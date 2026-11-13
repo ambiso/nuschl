@@ -85,6 +85,7 @@ struct Devices {
     output_channels: usize,
     /// Output callbacks that found the ring empty; written by the device thread.
     underruns: Arc<AtomicU32>,
+    clock: Clock,
     /// What the output callback hands to the device: the canceller's
     /// reference where the output cannot be recorded.
     played: Reference,
@@ -207,6 +208,7 @@ pub fn probe_route() -> Result<(), Box<dyn std::error::Error>> {
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let timing = Timing::new();
     timing.mark("worker_start");
+    let mut stats = crate::stats::Stats::new();
     let (mut first_processed, mut first_transmit, mut first_packet) = (true, true, true);
     let (tx, rx) = mpsc::sync_channel(256);
     let input_tx = tx.clone();
@@ -641,6 +643,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 underruns
             };
+            stats.underruns(underruns);
             let residual = pipeline
                 .as_ref()
                 .filter(|chain| chain.echo_cancellation())
@@ -727,6 +730,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             if capture.pop_entire_slice(&mut capture_frame).is_err() {
                 break;
             }
+            stats.capture(mic_index, mic_time);
             mic_index += FRAME as u64;
             timing.report_capture();
             if first_processed {
@@ -800,6 +804,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     timing.mark("first_packet");
                     first_packet = false;
                 }
+                stats.send(
+                    open.clock.now_shifted(Duration::ZERO, Duration::ZERO),
+                    transmit.queue.queued(),
+                );
                 emit(
                     &mut output,
                     LiveMediaEvent::Packet {
@@ -821,6 +829,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             last_cleanup = Instant::now();
         }
     }
+    stats.print();
     output.flush()?;
     // Stop and join the ticker before exiting (dropping it does both).
     #[cfg(windows)]
@@ -1279,6 +1288,7 @@ fn open_host(
         playback,
         output_channels,
         underruns,
+        clock,
         played: Reference {
             samples: played_consumer,
             timeline: played_timeline,
