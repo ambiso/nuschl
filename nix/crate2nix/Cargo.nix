@@ -333,6 +333,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "nuschl-sframe" = rec {
+      packageId = "nuschl-sframe";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "nuschl-sframe";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "nuschl-storage" = rec {
       packageId = "nuschl-storage";
       build = internal.buildRustCrateWithFeatures {
@@ -24808,6 +24818,34 @@ rec {
         ];
 
       };
+      "nuschl-sframe" = rec {
+        crateName = "nuschl-sframe";
+        version = "0.2.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/sframe; };
+        libName = "nuschl_sframe";
+        dependencies = [
+          {
+            name = "aes-gcm";
+            packageId = "aes-gcm 0.11.1";
+            usesDefaultFeatures = false;
+            features = [ "aes" "zeroize" ];
+          }
+          {
+            name = "libcrux-hkdf";
+            packageId = "libcrux-hkdf 0.0.9";
+          }
+          {
+            name = "thiserror";
+            packageId = "thiserror 2.0.21";
+          }
+          {
+            name = "zeroize";
+            packageId = "zeroize";
+          }
+        ];
+
+      };
       "nuschl-storage" = rec {
         crateName = "nuschl-storage";
         version = "0.2.0";
@@ -24913,12 +24951,6 @@ rec {
         libName = "nuschl_stream";
         dependencies = [
           {
-            name = "aes-gcm";
-            packageId = "aes-gcm 0.11.1";
-            usesDefaultFeatures = false;
-            features = [ "aes" "zeroize" ];
-          }
-          {
             name = "base64ct";
             packageId = "base64ct";
           }
@@ -24938,10 +24970,6 @@ rec {
           {
             name = "libcrux-hkdf";
             packageId = "libcrux-hkdf 0.0.9";
-          }
-          {
-            name = "libcrux-hmac";
-            packageId = "libcrux-hmac 0.0.9";
           }
           {
             name = "libcrux-kem";
