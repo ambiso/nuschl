@@ -143,7 +143,7 @@ The isolated DNS integration fixture is built with:
 
 ```sh
 nix build --offline --impure --file tests/web_dns_vm.nix driver \
-  --cores 2 --max-jobs 2 --no-link --print-out-paths
+  --no-link --print-out-paths
 ```
 
 Run that driver with `just vm-driver --root ~/.cache/nuschl-vm-<fresh-name> DRIVER`

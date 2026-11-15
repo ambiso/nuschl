@@ -32,10 +32,10 @@ chat, command argument or build log.
 ```sh
 umask 077
 mkdir -p "$HOME/.local/share/nuschl-release-keys"
-nix run --cores 2 --max-jobs 2 .#update-signer -- keygen \
+nix run .#update-signer -- keygen \
   --secret-file "$HOME/.local/share/nuschl-release-keys/update-v2.secret.json" \
   --public-file "$HOME/.local/share/nuschl-release-keys/update-v2.public.json"
-nix run --cores 2 --max-jobs 2 .#update-signer -- key-status \
+nix run .#update-signer -- key-status \
   --secret-file "$HOME/.local/share/nuschl-release-keys/update-v2.secret.json" \
   --public-file "$HOME/.local/share/nuschl-release-keys/update-v2.public.json"
 ```
@@ -53,7 +53,7 @@ To recover/export the public information from an existing private file, choose
 a new public output path:
 
 ```sh
-nix run --cores 2 --max-jobs 2 .#update-signer -- public-key \
+nix run .#update-signer -- public-key \
   --secret-file "$HOME/.local/share/nuschl-release-keys/update-v2.secret.json" \
   --public-file "$HOME/.local/share/nuschl-release-keys/export.public.json"
 ```
@@ -103,11 +103,11 @@ parent remain common-mode limits and are not made independent by this format.
 ## Signing a prepared manifest
 
 ```sh
-nix run --cores 2 --max-jobs 2 .#update-signer -- sign \
+nix run .#update-signer -- sign \
   --secret-file /private/path/update-v2.secret.json \
   --public-file crates/update/update-trust.json \
   --manifest dist/update.json --signature-file dist/update.json.sig
-nix run --cores 2 --max-jobs 2 .#update-signer -- verify \
+nix run .#update-signer -- verify \
   --public-file crates/update/update-trust.json \
   --manifest dist/update.json --signature-file dist/update.json.sig
 ```
@@ -197,7 +197,7 @@ download, apply and cleanup also pass. See [Windows proof](../../docs/windows-hy
 ```sh
 nix build .#update-verifier-ed25519 .#update-verifier-mldsa44 \
   .#update-runtime-fixture .#checks.x86_64-linux.update-unit \
-  .#checks.x86_64-linux.update-crypto --cores 2 --max-jobs 2
+  .#checks.x86_64-linux.update-crypto
 # Run the fixture outside the Nix build sandbox with disk TMPDIR and these
 # output paths: nuschl-update-runtime-fixture ED_VERIFIER ML_VERIFIER PYTHON
 python3 tests/update_release.py --signer /nix/store/…/bin/nuschl-update-sign
