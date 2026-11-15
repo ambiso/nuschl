@@ -83,7 +83,7 @@ export TMPDIR="$HOME/.cache/nuschl-local-release/tmp"
 mkdir -p "$TMPDIR"
 stage="$HOME/.cache/nuschl-local-release/v0.1.0-review"
 python3 release/local-release.py prepare \
-  --source-repo "$PWD" --tag v0.1.0 --repository ambiso/nuschl \
+  --source-repo "$PWD" --tag v0.1.0 --repository nuschl-eu/nuschl \
   --output "$stage" --build
 ```
 

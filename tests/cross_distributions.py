@@ -232,7 +232,7 @@ def main():
         artifact = out / "artifacts" / platform
         artifact.mkdir(parents=True)
         run(["tar", "-C", str(install), "-cf", str(artifact / "install.tar"), root_name])
-        info = {"repository": "ambiso/nuschl", "commit": match[1], "version": version,
+        info = {"repository": "nuschl-eu/nuschl", "commit": match[1], "version": version,
                 "platform": platform, "run_id": "local-cross-validation", "run_attempt": "1",
                 "host": "x86_64-linux", "os_code_signed": False,
                 "native_platform_runtime_tested_by_this_job": False,
@@ -241,7 +241,7 @@ def main():
         (artifact / "SHA256SUMS").write_text("".join(sha(artifact / name) + "  " + name + "\n"
                                                     for name in ("install.tar", "build-info.json")))
         authority["prepare"](artifact, platform, out / "checked-install",
-            repository="ambiso/nuschl", commit=match[1], run_id="local-cross-validation",
+            repository="nuschl-eu/nuschl", commit=match[1], run_id="local-cross-validation",
             attempt=1, version=version, policy=policy)
         proof[platform] = {"file_count": len(files), "install_tar_sha256": sha(artifact / "install.tar"),
                            "notice_scope": platform, "notice_check": "passed"}

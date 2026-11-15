@@ -23,7 +23,7 @@ remains available on legacy servers without plugin-message support.
 
 Negotiated typed previews, new archive/persistence handling and MLS preview support
 are deferred. This does not disable ordinary existing local chat history. Issue
-[#11](https://github.com/ambiso/nuschl/issues/11) remains open for the deferred work.
+[#11](https://github.com/nuschl-eu/nuschl/issues/11) remains open for the deferred work.
 The sections below describe both this delivery and the remaining modern contracts;
 they are not a claim that those contracts have shipped.
 
@@ -133,7 +133,7 @@ budget or omit the preview rather than increasing that limit or truncating text.
    The current legacy path uses the established Mumble schema and existing local
    history. The internal core preview value is rendered into one compatible HTML
    message. `preview/1` remains unadvertised; its wire and storage integration is
-   follow-up work in [#11](https://github.com/ambiso/nuschl/issues/11).
+   follow-up work in [#11](https://github.com/nuschl-eu/nuschl/issues/11).
 4. **MLS (remaining):** protect the entire structured body and archive record. A new authenticated
    application-body kind/version must not cause older clients to display raw JSON.
    Until group capability is authenticated, send text only. No cleartext preview
