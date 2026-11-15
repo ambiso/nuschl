@@ -74,7 +74,7 @@
           {#if totalDuration(tracks) > 0}<span>{formatDuration(totalDuration(tracks))}</span>{/if}
         </p>
         {#if inLibrary}
-          <p class="in-library" id="in-library-hint">Your library already has an album with this name.{#if libraryLink} <a href={libraryLink}>Open it in the library</a>{/if}</p>
+          <p class="in-library" id="in-library-hint">Your library already has an album with this name.{#if libraryLink}{" "}<a href={libraryLink}>Open it in the library</a>{/if}</p>
         {/if}
         <div class="detail-actions">
           <button class="primary" disabled={!canAdd} aria-describedby={inLibrary ? "in-library-hint" : undefined} onclick={add}><Icon name="add" /> {inLibrary ? "Add anyway" : "Add to library"}</button>
