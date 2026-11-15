@@ -30,9 +30,11 @@ browsers. People control what plays on a web page; they get their link by writin
 - **Covers.** The bot fetches at most 8 MiB of encoded art, then a credential-free,
   confined content worker decodes PNG, JPEG, WebP or the first GIF frame. Source
   dimensions are capped at 4096 per edge with a 64 MiB decoder allocation budget;
-  the returned thumbnail is at most 400×400 RGBA pixels (300×300 by default).
-  The browser validates these pixels and paints Canvas; encoded image bytes never
-  reach its image decoder. Unsupported formats and failed helpers show a placeholder.
+  the worker shrinks the image to at most 400×400 pixels (300×300 by default) and
+  encodes those pixels as a new 8-bit RGBA PNG without metadata. The bot checks
+  its structure (only `IHDR`, `IDAT` and `IEND`, correct CRCs, the expected size)
+  and serves it; the original art never reaches the browser. Unsupported formats
+  and failed helpers show a placeholder.
   Finished covers are kept on disk in the state directory (`web.cover_cache_mib`,
   64 MiB by default, each for at most a day), so the library and the worker see
   each cover and size once a day at most, also across restarts. The browser keeps
@@ -339,15 +341,12 @@ Authenticated SSE streams share 32 lifetime permits; overload returns HTTP 503
 without an admission wait queue. Artwork has two global jobs. Each owned task
 retains its permit through the worker's bounded response, EOF and actual process
 reaping, even if the HTTP client disconnects. A helper failure never falls back
-to parent decoding or encoded browser images. The fixed packaged content helper
+to parent decoding or to the original art. The fixed packaged content helper
 has no network, credentials, profile or audio devices.
 
-The browser permits two active fetches and 64 queued requests, with absolute
-10-second consumer deadlines. Cancellation retains an active fetch's capacity
-until its real settlement. Cached pixel storage is bounded to 64 entries/8 MiB;
-live Canvas storage is bounded to 64 bitmaps/16 MiB logical RGBA. Offscreen or
-obsolete-library bitmaps are cleared. CSP forbids image resource loading.
-These are application-level budgets, not a complete accounting of browser memory.
+The page loads covers as images from the bot itself (CSP `img-src 'self'`),
+lazily as they come near the viewport. Every image it can load is a PNG the
+content worker made, so browsers decode only those.
 
 Use `tokens_file = "channel-tokens"` for private Mumble ACL tokens; its contents
 are a JSON array of token strings supplied through `credentials.channel-tokens`.
@@ -379,6 +378,9 @@ cancellation while both confined children are stalled, immediate overload, real
 PID exit and capacity reuse. Browser mode runs the packaged UI and CSP at
 320/390/1280 pixels: exact generated red/blue pixels, library changes, held stale
 responses, malformed JSON, offscreen Canvas release and no image/media requests.
+Since covers became worker-made PNGs, browser mode checks loaded `<img>` pixels,
+lazy loading, held stale responses, a non-image answer and a CSP-refused foreign
+image instead.
 The browser is isolated from host devices and profiles; its non-local background
 requests meet an owned rejecting proxy. This proves synthetic artwork behavior,
 not full browser resource-exhaustion resistance or platform-wide confinement.
@@ -629,11 +631,11 @@ Browsing uses `albums`, `album`, `artists`, `artist`, `playlists`, `playlist`, a
 `search` JSON endpoints. Library identity in requests is its current config index.
 Album lists accept `library`, `list`, and `page`; detail endpoints accept `library`
 and `id`. The authenticated `art/<library>/<id>?size=…&v=…` route returns
-`{"width":N,"height":N,"rgba":"<canonical base64 RGBA>"}`. Covers are made in
+`image/png`: a PNG the content worker made from the decoded art (8-bit RGBA,
+only `IHDR`, `IDAT` and `IEND`). Covers are made in
 edge lengths of 32, 64, 96, 128, 200, 300 and 400 pixels; a request gets the
 largest of these that is no larger than its `size`, so the page's few sizes share
-cache entries and worker jobs. There are exactly these three fields, no
-encoded-file or source-URL authority. Invalid images return 404, busy workers
+cache entries and worker jobs. Invalid images return 404, busy workers
 (two jobs) or a missing worker return 503. Library failures preserve the existing
 redacted errors.
 
@@ -643,7 +645,7 @@ deletes the files) and at most 4,096 covers. Entries are keyed by library, cover
 ID and size and are kept for at most 24 hours; the least recently used leave
 first, and no single cover may take more than an eighth of the space. Every file
 holds its key and is checked again when read; nothing past its indexed size is
-read. A damaged file is deleted and fetched anew, and only well-formed pixels are
+read. A damaged file is deleted and fetched anew, and only well-formed PNGs are
 served. A restart keeps the files and drops expired, unfinished or excess ones. If
 the folder cannot be used the bot logs a warning and runs without the cache. A
 cached cover needs no library call and no worker job. State/SSE includes

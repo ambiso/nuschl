@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: EUPL-1.2
-"""Private musicbot artwork fixture: real worker/HTTP/Canvas and cancellation.
+"""Private musicbot artwork fixture: real worker/HTTP/browser images and cancellation.
 
 Only owned Murmur/Subsonic endpoints, generated PNGs and dedicated browser state.
 No host microphone, camera, clipboard, profile or external server is used.
