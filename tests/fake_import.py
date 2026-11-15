@@ -8,8 +8,10 @@ seconds. A search for "busy" answers `rate_limited`; album LIMITED answers
 `limit_reached` for the requester. `GET /fixture/seen` (no key) lists what was
 asked, so a test can check the requesters and the key the bot sent.
 
-tests/musicbot.py serves it in process after setting `State.key`.
+tests/musicbot.py serves it in process after setting `State.key`; the NixOS
+VM check runs it as a service: fake_import.py --port 5000 --key-file <file>
 """
+import argparse
 import base64
 import http.server
 import json
@@ -155,3 +157,17 @@ class Service(http.server.BaseHTTPRequestHandler):
                       "requested_at": time.time(), "requesters": [requester]}
             State.imports.insert(0, record)
             return self.send(202, {"import": view(record, requester)})
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--key-file", required=True)
+    args = parser.parse_args()
+    with open(args.key_file, encoding="utf-8") as file:
+        State.key = file.read().strip()
+    http.server.ThreadingHTTPServer(("127.0.0.1", args.port), Service).serve_forever()
+
+
+if __name__ == "__main__":
+    main()
