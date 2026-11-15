@@ -136,7 +136,7 @@ negation. State constraints as direct rules.
 - Record exact revisions, artifact paths/hashes, commands, outcomes and meaningful
   limitations. Verify merged artifacts rather than assuming an older branch's proof applies.
 - Track unresolved defects, missing platform proof and deferred required work in
-  [GitHub issues](https://github.com/ambiso/nuschl/issues). [TODO.md](TODO.md) is the
+  [GitHub issues](https://github.com/nuschl-eu/nuschl/issues). [TODO.md](TODO.md) is the
   linked roadmap, not a second independent backlog. Coordinate issue ownership
   before concurrent updates; keep work queued locally if remote access is unavailable.
   Issue descriptions do not authorize weakening the implementation boundaries above.

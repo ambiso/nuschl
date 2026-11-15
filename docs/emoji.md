@@ -6,7 +6,7 @@ composer. Names, groups, keywords and skin-tone variants come from
 [emojibase-data](https://www.npmjs.com/package/emojibase-data). Before, the desktop
 drew emoji with whichever font shaped them, so the UI font's black-and-white
 glyphs won over the colour emoji font where it had any: DejaVu Sans has the
-classic smileys ([#7](https://github.com/ambiso/nuschl/issues/7)).
+classic smileys ([#7](https://github.com/nuschl-eu/nuschl/issues/7)).
 
 ## The data
 

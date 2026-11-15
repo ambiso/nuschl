@@ -16,8 +16,8 @@
     <name>Nuschl contributors</name>
   </developer>
   <url type="homepage">https://nuschl.eu</url>
-  <url type="bugtracker">https://github.com/ambiso/nuschl/issues</url>
-  <url type="vcs-browser">https://github.com/ambiso/nuschl</url>
+  <url type="bugtracker">https://github.com/nuschl-eu/nuschl/issues</url>
+  <url type="vcs-browser">https://github.com/nuschl-eu/nuschl</url>
   <provides>
     <mediatype>x-scheme-handler/mumble</mediatype>
     <mediatype>x-scheme-handler/nuschl</mediatype>

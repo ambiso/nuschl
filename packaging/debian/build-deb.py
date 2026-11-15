@@ -156,7 +156,7 @@ def main():
         control = tree / 'DEBIAN'; control.mkdir()
         docs = tree / 'usr/share/doc/nuschl'; docs.mkdir(parents=True, exist_ok=True)
         own_license = ROOT / 'LICENSE'
-        (docs / 'copyright').write_bytes(b'Upstream-Name: Nuschl\nSource: https://github.com/ambiso/nuschl\n\n' + own_license.read_bytes() + b'\n\nBundled third-party notices (full referenced files are in /usr/share/licenses/nuschl):\n\n' + (tree / 'usr/share/licenses/nuschl/THIRD-PARTY.txt').read_bytes())
+        (docs / 'copyright').write_bytes(b'Upstream-Name: Nuschl\nSource: https://github.com/nuschl-eu/nuschl\n\n' + own_license.read_bytes() + b'\n\nBundled third-party notices (full referenced files are in /usr/share/licenses/nuschl):\n\n' + (tree / 'usr/share/licenses/nuschl/THIRD-PARTY.txt').read_bytes())
         required = max((version(row['minimum_glibc']) for row in programs.values()))
         libc = '.'.join(map(str, required))
         size = sum(p.stat().st_size for p in tree.rglob('*') if p.is_file() and not p.is_symlink())
@@ -168,7 +168,7 @@ Architecture: {args.architecture}
 Maintainer: {args.maintainer}
 Depends: libc6 (>= {libc}), {DEPENDS}
 Installed-Size: {(size + 1023) // 1024}
-Homepage: https://github.com/ambiso/nuschl
+Homepage: https://github.com/nuschl-eu/nuschl
 Description: Voice and text chat for Mumble servers
  Desktop client with isolated content, cryptography, storage and media helpers.
  This package is updated by the system package manager.
