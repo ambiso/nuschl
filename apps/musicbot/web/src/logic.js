@@ -114,10 +114,11 @@ function libraryIndex(text) {
  * `{ view: "queue" | "channels" | "history" }`, `{ view: "albums", library, list }`,
  * `{ view: "artists" | "playlists", library }`,
  * `{ view: "album" | "artist" | "playlist" | "song" | "similar", library, id, namespace? }`,
- * `{ view: "path", library, from, to, namespace? }`, `{ view: "search", q }`.
+ * `{ view: "path", library, from, to, namespace? }`, `{ view: "search", q }`,
+ * `{ view: "add", q }`, `{ view: "addAlbum", id }`, `{ view: "requests" }`.
  * A shared link (`library_key=`, see shareRoute) adds `sharedLibrary: key` to
  * library routes instead of a namespace; adoptSharedRoute resolves it.
- * Unknown hashes give the queue view.
+ * Unknown hashes give the queue view; an invalid import album id gives the add view.
  */
 export function parseRoute(hash) {
   const text = (hash || "").replace(/^#/, "");
@@ -139,6 +140,7 @@ export function parseRoute(hash) {
   switch (view) {
     case "channels":
     case "history":
+    case "requests":
       return { view };
     case "albums": {
       const list = params.get("list");
@@ -159,6 +161,10 @@ export function parseRoute(hash) {
       return { view, library: libraryIndex(library), from: decoded, to: decodedTo, ...namespace };
     case "search":
       return { view, q: params.get("q") ?? "" };
+    case "add":
+      if (parts.length === 1) return { view, q: params.get("q") ?? "" };
+      if (parts.length === 3 && library === "album" && isImportId(decoded)) return { view: "addAlbum", id: decoded };
+      return { view, q: "" };
     default:
       return { view: "queue" };
   }
@@ -169,6 +175,8 @@ export function buildRoute(route) {
   switch (route.view) {
     case "history":
       return "#/history";
+    case "requests":
+      return "#/requests";
     case "channels":
       return "#/channels";
     case "albums":
@@ -186,6 +194,10 @@ export function buildRoute(route) {
       return `#/path/${route.library ?? 0}/${encodeURIComponent(route.from)}/${encodeURIComponent(route.to)}${namespaceQuery(route)}`;
     case "search":
       return `#/search?${new URLSearchParams({ q: route.q ?? "" })}`;
+    case "add":
+      return `#/add?${new URLSearchParams({ q: route.q ?? "" })}`;
+    case "addAlbum":
+      return `#/add/album/${encodeURIComponent(route.id)}`;
     default:
       return "#/queue";
   }
@@ -392,4 +404,61 @@ export function mergeHistory(current, page, older = false) {
   let next_before = older || !joins ? page.next_before : current.next_before;
   if (items.length === 1000 || (next_before !== null && next_before <= page.oldest_id)) next_before = null;
   return { items, next_before, oldest_id: page.oldest_id, revision: page.revision };
+}
+
+/** True for an import service id: exactly 16 lowercase hex characters. */
+export function isImportId(id) {
+  return typeof id === "string" && /^[0-9a-f]{16}$/.test(id);
+}
+
+const RELEASE_TYPES = { album: "Album", ep: "EP", single: "Single", compilation: "Compilation" };
+
+/** Display name of an import service release type, or an empty string for an unknown one. */
+export function releaseTypeLabel(type) {
+  return Object.hasOwn(RELEASE_TYPES, type) ? RELEASE_TYPES[type] : "";
+}
+
+const count = (value) => (Number.isInteger(value) && value >= 0 ? value : 0);
+
+/** The status line of an import request. */
+export function requestStatusText(request) {
+  const total = count(request?.tracks_total);
+  switch (request?.status) {
+    case "queued":
+      return "Waiting to start";
+    case "downloading":
+      return `Adding · ${count(request.tracks_done)} of ${total} tracks`;
+    case "handed_over": {
+      const failed = Math.min(count(request.tracks_failed), total);
+      return failed === 0
+        ? "Added to the library. It can take a minute until it shows up; search for it in a minute or so."
+        : `Added ${total - failed} of ${total} tracks to the library. It can take a minute until they show up; search for them in a minute or so.`;
+    }
+    case "failed":
+      return "Could not be added.";
+    default:
+      return "";
+  }
+}
+
+/** Progress of a request that is being added as `{ value, max }`, or null for any other state. */
+export function requestProgress(request) {
+  if (request?.status !== "downloading") return null;
+  const max = count(request.tracks_total);
+  return max > 0 ? { value: Math.min(count(request.tracks_done), max), max } : null;
+}
+
+/** Tracks still available in an import budget `{ limit, used }`, or null when it is malformed. */
+function remaining(budget) {
+  const { limit, used } = budget ?? {};
+  return Number.isInteger(limit) && Number.isInteger(used) && limit >= 0 && used >= 0 ? Math.max(0, limit - used) : null;
+}
+
+/** The budget line for `{ mine, total }`: the smaller remainder of both, or null when either is malformed. */
+export function budgetText(budget) {
+  const mine = remaining(budget?.mine);
+  const total = remaining(budget?.total);
+  if (mine === null || total === null) return null;
+  const left = Math.min(mine, total);
+  return `You can add ${left} more ${left === 1 ? "track" : "tracks"} today.`;
 }

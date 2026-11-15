@@ -7,6 +7,7 @@ import {
   queueStorageKey, selectedQueue, encodeDragItem, decodeDragItem, handlesSpace,
   mergeHistory, libraryForNamespace, routeForNamespace, browseItemIsCurrent, similarityPercent, sonicPathStart,
   shareRoute, shareRoot, shareUrl, addressRoute, adoptSharedRoute,
+  isImportId, releaseTypeLabel, requestStatusText, requestProgress, budgetText,
 } from "./logic.js";
 
 test("formatDuration", () => {
@@ -137,7 +138,87 @@ test("routes round trip, including awkward ids", () => {
     { view: "playlists", library: 3 },
     { view: "search", q: "a b/c?d#e&f=g+h" },
     { view: "search", q: "" },
+    { view: "add", q: "a b/c?d#e&f=g+h" },
+    { view: "add", q: "" },
+    { view: "addAlbum", id: "0123456789abcdef" },
+    { view: "requests" },
   ]) assert.deepEqual(parseRoute(buildRoute(route)), route);
+});
+
+test("import routes", () => {
+  assert.equal(buildRoute({ view: "add", q: "Miles Davis" }), "#/add?q=Miles+Davis");
+  assert.equal(buildRoute({ view: "add" }), "#/add?q=");
+  assert.equal(buildRoute({ view: "addAlbum", id: "0123456789abcdef" }), "#/add/album/0123456789abcdef");
+  assert.equal(buildRoute({ view: "requests" }), "#/requests");
+  assert.deepEqual(parseRoute("#/add"), { view: "add", q: "" });
+  assert.deepEqual(parseRoute("#/add?q=kind%20of%20blue"), { view: "add", q: "kind of blue" });
+  assert.deepEqual(parseRoute("#/add/album/fedcba9876543210"), { view: "addAlbum", id: "fedcba9876543210" });
+  assert.deepEqual(parseRoute("#/requests"), { view: "requests" });
+  assert.deepEqual(parseRoute("#/requests?library_key=x"), { view: "requests" });
+  // Only well-formed import ids reach the album page.
+  for (const hash of ["#/add/album", "#/add/album/ABCDEF0123456789", "#/add/album/0123456789abcde", "#/add/album/0123456789abcdef0",
+    "#/add/album/..%2F..%2Fapi", "#/add/album/0123456789abcdef/x", "#/add/song/0123456789abcdef", "#/add/album/%E0%A4%A"]) {
+    assert.deepEqual(parseRoute(hash), hash.endsWith("%A") ? { view: "queue" } : { view: "add", q: "" }, hash);
+  }
+  // Import routes carry no library and stay unchanged across namespaces and libraries.
+  for (const route of [{ view: "add", q: "x" }, { view: "addAlbum", id: "0123456789abcdef" }, { view: "requests" }]) {
+    assert.deepEqual(routeForLibrary(route, 2), route);
+    assert.deepEqual(routeForNamespace(route, 1, null), route);
+    assert.equal(shareRoute(route, ["k"]), buildRoute(route));
+  }
+});
+
+test("isImportId accepts exactly 16 lowercase hex characters", () => {
+  assert.ok(isImportId("0123456789abcdef"));
+  for (const id of ["", "0123456789ABCDEF", "0123456789abcde", "0123456789abcdefa", "0123456789abcdeg", null, 123, "../0123456789abc"]) {
+    assert.equal(isImportId(id), false, String(id));
+  }
+});
+
+test("releaseTypeLabel", () => {
+  assert.equal(releaseTypeLabel("album"), "Album");
+  assert.equal(releaseTypeLabel("ep"), "EP");
+  assert.equal(releaseTypeLabel("single"), "Single");
+  assert.equal(releaseTypeLabel("compilation"), "Compilation");
+  assert.equal(releaseTypeLabel("toString"), "");
+  assert.equal(releaseTypeLabel(undefined), "");
+});
+
+test("request status texts", () => {
+  const request = (status, tracks_done = 0, tracks_failed = 0) => ({ status, tracks_total: 12, tracks_done, tracks_failed });
+  assert.equal(requestStatusText(request("queued")), "Waiting to start");
+  assert.equal(requestStatusText(request("downloading", 5)), "Adding · 5 of 12 tracks");
+  assert.equal(requestStatusText(request("handed_over", 12)),
+    "Added to the library. It can take a minute until it shows up; search for it in a minute or so.");
+  assert.equal(requestStatusText(request("handed_over", 9, 3)),
+    "Added 9 of 12 tracks to the library. It can take a minute until they show up; search for them in a minute or so.");
+  assert.equal(requestStatusText(request("failed")), "Could not be added.");
+  assert.equal(requestStatusText(request("bogus")), "");
+  assert.equal(requestStatusText(null), "");
+  // Malformed counts never produce negative or fractional numbers.
+  assert.equal(requestStatusText({ status: "downloading", tracks_total: -1, tracks_done: 2.5 }), "Adding · 0 of 0 tracks");
+  assert.equal(requestStatusText({ status: "handed_over", tracks_total: 2, tracks_failed: 5 }),
+    "Added 0 of 2 tracks to the library. It can take a minute until they show up; search for them in a minute or so.");
+});
+
+test("request progress shows only while adding", () => {
+  assert.deepEqual(requestProgress({ status: "downloading", tracks_total: 10, tracks_done: 4 }), { value: 4, max: 10 });
+  assert.deepEqual(requestProgress({ status: "downloading", tracks_total: 10, tracks_done: 40 }), { value: 10, max: 10 });
+  assert.equal(requestProgress({ status: "downloading", tracks_total: 0, tracks_done: 0 }), null);
+  for (const status of ["queued", "handed_over", "failed"]) assert.equal(requestProgress({ status, tracks_total: 10, tracks_done: 4 }), null);
+});
+
+test("budget text uses the smaller remainder", () => {
+  const budget = (mine, total) => ({ mine: { limit: mine[0], used: mine[1], next_free_at: null }, total: { limit: total[0], used: total[1], next_free_at: null } });
+  assert.equal(budgetText(budget([100, 40], [1000, 10])), "You can add 60 more tracks today.");
+  assert.equal(budgetText(budget([100, 40], [1000, 980])), "You can add 20 more tracks today.");
+  assert.equal(budgetText(budget([100, 99], [1000, 0])), "You can add 1 more track today.");
+  assert.equal(budgetText(budget([100, 120], [1000, 0])), "You can add 0 more tracks today.");
+  assert.equal(budgetText(budget([100, 0], [1000, 1000])), "You can add 0 more tracks today.");
+  assert.equal(budgetText(null), null);
+  assert.equal(budgetText({ mine: { limit: 10, used: 0 } }), null);
+  assert.equal(budgetText(budget([10, -1], [10, 0])), null);
+  assert.equal(budgetText(budget([1.5, 0], [10, 0])), null);
 });
 
 test("parseRoute falls back on bad input", () => {
@@ -346,6 +427,7 @@ function everyRoute(library, namespace) {
     { view: "queue" }, { view: "channels" }, { view: "history" },
     { view: "search", q: "a b/c?d#e&f=g+h" },
     { view: "albums", library, list: "starred" }, { view: "artists", library }, { view: "playlists", library },
+    { view: "add", q: "a b/c?d#e&f=g+h" }, { view: "addAlbum", id: "0123456789abcdef" }, { view: "requests" },
   ];
   for (const id of SHARE_IDS) {
     for (const view of ["album", "artist", "playlist", "song", "similar"]) routes.push({ view, library, id, namespace });
