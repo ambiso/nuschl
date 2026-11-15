@@ -2,10 +2,13 @@
 //! Finished cover answers on disk, shared by every viewer, so the library and
 //! the artwork worker handle each cover and size at most once a day.
 //!
-//! Each file holds one line with its key as JSON, then the answer the web page
-//! receives. File names are hashes of the key; the stored key is compared on
-//! every read, so a name collision is only a miss. Answers are checked again
-//! when read, so only well-formed RGBA leaves the cache.
+//! Each file holds one line with its key as JSON, then its write time as 32
+//! digits of nanoseconds since the epoch, then the answer the web page
+//! receives. The persisted write time ranks the files oldest first across a
+//! restart, where the kernel's modification time ties within its coarse
+//! clock granularity. File names are hashes of the key; the stored key is
+//! compared on every read, so a name collision is only a miss. Answers are
+//! checked again when read, so only well-formed RGBA leaves the cache.
 use axum::body::Bytes;
 use md5::{Digest, Md5};
 use serde::Deserialize;
@@ -21,6 +24,8 @@ pub const MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 /// At most this many covers, however small, so the index and its scans stay
 /// small too.
 pub const MAX_ENTRIES: usize = 4096;
+/// Digits of the persisted write time on a stored file's second line.
+const WRITE_STAMP_DIGITS: usize = 32;
 const TEMPORARY: &str = ".tmp-";
 
 /// The library's key, the cover ID and the edge length.
@@ -36,6 +41,9 @@ pub struct CoverCache {
 struct Index {
     bytes: u64,
     tick: u64,
+    /// The last write time the cache itself handed out, in nanoseconds since
+    /// the epoch, always strictly greater than all earlier ones.
+    stamp: u128,
     /// By file name.
     entries: HashMap<String, Entry>,
 }
@@ -63,7 +71,8 @@ impl CoverCache {
                     if name.starts_with(TEMPORARY) || !metadata.is_file() || expired(stored) {
                         remove(&directory.join(&name));
                     } else {
-                        found.push((name, metadata.len(), stored));
+                        let write = write_stamp(&directory.join(&name));
+                        found.push((name, metadata.len(), stored, write));
                     }
                 }
             }
@@ -73,9 +82,15 @@ impl CoverCache {
         if budget > 0 {
             nuschl_session::layout::create_private_dir(&directory)?;
         }
-        found.sort_by_key(|(_, _, stored)| *stored);
+        // The cache's own write time ranks entries, the kernel's modification
+        // time only where a file predates it. The name breaks remaining ties,
+        // for example between legacy files written in the same instant.
+        found.sort_by_key(|(name, _, stored, write)| {
+            let written = write.unwrap_or_else(|| time_value(*stored));
+            (written, name.clone())
+        });
         let mut index = Index::default();
-        for (name, size, stored) in found {
+        for (name, size, stored, _) in found {
             index.tick += 1;
             index.bytes += size;
             let used = index.tick;
@@ -149,14 +164,30 @@ impl CoverCache {
     /// Keeps `body` unless it would take more than an eighth of the budget,
     /// so a few large covers cannot push out everything else.
     pub async fn insert(&self, key: &CoverKey, body: &[u8]) {
-        let mut file = match serde_json::to_vec(key) {
+        if self.budget == 0 {
+            return;
+        }
+        let key_line = match serde_json::to_vec(key) {
             Ok(line) => line,
             Err(_) => return,
         };
+        // Write order survives the restart through this stamp, so rapid
+        // inserts keep their relative age regardless of the kernel clock.
+        let stamp = {
+            let mut index = self.lock();
+            index.stamp = index
+                .stamp
+                .max(time_value(SystemTime::now()))
+                .saturating_add(1);
+            index.stamp
+        };
+        let mut file = key_line;
+        file.push(b'\n');
+        file.extend_from_slice(format!("{stamp:0width$}", width = WRITE_STAMP_DIGITS).as_bytes());
         file.push(b'\n');
         file.extend_from_slice(body);
         let size = file.len() as u64;
-        if self.budget == 0 || size > self.budget / 8 {
+        if size > self.budget / 8 {
             return;
         }
         let name = file_name(key);
@@ -251,6 +282,34 @@ fn file_name(key: &CoverKey) -> String {
 
 struct Collision;
 
+/// The cache's own write time from a stored file's second line; absent for
+/// files an earlier version stored without one, whose age is the modification
+/// time instead.
+fn write_stamp(path: &Path) -> Option<u128> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).ok()?;
+    let mut head = Vec::new();
+    file.take(1024).read_to_end(&mut head).ok()?;
+    let first = head.iter().position(|byte| *byte == b'\n')? + 1;
+    let line = head.get(first..)?;
+    let end = line.iter().position(|byte| *byte == b'\n')?;
+    let digits = line.get(..end)?;
+    let stamp = (digits.len() == WRITE_STAMP_DIGITS && digits.iter().all(u8::is_ascii_digit))
+        .then(|| {
+            digits
+                .iter()
+                .fold(0u128, |value, digit| value * 10 + (digit - b'0') as u128)
+        })?;
+    Some(stamp)
+}
+
+/// Nanoseconds since the epoch; 0 for a time before it.
+fn time_value(stored: SystemTime) -> u128 {
+    stored
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |age| age.as_nanos())
+}
+
 /// The stored answer when the file belongs to `key` and holds well-formed
 /// pixels no larger than the key's size; `None` for anything damaged.
 fn answer(key: &CoverKey, file: Vec<u8>) -> Option<Result<Bytes, Collision>> {
@@ -266,7 +325,20 @@ fn answer(key: &CoverKey, file: Vec<u8>) -> Option<Result<Bytes, Collision>> {
         height: u32,
         rgba: String,
     }
-    let pixels: Pixels = serde_json::from_slice(&file[split + 1..]).ok()?;
+    // Files an earlier version stored start the answer right after the key
+    // line; the current one carries the write stamp on the second line.
+    let rest = &file[split + 1..];
+    let body_start = split
+        + 1
+        + match rest.iter().position(|byte| *byte == b'\n') {
+            Some(end)
+                if end == WRITE_STAMP_DIGITS && rest[..end].iter().all(u8::is_ascii_digit) =>
+            {
+                end + 1
+            }
+            _ => 0,
+        };
+    let pixels: Pixels = serde_json::from_slice(&file[body_start..]).ok()?;
     let bytes = u64::from(pixels.width) * u64::from(pixels.height) * 4;
     let fits = (1..=key.2).contains(&pixels.width) && (1..=key.2).contains(&pixels.height);
     if !fits || pixels.rgba.len() as u64 != bytes.div_ceil(3) * 4 {
@@ -281,7 +353,7 @@ fn answer(key: &CoverKey, file: Vec<u8>) -> Option<Result<Bytes, Collision>> {
         return None;
     }
     let mut file = file;
-    Some(Ok(Bytes::from(file.split_off(split + 1))))
+    Some(Ok(Bytes::from(file.split_off(body_start))))
 }
 
 async fn write(temporary: &Path, path: &Path, contents: &[u8]) -> std::io::Result<()> {
@@ -317,7 +389,8 @@ mod tests {
     }
 
     fn file_size(id: &str) -> u64 {
-        (serde_json::to_vec(&key(id)).unwrap().len() + 1 + BODY.len()) as u64
+        // The file also holds its newline and write-stamp line.
+        (serde_json::to_vec(&key(id)).unwrap().len() + 2 + WRITE_STAMP_DIGITS + BODY.len()) as u64
     }
 
     #[tokio::test]
