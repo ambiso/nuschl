@@ -55,7 +55,7 @@ rtc:
     python3 tests/rtc_probe.py
 
 vm:
-    nix build --cores 2 .#checks.x86_64-linux.vm-smoke --no-link -L
+    nix build .#checks.x86_64-linux.vm-smoke --no-link -L
 
 # `just vm-driver --root ~/.cache/nuschl-vm-r1 [--probe] /nix/store/...-nixos-test-driver-...`
 # (tests/vm_driver.py) refuses to boot on RAM-backed or escaped state paths and
@@ -179,7 +179,7 @@ readme-screenshot:
 
 # Regenerate after changing dependencies/manifests, including new local vendors.
 crate2nix:
-    nix run --cores 2 --max-jobs 2 --inputs-from . nixpkgs#crate2nix -- generate -f Cargo.toml -o nix/crate2nix/Cargo.nix -h nix/crate2nix/crate-hashes.json
+    nix run --inputs-from . nixpkgs#crate2nix -- generate -f Cargo.toml -o nix/crate2nix/Cargo.nix -h nix/crate2nix/crate-hashes.json
     python3 nix/crate2nix-inputs.py > nix/crate2nix/inputs.sha256
 
 fmt:

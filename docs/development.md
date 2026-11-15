@@ -11,7 +11,7 @@ Everything comes from the Nix flake's development shell:
 ```sh
 direnv allow
 # Or enter the same pinned environment explicitly:
-nix develop --cores 2
+nix develop
 ```
 
 `cargo add` is built into the pinned Cargo. `Cargo.lock` and `flake.lock` are tracked.
@@ -39,7 +39,7 @@ the `stable` channel independently of `flake.lock`. Commits are made with `jj`.
 | `just emoji-assets` | link the emoji images and picker data for builds outside Nix ([emoji.md](emoji.md)) |
 | `just fmt` | format Rust, Nix and TOML |
 
-Other VM checks run with `nix build --cores 2 .#checks.x86_64-linux.<name>`:
+Other VM checks run with `nix build .#checks.x86_64-linux.<name>`:
 `vm-server` (the server module), `vm-home-manager`, `home-manager`. UI scenes for
 looking at changes run in a private headless GNOME Shell (`tests/screenshots.py`,
 tests/README.md).
@@ -66,7 +66,7 @@ move its build scratch.
 The worker exchange diagnostic has its own `main` (`harness = false`). Run:
 
 ```sh
-nix build --cores 2 --max-jobs 1 \
+nix build \
   .#checks.x86_64-linux.ipc-exchange \
   .#checks.x86_64-linux.ipc-exchange-negative-controls
 ```
@@ -83,7 +83,7 @@ or platform-wide confinement.
 Pull requests to `main` and pushes to `main` run one command on the self-hosted
 runner, the `ci` check: `nix build -f ci.nix`, every flake check including the
 NixOS VM tests, except the release packaging proofs. Run the same command on the
-working copy before pushing with `scripts/pre-pr --cores 2 --max-jobs 2`; Nix
+working copy before pushing with `scripts/pre-pr`; Nix
 reads only tracked files, so commit new files first. jj runs no git hooks: push
 bookmarks with `scripts/pr-push --bookmark NAME`. With plain git,
 `git config core.hooksPath .githooks` runs it before each push.
@@ -114,7 +114,7 @@ builds use crane (`.#default-crane` builds the package the same way).
 Windows and macOS packages are cross-built from Linux: `.#windows`, `.#macos-app`,
 `.#macos-universal` and `.#macos-aarch64` ([install.md](install.md#how-releases-are-made)).
 
-`nix flake check --cores 2` runs the native build, tests, Clippy, formatting,
+`nix flake check` runs the native build, tests, Clippy, formatting,
 dependency policy, and a vulnerability check using a pinned advisory database.
 `cargo deny check` also checks the current advisory database and registry yanks
 outside the Nix sandbox.
@@ -153,7 +153,7 @@ regenerate the committed Windows `.ico` with the command at the top of
 ## The WebRTC trial
 
 The modern media transport is a str0m trial in `nuschl-rtc`. Run
-`nix run --cores 2 .#rtc-probe` for the headless audio/video loopback probe, or
+`nix run .#rtc-probe` for the headless audio/video loopback probe, or
 `just rtc` inside the development shell to include the worker's Opus encoding and
 decoding. Both send Opus and a generated VP8 test pattern between two loopback UDP
 peers; no microphone, camera, public STUN service or external server is used. The

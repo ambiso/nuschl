@@ -194,8 +194,7 @@ def confirm_modal(details):
 
 def build_signer(selection, area):
     flake = 'git+' + ROOT.as_uri() + '?rev=' + selection['commit']
-    backend.guarded_build(['nix', 'build', '--cores', '2', '--max-jobs', '2',
-                           '--out-link', str(area / 'signer'), flake + '#update-signer'],
+    backend.guarded_build(['nix', 'build', '--out-link', str(area / 'signer'), flake + '#update-signer'],
                           area / 'signer-build.log')
     return backend.select_product(flake, 'update-signer')
 
