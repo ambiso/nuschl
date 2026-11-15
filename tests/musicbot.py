@@ -524,6 +524,8 @@ def service(args):
             assert state["you"] == "carol" and state["players"][0]["name"] == "root", state
             watcher = Events(link)
             watcher.wait(lambda state: state["you"] == "carol")
+            if args.import_service:
+                adding_music(link, args.import_service, watcher)
             command(link, "pause")
             command(link, "clear")
             command(link, "skip")
@@ -790,6 +792,7 @@ def main():
     parser.add_argument("--espeak", type=Path, help="espeak-ng for the ducking test")
     parser.add_argument("--opus-library", type=Path, help="reference libopus for speech encoding")
     parser.add_argument("--web-assets", type=Path, help="built UI directory; forwarded only when supplied")
+    parser.add_argument("--import-service", help="with --service: the module's fixture import service URL")
     args = parser.parse_args()
     if not args.service and not (args.espeak and args.opus_library):
         parser.error("--espeak and --opus-library are needed unless --service")
