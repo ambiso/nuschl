@@ -70,3 +70,15 @@ name = "games"
 host = "voice.example.org"
 username = "Music (Games)"
 channel = "Games/Background"
+
+# Adding music: people search an import service for albums missing from the
+# libraries and have them added to one of them (docs/musicbot.md, "Adding
+# music"). Without this section the web page does not offer it.
+
+# [import]
+# Base URL of the import service: https://, or http:// on this machine only.
+# url = "http://127.0.0.1:5000/"
+# Its bearer key, a credential file like the other *_file entries.
+# key_file = "import-key"
+# The [[subsonic]] library the added albums arrive in, by name.
+# library = "Navidrome"
