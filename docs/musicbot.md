@@ -406,6 +406,13 @@ and a plain/OpenSubsonic fixture. It checks synchronized mutations, shared and
 separate audio, speech-only ducking, seeking, public presence comments, completed,
 skipped and failed history, pagination, restart recovery with libraries reordered
 or removed, and sonic similarity endpoints on the OpenSubsonic library only.
+With `tests/fake_import.py`, a fixture import service whose imports advance
+from queued to handed_over within seconds, it checks the `api/import` endpoints,
+the bearer key, pseudonymous requesters, fixed error texts (429, 404, 409), import
+covers through the content worker and live import revisions; the VM check runs
+the same against the module's bot with the key as a credential. Rust tests cover
+the `[import]` validation, pseudonym derivation, error mapping, id checks, reply
+caps, refused redirects and the endpoints against a fixture service.
 
 The backend reporting check also ran against a real Navidrome 0.64.2 instance
 with a six-second FLAC and stock Murmur. Navidrome's now-playing API identified
