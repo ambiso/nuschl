@@ -182,7 +182,7 @@ async fn page_request(
     mut request: axum::extract::Request,
 ) -> Result<axum::extract::Request, ApiError> {
     let path = request.uri().path();
-    let page_path = ["/api/", "/art/", "/assets/"]
+    let page_path = ["/api/", "/art/", "/import-art/", "/assets/"]
         .iter()
         .any(|prefix| path.starts_with(prefix))
         || path == "/licenses";
@@ -2124,6 +2124,7 @@ mod tests {
                 ("api/listen?player=0", None),
                 ("api/rating", Some(r#"{"library":0,"id":"s","rating":5}"#)),
                 ("art/0/cover?size=32", None),
+                ("import-art/00000000000000a1?size=32", None),
                 ("api/forget", Some("{}")),
             ] {
                 assert_eq!(
