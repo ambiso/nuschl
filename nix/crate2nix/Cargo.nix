@@ -24319,8 +24319,16 @@ rec {
             features = [ "std" ];
           }
           {
+            name = "getrandom";
+            packageId = "getrandom 0.4.3";
+          }
+          {
             name = "hex";
             packageId = "hex";
+          }
+          {
+            name = "hmac";
+            packageId = "hmac 0.13.0";
           }
           {
             name = "md-5";
@@ -24354,6 +24362,10 @@ rec {
           {
             name = "serde_json";
             packageId = "serde_json";
+          }
+          {
+            name = "sha2";
+            packageId = "sha2 0.11.1";
           }
           {
             name = "thiserror";

@@ -22,8 +22,12 @@ pub const MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 pub const MAX_ENTRIES: usize = 4096;
 const TEMPORARY: &str = ".tmp-";
 
-/// The library's key, the cover ID and the edge length.
+/// The library's key (or [`IMPORT_NAMESPACE`]), the cover ID and the edge length.
 pub type CoverKey = (String, String, u32);
+
+/// Stands in for the library key in keys of import service covers. Library
+/// keys are 32 hexadecimal digits, so none can take this name.
+pub const IMPORT_NAMESPACE: &str = "import";
 
 pub struct CoverCache {
     directory: PathBuf,

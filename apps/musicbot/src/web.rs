@@ -6,7 +6,8 @@
 //! contract is described in docs/musicbot.md ("Web API").
 use crate::{
     Bot,
-    covers::CoverKey,
+    covers::{CoverKey, IMPORT_NAMESPACE},
+    import,
     player::{BrowserSubscription, Ducking, MAX_DUCK_HOLD},
     subsonic::{
         self, Album, AlbumList, Artist, Library, LibraryIdentity, Playlist, SongDetails,
@@ -78,6 +79,7 @@ pub fn router(bot: Arc<Bot>) -> Router {
         .route("/u/{token}/assets/{file}", get(asset))
         .route("/u/{token}/licenses", get(licenses))
         .route("/u/{token}/art/{library}/{id}", get(art))
+        .route("/u/{token}/import-art/{id}", get(import_art))
         .route("/u/{token}/api/state", get(state))
         .route("/u/{token}/api/history", get(history))
         .route("/u/{token}/api/events", get(events))
@@ -95,6 +97,12 @@ pub fn router(bot: Arc<Bot>) -> Router {
         .route("/u/{token}/api/similar", get(similar))
         .route("/u/{token}/api/path", get(sonic_path))
         .route("/u/{token}/api/forget", post(forget))
+        .route("/u/{token}/api/import/search", get(import_search))
+        .route("/u/{token}/api/import/album", get(import_album))
+        .route(
+            "/u/{token}/api/import/requests",
+            get(import_requests).post(import_request),
+        )
         .with_state(bot.clone());
     // The outer router's layers run before the inner routing, so the page's
     // token-free requests can reach the per-link handlers. The header layer
@@ -266,36 +274,57 @@ fn owner(bot: &Bot, token: &str) -> Result<Owner, ApiError> {
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, INVALID_LINK.to_owned()))
 }
 
+/// How an admitted blocking call ended without a result.
+enum CallFailure<E> {
+    /// The admission was full; nothing ran.
+    Busy,
+    Failed(E),
+    Crashed,
+    TimedOut,
+}
+
 /// Runs an admitted blocking call. Dropping or timing out its caller must not
 /// release capacity while the real transport is still doing work.
-async fn blocking_library_call<T: Send + 'static>(
+async fn admitted_call<T: Send + 'static, E: Send + 'static>(
     admission: &'static Semaphore,
     timeout: Duration,
-    call: impl FnOnce() -> Result<T, subsonic::Error> + Send + 'static,
-) -> Result<T, ApiError> {
-    let permit = admission.try_acquire().map_err(|_| {
-        ApiError(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "the music library is busy".to_owned(),
-        )
-    })?;
+    call: impl FnOnce() -> Result<T, E> + Send + 'static,
+) -> Result<T, CallFailure<E>> {
+    let permit = admission.try_acquire().map_err(|_| CallFailure::Busy)?;
     let task = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         call()
     });
     match tokio::time::timeout(timeout, task).await {
-        Ok(Ok(result)) => {
-            result.map_err(|error| ApiError(StatusCode::BAD_GATEWAY, error.public_message()))
-        }
-        Ok(Err(_)) => Err(ApiError(
-            StatusCode::BAD_GATEWAY,
-            "the music library request failed".to_owned(),
-        )),
-        Err(_) => Err(ApiError(
-            StatusCode::BAD_GATEWAY,
-            "the library did not answer in time".to_owned(),
-        )),
+        Ok(Ok(result)) => result.map_err(CallFailure::Failed),
+        Ok(Err(_)) => Err(CallFailure::Crashed),
+        Err(_) => Err(CallFailure::TimedOut),
     }
+}
+
+/// An admitted library call with the library's redacted errors.
+async fn blocking_library_call<T: Send + 'static>(
+    admission: &'static Semaphore,
+    timeout: Duration,
+    call: impl FnOnce() -> Result<T, subsonic::Error> + Send + 'static,
+) -> Result<T, ApiError> {
+    admitted_call(admission, timeout, call)
+        .await
+        .map_err(|failure| match failure {
+            CallFailure::Busy => ApiError(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the music library is busy".to_owned(),
+            ),
+            CallFailure::Failed(error) => ApiError(StatusCode::BAD_GATEWAY, error.public_message()),
+            CallFailure::Crashed => ApiError(
+                StatusCode::BAD_GATEWAY,
+                "the music library request failed".to_owned(),
+            ),
+            CallFailure::TimedOut => ApiError(
+                StatusCode::BAD_GATEWAY,
+                "the library did not answer in time".to_owned(),
+            ),
+        })
 }
 
 /// Runs a blocking library call with shared process-wide admission.
@@ -585,7 +614,19 @@ async fn art(
     let cached = bot.covers.get(&key).await;
     let body = match cached {
         Some(body) => body,
-        None => fetch_cover(&bot, library, key).await?,
+        None => {
+            let (owned, id) = (bot.clone(), key.1.clone());
+            let image = async move {
+                ask(&owned, library, move |library| library.cover_art(&id, size))
+                    .await
+                    .map(|image| image.bytes)
+                    .map_err(|error| match error.0 {
+                        StatusCode::SERVICE_UNAVAILABLE => error,
+                        _ => ApiError(StatusCode::NOT_FOUND, error.1),
+                    })
+            };
+            fetch_cover(&bot, key, image).await?
+        }
     };
     owner(&bot, &token)?;
     let caching = if versioned {
@@ -603,9 +644,14 @@ async fn art(
         .into_response())
 }
 
-/// Fetches a cover that is not cached, has the worker re-encode it, and
-/// caches it, even when the HTTP client has gone by then.
-async fn fetch_cover(bot: &Arc<Bot>, library: usize, key: CoverKey) -> Result<Bytes, ApiError> {
+/// Fetches a cover that is not cached, has the content worker re-encode it,
+/// and caches it, even when the HTTP client has gone by then. `image` fetches
+/// the encoded cover; it runs only once a worker job is admitted.
+async fn fetch_cover(
+    bot: &Arc<Bot>,
+    key: CoverKey,
+    image: impl Future<Output = Result<Vec<u8>, ApiError>> + Send + 'static,
+) -> Result<Bytes, ApiError> {
     let permit = COVER_JOBS.try_acquire().map_err(|_| {
         ApiError(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -613,7 +659,6 @@ async fn fetch_cover(bot: &Arc<Bot>, library: usize, key: CoverKey) -> Result<By
         )
     })?;
     let size = key.2;
-    let id = key.1.clone();
     let worker = content_worker_path(&std::env::current_exe().map_err(|_| {
         ApiError(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -623,19 +668,14 @@ async fn fetch_cover(bot: &Arc<Bot>, library: usize, key: CoverKey) -> Result<By
     let owned = bot.clone();
     let task = tokio::spawn(async move {
         let _permit = permit;
-        let image = ask(&owned, library, move |library| library.cover_art(&id, size))
-            .await
-            .map_err(|error| match error.0 {
-                StatusCode::SERVICE_UNAVAILABLE => error,
-                _ => ApiError(StatusCode::NOT_FOUND, error.1),
-            })?;
+        let image = image.await?;
         if !worker.is_file() {
             return Err(ApiError(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "the artwork worker is unavailable".to_owned(),
             ));
         }
-        let thumbnail = nuschl_ipc::host::thumbnail(&worker, &image.bytes, size, size)
+        let thumbnail = nuschl_ipc::host::thumbnail(&worker, &image, size, size)
             .await
             .map_err(|_| {
                 ApiError(
@@ -668,6 +708,15 @@ struct StateView {
     players: Vec<PlayerView>,
     channels: Vec<ChannelView>,
     rating_revision: u64,
+    /// Adding music, when configured: the library added albums arrive in and
+    /// a revision that advances when the import list changes.
+    import: Option<ImportStateView>,
+}
+
+#[derive(Serialize)]
+struct ImportStateView {
+    library: usize,
+    revision: u64,
 }
 
 #[derive(Serialize)]
@@ -791,6 +840,10 @@ fn snapshot(bot: &Bot, you: &str) -> StateView {
         players,
         channels,
         rating_revision: bot.rating_revision.load(Ordering::SeqCst),
+        import: bot.adding.as_ref().map(|adding| ImportStateView {
+            library: adding.library,
+            revision: adding.revision.load(Ordering::SeqCst),
+        }),
     }
 }
 
@@ -1639,6 +1692,229 @@ async fn search(
     Ok(Json(SearchResults { results }))
 }
 
+/// Adding music, or 404 where it is not configured.
+fn adding(bot: &Bot) -> Result<Arc<import::Adding>, ApiError> {
+    bot.adding.clone().ok_or_else(|| {
+        ApiError(
+            StatusCode::NOT_FOUND,
+            import::Failure::Unavailable.message().to_owned(),
+        )
+    })
+}
+
+fn import_error(failure: import::Failure) -> ApiError {
+    ApiError(
+        StatusCode::from_u16(failure.status()).unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
+        failure.message().to_owned(),
+    )
+}
+
+/// Runs an import service call under its own admission and deadline.
+async fn import_call<T: Send + 'static>(
+    adding: &import::Adding,
+    call: impl FnOnce(&import::Client) -> Result<T, import::Failure> + Send + 'static,
+) -> Result<T, ApiError> {
+    let client = adding.client.clone();
+    admitted_call(&import::IMPORT_CALLS, import::TIMEOUT, move || {
+        call(&client)
+    })
+    .await
+    .map_err(|failure| {
+        import_error(match failure {
+            CallFailure::Busy => import::Failure::Busy,
+            CallFailure::Failed(failure) => failure,
+            CallFailure::Crashed | CallFailure::TimedOut => import::Failure::Unavailable,
+        })
+    })
+}
+
+#[derive(Serialize)]
+struct ImportAlbums {
+    albums: Vec<import::Album>,
+}
+
+async fn import_search(
+    State(bot): State<Arc<Bot>>,
+    Path(token): Path<String>,
+    Query(query): Query<SearchQuery>,
+) -> Result<Json<ImportAlbums>, ApiError> {
+    let owner = owner(&bot, &token)?;
+    let adding = adding(&bot)?;
+    let text: String = query.q.trim().chars().take(MAX_QUERY).collect();
+    if text.is_empty() {
+        return Ok(Json(ImportAlbums { albums: Vec::new() }));
+    }
+    let requester = adding.pseudonyms.of(&owner);
+    let albums = import_call(&adding, move |client| client.search(&requester, &text)).await?;
+    Ok(Json(ImportAlbums { albums }))
+}
+
+#[derive(Deserialize)]
+struct ImportIdQuery {
+    #[serde(default)]
+    id: String,
+}
+
+#[derive(Serialize)]
+struct InLibrary {
+    library: usize,
+    id: String,
+}
+
+#[derive(Serialize)]
+struct ImportAlbumView {
+    album: import::AlbumDetails,
+    in_library: Option<InLibrary>,
+}
+
+async fn import_album(
+    State(bot): State<Arc<Bot>>,
+    Path(token): Path<String>,
+    Query(query): Query<ImportIdQuery>,
+) -> Result<Json<ImportAlbumView>, ApiError> {
+    let owner = owner(&bot, &token)?;
+    let adding = adding(&bot)?;
+    if !import::valid_id(&query.id) {
+        return Err(import_error(import::Failure::NotAvailable));
+    }
+    let requester = adding.pseudonyms.of(&owner);
+    let id = query.id;
+    let album = import_call(&adding, move |client| client.album(&requester, &id)).await?;
+    let in_library = in_library(&bot, adding.library, &album.album).await;
+    Ok(Json(ImportAlbumView { album, in_library }))
+}
+
+/// An album of the same title and artist in the library added albums arrive
+/// in, from one search there; `None` also when that search fails.
+async fn in_library(bot: &Bot, library: usize, album: &import::Album) -> Option<InLibrary> {
+    let text: String = format!("{} {}", album.artist, album.title)
+        .trim()
+        .chars()
+        .take(MAX_QUERY)
+        .collect();
+    let found = ask(bot, library, move |library| library.search(&text))
+        .await
+        .ok()?;
+    let title = import::normalized(&album.title);
+    let artist = import::normalized(&album.artist);
+    found
+        .albums
+        .into_iter()
+        .find(|candidate| {
+            import::normalized(&candidate.name) == title
+                && candidate
+                    .artist
+                    .as_deref()
+                    .is_some_and(|name| import::normalized(name) == artist)
+        })
+        .map(|candidate| InLibrary {
+            library,
+            id: candidate.id,
+        })
+}
+
+#[derive(Serialize)]
+struct BudgetView {
+    mine: import::Budget,
+    total: import::Budget,
+}
+
+#[derive(Serialize)]
+struct ImportRequests {
+    requests: Vec<import::Import>,
+    budget: BudgetView,
+}
+
+async fn import_requests(
+    State(bot): State<Arc<Bot>>,
+    Path(token): Path<String>,
+) -> Result<Json<ImportRequests>, ApiError> {
+    let owner = owner(&bot, &token)?;
+    let adding = adding(&bot)?;
+    let requester = adding.pseudonyms.of(&owner);
+    let list = import_call(&adding, move |client| client.imports(&requester)).await?;
+    Ok(Json(ImportRequests {
+        requests: list.imports,
+        budget: BudgetView {
+            mine: list.budget.requester,
+            total: list.budget.total,
+        },
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewImportRequest {
+    album_id: String,
+}
+
+#[derive(Serialize)]
+struct ImportRequestView {
+    request: import::Import,
+    existing: bool,
+}
+
+async fn import_request(
+    State(bot): State<Arc<Bot>>,
+    Path(token): Path<String>,
+    // JSON only, like the other POSTs: cross-origin forms cannot send it.
+    Json(body): Json<NewImportRequest>,
+) -> Result<Json<ImportRequestView>, ApiError> {
+    let owner = owner(&bot, &token)?;
+    let adding = adding(&bot)?;
+    if !import::valid_id(&body.album_id) {
+        return Err(import_error(import::Failure::NotAvailable));
+    }
+    let requester = adding.pseudonyms.of(&owner);
+    let album_id = body.album_id;
+    let (request, existing) =
+        import_call(&adding, move |client| client.request(&requester, &album_id)).await?;
+    adding.requested(&bot.changes);
+    Ok(Json(ImportRequestView { request, existing }))
+}
+
+#[derive(Deserialize)]
+struct ImportArtQuery {
+    #[serde(default = "default_art_size")]
+    size: u32,
+}
+
+/// An import service cover as a PNG the content worker re-encoded, cached like
+/// library covers under [`IMPORT_NAMESPACE`].
+async fn import_art(
+    State(bot): State<Arc<Bot>>,
+    Path((token, id)): Path<(String, String)>,
+    Query(query): Query<ImportArtQuery>,
+) -> Result<Response, ApiError> {
+    let owner = owner(&bot, &token)?;
+    let adding = adding(&bot)?;
+    if !import::valid_id(&id) {
+        return Err(import_error(import::Failure::NotAvailable));
+    }
+    let size = snap_cover_size(query.size);
+    let key: CoverKey = (IMPORT_NAMESPACE.to_owned(), id.clone(), size);
+    let body = match bot.covers.get(&key).await {
+        Some(body) => body,
+        None => {
+            let requester = adding.pseudonyms.of(&owner);
+            let image = async move {
+                import_call(&adding, move |client| client.cover(&requester, &id)).await
+            };
+            fetch_cover(&bot, key, image).await?
+        }
+    };
+    self::owner(&bot, &token)?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            // Import service ids name one album for good.
+            (header::CACHE_CONTROL, "private, max-age=86400"),
+        ],
+        body,
+    )
+        .into_response())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2052,6 +2328,7 @@ mod tests {
             persistence: std::sync::Mutex::new(()),
             covers: crate::covers::CoverCache::open(directory.path().join("covers"), 1 << 20)
                 .unwrap(),
+            adding: None,
             rating_revision: std::sync::atomic::AtomicU64::new(0),
         });
         (directory, bot, token)
@@ -3328,5 +3605,309 @@ mod tests {
         }
         assert_eq!(failing.requests().len(), asked);
         drop(occupied);
+    }
+
+    #[test]
+    fn import_covers_have_a_namespace_no_library_key_can_take() {
+        assert!(!crate::library_keys::is_key(IMPORT_NAMESPACE));
+        let (_directory, bot, _token) = test_bot("http://unused.invalid", 2);
+        assert!(
+            bot.libraries
+                .iter()
+                .all(|library| library.key() != IMPORT_NAMESPACE)
+        );
+    }
+
+    #[test]
+    fn state_has_no_import_without_the_section() {
+        let (_directory, bot, _token) = test_bot("http://unused.invalid", 1);
+        let state = serde_json::to_value(snapshot(&bot, "Listener")).unwrap();
+        assert_eq!(state["import"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn import_endpoints_need_the_section() {
+        let (_directory, bot, token) = test_bot("http://unused.invalid", 1);
+        let error = import_requests(State(bot), Path(token))
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(
+            (error.0, error.1.as_str()),
+            (
+                StatusCode::NOT_FOUND,
+                "Adding music is not available right now."
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn import_endpoints_pass_on_checked_replies_and_fixed_errors() {
+        use std::{
+            io::Write,
+            sync::{
+                Mutex,
+                atomic::{AtomicBool, Ordering as AtomicOrdering},
+            },
+        };
+        let _exclusive = API_TESTS.lock().await;
+        const ALBUM: &str = "0123456789abcdef";
+        let album = serde_json::json!({
+            "id": ALBUM, "title": "The  Album", "artist": "the artist", "year": 2001,
+            "track_count": 2, "release_type": "album", "has_cover": true,
+        });
+        let import = serde_json::json!({
+            "id": "00000000000000aa", "album_id": ALBUM, "status": "queued",
+            "title": "The Album", "artist": "The Artist", "year": 2001,
+            "release_type": "album", "has_cover": true, "tracks_total": 2,
+            "tracks_done": 0, "tracks_failed": 0, "requested_at": 1,
+            "handed_over_at": null, "mine": true,
+        });
+        let budget = serde_json::json!({"limit": 100, "used": 2, "next_free_at": null});
+        let limited = Arc::new(AtomicBool::new(false));
+        let service = Server::new({
+            let (album, import, budget, limited) = (
+                album.clone(),
+                import.clone(),
+                budget.clone(),
+                limited.clone(),
+            );
+            move |request, socket| {
+                let target = request.split_whitespace().nth(1).unwrap();
+                let path = target.split('?').next().unwrap();
+                let (status, body) = match (request.split(' ').next().unwrap(), path) {
+                    (_, _) if limited.load(AtomicOrdering::SeqCst) => (
+                        "429 Too Many Requests",
+                        serde_json::json!({"error": "rate_limited", "retry_after": 2}),
+                    ),
+                    ("GET", "/api/integration/v1/search") => {
+                        ("200 OK", serde_json::json!({"albums": [album]}))
+                    }
+                    ("GET", "/api/integration/v1/albums/0123456789abcdef") => {
+                        let mut details = album.clone();
+                        details["tracks"] = serde_json::json!([
+                            {"position": 1, "title": "One", "artist": "The Artist", "duration": 61},
+                            {"position": 2, "title": "Two", "artist": "The Artist", "duration": null},
+                        ]);
+                        ("200 OK", details)
+                    }
+                    ("GET", "/api/integration/v1/imports") => (
+                        "200 OK",
+                        serde_json::json!({"imports": [import],
+                            "budget": {"requester": budget, "total": budget}}),
+                    ),
+                    ("POST", "/api/integration/v1/imports") => {
+                        ("202 Accepted", serde_json::json!({"import": import}))
+                    }
+                    _ => ("404 Not Found", serde_json::json!({"error": "not_found"})),
+                };
+                let body = serde_json::to_vec(&body).unwrap();
+                write!(socket, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                socket.write_all(&body).unwrap();
+            }
+        });
+        let searched = Arc::new(Mutex::new(Vec::new()));
+        let library = Server::new({
+            let searched = searched.clone();
+            move |request, socket| {
+                searched.lock().unwrap().push(request.to_owned());
+                let body = serde_json::to_vec(&serde_json::json!({"subsonic-response": {
+                "status": "ok", "searchResult3": {"album": [
+                    {"id": "other", "name": "The Album (Live)", "artist": "The Artist"},
+                    {"id": "held", "name": "the album", "artist": "The  Artist"},
+                ]}}}))
+                .unwrap();
+                write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                socket.write_all(&body).unwrap();
+            }
+        });
+        let (directory, mut bot, token) = test_bot(&library.url, 1);
+        std::fs::write(directory.path().join("import-key"), "import-secret\n").unwrap();
+        let config = crate::config::Import {
+            url: format!("{}/", service.url),
+            key_file: directory.path().join("import-key"),
+            library: "Library 0".into(),
+        };
+        let adding =
+            import::Adding::open(&config, &bot.config.libraries, directory.path()).unwrap();
+        Arc::get_mut(&mut bot).unwrap().adding = Some(Arc::new(adding));
+        let requester = bot
+            .adding
+            .as_ref()
+            .unwrap()
+            .pseudonyms
+            .of(&bot.tokens.owner(&token.parse().unwrap()).unwrap());
+        let state = serde_json::to_value(snapshot(&bot, "Listener")).unwrap();
+        assert_eq!(
+            state["import"],
+            serde_json::json!({"library": 0, "revision": 0})
+        );
+        fn value<T: Serialize>(json: &T) -> serde_json::Value {
+            serde_json::to_value(json).unwrap()
+        }
+
+        let found = import_search(
+            State(bot.clone()),
+            Path(token.clone()),
+            Query(SearchQuery {
+                q: "  the album ".into(),
+            }),
+        )
+        .await
+        .ok()
+        .unwrap();
+        assert_eq!(value(&found.0), serde_json::json!({"albums": [album]}));
+        let asked = service.requests().pop().unwrap();
+        assert!(
+            asked.starts_with(&format!(
+                "GET /api/integration/v1/search?requester={requester}&q=the%20album&limit=25 "
+            )),
+            "{asked}"
+        );
+        assert!(
+            asked
+                .to_ascii_lowercase()
+                .contains("authorization: bearer import-secret\r\n")
+        );
+
+        let page = import_album(
+            State(bot.clone()),
+            Path(token.clone()),
+            Query(ImportIdQuery { id: ALBUM.into() }),
+        )
+        .await
+        .ok()
+        .unwrap();
+        let page = value(&page.0);
+        assert_eq!(page["album"]["tracks"][0]["title"], "One");
+        assert_eq!(page["album"]["title"], "The  Album");
+        assert_eq!(
+            page["in_library"],
+            serde_json::json!({"library": 0, "id": "held"})
+        );
+        assert!(searched.lock().unwrap()[0].contains("query=the%20artist%20The%20%20Album"));
+
+        let asked = service.requests().len();
+        for id in [
+            "",
+            "0123456789ABCDEF",
+            "../imports/0000",
+            "0123456789abcdef0",
+        ] {
+            let error = import_album(
+                State(bot.clone()),
+                Path(token.clone()),
+                Query(ImportIdQuery { id: id.into() }),
+            )
+            .await
+            .err()
+            .unwrap();
+            assert_eq!(
+                (error.0, error.1.as_str()),
+                (StatusCode::NOT_FOUND, "This album cannot be added.")
+            );
+            let error = import_art(
+                State(bot.clone()),
+                Path((token.clone(), id.into())),
+                Query(ImportArtQuery { size: 64 }),
+            )
+            .await
+            .err()
+            .unwrap();
+            assert_eq!(error.0, StatusCode::NOT_FOUND);
+            let error = import_request(
+                State(bot.clone()),
+                Path(token.clone()),
+                Json(NewImportRequest {
+                    album_id: id.into(),
+                }),
+            )
+            .await
+            .err()
+            .unwrap();
+            assert_eq!(error.0, StatusCode::NOT_FOUND);
+        }
+        assert_eq!(
+            service.requests().len(),
+            asked,
+            "invalid ids reached the service"
+        );
+
+        let list = import_requests(State(bot.clone()), Path(token.clone()))
+            .await
+            .ok()
+            .unwrap();
+        assert_eq!(
+            value(&list.0),
+            serde_json::json!({"requests": [import], "budget": {"mine": budget, "total": budget}})
+        );
+
+        let mut changes = bot.changes.subscribe();
+        changes.borrow_and_update();
+        let added = import_request(
+            State(bot.clone()),
+            Path(token.clone()),
+            Json(NewImportRequest {
+                album_id: ALBUM.into(),
+            }),
+        )
+        .await
+        .ok()
+        .unwrap();
+        assert_eq!(
+            value(&added.0),
+            serde_json::json!({"request": import, "existing": false})
+        );
+        assert!(changes.has_changed().unwrap());
+        let state = serde_json::to_value(snapshot(&bot, "Listener")).unwrap();
+        assert_eq!(state["import"]["revision"], 1);
+        let posted = service.requests().pop().unwrap();
+        assert!(
+            posted.starts_with("POST /api/integration/v1/imports "),
+            "{posted}"
+        );
+
+        limited.store(true, AtomicOrdering::SeqCst);
+        let error = import_search(
+            State(bot.clone()),
+            Path(token.clone()),
+            Query(SearchQuery { q: "x".into() }),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(
+            (error.0, error.1.as_str()),
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many searches at once. Try again in a few seconds."
+            )
+        );
+
+        let occupied = import::IMPORT_CALLS
+            .acquire_many(import::MAX_IMPORT_CALLS as u32)
+            .await
+            .unwrap();
+        let asked = service.requests().len();
+        let error = import_requests(State(bot.clone()), Path(token.clone()))
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(
+            (error.0, error.1.as_str()),
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Too many requests at once. Try again in a moment."
+            )
+        );
+        assert_eq!(service.requests().len(), asked);
+        drop(occupied);
+
+        let missing = Uuid::nil().to_string();
+        let error = import_requests(State(bot.clone()), Path(missing))
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.0, StatusCode::NOT_FOUND);
     }
 }
