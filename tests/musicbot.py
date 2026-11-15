@@ -323,7 +323,7 @@ def adding_music(link, service, watcher):
     assert again["existing"] is True and again["request"]["id"] == added["request"]["id"], again
     assert error_text(link + "api/import/requests", 409, {"album_id": fake_import.LIMITED}) == \
         "You have added as much as you can for today. Try again later."
-    after_posts = watcher.wait(lambda state: state["import"]["revision"] > revision, after=marked)
+    watcher.wait(lambda state: state["import"]["revision"] > revision, after=marked)
     requests = api(link, "import/requests")
     assert requests["requests"][0]["album_id"] == fake_import.NEW, requests
     assert requests["budget"]["mine"] == {"limit": 100, "used": 3, "next_free_at": None}, requests
@@ -332,8 +332,8 @@ def adding_music(link, service, watcher):
     eventually(lambda: api(link, "import/requests")["requests"][0], lambda request:
                request["status"] == "handed_over" and request["handed_over_at"] is not None,
                "the import reaching handed_over", timeout=30)
-    final = watcher.wait(lambda state: state["import"]["revision"]
-                         >= after_posts["import"]["revision"] + 2, after=marked)
+    # The POST, and the poller seeing downloading and handed_over.
+    final = watcher.wait(lambda state: state["import"]["revision"] >= revision + 3, after=marked)
     seen = json.load(urllib.request.urlopen(service + "fixture/seen", timeout=HTTP_TIMEOUT))
     assert seen and all(entry["authorized"] for entry in seen), seen
     requesters = {entry["requester"] for entry in seen}
