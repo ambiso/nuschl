@@ -11,7 +11,6 @@ deployment with reordered configuration are checked through observable APIs
 and the audio received by real Mumble listeners.
 """
 import argparse
-import base64
 from collections import Counter, deque
 import html
 import ctypes
@@ -36,6 +35,7 @@ import zlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fake_subsonic import API_KEY, COVER, COVER_PNG, PASSWORD, Library  # noqa: E402
+import fake_import  # noqa: E402
 from mumble_client import Client, ReferenceOpus, certificate_pin, rms  # noqa: E402
 
 MUSIC, LOBBY = 6, 1  # local_murmur.py's channels
@@ -259,6 +259,93 @@ def expect_error(url, status, data=None, headers=None, json_error=False):
     raise AssertionError(f"{url} accepted an invalid request")
 
 
+def error_text(url, status, body=None):
+    """The `error` text of a JSON API error answer with `status`."""
+    request = urllib.request.Request(url)
+    if body is not None:
+        request = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
+                                         headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(request, timeout=HTTP_TIMEOUT)
+    except urllib.error.HTTPError as error:
+        assert error.code == status, (error.code, error.read())
+        return json.load(error)["error"]
+    raise AssertionError(f"{url} answered without an error")
+
+
+def post_json(url, body):
+    request = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
+                                     headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
+        assert response.status == 200, response.status
+        return json.load(response)
+
+
+def adding_music(link, service, watcher):
+    """The bot's api/import endpoints against the fixture import service
+    (tests/fake_import.py): checked replies, fixed error texts, the bearer
+    key, pseudonymous requesters, covers through the content worker, and live
+    revisions while an import advances to handed_over."""
+    state = api(link)
+    assert state["import"] is not None and state["import"]["library"] == 1, state.get("import")
+    revision = state["import"]["revision"]
+    assert api(link, "import/search", q="   ") == {"albums": []}
+    found = api(link, "import/search", q="  fixture ")
+    assert [album["id"] for album in found["albums"]] == [fake_import.NEW, fake_import.LIMITED], found
+    assert found["albums"][0] == fake_import.ALBUMS[fake_import.NEW], found
+    assert error_text(link + "api/import/search?q=busy", 429) == \
+        "Too many searches at once. Try again in a few seconds."
+    held = api(link, "import/album", id=fake_import.HELD)
+    assert held["in_library"] == {"library": 1, "id": "a1"}, held
+    page = api(link, "import/album", id=fake_import.NEW)
+    assert page["in_library"] is None and len(page["album"]["tracks"]) == 3, page
+    assert page["album"]["tracks"][0] == {"position": 1, "title": "Track 1",
+                                          "artist": "Fixture Artist", "duration": 60}, page
+    asked = len(json.load(urllib.request.urlopen(service + "fixture/seen", timeout=HTTP_TIMEOUT)))
+    for invalid in ["../imports", "00000000000000A2", "0000000000000000a"]:
+        quoted = urllib.parse.quote(invalid, safe="")
+        assert error_text(link + f"api/import/album?id={quoted}", 404) == "This album cannot be added."
+        expect_error(link + f"import-art/{quoted}?size=64", 404)
+        assert error_text(link + "api/import/requests", 404, {"album_id": invalid}) == \
+            "This album cannot be added."
+    seen = json.load(urllib.request.urlopen(service + "fixture/seen", timeout=HTTP_TIMEOUT))
+    assert len(seen) == asked, "invalid ids reached the import service"
+    with urllib.request.urlopen(link + f"import-art/{fake_import.NEW}?size=64", timeout=HTTP_TIMEOUT) as response:
+        assert response.headers["Cache-Control"] == "private, max-age=86400", dict(response.headers)
+        assert response.headers["Content-Type"] == "image/png", dict(response.headers)
+        assert response.read().startswith(b"\x89PNG\r\n\x1a\n")
+
+    marked = watcher.mark()
+    added = post_json(link + "api/import/requests", {"album_id": fake_import.NEW})
+    assert added["existing"] is False and added["request"]["status"] == "queued", added
+    assert added["request"]["mine"] is True, added
+    again = post_json(link + "api/import/requests", {"album_id": fake_import.NEW})
+    assert again["existing"] is True and again["request"]["id"] == added["request"]["id"], again
+    assert error_text(link + "api/import/requests", 409, {"album_id": fake_import.LIMITED}) == \
+        "You have added as much as you can for today. Try again later."
+    after_posts = watcher.wait(lambda state: state["import"]["revision"] > revision, after=marked)
+    requests = api(link, "import/requests")
+    assert requests["requests"][0]["album_id"] == fake_import.NEW, requests
+    assert requests["budget"]["mine"] == {"limit": 100, "used": 3, "next_free_at": None}, requests
+    # The poller notices each step without browser polling: queued, then
+    # downloading, then handed_over each advance the revision viewers see.
+    eventually(lambda: api(link, "import/requests")["requests"][0], lambda request:
+               request["status"] == "handed_over" and request["handed_over_at"] is not None,
+               "the import reaching handed_over", timeout=30)
+    final = watcher.wait(lambda state: state["import"]["revision"]
+                         >= after_posts["import"]["revision"] + 2, after=marked)
+    seen = json.load(urllib.request.urlopen(service + "fixture/seen", timeout=HTTP_TIMEOUT))
+    assert seen and all(entry["authorized"] for entry in seen), seen
+    requesters = {entry["requester"] for entry in seen}
+    people = requesters - {"musicbot"}
+    assert "musicbot" in requesters and len(people) == 1, requesters
+    assert re.fullmatch(r"r[0-9a-f]{32}", people.pop()), requesters
+    # The fixture refuses calls without the key; the bot's calls all carried it
+    # (checked above, before this probe is recorded).
+    expect_error(service + "api/integration/v1/imports?requester=musicbot", 401)
+    print(json.dumps({"adding_music": len(seen), "revision": final["import"]["revision"]}))
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *_):
         return None
@@ -459,7 +546,7 @@ def service(args):
             close_resources([watcher, listener])
 
 
-def write_config(config, root, library_url, web_port, port, pin, reverse=False, only_open=False):
+def write_config(config, root, library_url, web_port, port, pin, import_url, reverse=False, only_open=False):
     libraries = [f'''[[subsonic]]
 name = "Plain"
 url = "{library_url}/plain"
@@ -486,6 +573,11 @@ certificate_sha256 = "{pin}"
     config.write_text(f'''[web]
 listen = "127.0.0.1:{web_port}"
 public_url = "http://127.0.0.1:{web_port}"
+
+[import]
+url = "{import_url}"
+key_file = "{root / 'import-key'}"
+library = "Open"
 
 ''' + "\n".join(libraries + channels))
 
@@ -709,17 +801,23 @@ def main():
     library_thread = threading.Thread(target=library.serve_forever, name="fake-subsonic")
     library_thread.start()
     library_url = f"http://127.0.0.1:{library.server_address[1]}"
+    fake_import.State.key = "fixture-import-key-0123456789abcdef"
+    importer = http.server.ThreadingHTTPServer(("127.0.0.1", 0), fake_import.Service)
+    importer_thread = threading.Thread(target=importer.serve_forever, name="fake-import")
+    importer_thread.start()
+    import_url = f"http://127.0.0.1:{importer.server_address[1]}/"
     try:
         with tempfile.TemporaryDirectory(prefix="nuschl-musicbot-") as temporary:
             root = Path(temporary)
             pin = certificate_pin(args.binaries, "127.0.0.1", args.port, root / "probe")
             (root / "password").write_text(PASSWORD + "\n")
             (root / "key").write_text(API_KEY + "\n")
+            (root / "import-key").write_text(fake_import.State.key + "\n")
             with socket.socket() as probe:
                 probe.bind(("127.0.0.1", 0))
                 web_port = probe.getsockname()[1]
             config = root / "musicbot.toml"
-            write_config(config, root, library_url, web_port, args.port, pin)
+            write_config(config, root, library_url, web_port, args.port, pin, import_url)
             bot = BotProcess(args, config, root)
             alice = bob = None
             watchers = []
@@ -757,6 +855,7 @@ def main():
                 watchers.append(Events(bob_link))
                 for watcher, name in zip(watchers, ("alice", "bob")):
                     watcher.wait(lambda state, name=name: state["you"] == name)
+                adding_music(link, import_url, watchers[0])
                 shared_ratings(link, watchers)
                 # Keep the queue paused so exact shared snapshots can be compared.
                 broadcast(watchers, link, "pause", lambda state: state["players"][0]["paused"])
@@ -967,7 +1066,7 @@ def main():
                 watchers.clear()
                 eventually(lambda: dict(alice.users), lambda users: dj not in users and dj2 not in users,
                            "old bot sessions disconnecting")
-                write_config(config, root, library_url, web_port, args.port, pin, reverse=True)
+                write_config(config, root, library_url, web_port, args.port, pin, import_url, reverse=True)
                 bot = BotProcess(args, config, root)
                 dj, dj2 = connected(alice)
                 link, bob_link = link_from(alice, dj), link_from(bob, dj2)
@@ -1028,7 +1127,8 @@ def main():
                 watchers.clear()
                 eventually(lambda: dict(alice.users), lambda users: dj not in users and dj2 not in users,
                            "bot sessions disconnecting before library removal")
-                write_config(config, root, library_url, web_port, args.port, pin, reverse=True, only_open=True)
+                write_config(config, root, library_url, web_port, args.port, pin, import_url,
+                             reverse=True, only_open=True)
                 bot = BotProcess(args, config, root)
                 connected(alice)
                 removed_library_history = api(link, "history", player=music)
@@ -1061,6 +1161,10 @@ def main():
         library.server_close()
         library_thread.join(timeout=5)
         assert not library_thread.is_alive(), "fake Subsonic server did not stop"
+        importer.shutdown()
+        importer.server_close()
+        importer_thread.join(timeout=5)
+        assert not importer_thread.is_alive(), "fake import service did not stop"
 
 
 
