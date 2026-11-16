@@ -7035,7 +7035,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ashpd",
  "base64 0.22.1",
@@ -7051,6 +7051,7 @@ dependencies = [
  "nuschl-ipc",
  "nuschl-legacy-html",
  "nuschl-protocol",
+ "nuschl-sandbox",
  "nuschl-session",
  "nuschl-update",
  "serde_json",
@@ -7063,11 +7064,11 @@ dependencies = [
 
 [[package]]
 name = "nuschl-audio-jitter"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "nuschl-audio-wasm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nuschl-audio-jitter",
  "opus-pure",
@@ -7076,12 +7077,13 @@ dependencies = [
 
 [[package]]
 name = "nuschl-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "hex",
  "nuschl-ipc",
  "nuschl-protocol",
+ "nuschl-sandbox",
  "nuschl-session",
  "nuschld",
  "serde",
@@ -7092,13 +7094,15 @@ dependencies = [
 
 [[package]]
 name = "nuschl-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hex",
  "nuschl-core",
  "nuschl-ipc",
  "nuschl-legacy-html",
+ "nuschl-link-preview",
  "nuschl-protocol",
+ "nuschl-sandbox",
  "nuschl-session",
  "serde",
  "serde_json",
@@ -7107,7 +7111,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-client-wasm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "futures-util",
@@ -7138,7 +7142,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-content"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "hex",
@@ -7146,6 +7150,7 @@ dependencies = [
  "image",
  "markup5ever_rcdom 0.40.1+unofficial",
  "nuschl-core",
+ "nuschl-link-preview",
  "pulldown-cmark",
  "syntect",
  "thiserror 2.0.21",
@@ -7153,7 +7158,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-content-wasm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nuschl-content",
  "nuschl-core",
@@ -7164,7 +7169,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-content-worker"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "nuschl-content",
@@ -7172,11 +7177,12 @@ dependencies = [
  "nuschl-ipc",
  "nuschl-sandbox-windows",
  "tokio",
+ "ureq-proto",
 ]
 
 [[package]]
 name = "nuschl-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "hex",
@@ -7189,7 +7195,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-crypto-worker"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hex",
  "nuschl-e2ee",
@@ -7197,6 +7203,7 @@ dependencies = [
  "nuschl-ipc",
  "nuschl-kt",
  "nuschl-protocol",
+ "nuschl-sandbox",
  "nuschl-sandbox-windows",
  "nuschl-session",
  "nuschl-witness",
@@ -7210,7 +7217,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-e2ee"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libcrux-sha2 0.0.9",
  "nuschl-identity",
@@ -7225,7 +7232,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-files"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ring",
  "thiserror 2.0.21",
@@ -7234,7 +7241,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-identity"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "curve25519-dalek 4.1.3",
  "getrandom 0.4.3",
@@ -7256,20 +7263,20 @@ dependencies = [
 
 [[package]]
 name = "nuschl-ipc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "nuschl-core",
+ "nuschl-sandbox",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
- "win32job",
 ]
 
 [[package]]
 name = "nuschl-kt"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "akd",
  "akd_core",
@@ -7289,23 +7296,23 @@ dependencies = [
 
 [[package]]
 name = "nuschl-legacy-html"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "nuschl-link-preview"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ipnet",
  "nuschl-core",
+ "nuschl-legacy-html",
  "serde",
- "serde_json",
  "thiserror 2.0.21",
  "url",
 ]
 
 [[package]]
 name = "nuschl-math"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "comemo",
  "rayon",
@@ -7318,7 +7325,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-math-worker"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "nuschl-ipc",
@@ -7329,7 +7336,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-media-worker"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "allocation-counter",
  "cpal",
@@ -7350,7 +7357,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-musicbot"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "clap",
@@ -7376,7 +7383,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-musicbot-codec-worker"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "audioadapter-buffers",
  "nnnoiseless",
@@ -7391,7 +7398,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes 0.8.4",
  "bytes",
@@ -7403,7 +7410,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-rtc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "str0m",
  "thiserror 2.0.21",
@@ -7411,19 +7418,29 @@ dependencies = [
 
 [[package]]
 name = "nuschl-rtc-probe"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hex",
  "nuschl-rtc",
 ]
 
 [[package]]
+name = "nuschl-sandbox"
+version = "0.2.0"
+dependencies = [
+ "thiserror 2.0.21",
+ "tokio",
+ "win32job",
+]
+
+[[package]]
 name = "nuschl-sandbox-windows"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "nuschl-core",
  "nuschl-ipc",
+ "nuschl-sandbox",
  "serde",
  "serde_json",
  "tokio",
@@ -7432,7 +7449,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-session"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "directories",
@@ -7440,7 +7457,9 @@ dependencies = [
  "nuschl-core",
  "nuschl-ipc",
  "nuschl-legacy-html",
+ "nuschl-link-preview",
  "nuschl-protocol",
+ "nuschl-sandbox",
  "p12-keystore",
  "prost",
  "rcgen",
@@ -7459,11 +7478,12 @@ dependencies = [
 
 [[package]]
 name = "nuschl-storage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "nuschl-core",
  "nuschl-ipc",
+ "serde_json",
  "sqlx",
  "tempfile",
  "thiserror 2.0.21",
@@ -7472,7 +7492,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-storage-worker"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "landlock",
@@ -7485,7 +7505,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-transfer-worker"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-executor",
  "async-io",
@@ -7499,7 +7519,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-tui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -7508,6 +7528,7 @@ dependencies = [
  "nuschl-client",
  "nuschl-core",
  "nuschl-ipc",
+ "nuschl-sandbox",
  "nuschl-session",
  "ratatui",
  "ratatui-image",
@@ -7517,11 +7538,11 @@ dependencies = [
 
 [[package]]
 name = "nuschl-update"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cap-std",
  "hex",
- "nuschl-ipc",
+ "nuschl-sandbox",
  "semver",
  "serde",
  "serde_json",
@@ -7535,7 +7556,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-update-worker"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "curve25519-dalek 4.1.3",
  "ed25519-dalek",
@@ -7555,7 +7576,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-web-relay"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "clap",
@@ -7579,7 +7600,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-witness"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "getrandom 0.4.3",
@@ -7601,7 +7622,7 @@ dependencies = [
 
 [[package]]
 name = "nuschld"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "async-trait",

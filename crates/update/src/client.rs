@@ -22,7 +22,7 @@ fn open_root(root: &Path) -> Result<Dir, Error> {
 }
 
 /// Where releases are published; `NUSCHL_UPDATE_URL` overrides it (tests).
-pub const DEFAULT_URL: &str = "https://github.com/ambiso/nuschl/releases/latest/download/";
+pub const DEFAULT_URL: &str = "https://github.com/nuschl-eu/nuschl/releases/latest/download/";
 pub const MANIFEST: &str = "update.json";
 /// Public hybrid pairs are embedded, never read from an adjacent writable file.
 pub const RELEASE_TRUST: &str = include_str!("../update-trust.json");

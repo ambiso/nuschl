@@ -105,8 +105,6 @@
             || lib.hasSuffix ".ico" path
             # The math worker's bundled font (crates/math/fonts).
             || lib.hasSuffix ".otf" path
-            # The emoji picker's table.
-            || lib.hasSuffix "emoji.txt" path
             # Frozen identity vectors are compiled into the all-target tests.
             || lib.hasInfix "/test-vectors/" path
             # Vendored GPUI crates keep their shaders, headers and README.
@@ -139,13 +137,19 @@
           pkgs.libxrandr
           pkgs.libxcb
         ];
+        # Twemoji images and emojibase names for both clients; the sources
+        # are pinned together in nix/emoji.nix.
+        emojiAssets = import ./nix/emoji.nix { inherit pkgs; };
+        version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
         common = {
           pname = "nuschl";
-          version = "0.1.0";
+          inherit version;
           inherit src nativeBuildInputs buildInputs;
           strictDeps = true;
           cargoExtraArgs = "--workspace";
           LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
+          # Compiled into the desktop by apps/desktop/build.rs.
+          NUSCHL_EMOJI_ASSETS = emojiAssets;
         };
         # Registry CPAL uses this patched path dependency. Its real API must
         # survive Crane's dummy-source pass so CPAL can compile against it.
@@ -182,6 +186,8 @@
             "postInstall"
             "installPhase"
             "installPhaseCommand"
+            # Only the desktop's own build script reads it.
+            "NUSCHL_EMOJI_ASSETS"
           ];
         buildDeps = args: craneLib.buildDepsOnly (dependencyArgs args // { inherit dummySrc; });
         buildCrossPackage =
@@ -203,7 +209,12 @@
         cargoArtifacts = buildDeps common;
         musicbotWeb = import ./nix/musicbot-web.nix { inherit pkgs lib; };
         webClient = import ./nix/web-client.nix {
-          inherit pkgs lib toolchain;
+          inherit
+            pkgs
+            lib
+            toolchain
+            emojiAssets
+            ;
           releaseNotices = releaseNotices.web.bundle;
         };
         releaseNotices = import ./nix/release-notices.nix {
@@ -234,7 +245,7 @@
           mkdir -p "$out/share/licenses/nuschl"
           cp -R ${nativeNoticeBundle}/share/licenses/nuschl/. "$out/share/licenses/nuschl/"
         '';
-        witnessPackage = pkgs.runCommand "nuschl-witness-0.1.0" { meta.mainProgram = "nuschl-witness"; } ''
+        witnessPackage = pkgs.runCommand "nuschl-witness-${version}" { meta.mainProgram = "nuschl-witness"; } ''
           install -Dm755 ${crates.project.workspaceMembers.nuschl-witness.build}/bin/nuschl-witness "$out/bin/nuschl-witness"
           install -Dm644 ${./LICENSE} "$out/share/licenses/nuschl/EUPL-1.2"
           ${installNativeNotices}
@@ -242,7 +253,7 @@
         musicbotNoticeScope = "musicbot-${pkgs.stdenv.hostPlatform.rust.rustcTarget}";
         musicbotNotices = releaseNotices.forScope musicbotNoticeScope;
         musicbotPackage =
-          pkgs.runCommand "nuschl-musicbot-0.1.0"
+          pkgs.runCommand "nuschl-musicbot-${version}"
             {
               nativeBuildInputs = [ pkgs.makeWrapper ];
               meta.mainProgram = "nuschl-musicbot";
@@ -351,6 +362,61 @@
         # The desktop package from per-crate derivations (crate2nix): a change
         # rebuilds only the crates that depend on it.
         crates = import ./nix/crate2nix.nix { inherit pkgs toolchain; };
+        # One `<crate>-unit` check per workspace member, generated from the
+        # member list, so a member starts with its unit tests running in
+        # `ci`. unitExtras gives a member's leaf the test inputs it needs;
+        # unitOptOut moves a member's tests to where they run.
+        unitExtras = {
+          nuschl-sandbox.testInputs = [ pkgs.bubblewrap pkgs.util-linux ];
+          nuschl-ipc.testInputs = [ pkgs.bubblewrap pkgs.util-linux ];
+          nuschl-content-worker.testInputs = [ pkgs.bubblewrap pkgs.util-linux ];
+          nuschl-musicbot-codec-worker.testInputs = [ pkgs.bubblewrap pkgs.util-linux ];
+          # The math worker's confinement tests spawn sandboxed workers, and
+          # the CLI's e2ee tests run the crypto worker through the sandbox.
+          nuschl-math-worker.testInputs = [ pkgs.bubblewrap pkgs.util-linux ];
+          nuschl-cli.testInputs = [ pkgs.bubblewrap pkgs.util-linux ];
+          nuschl-crypto-worker.testInputs = [ pkgs.bubblewrap pkgs.util-linux ];
+          # The signer's tests need its feature; the default build has none.
+          nuschl-update-worker.features = [ "signer" ];
+          nuschl-link-preview.testInputs = [ pkgs.python3 ];
+          # One throwaway server in the build directory, on a unix socket
+          # there; nothing listens on the network. The ignored checks run too.
+          nuschl-storage = {
+            testInputs = [ pkgs.postgresql ];
+            testCrateFlags = [ "--include-ignored" ];
+            testPreRun = ''
+              export NUSCHL_PG="$(pwd)/postgres"
+              # Runs before each test binary; the first one creates the server.
+              fresh=
+              if [ ! -d "$NUSCHL_PG" ]; then
+                initdb --auth=trust --no-locale --username=postgres \
+                  --pgdata="$NUSCHL_PG" > initdb.log 2>&1
+                fresh=1
+              fi
+              pg_ctl --pgdata="$NUSCHL_PG" --log="$NUSCHL_PG/server.log" \
+                --options="-k $NUSCHL_PG -c listen_addresses=" --wait start
+              [ -z "$fresh" ] || createdb --host="$NUSCHL_PG" --username=postgres nuschl_test
+              export NUSCHL_TEST_POSTGRES_URL="postgresql:///nuschl_test?host=$NUSCHL_PG&user=postgres"
+            '';
+            testPostRun = ''
+              pg_ctl --pgdata="$NUSCHL_PG" stop
+            '';
+          };
+          nuschl-storage-worker.testInputs = [ pkgs.postgresql ];
+        };
+        unitOptOut = {
+          # These run on another platform or target.
+          nuschl-sandbox-windows = "Windows adapter; the tests run under Miri (`just miri`)";
+          # Fix the named blocker, then remove the entry. The cover cache's
+          # fix is the sibling change "musicbot: rank the cover cache by its
+          # persisted write time".
+          nuschl-musicbot = "pending the cover-cache restart flake";
+        };
+        unitChecks = lib.mapAttrs'
+          (name: member:
+            lib.nameValuePair "${name}-unit"
+              (member.build.override ({ runTests = true; } // unitExtras.${name} or { })))
+          (removeAttrs crates.project.workspaceMembers (lib.attrNames unitOptOut));
         # Explicit operator/CI tool; never included in client worker payloads.
         updateSigner = crates.project.workspaceMembers."nuschl-update-worker".build.override {
           features = [ "signer" ];
@@ -390,7 +456,7 @@
             )
           );
         package =
-          pkgs.runCommand "nuschl-0.1.0"
+          pkgs.runCommand "nuschl-${version}"
             {
               nativeBuildInputs = [ pkgs.makeWrapper ];
               meta.mainProgram = "nuschl";
@@ -425,7 +491,7 @@
           };
         desktopCrates = "-p nuschl -p nuschl-content-worker -p nuschl-crypto-worker -p nuschl-math-worker -p nuschl-media-worker -p nuschl-storage-worker -p nuschl-transfer-worker";
         crossCommon = {
-          version = "0.1.0";
+          inherit version;
           inherit src dummySrc;
           strictDeps = true;
           doCheck = false; # Tests run natively, never under an emulator.
@@ -434,6 +500,7 @@
             pkgs.protobuf
             pkgs.pkg-config
           ];
+          NUSCHL_EMOJI_ASSETS = emojiAssets;
         };
         mingw = pkgs.pkgsCross.mingwW64;
         windowsVerifiers = import ./nix/cross-updaters.nix { inherit pkgs; };
@@ -596,6 +663,7 @@
         packages.${distroOutput "deb-source-check"} = linuxDistro.debSourceCheck;
         legacyPackages.crate2nixInputs = crate2nixInputs;
         packages.default-crane = cranePackage;
+        packages.emojiAssets = emojiAssets;
         packages.server = serverPackage;
         packages.witness = witnessPackage;
         packages.update-signer = updateSigner;
@@ -682,15 +750,8 @@
               cargoClippyExtraArgs = "--all-targets -- --deny warnings";
             }
           );
-          update-ipc-policy = crates.project.workspaceMembers."nuschl-ipc".build.override {
-            runTests = true;
-            testInputs = [
-              pkgs.bubblewrap
-              pkgs.util-linux
-            ];
-          };
-          # exchange.rs has its own main (harness=false); the unit-test leaf
-          # alone compiles it under libtest and reports zero tests.
+          # exchange.rs has its own main (harness = false) and its own check;
+          # the unit-test leaf compiles it under libtest and reports zero tests.
           ipc-exchange = import ./nix/ipc-exchange-check.nix {
             inherit pkgs toolchain;
             ipc = crates.project.workspaceMembers."nuschl-ipc".build;
@@ -700,17 +761,6 @@
               inherit name path;
             }) self.checks.${system}.ipc-exchange.negativeControls
           );
-          update-unit = crates.project.workspaceMembers."nuschl-update".build.override { runTests = true; };
-          # Scoped unit-test leaves over the cached per-crate graph (no Cargo target).
-          desktop-unit = crates.project.workspaceMembers."nuschl".build.override { runTests = true; };
-          core-unit = crates.project.workspaceMembers."nuschl-core".build.override { runTests = true; };
-          media-unit = crates.project.workspaceMembers."nuschl-media-worker".build.override {
-            runTests = true;
-          };
-          update-crypto = crates.project.workspaceMembers."nuschl-update-worker".build.override {
-            features = [ "signer" ];
-            runTests = true;
-          };
           fmt = craneLib.cargoFmt { inherit src; };
           deny = craneLib.cargoDeny (
             common
@@ -750,7 +800,7 @@
               cp ${pkgs.writeText "nuschl-sandbox-audit.toml" "[yanked]\nenabled = false\n"} .cargo/audit.toml
             '';
           };
-        }
+        } // unitChecks
         // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
           let
             homeManagerChecks = import ./nix/home-manager-test.nix {
@@ -760,6 +810,11 @@
             };
           in
           {
+            preview-worker = import ./nix/preview-worker-check.nix {
+              inherit pkgs toolchain;
+              ipc = crates.project.workspaceMembers."nuschl-ipc".build;
+              contentWorker = crates.project.workspaceMembers."nuschl-content-worker".build;
+            };
             rename-options =
               let
                 legacy = nixpkgs.lib.nixosSystem {
@@ -815,11 +870,34 @@
                 "1.3" = "${nixpkgs-mumble13.legacyPackages.${system}.murmur}/bin/murmurd";
               };
             };
+            vm-link-previews = import ./tests/link_previews_vm.nix {
+              inherit pkgs;
+              nuschl = package;
+              sourceIdentity = self.rev or self.outPath;
+              contentWorker = crates.project.workspaceMembers."nuschl-content-worker".build;
+              # Export the actual cached test ELF without running its private
+              # network fixture in a build sandbox or rewriting its bytes.
+              nativeFetchTest =
+                (crates.project.workspaceMembers."nuschl-session".build.override {
+                  runTests = true;
+                  testPreRun = ''
+                    case "$f" in
+                      */nuschl_session-*)
+                        test ! -e "$out/bin/nuschl-preview-fetch-test"
+                        install -Dm0555 "$f" "$out/bin/nuschl-preview-fetch-test"
+                        ;;
+                    esac
+                    continue
+                  '';
+                }).test.overrideAttrs
+                  { dontFixup = true; };
+            };
           }
         );
         devShells.default = craneLib.devShell {
           inherit buildInputs;
           LIBCLANG_PATH = common.LIBCLANG_PATH;
+          NUSCHL_EMOJI_ASSETS = emojiAssets;
           packages =
             nativeBuildInputs
             ++ [

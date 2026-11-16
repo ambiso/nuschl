@@ -9,7 +9,7 @@ publish.workspace = true
 
 [dependencies]
 hex = "0.4.3"
-nuschl-rtc = { path = "../../crates/rtc", version = "0.1.0" }
+nuschl-rtc = { path = "../../crates/rtc", version = "0.2.0" }
 
 [lints]
 workspace = true

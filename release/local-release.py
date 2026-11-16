@@ -499,7 +499,7 @@ def stage_notes(repository, stage, tag, commit, version, flake, build=False):
     tool = select_git_cliff(flake)
     executable = Path(tool['output']) / 'bin/git-cliff'
     if build and not executable.exists():
-        guarded_build(['nix', 'build', '--cores', '2', '--max-jobs', '2', '--no-link', tool['drv'] + '^out'],
+        guarded_build(['nix', 'build', '--no-link', tool['drv'] + '^out'],
                       stage / 'git-cliff-build.log')
     require(executable.is_file() and os.access(executable, os.X_OK),
             "the selected flake's git-cliff is not built; enter its development shell or prepare with --build")
@@ -574,7 +574,7 @@ def prepare(args):
     products = {}
     for name in PRODUCTS:
         if args.build:
-            guarded_build(['nix', 'build', '--cores', '2', '--max-jobs', '2', '--no-link',
+            guarded_build(['nix', 'build', '--no-link',
                            flake + '#' + name], stage / (name + '-build.log'))
         products[name] = select_product(flake, name)
     install = stage / 'install'

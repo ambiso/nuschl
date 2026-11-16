@@ -1,5 +1,5 @@
 # Offline maintainer recipe. Generate into a new Nix output, never the checkout:
-# nix build --impure --file nix/syntax-bundle.nix --cores 2 --max-jobs 1
+# nix build --impure --file nix/syntax-bundle.nix
 # Review/compare result/default-nix.packdump before explicitly copying it.
 let
   projectRoot = ../.;
