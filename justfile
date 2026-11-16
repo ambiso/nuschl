@@ -31,8 +31,15 @@ wasm-client profile="release":
         wasm-bindgen --target web --out-dir web/app/src/sdk \
             "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/$directory/nuschl_client_wasm.wasm"'
 
+# Twemoji images and the emoji picker's data (nix/emoji.nix) for builds
+# outside Nix: the desktop's build script falls back to ./emoji-assets, and
+# the web client serves web/app/public/emoji.
+emoji-assets:
+    nix build .#emojiAssets -o emoji-assets
+    ln -sfn ../../../emoji-assets web/app/public/emoji
+
 # The Svelte client (web/app) with the SDK, into web/app/dist.
-web: wasm-client
+web: wasm-client emoji-assets
     cd web/app && npm ci --no-audit --no-fund && npm test && npm run build
 
 # The music bot's Svelte UI, served by nuschl-musicbot from this directory.
@@ -48,7 +55,7 @@ rtc:
     python3 tests/rtc_probe.py
 
 vm:
-    nix build --cores 2 .#checks.x86_64-linux.vm-smoke --no-link -L
+    nix build .#checks.x86_64-linux.vm-smoke --no-link -L
 
 # `just vm-driver --root ~/.cache/nuschl-vm-r1 [--probe] /nix/store/...-nixos-test-driver-...`
 # (tests/vm_driver.py) refuses to boot on RAM-backed or escaped state paths and
@@ -172,7 +179,7 @@ readme-screenshot:
 
 # Regenerate after changing dependencies/manifests, including new local vendors.
 crate2nix:
-    nix run --cores 2 --max-jobs 2 --inputs-from . nixpkgs#crate2nix -- generate -f Cargo.toml -o nix/crate2nix/Cargo.nix -h nix/crate2nix/crate-hashes.json
+    nix run --inputs-from . nixpkgs#crate2nix -- generate -f Cargo.toml -o nix/crate2nix/Cargo.nix -h nix/crate2nix/crate-hashes.json
     python3 nix/crate2nix-inputs.py > nix/crate2nix/inputs.sha256
 
 fmt:

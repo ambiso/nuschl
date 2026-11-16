@@ -372,7 +372,7 @@ class History(unittest.TestCase):
             self.assertEqual(builds, [])
             with self.assertRaisesRegex(ValueError, 'not built'):
                 self.notes(self.stage('built'), build=True)  # Only that derivation, bounded like products.
-            self.assertEqual(builds, [['nix', 'build', '--cores', '2', '--max-jobs', '2', '--no-link',
+            self.assertEqual(builds, [['nix', 'build', '--no-link',
                                        good[0]['drv'] + '^out']])
         with patch.dict(os.environ, {'PATH': str(decoy) + os.pathsep + os.environ['PATH']}), \
                 patch.object(local, 'select_git_cliff', return_value=self.tool):
