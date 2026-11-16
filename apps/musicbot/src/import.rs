@@ -894,6 +894,66 @@ mod tests {
         reply
     }
 
+    #[tokio::test]
+    async fn the_poller_counts_each_change_as_the_bot() {
+        use std::sync::atomic::AtomicUsize;
+        let step = Arc::new(AtomicUsize::new(0));
+        let server = Server::new({
+            let step = step.clone();
+            move |_, socket| {
+                let (status, done) = match step.load(Ordering::SeqCst) {
+                    0 => ("queued", 0),
+                    1 | 2 => ("downloading", 1),
+                    3 => {
+                        let _ = socket.write_all(&response(
+                            "500 Internal Server Error",
+                            "text/plain",
+                            b"",
+                        ));
+                        return;
+                    }
+                    _ => ("handed_over", 2),
+                };
+                let body = format!(
+                    r#"{{"imports":[{{"id":"00000000000000aa","album_id":"0123456789abcdef","status":"{status}","title":"T","artist":"A","year":null,"release_type":"album","has_cover":false,"tracks_total":2,"tracks_done":{done},"tracks_failed":0,"requested_at":1,"handed_over_at":null,"mine":false}}],"budget":{{"requester":{{"limit":1,"used":0,"next_free_at":null}},"total":{{"limit":1,"used":0,"next_free_at":null}}}}}}"#
+                );
+                let _ = socket.write_all(&response("200 OK", "application/json", body.as_bytes()));
+            }
+        });
+        let adding = Adding {
+            client: Arc::new(Client::new(&server.url, "key")),
+            pseudonyms: Pseudonyms {
+                secret: [1; SECRET_BYTES],
+            },
+            library: 0,
+            revision: AtomicU64::new(0),
+            wake: Notify::new(),
+        };
+        let (changes, mut last) = (Changes::default(), None);
+        let mut seen = Vec::new();
+        for state in 0..5 {
+            step.store(state, Ordering::SeqCst);
+            let interval = poll(&adding, &changes, &mut last).await;
+            seen.push((adding.revision.load(Ordering::SeqCst), interval));
+        }
+        // Queued and the first progress count; a repeat and a failure do not.
+        assert_eq!(
+            seen,
+            [
+                (1, ACTIVE_INTERVAL),
+                (2, ACTIVE_INTERVAL),
+                (2, ACTIVE_INTERVAL),
+                (2, IDLE_INTERVAL),
+                (3, IDLE_INTERVAL),
+            ]
+        );
+        assert!(server.requests().iter().all(|head| {
+            head.starts_with(&format!(
+                "GET /api/integration/v1/imports?requester={BOT_REQUESTER}&"
+            ))
+        }));
+    }
+
     #[test]
     fn requests_carry_the_key_and_requester() {
         let body = br#"{"albums":[{"id":"0123456789abcdef","title":"T","artist":"A","year":2000,"track_count":3,"release_type":"album","has_cover":true}]}"#;
