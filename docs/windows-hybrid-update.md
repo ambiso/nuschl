@@ -47,7 +47,7 @@ or attach personal profiles. Build the test products without a desktop rebuild:
 
 ```sh
 nix build --impure --file tests/windows_hybrid.nix ed ml fixture \
-  --cores 2 --max-jobs 2 --no-link --print-out-paths
+  --no-link --print-out-paths
 NUSCHL_WINDOWS_VM_DIR=/path/to/existing-installed-guest \
 TMPDIR=/path/to/owned-disk-scratch python3 tests/windows_hybrid.py \
   --ed25519 /ED_OUTPUT/bin/nuschl-update-verify-ed25519.exe \
