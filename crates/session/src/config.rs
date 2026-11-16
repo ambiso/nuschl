@@ -1892,7 +1892,30 @@ pub(crate) fn read_bounded(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// Open until [`end_writes`]; a private file write holds it until its rename.
+static WRITES: Mutex<bool> = Mutex::new(true);
+
+/// Start a private file write; an error once writes have ended.
+fn start_write() -> io::Result<MutexGuard<'static, bool>> {
+    let open = WRITES.lock().unwrap_or_else(PoisonError::into_inner);
+    if *open {
+        Ok(open)
+    } else {
+        Err(io::Error::other(
+            "Nuschl is quitting and saves no more files",
+        ))
+    }
+}
+
+/// Wait for a private file being written to be renamed into place, and make
+/// later writes fail. Call it just before the process exits: no temporary
+/// file is left behind.
+pub fn end_writes() {
+    *WRITES.lock().unwrap_or_else(PoisonError::into_inner) = false;
+}
+
 pub(crate) fn atomic_private_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let _writing = start_write()?;
     let temporary = path.with_extension(format!("{}.tmp", Uuid::new_v4()));
     let result = (|| {
         let mut options = fs::OpenOptions::new();
@@ -1917,6 +1940,7 @@ pub(crate) fn atomic_private_write(path: &Path, bytes: &[u8]) -> io::Result<()> 
 /// Publish a complete private file only if its destination is still absent.
 /// Migration never replaces a sidecar another version or process created.
 fn atomic_private_create(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let _writing = start_write()?;
     let temporary = path.with_extension(format!("{}.tmp", Uuid::new_v4()));
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);

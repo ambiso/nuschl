@@ -27,7 +27,7 @@ fn activation(event: &KeyDownEvent) -> bool {
 /// built-in fallback clicks the node's centre instead, which misses (or hits
 /// another control) while a scroll region clips the button. As for keys
 /// (`keep_dialog_focus`) and the pointer (the backdrop), only controls inside
-/// an open dialog act.
+/// the dialog in front act.
 fn accessible_click<F>(
     action: Rc<F>,
     cx: &mut Context<Desktop>,
@@ -39,7 +39,12 @@ where
     move |control, window, cx| {
         entity
             .update(cx, |this, cx| {
-                if !this.dialog_open() || this.modal_focus.contains(control, window) {
+                if !this.dialog_open()
+                    || this
+                        .modal_seen
+                        .get()
+                        .is_some_and(|front| this.dialog_focus(front, cx).contains(control, window))
+                {
                     action(this, window, cx);
                 }
             })
@@ -298,6 +303,19 @@ fn field(id: &'static str, label: &'static str, state: &Entity<InputState>) -> A
         .into_any_element()
 }
 
+impl Desktop {
+    /// The focus scope of the dialog `id`, tracked by that dialog alone.
+    /// Stacked dialogs (a prompt over Settings) each have their own: one
+    /// handle tracked by both would make both the focused node.
+    pub fn dialog_focus(&self, id: &'static str, cx: &mut App) -> FocusHandle {
+        self.modal_focus
+            .borrow_mut()
+            .entry(id)
+            .or_insert_with(|| cx.focus_handle())
+            .clone()
+    }
+}
+
 pub fn modal(
     this: &Desktop,
     id: &'static str,
@@ -337,7 +355,7 @@ pub fn modal(
                         this.cancel_modal_scroll();
                     }
                 }))
-                .track_focus(&this.modal_focus)
+                .track_focus(&this.dialog_focus(id, cx))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .role(Role::Dialog)
                 .aria_label(label)
