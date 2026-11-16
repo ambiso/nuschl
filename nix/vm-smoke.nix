@@ -10,6 +10,7 @@ let
 in
 pkgs.testers.runNixOSTest {
   name = "nuschl-mumble-client";
+  globalTimeout = 1800;
   nodes = {
     database =
       { lib, ... }:

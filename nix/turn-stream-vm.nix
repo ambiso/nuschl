@@ -24,6 +24,7 @@ let
 in
 pkgs.testers.runNixOSTest {
   name = "nuschl-turn-stream";
+  globalTimeout = 1800;
   nodes = {
     turn =
       { nodes, ... }:

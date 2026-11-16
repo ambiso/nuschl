@@ -55,6 +55,7 @@ let
 in
 pkgs.testers.runNixOSTest {
   name = "nuschl-server";
+  globalTimeout = 1800;
   nodes = {
     server =
       { pkgs, ... }:

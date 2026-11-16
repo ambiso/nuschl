@@ -302,6 +302,7 @@ assert lib.assertMsg (accepts {
 
   vm = pkgs.testers.runNixOSTest {
     name = "nuschl-home-manager";
+    globalTimeout = 1800;
     nodes.machine = {
       imports = [ home-manager.nixosModules.home-manager ];
       users.users.alice = {

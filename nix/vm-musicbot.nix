@@ -41,6 +41,7 @@ in
 assert evaluates { tokens_file = "acl"; } && !evaluates { tokens = [ "fixture" ]; };
 pkgs.testers.runNixOSTest {
   name = "nuschl-musicbot";
+  globalTimeout = 1800;
   nodes.machine =
     { ... }:
     {
