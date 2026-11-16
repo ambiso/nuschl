@@ -1953,11 +1953,11 @@ impl RenderOnce for MenuSurface {
                                         .children(self.rows),
                                 ),
                             )
-                            .child(div().absolute().inset_0().child(crate::layout::scrollbar(
+                            .child(crate::layout::scrollbar(
                                 "context-menu-scrollbar",
                                 &state.scroll,
                                 APP,
-                            )))
+                            ))
                             .focus_trap("context-menu-focus", &state.focus),
                     ),
                 ),

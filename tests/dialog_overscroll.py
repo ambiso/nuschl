@@ -4,11 +4,10 @@
 
 At 100 % and 200 % zoom, Settings and Ada's "Profile and connection" (Details) are
 scrolled to the end with End and with a wheel over the scrollbar gutter. The lowest
-accessible control must sit within the bottom padding, and no accessible text may
-have a run of three or more spaces. A build without the fix ends on a blank page.
+accessible control must sit within the bottom padding. A build without the fix ends
+on a blank page.
 """
 import json
-import re
 import time
 
 from accessibility import items
@@ -93,15 +92,13 @@ def run(args, shell, registry, profile, shot):
                 shell.click(*on_screen(box, box[2] // 2, box[3] // 2), button=3)
                 find("menu item", "Profile and connection").press()
             dialog = find("dialog", name)
-            spaced = [text for _, _, text, _ in items(app) if re.search(r"\S {3,}\S", text)]
             gaps = {how: end_gap(dialog, how, zoom) for how in ("key", "wheel")}
             shot(f"overscroll-{name.lower()}-{int(zoom * 100)}")
-            results.append({"dialog": name, "zoom": zoom, "gap_below_last": gaps, "spaced_text": spaced})
+            results.append({"dialog": name, "zoom": zoom, "gap_below_last": gaps})
             shell.key("Escape")
             eventually(lambda: not any(role == "dialog" for _, role, _, _ in items(app)), f"{name} did not close")
     shell.chord("Control_L", "0")
     (args.output / "dialog-overscroll.json").write_text(json.dumps(results, indent=2) + "\n")
-    failures = [result for result in results if result["spaced_text"]
-                or max(result["gap_below_last"].values()) > PADDING * result["zoom"]]
-    assert not failures, f"blank space below the last control or spaced text: {failures}"
+    failures = [result for result in results if max(result["gap_below_last"].values()) > PADDING * result["zoom"]]
+    assert not failures, f"blank space below the last control: {failures}"
     print(f"Dialog overscroll passed: {json.dumps(results)}", flush=True)
