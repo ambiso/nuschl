@@ -12,9 +12,21 @@
 - **Reconnects:** on Nuschl servers, chat history fills in after a reconnect,
   without duplicates. In the browser, an Unmute clicked right after joining a
   channel is no longer refused.
-- **Voice:** gaps in incoming audio fade in and out without clicks.
+- **Voice:** gaps in incoming audio fade in and out without clicks, and mute
+  and other controls take effect at once while voice is busy.
 - **Sandboxing:** each helper program runs with its own fixed set of
   permissions.
+- **Desktop:** Settings → Voice quality lists only the servers that hold your
+  voice below the bitrate you chose. Servers you deafened yourself stay out of the
+  voice card. A dialog over another keeps the keyboard focus, and dialogs stop
+  scrolling at their end. Nuschl keeps no temporary files in its config folder.
+- **Browser:** larger voice toggles for touch, a drawer that slides, and swipe
+  gestures.
+- **Music bot:** with an import service configured, people can search for albums
+  missing from the library and add them from the bot's web page. Covers reach the
+  browser as PNG images made by the bot's sandboxed content worker.
+- **Server:** importing a Murmur database (`nuschld --import-murmur`) requires
+  Linux 6.12 or later.
 
 ## Downloads
 
