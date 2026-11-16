@@ -324,10 +324,10 @@ impl Client {
         let mut response = self
             .get(&format!("covers/{id}"), requester)?
             .call()
-            .map_err(|_| Failure::Unavailable)?;
+            .map_err(unreachable)?;
         let body = read_capped(&mut response)?;
         if !response.status().is_success() {
-            return Err(Failure::from_reply(&body));
+            return Err(refused(response.status(), &body));
         }
         let declared = response.body().mime_type().unwrap_or_default();
         if !declared.eq_ignore_ascii_case("image/jpeg") {
@@ -373,11 +373,11 @@ impl Client {
                 album_id,
                 requester,
             })
-            .map_err(|_| Failure::Unavailable)?;
+            .map_err(unreachable)?;
         let existing = match response.status().as_u16() {
             202 => false,
             200 => true,
-            _ => return Err(Failure::from_reply(&read_capped(&mut response)?)),
+            _ => return Err(refused(response.status(), &read_capped(&mut response)?)),
         };
         let reply: Reply = parse(&read_capped(&mut response)?)?;
         if !reply.import.valid() || reply.import.album_id != album_id {
@@ -393,23 +393,42 @@ fn read_capped(response: &mut ureq::http::Response<ureq::Body>) -> Result<Vec<u8
         .with_config()
         .limit(MAX_REPLY_BYTES)
         .read_to_vec()
-        .map_err(|_| Failure::Unavailable)
+        .map_err(unreachable)
+}
+
+fn unreachable(error: ureq::Error) -> Failure {
+    tracing::warn!("import service: {error}");
+    Failure::Unavailable
+}
+
+/// The failure an error reply stands for, logged with its status.
+fn refused(status: ureq::http::StatusCode, body: &[u8]) -> Failure {
+    let failure = Failure::from_reply(body);
+    if failure == Failure::Unavailable {
+        tracing::warn!("import service answered {status}");
+    } else {
+        tracing::debug!("import service answered {status}: {failure:?}");
+    }
+    failure
 }
 
 fn parse<T: DeserializeOwned>(body: &[u8]) -> Result<T, Failure> {
-    serde_json::from_slice(body).map_err(|_| Failure::Unavailable)
+    serde_json::from_slice(body).map_err(|error| {
+        tracing::warn!("import service reply: {error}");
+        Failure::Unavailable
+    })
 }
 
 /// A capped JSON reply, or the failure its error reply stands for.
 fn json<T: DeserializeOwned>(
     response: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
 ) -> Result<T, Failure> {
-    let mut response = response.map_err(|_| Failure::Unavailable)?;
+    let mut response = response.map_err(unreachable)?;
     let body = read_capped(&mut response)?;
     if response.status().is_success() {
         parse(&body)
     } else {
-        Err(Failure::from_reply(&body))
+        Err(refused(response.status(), &body))
     }
 }
 
@@ -590,10 +609,7 @@ async fn poll(adding: &Adding, changes: &Changes, last: &mut Option<Fingerprint>
                 IDLE_INTERVAL
             }
         }
-        Ok(Err(failure)) => {
-            tracing::debug!("import list: {}", failure.message());
-            IDLE_INTERVAL
-        }
+        Ok(Err(_)) => IDLE_INTERVAL,
         Err(_) => {
             tracing::warn!("import list request failed");
             IDLE_INTERVAL
