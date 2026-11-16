@@ -157,7 +157,7 @@ already in the dependency graph). It does not use the workspace lints, because
 and `multiple_unsafe_ops_per_block` (one unsafe operation per block, each with a
 `SAFETY:` comment), `as_conversions`, `ptr_as_ptr`, `ptr_cast_constness`,
 `borrow_as_ptr` and the `cast_possible_*` lints are errors. `cargo-deny` lets only the
-six worker crates depend on it. On other platforms it compiles to a constant.
+worker crates listed in `deny.toml` depend on it. On other platforms it compiles to a constant.
 
 ## Safety argument
 
