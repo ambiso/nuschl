@@ -2,7 +2,6 @@
 // HTTP helpers. Every URL is relative to the token-free page root, which the
 // bot authenticates with its cookie, so the app also works when the bot sits
 // behind a proxy under a path.
-import { isImportId } from "./logic.js";
 
 export class HttpError extends Error {
   constructor(status, message) {
@@ -68,5 +67,5 @@ export function artUrl(library, coverArt, size, key) {
 
 /** URL of an import service cover `size` pixels wide, or null for an invalid id. */
 export function importArtUrl(id, size) {
-  return isImportId(id) ? `import-art/${id}?size=${size}` : null;
+  return `import-art/${id}?size=${size}`;
 }

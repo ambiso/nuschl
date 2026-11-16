@@ -4,7 +4,7 @@
   import { store } from "../store.svelte.js";
   import { resource } from "../resource.svelte.js";
   import { query } from "../api.js";
-  import { buildRoute, isImportId, releaseTypeLabel } from "../logic.js";
+  import { buildRoute, releaseTypeLabel } from "../logic.js";
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
 
@@ -14,7 +14,7 @@
   const available = $derived(store.snapshot?.import != null);
   let search = $state(untrack(() => route.q));
   const result = resource(() => (current && available && route.q.trim() ? query("api/import/search", { q: route.q }) : null), () => store.browseSignal);
-  const albums = $derived(current && Array.isArray(result.data?.albums) ? result.data.albums.filter((album) => isImportId(album?.id)) : []);
+  const albums = $derived(current && Array.isArray(result.data?.albums) ? result.data.albums : []);
 
   function submit(event) {
     event.preventDefault();
