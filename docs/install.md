@@ -9,12 +9,12 @@ first publication still requires enrolled signing trust and complete notices ([H
 
 The flake builds the desktop app for Linux (`packages.<system>.default`, tested on
 x86_64) and exports a NixOS module for the server and a Home Manager module for the
-app. `nix run github:ambiso/nuschl` starts the app without installing it, and
-`nix run github:ambiso/nuschl#tui` the terminal client (`nuschl-tui`, in the same
+app. `nix run github:nuschl-eu/nuschl` starts the app without installing it, and
+`nix run github:nuschl-eu/nuschl#tui` the terminal client (`nuschl-tui`, in the same
 package). To install it system-wide from your own flake:
 
 ```nix
-# inputs.nuschl.url = "github:ambiso/nuschl";
+# inputs.nuschl.url = "github:nuschl-eu/nuschl";
 environment.systemPackages = [ inputs.nuschl.packages.${pkgs.stdenv.hostPlatform.system}.default ];
 ```
 
@@ -41,7 +41,7 @@ icons and works with your own nixpkgs: only the package comes from this flake, a
 `programs.nuschl.package` replaces it.
 
 ```nix
-# Flake input: nuschl.url = "github:ambiso/nuschl";
+# Flake input: nuschl.url = "github:nuschl-eu/nuschl";
 imports = [ inputs.nuschl.homeModules.default ];
 programs.nuschl = {
   enable = true;

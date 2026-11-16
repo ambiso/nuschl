@@ -2,7 +2,7 @@
 # Review wiring for nix/ipc-exchange-check.nix before flake.nix includes it.
 # Rebuilds pkgs, the toolchain and the crate2nix graph as flake.nix does, and
 # refuses unless its nuschl-ipc library is the flake's own derivation (the
-# one the update-ipc-policy check links), so the check reuses cached leaves.
+# one the nuschl-ipc-unit check links), so the check reuses cached leaves.
 #   nix build --impure -f nix/ipc-exchange-check-wiring.nix check
 #   nix build --impure -f nix/ipc-exchange-check-wiring.nix negativeControls
 #   nix build --impure -f nix/ipc-exchange-check-wiring.nix replaced-by-true  # must fail
@@ -22,13 +22,13 @@ let
   };
   crates = import ./crate2nix.nix { inherit pkgs toolchain; };
   ipc = crates.project.workspaceMembers."nuschl-ipc".build;
-  # The flake's crate2nix leaves are not exposed; its update-ipc-policy check
+  # The flake's crate2nix leaves are not exposed; its nuschl-ipc-unit check
   # links the nuschl-ipc library, so that derivation names it as an input.
-  policy = builtins.readFile flake.checks.${system}.update-ipc-policy.drvPath;
+  policy = builtins.readFile flake.checks.${system}.nuschl-ipc-unit.drvPath;
   check = import ./ipc-exchange-check.nix { inherit pkgs toolchain ipc; };
 in
 assert lib.assertMsg (lib.hasInfix (builtins.unsafeDiscardStringContext ipc.drvPath) policy)
-  "this wiring's nuschl-ipc ${ipc.drvPath} is not the flake's update-ipc-policy input";
+  "this wiring's nuschl-ipc ${ipc.drvPath} is not the flake's nuschl-ipc-unit input";
 {
   inherit check;
   inherit (check) diagnostic negativeControls;
