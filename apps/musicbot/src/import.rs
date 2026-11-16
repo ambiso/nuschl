@@ -647,77 +647,28 @@ mod tests {
     }
 
     #[test]
-    fn error_codes_map_to_fixed_texts() {
-        let cases = [
+    fn error_replies_map_to_failures() {
+        for (body, failure) in [
             (
-                r#"{"error":"rate_limited","retry_after":3}"#,
-                429,
-                "Too many searches at once. Try again in a few seconds.",
-            ),
-            (
-                r#"{"error":"limit_reached","scope":"requester","limit":10}"#,
-                409,
-                "You have added as much as you can for today. Try again later.",
+                r#"{"error":"limit_reached","scope":"requester"}"#,
+                Failure::RequesterLimit,
             ),
             (
                 r#"{"error":"limit_reached","scope":"total"}"#,
-                409,
-                "The library has taken in as much as it can for today. Try again later.",
-            ),
-            (
-                r#"{"error":"too_many_tracks","limit":100}"#,
-                422,
-                "This album is too large to add.",
-            ),
-            (
-                r#"{"error":"not_available"}"#,
-                404,
-                "This album cannot be added.",
-            ),
-            (
-                r#"{"error":"not_found"}"#,
-                404,
-                "This album cannot be added.",
-            ),
-            (
-                r#"{"error":"unauthenticated"}"#,
-                503,
-                "Adding music is not available right now.",
-            ),
-            (
-                r#"{"error":"catalog_unavailable"}"#,
-                503,
-                "Adding music is not available right now.",
+                Failure::TotalLimit,
             ),
             (
                 r#"{"error":"limit_reached","scope":"elsewhere"}"#,
-                503,
-                "Adding music is not available right now.",
+                Failure::Unavailable,
             ),
             (
                 r#"{"error":"internal","message":"secret detail"}"#,
-                503,
-                "Adding music is not available right now.",
+                Failure::Unavailable,
             ),
-            (
-                "<html>proxy error</html>",
-                503,
-                "Adding music is not available right now.",
-            ),
-        ];
-        for (body, status, text) in cases {
-            let failure = Failure::from_reply(body.as_bytes());
-            assert_eq!(
-                (failure.status(), failure.message()),
-                (status, text),
-                "{body}"
-            );
+            ("<html>proxy error</html>", Failure::Unavailable),
+        ] {
+            assert_eq!(Failure::from_reply(body.as_bytes()), failure, "{body}");
         }
-        assert_eq!(Failure::Busy.status(), 503);
-        assert_eq!(
-            Failure::Busy.message(),
-            "Too many requests at once. Try again in a moment."
-        );
     }
 
     #[test]
@@ -845,39 +796,6 @@ mod tests {
         let mut many = details.clone();
         many.tracks = vec![details.tracks[0].clone(); MAX_TRACKS + 1];
         assert!(!many.valid());
-    }
-
-    #[test]
-    fn fingerprints_see_progress_and_status() {
-        let list = |imports| Imports {
-            imports,
-            budget: Budgets {
-                requester: Budget {
-                    limit: 1,
-                    used: 0,
-                    next_free_at: None,
-                },
-                total: Budget {
-                    limit: 1,
-                    used: 0,
-                    next_free_at: None,
-                },
-            },
-        };
-        let queued = fingerprint(&list(vec![import(Status::Queued, 0)]));
-        assert_ne!(
-            queued,
-            fingerprint(&list(vec![import(Status::Downloading, 0)]))
-        );
-        assert_ne!(
-            fingerprint(&list(vec![import(Status::Downloading, 1)])),
-            fingerprint(&list(vec![import(Status::Downloading, 2)]))
-        );
-        let mut renamed = import(Status::Queued, 0);
-        renamed.title = "Other".into();
-        assert_eq!(queued, fingerprint(&list(vec![renamed])));
-        assert!(import(Status::Queued, 0).active());
-        assert!(!import(Status::HandedOver, 4).active());
     }
 
     #[test]

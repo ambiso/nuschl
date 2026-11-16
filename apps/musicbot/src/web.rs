@@ -1898,7 +1898,10 @@ async fn import_art(
         None => {
             // The cache is shared, so the bot asks: no viewer's lookups are spent.
             let image = async move {
-                import_call(&adding, move |client| client.cover(import::BOT_REQUESTER, &id)).await
+                import_call(&adding, move |client| {
+                    client.cover(import::BOT_REQUESTER, &id)
+                })
+                .await
             };
             fetch_cover(&bot, key, image).await?
         }
