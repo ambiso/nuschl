@@ -1,9 +1,13 @@
 # Memory safety and isolation
 
-Use a memory-safe implementation for every component that handles untrusted data.
-When none is suitable, run that processing in a worker with only the capabilities
-its role needs. Bound inputs and resources in memory-safe code too: it can still
-panic, over-allocate, loop forever or produce corrupt output.
+Native code handles untrusted data with a memory-safe implementation. When none is
+suitable, that processing runs in a worker with only the capabilities its role
+needs. Memory-safe code can still panic, over-allocate or loop, so workers are
+bounded as a whole by their OS limits and restarted by their supervisor.
+
+The web app uses the browser's own facilities for untrusted formats, such as image
+decoding and media codecs, and ships Rust compiled to WebAssembly where that is
+simpler, such as logic shared with the client SDK.
 
 All first-party crates inherit `unsafe_code = "forbid"`; `nuschl-sandbox-windows`
 (below) is the one exception. Every dependency change includes a review of the
