@@ -186,3 +186,20 @@ fmt:
     cargo fmt --all
     nixfmt flake.nix nix/*.nix
     rg --files -g '*.toml' -0 | xargs -0 taplo fmt
+
+
+
+# The issue queue (AGENTS.md): approved open issues by priority, then thumbs-up.
+# Approved: labelled status:approved or source:user-request, or a TODO scope
+# the owner approved (docs/todo-issue-map.tsv, column issue_numbers).
+queue:
+    #!/usr/bin/env bash
+    todo=$(grep -v '^#' docs/todo-issue-map.tsv | tail -n +2 | cut -f6 | tr ',' '\n' | grep -E '^[0-9]+$' | sort -un | paste -sd,)
+    gh issue list --state open --limit 500 --json number,title,labels,reactionGroups -q "[$todo] as \$todo | "'
+      map(. + {l: [.labels[].name]})
+      | map(select((.l | any(. == "status:approved" or . == "source:user-request")) or (.number | IN($todo[]))))
+      | map(select(.l | any(. == "status:in-progress" or . == "status:needs-approval" or . == "status:on-hold") | not))
+      | map(. + {rank: (.l | if index("priority:urgent") then 0 elif index("priority:high") then 1 elif index("priority:low") then 3 else 2 end),
+                 up: ([.reactionGroups[] | select(.content == "THUMBS_UP") | .users.totalCount] | add // 0)})
+      | sort_by(.rank, -.up, .number)[]
+      | "\(["urgent", "high", "medium", "low"][.rank])\t+\(.up)\t#\(.number)\t\(.title)"'

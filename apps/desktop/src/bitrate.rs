@@ -1,24 +1,29 @@
 // SPDX-License-Identifier: EUPL-1.2
 //! The requested voice bitrate and what each server makes of it
 //! (`nuschl_core::bitrate`): a Settings row of its own beside the
-//! transmission controls, and the effective rate on each voice place.
+//! transmission controls, the effective rate on each voice place, and each
+//! server's rate in its Connection info.
 use crate::{
     layout,
     settings::{Action, managed, segmented},
-    state::Desktop,
+    state::{Desktop, ServerView},
     theme::*,
 };
 use gpui_kit::{prelude::*, *};
-use nuschl_client::server::Status;
-use nuschl_core::bitrate::{VOICE_BITRATE_CHOICES, VoiceBitrate, kbps};
+use nuschl_client::{bitrate::for_server, server::Status};
+use nuschl_core::bitrate::{BitrateLimit, VOICE_BITRATE_CHOICES, VoiceBitrate, kbps};
 use std::rc::Rc;
 
 /// The labels of [`VOICE_BITRATE_CHOICES`], in order.
 const LABELS: [&str; VOICE_BITRATE_CHOICES.len()] =
     ["64 kb/s", "96 kb/s", "128 kb/s", "192 kb/s", "256 kb/s"];
 
-/// The VOICE QUALITY section: the requested target, and for every
-/// connected server what it allows and why.
+/// Settings names at most this many servers below the requested rate; every
+/// server's Connection info shows its own.
+const LISTED: usize = 5;
+
+/// The VOICE QUALITY section: the requested target, the connected servers
+/// that send less, and one line for the rest.
 pub fn settings_rows(this: &Desktop, cx: &mut Context<Desktop>) -> Vec<AnyElement> {
     let requested = this.settings.voice_bitrate;
     let choose = |bitrate: u32| -> Action {
@@ -42,58 +47,77 @@ pub fn settings_rows(this: &Desktop, cx: &mut Context<Desktop>) -> Vec<AnyElemen
         .zip(LABELS)
         .map(|(&bitrate, label)| (label, bitrate == requested, choose(bitrate)))
         .collect();
-    let custom = !VOICE_BITRATE_CHOICES.contains(&requested);
-    let mut rows = vec![
-        managed(
-            this,
-            "voice_bitrate",
-            segmented("voice-bitrate", "Voice bitrate", options, cx),
-        ),
+    let line = |id: ElementId, text: String, tone: Token| {
         div()
             .text_xs()
-            .text_color(color(TEXT_MUTED))
-            .child(layout::text(
-                "voice-bitrate-note",
-                format!(
-                    "Requested: {}{}. Mono Opus for every server; a server's \
-                     bandwidth limit can lower it, never raise it.",
-                    kbps(requested),
-                    if custom { " (custom)" } else { "" }
-                ),
-            ))
-            .into_any_element(),
-    ];
-    for (index, server) in this.client.servers.iter().enumerate() {
-        if server.status != Status::Connected || !server.has_mumble_voice() {
-            continue;
-        }
-        let Some(bitrate) = this.client.voice_bitrate(index, requested) else {
-            continue;
-        };
-        rows.push(
-            div()
-                .text_xs()
-                .text_color(color(
-                    if bitrate.limit == nuschl_core::bitrate::BitrateLimit::Requested {
-                        TEXT_MUTED
-                    } else {
-                        WARNING
-                    },
-                ))
-                .child(layout::text(
-                    ("voice-bitrate-server", index),
-                    format!("{}: {}", server.name, bitrate.explanation()),
-                ))
-                .into_any_element(),
-        );
+            .text_color(color(tone))
+            .child(layout::text(id, text))
+            .into_any_element()
+    };
+    let mut rows = vec![managed(
+        this,
+        "voice_bitrate",
+        segmented("voice-bitrate", "Voice bitrate", options, cx),
+    )];
+    if !VOICE_BITRATE_CHOICES.contains(&requested) {
+        let custom = format!("Custom: {}", kbps(requested));
+        rows.push(line("voice-bitrate-custom".into(), custom, TEXT_MUTED));
+    }
+    for (position, (server, text)) in settings_lines(&this.client.servers, requested)
+        .into_iter()
+        .enumerate()
+    {
+        rows.push(match server {
+            Some(index) => line(("voice-bitrate-server", index).into(), text, WARNING),
+            None => line(("voice-bitrate-summary", position).into(), text, TEXT_MUTED),
+        });
     }
     rows
 }
 
+/// Connected with Mumble voice, so it has a voice bitrate to show.
+pub fn has_voice(server: &ServerView) -> bool {
+    server.status == Status::Connected && server.has_mumble_voice()
+}
+
+/// The Settings lines at a `requested` rate, in server order: up to
+/// [`LISTED`] servers below the request (with their index), then how many
+/// more, then one line for the servers at the request.
+fn settings_lines(servers: &[ServerView], requested: u32) -> Vec<(Option<usize>, String)> {
+    let (met, below): (Vec<_>, Vec<_>) = servers
+        .iter()
+        .enumerate()
+        .filter(|(_, server)| has_voice(server))
+        .filter_map(|(index, server)| Some((index, server, for_server(servers, index, requested)?)))
+        .partition(|(_, _, bitrate)| bitrate.limit == BitrateLimit::Requested);
+    let mut lines: Vec<_> = below
+        .iter()
+        .take(LISTED)
+        .map(|(index, server, bitrate)| {
+            (
+                Some(*index),
+                format!("{}: {}", server.name, place_line(bitrate)),
+            )
+        })
+        .collect();
+    if below.len() > LISTED {
+        let more = format!("+{} more in Connection info", below.len() - LISTED);
+        lines.push((None, more));
+    }
+    if !met.is_empty() {
+        let who = if below.is_empty() {
+            "All servers"
+        } else {
+            "Other servers"
+        };
+        lines.push((None, format!("{who}: {}", kbps(requested))));
+    }
+    lines
+}
+
 /// One line for a voice place, short enough for the voice card: "128 kb/s",
-/// "48 of 128 kb/s · server limit". Settings has the whole explanation.
+/// "48 of 128 kb/s · server limit".
 pub fn place_line(bitrate: &VoiceBitrate) -> String {
-    use nuschl_core::bitrate::BitrateLimit;
     let rate = || bitrate.summary();
     match bitrate.limit {
         BitrateLimit::Requested => rate(),
@@ -106,8 +130,27 @@ pub fn place_line(bitrate: &VoiceBitrate) -> String {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's prelude has an attribute named `test` too.
-    use super::{LABELS, place_line};
-    use nuschl_core::bitrate::{VOICE_BITRATE_CHOICES, VoiceBitrate, kbps};
+    use super::{LABELS, LISTED, place_line, settings_lines};
+    use nuschl_client::server::{ServerState, Status};
+    use nuschl_core::{
+        bitrate::{VOICE_BITRATE_CHOICES, VoiceBitrate, kbps},
+        bookmark::ServerBookmark,
+        model::ServerLimits,
+    };
+
+    /// A connected, muted server allowing `budget` per user.
+    fn server(name: &str, budget: u32) -> ServerState {
+        let mut server =
+            ServerState::new(ServerBookmark::new(name, "localhost", 64738, "me").unwrap());
+        server.status = Status::Connected;
+        server.muted = true;
+        server.deafened = false;
+        server.limits = Some(ServerLimits {
+            max_bandwidth: Some(budget),
+            ..Default::default()
+        });
+        server
+    }
 
     #[test]
     fn labels_name_each_choice() {
@@ -142,5 +185,66 @@ mod tests {
         ] {
             assert!(line.chars().count() <= 32, "{line}");
         }
+    }
+
+    #[test]
+    fn settings_list_up_to_five_servers_below_the_request_then_the_rest() {
+        let narrow = |count: usize| (0..count).map(|n| server(&format!("S{n}"), 72_000));
+        let wide = |name| server(name, 558_000);
+        let below = |n: usize| (Some(n), format!("S{n}: 48 of 128 kb/s · server limit"));
+        let others = |text: &str| (None, text.to_owned());
+        let cases = [
+            (vec![], vec![]),
+            (
+                vec![wide("A"), wide("B")],
+                vec![others("All servers: 128 kb/s")],
+            ),
+            (narrow(1).collect(), vec![below(0)]),
+            (
+                narrow(2).chain([wide("Wide")]).collect(),
+                vec![below(0), below(1), others("Other servers: 128 kb/s")],
+            ),
+            (
+                narrow(LISTED).chain([wide("Wide"), wide("Big")]).collect(),
+                (0..LISTED)
+                    .map(below)
+                    .chain([others("Other servers: 128 kb/s")])
+                    .collect(),
+            ),
+            (
+                narrow(LISTED + 4).chain([wide("Wide")]).collect(),
+                (0..LISTED)
+                    .map(below)
+                    .chain([
+                        others("+4 more in Connection info"),
+                        others("Other servers: 128 kb/s"),
+                    ])
+                    .collect(),
+            ),
+        ];
+        for (servers, lines) in cases {
+            assert_eq!(settings_lines(&servers, 128_000), lines);
+        }
+    }
+
+    #[test]
+    fn only_connected_servers_with_mumble_voice_have_a_rate() {
+        let mut offline = server("Offline", 72_000);
+        offline.status = Status::Connecting;
+        let mut encrypted = server("E2EE", 72_000);
+        encrypted.capabilities.push("e2ee/1".into());
+        let servers = [
+            server("Wide", 558_000),
+            offline,
+            server("Tiny", 20_000),
+            encrypted,
+        ];
+        assert_eq!(
+            settings_lines(&servers, 128_000),
+            [
+                (Some(2), "Tiny: Not sending · server limit".into()),
+                (None, "Other servers: 128 kb/s".into()),
+            ]
+        );
     }
 }
