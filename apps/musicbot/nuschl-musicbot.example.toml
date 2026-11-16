@@ -73,7 +73,7 @@ channel = "Games/Background"
 
 # Adding music: people search an import service for albums missing from the
 # libraries and have them added to one of them (docs/musicbot.md, "Adding
-# music"). Without this section the web page does not offer it.
+# music"). The web page offers it only with this section.
 
 # [import]
 # Base URL of the import service: https://, or http:// on this machine only.

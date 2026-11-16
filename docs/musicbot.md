@@ -572,9 +572,8 @@ page with its tracks and **Add to library**. When the library already has an alb
 of the same title and artist, the page says so, links to it and the button reads
 **Add anyway**. **Requests** lists recent imports, newest first, with their
 progress, a **Yours** marker and how many more tracks the viewer can add today.
-Once the import service has handed an album over, the page tells people that it
-can take a minute until the album shows up in the library and to search for it in
-a minute or so: the library still imports and scans it.
+Once the import service has handed an album over, the page says it shows up in the
+library within a few minutes, while the library imports and scans it.
 
 ```toml
 [import]
@@ -583,7 +582,7 @@ key_file = "import-key"             # bearer key, a credential like the other *_
 library = "Navidrome"               # the [[subsonic]] library added albums arrive in
 ```
 
-Without the section nothing changes: `state.import` is `null` and the page hides
+The section is optional: without it `state.import` is `null` and the page hides
 the feature. `--check-config` checks the URL (no user name, query or fragment;
 https, or http only for loopback hosts) and that `library` names a configured
 library, without reading the key. On NixOS the key is one of the module's
@@ -594,7 +593,8 @@ person: `"r"` and the first 32 hexadecimal digits of HMAC-SHA256
 over the Mumble server, a zero byte and the person's certificate hash, keyed with
 a 32-byte secret the bot makes on first use in `import_requester.key` in its
 state directory. People without a certificate share one pseudonym per server. The
-bot watches the import list as `musicbot`.
+bot watches the import list and fetches covers, which every viewer shares, as
+`musicbot`.
 
 **Limits.** The import service enforces them: lookups per requester and in total
 per minute, and tracks added per requester and in total over a rolling day. Its
@@ -617,15 +617,16 @@ none waiting), a 30-second deadline and a 1 MiB cap on its reply. Ids are exactl
 16 lowercase hexadecimal characters before they enter a URL path; replies are
 parsed into typed values and checked (bounded texts without control characters,
 sane numbers, at most 50 albums or imports and 200 tracks) before a viewer sees
-them, and no text of the import service is passed on. Covers are JPEG files the
-confined content worker re-encodes as PNGs like library covers, and cached in `covers/` under the key namespace `import`, which no library key (32
-hexadecimal digits) can take.
+them; the import service's error texts become the fixed texts above. The confined
+content worker re-encodes covers as PNGs like library covers; they are cached in
+`covers/` under the key namespace `import`, which no library key (32 hexadecimal
+digits) can take.
 
 A background task asks for the import list once at start, every 3 seconds while
 an import is queued or being added and every 30 seconds otherwise or after a
 failure. When an import's status or progress changes, `state.import.revision`
 advances and viewers receive the new state; the page then reloads its requests.
-A request through the bot advances the revision as well.
+A request through the bot makes the task look again at once.
 
 ## Web API
 

@@ -4,7 +4,7 @@
   import { store } from "../store.svelte.js";
   import { resource } from "../resource.svelte.js";
   import { query } from "../api.js";
-  import { buildRoute, isImportId, releaseTypeLabel } from "../logic.js";
+  import { buildRoute, releaseTypeLabel } from "../logic.js";
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
 
@@ -14,7 +14,7 @@
   const available = $derived(store.snapshot?.import != null);
   let search = $state(untrack(() => route.q));
   const result = resource(() => (current && available && route.q.trim() ? query("api/import/search", { q: route.q }) : null), () => store.browseSignal);
-  const albums = $derived(current && Array.isArray(result.data?.albums) ? result.data.albums.filter((album) => isImportId(album?.id)) : []);
+  const albums = $derived(current && Array.isArray(result.data?.albums) ? result.data.albums : []);
 
   function submit(event) {
     event.preventDefault();
@@ -30,7 +30,6 @@
   {#if !available}
     <p class="notice muted">Adding music is not available on this bot.</p>
   {:else}
-    <p class="muted">Find albums that are missing from the library and add them.</p>
     <form class="add-search" role="search" onsubmit={submit}>
       <label for="add-search-input" class="visually-hidden">Search for albums to add</label>
       <input id="add-search-input" type="search" placeholder="Artist or album" maxlength="200" bind:value={search} autocomplete="off" />

@@ -2,7 +2,7 @@
 <script>
   import { store } from "../store.svelte.js";
   import { resource } from "../resource.svelte.js";
-  import { budgetText, buildRoute, isImportId, releaseTypeLabel, requestProgress, requestStatusText } from "../logic.js";
+  import { budgetText, buildRoute, releaseTypeLabel, requestProgress, requestStatusText } from "../logic.js";
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
 
@@ -12,7 +12,7 @@
   // Loads on mount and again whenever the import revision in the live state changes.
   const result = resource(() => (current && revision !== null ? "api/import/requests" : null), () => store.browseSignal, undefined, { keep: true });
   const data = $derived(current ? result.data : null);
-  const requests = $derived(Array.isArray(data?.requests) ? data.requests.filter((request) => isImportId(request?.id)) : []);
+  const requests = $derived(Array.isArray(data?.requests) ? data.requests : []);
   const budget = $derived(data ? budgetText(data.budget) : null);
 
   function localTime(seconds) { return new Date(seconds * 1000).toLocaleString(); }
@@ -28,7 +28,6 @@
   {:else if !current}
     <p class="notice muted" role="status">Requests will update after the connection is restored.</p>
   {:else}
-    <p class="muted">Albums asked for recently, newest first.</p>
     {#if budget}<p class="budget">{budget}</p>{/if}
     {#if result.error}<div class="notice error" role="alert"><p>{result.error}</p><button onclick={() => result.reload()}>Try again</button></div>{/if}
     {#if result.loading && !data}<p class="notice" role="status">Loading requests…</p>{/if}
@@ -37,10 +36,10 @@
       {#each requests as request (request.id)}
         {@const progress = requestProgress(request)}
         <li>
-          <Cover importId={request.has_cover && isImportId(request.album_id) ? request.album_id : null} size={128} px={56} />
+          <Cover importId={request.has_cover ? request.album_id : null} size={128} px={56} />
           <div class="description">
             <div class="request-heading">
-              <div class="title">{#if isImportId(request.album_id)}<a href={buildRoute({ view: "addAlbum", id: request.album_id })}>{request.title}</a>{:else}{request.title}{/if}</div>
+              <div class="title"><a href={buildRoute({ view: "addAlbum", id: request.album_id })}>{request.title}</a></div>
               {#if request.mine}<span class="mine">Yours</span>{/if}
             </div>
             <div class="muted">{request.artist}</div>

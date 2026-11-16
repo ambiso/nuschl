@@ -1869,7 +1869,7 @@ async fn import_request(
     let album_id = body.album_id;
     let (request, existing) =
         import_call(&adding, move |client| client.request(&requester, &album_id)).await?;
-    adding.requested(&bot.changes);
+    adding.requested();
     Ok(Json(ImportRequestView { request, existing }))
 }
 
@@ -1886,7 +1886,7 @@ async fn import_art(
     Path((token, id)): Path<(String, String)>,
     Query(query): Query<ImportArtQuery>,
 ) -> Result<Response, ApiError> {
-    let owner = owner(&bot, &token)?;
+    owner(&bot, &token)?;
     let adding = adding(&bot)?;
     if !import::valid_id(&id) {
         return Err(import_error(import::Failure::NotAvailable));
@@ -1896,14 +1896,17 @@ async fn import_art(
     let body = match bot.covers.get(&key).await {
         Some(body) => body,
         None => {
-            let requester = adding.pseudonyms.of(&owner);
+            // The cache is shared, so the bot asks: no viewer's lookups are spent.
             let image = async move {
-                import_call(&adding, move |client| client.cover(&requester, &id)).await
+                import_call(&adding, move |client| {
+                    client.cover(import::BOT_REQUESTER, &id)
+                })
+                .await
             };
             fetch_cover(&bot, key, image).await?
         }
     };
-    self::owner(&bot, &token)?;
+    owner(&bot, &token)?;
     Ok((
         [
             (header::CONTENT_TYPE, "image/png"),
@@ -3843,8 +3846,6 @@ mod tests {
             serde_json::json!({"requests": [import], "budget": {"mine": budget, "total": budget}})
         );
 
-        let mut changes = bot.changes.subscribe();
-        changes.borrow_and_update();
         let added = import_request(
             State(bot.clone()),
             Path(token.clone()),
@@ -3859,9 +3860,6 @@ mod tests {
             value(&added.0),
             serde_json::json!({"request": import, "existing": false})
         );
-        assert!(changes.has_changed().unwrap());
-        let state = serde_json::to_value(snapshot(&bot, "Listener")).unwrap();
-        assert_eq!(state["import"]["revision"], 1);
         let posted = service.requests().pop().unwrap();
         assert!(
             posted.starts_with("POST /api/integration/v1/imports "),

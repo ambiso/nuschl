@@ -189,16 +189,16 @@ test("request status texts", () => {
   assert.equal(requestStatusText(request("queued")), "Waiting to start");
   assert.equal(requestStatusText(request("downloading", 5)), "Adding · 5 of 12 tracks");
   assert.equal(requestStatusText(request("handed_over", 12)),
-    "Added to the library. It can take a minute until it shows up; search for it in a minute or so.");
+    "Added. Shows up in the library within a few minutes.");
   assert.equal(requestStatusText(request("handed_over", 9, 3)),
-    "Added 9 of 12 tracks to the library. It can take a minute until they show up; search for them in a minute or so.");
+    "Added 9 of 12 tracks. They show up in the library within a few minutes.");
   assert.equal(requestStatusText(request("failed")), "Could not be added.");
   assert.equal(requestStatusText(request("bogus")), "");
   assert.equal(requestStatusText(null), "");
   // Malformed counts never produce negative or fractional numbers.
   assert.equal(requestStatusText({ status: "downloading", tracks_total: -1, tracks_done: 2.5 }), "Adding · 0 of 0 tracks");
   assert.equal(requestStatusText({ status: "handed_over", tracks_total: 2, tracks_failed: 5 }),
-    "Added 0 of 2 tracks to the library. It can take a minute until they show up; search for them in a minute or so.");
+    "Added 0 of 2 tracks. They show up in the library within a few minutes.");
 });
 
 test("request progress shows only while adding", () => {

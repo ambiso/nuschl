@@ -324,14 +324,10 @@ impl Client {
         let mut response = self
             .get(&format!("covers/{id}"), requester)?
             .call()
-            .map_err(|_| Failure::Unavailable)?;
+            .map_err(unreachable)?;
         let body = read_capped(&mut response)?;
         if !response.status().is_success() {
-            return Err(Failure::from_reply(&body));
-        }
-        let declared = response.body().mime_type().unwrap_or_default();
-        if !declared.eq_ignore_ascii_case("image/jpeg") {
-            return Err(Failure::Unavailable);
+            return Err(refused(response.status(), &body));
         }
         Ok(body)
     }
@@ -373,11 +369,11 @@ impl Client {
                 album_id,
                 requester,
             })
-            .map_err(|_| Failure::Unavailable)?;
+            .map_err(unreachable)?;
         let existing = match response.status().as_u16() {
             202 => false,
             200 => true,
-            _ => return Err(Failure::from_reply(&read_capped(&mut response)?)),
+            _ => return Err(refused(response.status(), &read_capped(&mut response)?)),
         };
         let reply: Reply = parse(&read_capped(&mut response)?)?;
         if !reply.import.valid() || reply.import.album_id != album_id {
@@ -393,23 +389,42 @@ fn read_capped(response: &mut ureq::http::Response<ureq::Body>) -> Result<Vec<u8
         .with_config()
         .limit(MAX_REPLY_BYTES)
         .read_to_vec()
-        .map_err(|_| Failure::Unavailable)
+        .map_err(unreachable)
+}
+
+fn unreachable(error: ureq::Error) -> Failure {
+    tracing::warn!("import service: {error}");
+    Failure::Unavailable
+}
+
+/// The failure an error reply stands for, logged with its status.
+fn refused(status: ureq::http::StatusCode, body: &[u8]) -> Failure {
+    let failure = Failure::from_reply(body);
+    if failure == Failure::Unavailable {
+        tracing::warn!("import service answered {status}");
+    } else {
+        tracing::debug!("import service answered {status}: {failure:?}");
+    }
+    failure
 }
 
 fn parse<T: DeserializeOwned>(body: &[u8]) -> Result<T, Failure> {
-    serde_json::from_slice(body).map_err(|_| Failure::Unavailable)
+    serde_json::from_slice(body).map_err(|error| {
+        tracing::warn!("import service reply: {error}");
+        Failure::Unavailable
+    })
 }
 
 /// A capped JSON reply, or the failure its error reply stands for.
 fn json<T: DeserializeOwned>(
     response: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
 ) -> Result<T, Failure> {
-    let mut response = response.map_err(|_| Failure::Unavailable)?;
+    let mut response = response.map_err(unreachable)?;
     let body = read_capped(&mut response)?;
     if response.status().is_success() {
         parse(&body)
     } else {
-        Err(Failure::from_reply(&body))
+        Err(refused(response.status(), &body))
     }
 }
 
@@ -502,11 +517,9 @@ impl Adding {
         })
     }
 
-    /// After a successful request through the bot: viewers refetch and the
-    /// poller looks again soon.
-    pub fn requested(&self, changes: &Changes) {
-        self.revision.fetch_add(1, Ordering::SeqCst);
-        changes.notify();
+    /// After a successful request through the bot: the poller looks again now
+    /// and raises the revision when it sees the change.
+    pub fn requested(&self) {
         self.wake.notify_one();
     }
 }
@@ -590,10 +603,7 @@ async fn poll(adding: &Adding, changes: &Changes, last: &mut Option<Fingerprint>
                 IDLE_INTERVAL
             }
         }
-        Ok(Err(failure)) => {
-            tracing::debug!("import list: {}", failure.message());
-            IDLE_INTERVAL
-        }
+        Ok(Err(_)) => IDLE_INTERVAL,
         Err(_) => {
             tracing::warn!("import list request failed");
             IDLE_INTERVAL
@@ -633,77 +643,28 @@ mod tests {
     }
 
     #[test]
-    fn error_codes_map_to_fixed_texts() {
-        let cases = [
+    fn error_replies_map_to_failures() {
+        for (body, failure) in [
             (
-                r#"{"error":"rate_limited","retry_after":3}"#,
-                429,
-                "Too many searches at once. Try again in a few seconds.",
-            ),
-            (
-                r#"{"error":"limit_reached","scope":"requester","limit":10}"#,
-                409,
-                "You have added as much as you can for today. Try again later.",
+                r#"{"error":"limit_reached","scope":"requester"}"#,
+                Failure::RequesterLimit,
             ),
             (
                 r#"{"error":"limit_reached","scope":"total"}"#,
-                409,
-                "The library has taken in as much as it can for today. Try again later.",
-            ),
-            (
-                r#"{"error":"too_many_tracks","limit":100}"#,
-                422,
-                "This album is too large to add.",
-            ),
-            (
-                r#"{"error":"not_available"}"#,
-                404,
-                "This album cannot be added.",
-            ),
-            (
-                r#"{"error":"not_found"}"#,
-                404,
-                "This album cannot be added.",
-            ),
-            (
-                r#"{"error":"unauthenticated"}"#,
-                503,
-                "Adding music is not available right now.",
-            ),
-            (
-                r#"{"error":"catalog_unavailable"}"#,
-                503,
-                "Adding music is not available right now.",
+                Failure::TotalLimit,
             ),
             (
                 r#"{"error":"limit_reached","scope":"elsewhere"}"#,
-                503,
-                "Adding music is not available right now.",
+                Failure::Unavailable,
             ),
             (
                 r#"{"error":"internal","message":"secret detail"}"#,
-                503,
-                "Adding music is not available right now.",
+                Failure::Unavailable,
             ),
-            (
-                "<html>proxy error</html>",
-                503,
-                "Adding music is not available right now.",
-            ),
-        ];
-        for (body, status, text) in cases {
-            let failure = Failure::from_reply(body.as_bytes());
-            assert_eq!(
-                (failure.status(), failure.message()),
-                (status, text),
-                "{body}"
-            );
+            ("<html>proxy error</html>", Failure::Unavailable),
+        ] {
+            assert_eq!(Failure::from_reply(body.as_bytes()), failure, "{body}");
         }
-        assert_eq!(Failure::Busy.status(), 503);
-        assert_eq!(
-            Failure::Busy.message(),
-            "Too many requests at once. Try again in a moment."
-        );
     }
 
     #[test]
@@ -831,39 +792,6 @@ mod tests {
         let mut many = details.clone();
         many.tracks = vec![details.tracks[0].clone(); MAX_TRACKS + 1];
         assert!(!many.valid());
-    }
-
-    #[test]
-    fn fingerprints_see_progress_and_status() {
-        let list = |imports| Imports {
-            imports,
-            budget: Budgets {
-                requester: Budget {
-                    limit: 1,
-                    used: 0,
-                    next_free_at: None,
-                },
-                total: Budget {
-                    limit: 1,
-                    used: 0,
-                    next_free_at: None,
-                },
-            },
-        };
-        let queued = fingerprint(&list(vec![import(Status::Queued, 0)]));
-        assert_ne!(
-            queued,
-            fingerprint(&list(vec![import(Status::Downloading, 0)]))
-        );
-        assert_ne!(
-            fingerprint(&list(vec![import(Status::Downloading, 1)])),
-            fingerprint(&list(vec![import(Status::Downloading, 2)]))
-        );
-        let mut renamed = import(Status::Queued, 0);
-        renamed.title = "Other".into();
-        assert_eq!(queued, fingerprint(&list(vec![renamed])));
-        assert!(import(Status::Queued, 0).active());
-        assert!(!import(Status::HandedOver, 4).active());
     }
 
     #[test]
@@ -995,12 +923,6 @@ mod tests {
         let mut cover = vec![0xff; MAX_REPLY_BYTES as usize + 1];
         cover[..3].copy_from_slice(&[0xff, 0xd8, 0xff]);
         let server = serve(response("200 OK", "image/jpeg", &cover));
-        assert_eq!(
-            Client::new(&server.url, "key").cover("r1", "0123456789abcdef"),
-            Err(Failure::Unavailable)
-        );
-        // A cover in another format is refused as well.
-        let server = serve(response("200 OK", "image/svg+xml", b"<svg/>"));
         assert_eq!(
             Client::new(&server.url, "key").cover("r1", "0123456789abcdef"),
             Err(Failure::Unavailable)

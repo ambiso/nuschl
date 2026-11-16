@@ -3,7 +3,7 @@
   import { store } from "../store.svelte.js";
   import { resource } from "../resource.svelte.js";
   import { postForJSON, query } from "../api.js";
-  import { buildRoute, formatDuration, isImportId, releaseTypeLabel, requestProgress, requestStatusText, totalDuration } from "../logic.js";
+  import { buildRoute, formatDuration, releaseTypeLabel, requestProgress, requestStatusText, totalDuration } from "../logic.js";
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
 
@@ -39,7 +39,6 @@
     try {
       const reply = await postForJSON("api/import/requests", { album_id: id });
       if (route.id !== id || !current) return;
-      if (!isImportId(reply?.request?.id) || reply.request.album_id !== id) throw new Error("Adding music is not available right now.");
       added = { request: reply.request, existing: reply.existing === true };
     } catch (error) {
       addError = error instanceof Error ? error.message : String(error);
