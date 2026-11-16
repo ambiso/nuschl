@@ -30,7 +30,7 @@ keep their current-time checks.
 
 1. Use the already reviewed signer from the pinned source/toolchain on an
    operator-controlled machine. Build/cache it before the offline session:
-   `nix build .#update-signer --cores 2 --max-jobs 2`. Use its absolute binary path
+   `nix build .#update-signer`. Use its absolute binary path
    below. Keep the independent private seeds in the existing protected operator
    key file, outside the repository and source snapshots. On Unix use a private
    directory and mode 0600; Windows needs its own appropriate ACLs. Never pass seed

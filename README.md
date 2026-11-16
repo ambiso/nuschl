@@ -14,8 +14,8 @@ Nuschl's own code is memory-safe Rust, and what other people send you is handled
 sandboxed helper processes.
 
 Nuschl is in early development, and things still change. Published versions and
-their download files appear on [Releases](https://github.com/ambiso/nuschl/releases).
-[CI builds](https://github.com/ambiso/nuschl/actions/workflows/build.yml) provide
+their download files appear on [Releases](https://github.com/nuschl-eu/nuschl/releases).
+[CI builds](https://github.com/nuschl-eu/nuschl/actions/workflows/build.yml) provide
 testing snapshots, independently of release publication.
 More about the app: [docs/desktop.md](docs/desktop.md).
 
@@ -25,8 +25,8 @@ Downloads for **0.1.0** include the required helper programs and licenses:
 
 | Platform | Download |
 | --- | --- |
-| Windows x86_64 | [Portable ZIP](https://github.com/ambiso/nuschl/releases/download/v0.1.0/nuschl-0.1.0-windows-x86_64.zip) |
-| macOS Intel and Apple silicon | [Universal app ZIP](https://github.com/ambiso/nuschl/releases/download/v0.1.0/nuschl-0.1.0-macos-universal.zip) |
+| Windows x86_64 | [Portable ZIP](https://github.com/nuschl-eu/nuschl/releases/download/v0.1.0/nuschl-0.1.0-windows-x86_64.zip) |
+| macOS Intel and Apple silicon | [Universal app ZIP](https://github.com/nuschl-eu/nuschl/releases/download/v0.1.0/nuschl-0.1.0-macos-universal.zip) |
 | Linux | [Nix installation](#nixos-and-nix) |
 
 Download the complete ZIP for your platform; the individual files on the release
@@ -38,7 +38,7 @@ are below.
 Try it without installing anything:
 
 ```sh
-nix run github:ambiso/nuschl
+nix run github:nuschl-eu/nuschl
 ```
 
 To keep it, add the flake as an input and install
@@ -46,7 +46,7 @@ To keep it, add the flake as an input and install
 Manager module:
 
 ```nix
-# flake.nix: inputs.nuschl.url = "github:ambiso/nuschl";
+# flake.nix: inputs.nuschl.url = "github:nuschl-eu/nuschl";
 imports = [ inputs.nuschl.homeModules.default ];
 programs.nuschl = {
   enable = true;
@@ -68,7 +68,7 @@ bubblewrap (`bwrap`) for its sandbox.
 ### Windows
 
 Windows releases use a portable zip, `nuschl-<version>-windows-x86_64.zip`, on the
-[Releases page](https://github.com/ambiso/nuschl/releases). Unpack it into a folder of your own (not
+[Releases page](https://github.com/nuschl-eu/nuschl/releases). Unpack it into a folder of your own (not
 Program Files) and start `nuschl.exe`. There is no installer yet; Nuschl updates
 itself in that folder.
 
@@ -80,7 +80,7 @@ Windows 11 VM.
 ### macOS
 
 macOS releases use `nuschl-<version>-macos-universal.zip` on the
-[Releases page](https://github.com/ambiso/nuschl/releases), with `Nuschl.app` (Intel and Apple silicon,
+[Releases page](https://github.com/nuschl-eu/nuschl/releases), with `Nuschl.app` (Intel and Apple silicon,
 macOS 14.2 or later). Move it to Applications first, so that it can update itself.
 The app is not notarised for now, so macOS refuses the first start: then open
 **System Settings → Privacy & Security** and choose **Open Anyway** next to the note
@@ -88,7 +88,7 @@ that Nuschl was blocked. The macOS build has not been tried on a Mac yet.
 
 ### A terminal client
 
-`nix run github:ambiso/nuschl#tui -- mumble://you@voice.example.org` starts `nuschl-tui`
+`nix run github:nuschl-eu/nuschl#tui -- mumble://you@voice.example.org` starts `nuschl-tui`
 with the same servers and history, also over SSH (voice off there); `--plain` suits
 screen readers, and F1 lists the keys.
 
@@ -213,7 +213,7 @@ Windows and macOS builds are cross-compiled on Linux (`nix build .#windows`,
 `.#macos-app`). More in [docs/development.md](docs/development.md), what the tests
 cover in [tests/README.md](tests/README.md), how it fits together in
 [docs/architecture.md](docs/architecture.md), and what is next in the
-[roadmap](TODO.md) and [GitHub issues](https://github.com/ambiso/nuschl/issues).
+[roadmap](TODO.md) and [GitHub issues](https://github.com/nuschl-eu/nuschl/issues).
 
 Releases are [prepared, signed and published locally](docs/local-release.md).
 CI can build and check packages without receiving the release signing key.
