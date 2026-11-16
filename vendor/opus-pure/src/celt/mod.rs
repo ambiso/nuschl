@@ -1399,7 +1399,7 @@ fn run_prefilter(
         frame_size,
         search_max,
     );
-    let mut pitch_index = (max_period - pitch_result).min(max_period - 2);
+    let mut pitch_index = max_period - pitch_result;
 
     let gain1_raw = crate::celt::pitch::remove_doubling(
         pitch_buf,
@@ -1410,6 +1410,12 @@ fn run_prefilter(
         prefilter_period,
         prefilter_gain,
     );
+    // Clamp after remove_doubling, as celt_encoder.c does: it can return
+    // max_period - 1, which comb_filter cannot apply with max_period samples
+    // of history (it clamps to max_period - 2 on its own). The decoder would
+    // then undo a comb at the signalled period that differs from the one
+    // applied, and the music comes out distorted for as long as that lasts.
+    pitch_index = pitch_index.min(max_period - 2);
     let mut gain1 = gain1_raw * 0.7;
 
     // Loss-rate ladder (matches celt_encoder.c: halve >2%, halve again >4%,
@@ -4231,38 +4237,15 @@ mod tests {
     // old->current over shortMdctSize, call 2 current->new with the crossfade),
     // honoring the 120-sample MDCT delay. If the encoder applies exactly what it
     // signals with the timing the decoder inverts, the round trip is ~identity.
-    #[test]
-    fn prefilter_postfilter_inversion() {
+    // Returns the round trip's SNR and the (pf_on, T, g) signalled per frame.
+    fn prefilter_round_trip(x: &[f32]) -> (f64, Vec<(bool, usize, f32)>) {
         let mode = modes::default_mode();
         let n = 960usize;
         let overlap = mode.overlap; // 120
         let short_n = mode.short_mdct_size; // 120
-        let frames = 100usize;
+        let total = x.len();
+        let frames = total / n;
         let max_period = COMBFILTER_MAXPERIOD;
-
-        // Signal designed to TOGGLE the prefilter: alternating strongly periodic
-        // stretches (varying pitch) and noise bursts.
-        let total = frames * n;
-        let mut x = vec![0.0f32; total];
-        let mut rng = 0x12345678u32;
-        let mut next = || {
-            rng = rng.wrapping_mul(1664525).wrapping_add(1013904223);
-            (rng >> 8) as f32 / (1 << 24) as f32 - 0.5
-        };
-        for (t, v) in x.iter_mut().enumerate() {
-            let seg = t / (n * 10);
-            let phase = t as f32;
-            *v = match seg % 4 {
-                0 => (phase * std::f32::consts::TAU / 147.0).sin() * 8000.0, // ~326 Hz
-                1 => next() * 6000.0,
-                2 => {
-                    ((phase * std::f32::consts::TAU / 89.0).sin()
-                        + 0.5 * (phase * std::f32::consts::TAU / 44.5).sin())
-                        * 7000.0
-                }
-                _ => (phase * std::f32::consts::TAU / 480.0).sin() * 5000.0, // 100 Hz
-            };
-        }
 
         // ---- encoder side ----
         let mut pre = vec![0.0f32; max_period + n];
@@ -4370,7 +4353,39 @@ mod tests {
             se += e * e;
             sx += (x[t] as f64) * (x[t] as f64);
         }
-        let snr = 10.0 * (sx / se.max(1e-30)).log10();
+        (10.0 * (sx / se.max(1e-30)).log10(), params)
+    }
+
+    #[test]
+    fn prefilter_postfilter_inversion() {
+        let n = 960usize;
+        let frames = 100usize;
+
+        // Signal designed to TOGGLE the prefilter: alternating strongly periodic
+        // stretches (varying pitch) and noise bursts.
+        let total = frames * n;
+        let mut x = vec![0.0f32; total];
+        let mut rng = 0x12345678u32;
+        let mut next = || {
+            rng = rng.wrapping_mul(1664525).wrapping_add(1013904223);
+            (rng >> 8) as f32 / (1 << 24) as f32 - 0.5
+        };
+        for (t, v) in x.iter_mut().enumerate() {
+            let seg = t / (n * 10);
+            let phase = t as f32;
+            *v = match seg % 4 {
+                0 => (phase * std::f32::consts::TAU / 147.0).sin() * 8000.0, // ~326 Hz
+                1 => next() * 6000.0,
+                2 => {
+                    ((phase * std::f32::consts::TAU / 89.0).sin()
+                        + 0.5 * (phase * std::f32::consts::TAU / 44.5).sin())
+                        * 7000.0
+                }
+                _ => (phase * std::f32::consts::TAU / 480.0).sin() * 5000.0, // 100 Hz
+            };
+        }
+
+        let (snr, params) = prefilter_round_trip(&x);
         let engaged = params.iter().filter(|p| p.0).count();
         assert!(
             engaged > frames / 4,
@@ -4380,6 +4395,40 @@ mod tests {
             snr > 90.0,
             "prefilter/postfilter round trip not transparent: SNR={snr:.1} dB (engaged {engaged}/{frames})"
         );
+    }
+
+    // The longest period the comb can apply with COMBFILTER_MAXPERIOD samples of
+    // history is COMBFILTER_MAXPERIOD - 2, and remove_doubling can return one
+    // more for a signal that repeats just below the maximum. libopus clamps after
+    // remove_doubling. Clamping before it let the encoder signal 1023 while
+    // comb_filter applied 1022, so the decoder undid a comb at the wrong period:
+    // music came out with an error as loud as itself, in bursts of a few frames.
+    #[test]
+    fn the_longest_pitch_period_is_applied_as_signalled() {
+        let n = 960usize;
+        let frames = 60usize;
+        for period in [1021usize, 1022, 1023] {
+            let burst: Vec<f32> = noise(period, 0x7E57_0000 ^ period as u32)
+                .iter()
+                .map(|v| v * 6000.0)
+                .collect();
+            let x: Vec<f32> = (0..frames * n).map(|t| burst[t % period]).collect();
+            let (snr, params) = prefilter_round_trip(&x);
+            let engaged: Vec<usize> = params.iter().filter(|p| p.0).map(|p| p.1).collect();
+            assert!(
+                engaged.len() > frames / 4,
+                "period {period}: prefilter engaged only {}/{frames} times",
+                engaged.len()
+            );
+            assert!(
+                snr > 90.0,
+                "period {period}: prefilter/postfilter round trip not transparent: SNR={snr:.1} dB"
+            );
+            assert!(
+                engaged.iter().all(|&t| t <= COMBFILTER_MAXPERIOD - 2),
+                "period {period}: signalled periods {engaged:?} exceed what the comb applies"
+            );
+        }
     }
 
     /// Deterministic pseudo-random samples in [-1, 1).
