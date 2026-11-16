@@ -32,6 +32,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import wave
+import zlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fake_subsonic import API_KEY, COVER, COVER_PNG, PASSWORD, Library  # noqa: E402
@@ -191,11 +192,9 @@ def browse(link):
         assert [song["id"] for song in playlist["songs"]] == ["s2", "s1"], playlist
         cover = "art/" + str(library) + "/" + urllib.parse.quote(album["album"]["cover_art"], safe="")
         with urllib.request.urlopen(link + cover + "?size=300", timeout=HTTP_TIMEOUT) as response:
-            pixels = json.load(response)
-            assert set(pixels) == {"width", "height", "rgba"}, pixels
-            assert pixels["width"] == pixels["height"] == 1, pixels
-            assert base64.b64decode(pixels["rgba"], validate=True) == bytes([200, 80, 40, 255]), pixels
-            assert response.headers.get_content_type() == "application/json", dict(response.headers)
+            png = response.read()
+            assert png_rgba(png) == (1, 1, bytes([200, 80, 40, 255])), png
+            assert response.headers.get_content_type() == "image/png", dict(response.headers)
             assert response.headers["Cache-Control"] == "private, no-store", dict(response.headers)
         # The same cover again comes from the bot's cache. With the state's art
         # key the browser may keep it; a key for another library is refused.
@@ -203,7 +202,7 @@ def browse(link):
         key = api(link)["library_keys"][library]
         with urllib.request.urlopen(link + cover + f"?size=300&v={key}", timeout=HTTP_TIMEOUT) as response:
             assert response.headers["Cache-Control"] == "private, max-age=86400", dict(response.headers)
-            assert json.load(response) == pixels
+            assert response.read() == png
         assert [seen for seen in Library.seen if seen[1] == "getCoverArt"] == asked, "the cover was fetched again"
         expect_error(link + cover + "?size=300&v=0000000000000000", 404)
         expect_error(link + f"art/{library}/missing", 404)
@@ -224,6 +223,29 @@ def browse(link):
         assert [song["title"] for song in result["songs"]] == ["Sine in A", "Sine in E"], result
         assert result["albums"][0]["name"] == "Waves", result
         assert result["artists"][0]["name"] == "Oscillators", result
+
+
+def png_rgba(png):
+    """(width, height, RGBA) of a single-pixel cover as the bot serves it:
+    only IHDR, IDAT and IEND chunks with correct CRCs, 8-bit RGBA, no
+    interlacing. With one pixel every PNG row filter leaves it as it is."""
+    assert png[:8] == b"\x89PNG\r\n\x1a\n", png[:8]
+    at, kinds, data = 8, [], b""
+    while at < len(png):
+        length, kind = struct.unpack(">I4s", png[at:at + 8])
+        body = png[at + 8:at + 8 + length]
+        assert struct.unpack(">I", png[at + 8 + length:at + 12 + length])[0] == zlib.crc32(kind + body)
+        kinds.append(kind)
+        if kind == b"IHDR":
+            width, height, depth, color, _, _, interlace = struct.unpack(">IIBBBBB", body)
+            assert (width, height, depth, color, interlace) == (1, 1, 8, 6, 0), body
+        elif kind == b"IDAT":
+            data += body
+        at += 12 + length
+    assert kinds[0] == b"IHDR" and kinds[-1] == b"IEND" and set(kinds[1:-1]) == {b"IDAT"}, kinds
+    raw = zlib.decompress(data)
+    assert len(raw) == 5 and raw[0] <= 4, raw
+    return width, height, raw[1:]
 
 
 def expect_error(url, status, data=None, headers=None, json_error=False):

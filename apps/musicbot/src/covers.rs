@@ -2,13 +2,12 @@
 //! Finished cover answers on disk, shared by every viewer, so the library and
 //! the artwork worker handle each cover and size at most once a day.
 //!
-//! Each file holds one line with its key as JSON, then the answer the web page
+//! Each file holds one line with its key as JSON, then the PNG the web page
 //! receives. File names are hashes of the key; the stored key is compared on
 //! every read, so a name collision is only a miss. Answers are checked again
-//! when read, so only well-formed RGBA leaves the cache.
+//! when read, so only well-formed thumbnail PNGs leave the cache.
 use axum::body::Bytes;
 use md5::{Digest, Md5};
-use serde::Deserialize;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -251,35 +250,15 @@ fn file_name(key: &CoverKey) -> String {
 
 struct Collision;
 
-/// The stored answer when the file belongs to `key` and holds well-formed
-/// pixels no larger than the key's size; `None` for anything damaged.
+/// The stored answer when the file belongs to `key` and holds a thumbnail
+/// PNG no larger than the key's size; `None` for anything damaged.
 fn answer(key: &CoverKey, file: Vec<u8>) -> Option<Result<Bytes, Collision>> {
     let split = file.iter().position(|byte| *byte == b'\n')?;
     let stored: CoverKey = serde_json::from_slice(&file[..split]).ok()?;
     if stored != *key {
         return Some(Err(Collision));
     }
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Pixels {
-        width: u32,
-        height: u32,
-        rgba: String,
-    }
-    let pixels: Pixels = serde_json::from_slice(&file[split + 1..]).ok()?;
-    let bytes = u64::from(pixels.width) * u64::from(pixels.height) * 4;
-    let fits = (1..=key.2).contains(&pixels.width) && (1..=key.2).contains(&pixels.height);
-    if !fits || pixels.rgba.len() as u64 != bytes.div_ceil(3) * 4 {
-        return None;
-    }
-    let text = pixels.rgba.as_bytes();
-    let padding = text.iter().rev().take_while(|byte| **byte == b'=').count();
-    let alphabet = text[..text.len() - padding]
-        .iter()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/'));
-    if !alphabet || padding as u64 != (3 - bytes % 3) % 3 {
-        return None;
-    }
+    nuschl_ipc::thumbnail::check_png(&file[split + 1..], key.2, key.2)?;
     let mut file = file;
     Some(Ok(Bytes::from(file.split_off(split + 1))))
 }
@@ -310,7 +289,10 @@ async fn discard(path: &Path) {
 mod tests {
     use super::*;
 
-    const BODY: &[u8] = br#"{"width":1,"height":1,"rgba":"AAAAAA=="}"#;
+    /// A 1×1 thumbnail PNG.
+    const BODY: &[u8] = b"\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\x0d\x49\x44\x41\x54\x78\x9c\x63\x38\x11\xa0\xf1\x1f\x00\x05\x64\x02\x40\x64\x52\x9c\x3a\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82";
+    /// A 2×1 thumbnail PNG.
+    const WIDE: &[u8] = b"\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x02\x00\x00\x00\x01\x08\x06\x00\x00\x00\xf4\x22\x7f\x8a\x00\x00\x00\x0e\x49\x44\x41\x54\x78\x9c\x63\x38\x11\xa0\xf1\x1f\x84\x01\x13\xc3\x04\x7f\x56\xe1\x16\x53\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82";
 
     fn key(id: &str) -> CoverKey {
         ("k".into(), id.into(), 300)
@@ -338,6 +320,19 @@ mod tests {
 
         // A new run finds them; a smaller budget keeps the newest files.
         drop(cache);
+        let newest = path.join(file_name(&key("i")));
+        for entry in std::fs::read_dir(&path).unwrap() {
+            let file = entry.unwrap().path();
+            if file != newest {
+                let older = SystemTime::now() - Duration::from_secs(60);
+                std::fs::File::options()
+                    .write(true)
+                    .open(&file)
+                    .unwrap()
+                    .set_modified(older)
+                    .unwrap();
+            }
+        }
         let reopened = CoverCache::open(path.clone(), file_size("a") * 2).unwrap();
         assert_eq!(std::fs::read_dir(&path).unwrap().count(), 2);
         assert_eq!(reopened.get(&key("i")).await.as_deref(), Some(BODY));
@@ -380,9 +375,7 @@ mod tests {
 
         // Pixels larger than the key's size are not served.
         let tiny: CoverKey = ("k".into(), "tiny".into(), 1);
-        cache
-            .insert(&tiny, br#"{"width":2,"height":1,"rgba":"AAAAAAAAAAA="}"#)
-            .await;
+        cache.insert(&tiny, WIDE).await;
         assert!(cache.get(&tiny).await.is_none());
         assert!(!path.join(file_name(&tiny)).exists());
 

@@ -24,9 +24,14 @@ async function setup(viewport) {
   return { context, page, failures };
 }
 async function pixel(page, expected) {
-  await page.waitForFunction(color => [...document.querySelectorAll('canvas.ready')].some(c => {
-    const p = c.getContext('2d').getImageData(0, 0, 1, 1).data;
-    return color.every((v, i) => v === p[i]);
+  // Covers are same-origin PNGs, so a canvas may read them back.
+  await page.waitForFunction(color => [...document.querySelectorAll('img.ready')].some(img => {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 1;
+    const context = canvas.getContext('2d');
+    context.drawImage(img, 0, 0, 1, 1);
+    const p = context.getImageData(0, 0, 1, 1).data;
+    return color.every((v, i) => Math.abs(v - p[i]) <= 2);
   }), expected);
 }
 async function choose(page, library) {
@@ -36,41 +41,39 @@ async function choose(page, library) {
   const close = page.getByRole('button', { name: 'Close navigation', exact: true });
   if (await close.isVisible()) await close.click();
 }
-async function clean(page, failures) {
+async function clean(page, failures, violations = []) {
   assert.deepEqual(failures, []);
-  assert.equal(await page.locator('img').count(), 0);
-  assert.deepEqual(await page.evaluate(() => window.fixtureViolations), []);
+  assert.deepEqual(await page.evaluate(() => window.fixtureViolations), violations);
   assert.equal(await page.evaluate(() => window.fixtureMediaRequests), 0);
 }
 try {
   for (const width of [320, 390, 1280]) {
     const { context, page, failures } = await setup({ width, height: 800 });
+    const requested = new Set();
+    page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/art/')) requested.add(request.url()); });
     await page.goto(link + '#/albums?library=0&list=newest');
     await pixel(page, [200, 80, 40, 255]);
     await page.waitForFunction(() => {
       const viewport = document.querySelector('#main-content').getBoundingClientRect();
-      return [...document.querySelectorAll('.media-grid canvas')].every(canvas => {
-        const r = canvas.getBoundingClientRect();
+      return [...document.querySelectorAll('.media-grid img')].every(img => {
+        const r = img.getBoundingClientRect();
         const visible = r.bottom > viewport.top && r.top < viewport.bottom && r.right > viewport.left && r.left < viewport.right;
-        return !visible || canvas.classList.contains('ready');
+        return !visible || img.classList.contains('ready');
       });
     });
     const before = await page.evaluate(() => ({
-      total: document.querySelectorAll('.media-grid canvas').length,
-      live: [...document.querySelectorAll('canvas')].filter(c => c.width > 0).length,
-      bytes: [...document.querySelectorAll('canvas')].reduce((s,c) => s+c.width*c.height*4,0),
+      total: document.querySelectorAll('.media-grid img').length,
+      shown: document.querySelectorAll('.media-grid img.ready').length,
       overflow: document.documentElement.scrollWidth > innerWidth,
     }));
     assert.equal(before.total, 48); assert.equal(before.overflow, false);
-    assert.ok(before.live > 0 && before.live < 48 && before.live <= 64);
-    assert.ok(before.bytes <= 16*1024*1024);
-    await page.screenshot({ path: `${output}/canvas-${width}.png` });
-    await page.locator('#main-content').evaluate(node => { node.scrollTop = node.scrollHeight; });
-    await page.waitForFunction(() => document.querySelector('.media-grid canvas').width === 0);
+    // Covers far below the fold are not fetched until they come near.
+    assert.ok(before.shown > 0 && requested.size < 48, { ...before, requested: requested.size });
+    await page.screenshot({ path: `${output}/covers-${width}.png` });
     await choose(page, 1);
     await pixel(page, [40, 80, 200, 255]);
     await clean(page, failures);
-    proof.viewports.push({ width, ...before, offscreenReleased: true, libraryPixelsChanged: true });
+    proof.viewports.push({ width, ...before, requestedBeforeScrolling: requested.size, libraryPixelsChanged: true });
     await context.close();
   }
   {
@@ -92,21 +95,25 @@ try {
     await pixel(page, [40, 80, 200, 255]);
     release();
     await page.waitForTimeout(150);
-    assert.equal(await page.evaluate(() => [...document.querySelectorAll('canvas.ready')].some(c => c.getContext('2d').getImageData(0,0,1,1).data[0]===200)), false);
+    assert.equal(await page.evaluate(() => [...document.querySelectorAll('img.ready')].some(img => img.src.includes('/art/0/'))), false);
     await clean(page, failures);
-    proof.stale = { heldRealResponse: true, noOldPixelsAfterNavigation: true, abortedFulfillRejected: discarded };
+    proof.stale = { heldRealResponse: true, noOldCoverAfterNavigation: true, abortedFulfillRejected: discarded };
     await context.close();
   }
   {
     const { context, page, failures } = await setup({ width: 390, height: 800 });
-    await page.route('**/art/**', route => route.fulfill({ status:200,contentType:'application/json',body:JSON.stringify({ width:1,height:1,rgba:'yFAo/w==',source:'https://never-fetch.invalid/image' }) }));
+    // An answer that is no image keeps the placeholder.
+    await page.route('**/art/**', route => route.fulfill({ status:200,contentType:'application/json',body:JSON.stringify({ width:1,height:1,rgba:'yFAo/w==' }) }));
     await page.goto(link + '#/albums?library=0&list=newest');
-    await page.waitForSelector('.media-grid canvas');
+    await page.waitForSelector('.media-grid img');
     await page.waitForTimeout(250);
-    assert.equal(await page.locator('canvas.ready').count(), 0);
-    assert.equal(await page.evaluate(() => [...document.querySelectorAll('canvas')].some(c => c.width || c.height)), false);
-    await clean(page, failures);
-    proof.malformed = { unexpectedSourceRejected: true, allCanvasesEmpty: true, remoteFetches: 0 };
+    assert.equal(await page.locator('img.ready').count(), 0);
+    assert.ok(await page.locator('.media-grid .placeholder').count() > 0);
+    // Images from anywhere else are refused by the CSP before any request.
+    await page.evaluate(() => { const img = document.createElement('img'); img.src = 'https://never-fetch.invalid/cover.png'; document.body.append(img); });
+    await page.waitForFunction(() => window.fixtureViolations.length > 0);
+    await clean(page, failures, ['img-src']);
+    proof.malformed = { notAnImageKeptPlaceholder: true, foreignImageRefusedByCsp: true, remoteFetches: 0 };
     await context.close();
   }
   await writeFile(`${output}/browser-proof.json`, JSON.stringify(proof,null,2)+'\n');

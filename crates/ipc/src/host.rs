@@ -151,7 +151,7 @@ pub async fn thumbnail(
     encoded: &[u8],
     max_width: u32,
     max_height: u32,
-) -> Result<nuschl_core::ContentBlock, Error> {
+) -> Result<Thumbnail, Error> {
     use base64::Engine as _;
     if encoded.len() > crate::MAX_THUMBNAIL_INPUT_BYTES
         || max_width == 0
@@ -166,12 +166,20 @@ pub async fn thumbnail(
         max_width,
         max_height,
     };
-    let maximum = (max_width as usize * max_height as usize * 4).div_ceil(3) * 4 + 4096;
+    let maximum = crate::MAX_THUMBNAIL_PNG_BYTES.div_ceil(3) * 4 + 4096;
     validated_thumbnail(
         bounded_content_request(executable, request, maximum).await?,
         max_width,
         max_height,
     )
+}
+
+/// A PNG thumbnail that passed [`crate::thumbnail::check_png`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Thumbnail {
+    pub width: u32,
+    pub height: u32,
+    pub png: Vec<u8>,
 }
 
 /// Admit at most one extraction/preparation and one render worker, with no
@@ -228,7 +236,13 @@ async fn bounded_content_request(
         mut output,
         containment: _containment,
     } = if is_preview {
-        nuschl_sandbox::spawn_preview(executable, PreviewOperation::Prepare).await?
+        nuschl_sandbox::spawn_receipted(
+            executable,
+            Role::Preview {
+                operation: PreviewOperation::Prepare,
+            },
+        )
+        .await?
     } else {
         spawn(executable, &[5]).await?
     };
@@ -314,52 +328,25 @@ fn validated_thumbnail(
     response: ContentResponse,
     max_width: u32,
     max_height: u32,
-) -> Result<nuschl_core::ContentBlock, Error> {
+) -> Result<Thumbnail, Error> {
     use base64::Engine as _;
-    let ContentResponse::Rendered(mut document) = response else {
+    let ContentResponse::Thumbnail(reply) = response else {
         return Err(Error::InvalidResponse);
     };
-    if document.blocks.len() != 1 {
+    if reply.png.len() > crate::MAX_THUMBNAIL_PNG_BYTES.div_ceil(3) * 4 {
         return Err(Error::InvalidResponse);
     }
-    let Some(nuschl_core::ContentBlock::Image {
-        width,
-        height,
-        rgba,
-        source: _,
-    }) = document.blocks.pop()
-    else {
-        return Err(Error::InvalidResponse);
-    };
-    if width == 0
-        || height == 0
-        || width > max_width
-        || height > max_height
-        || width > crate::MAX_THUMBNAIL_EDGE
-        || height > crate::MAX_THUMBNAIL_EDGE
-    {
-        return Err(Error::InvalidResponse);
-    }
-    let count = (width as usize)
-        .checked_mul(height as usize)
-        .and_then(|n| n.checked_mul(4))
-        .filter(|n| *n <= crate::MAX_THUMBNAIL_RGBA_BYTES)
-        .ok_or(Error::InvalidResponse)?;
-    if rgba.len() != count.div_ceil(3) * 4 {
-        return Err(Error::InvalidResponse);
-    }
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(&rgba)
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(&reply.png)
         .map_err(|_| Error::InvalidResponse)?;
-    if bytes.len() != count {
-        return Err(Error::InvalidResponse);
+    match crate::thumbnail::check_png(&png, max_width, max_height) {
+        Some(size) if size == (reply.width, reply.height) => Ok(Thumbnail {
+            width: reply.width,
+            height: reply.height,
+            png,
+        }),
+        _ => Err(Error::InvalidResponse),
     }
-    Ok(nuschl_core::ContentBlock::Image {
-        width,
-        height,
-        rgba,
-        source: None,
-    })
 }
 
 /// Decode a server's website icon in the sandboxed content worker.
@@ -706,43 +693,39 @@ async fn read_reply(
 #[cfg(test)]
 mod thumbnail_validation_tests {
     use super::*;
-    use nuschl_core::ContentBlock;
-    fn image(width: u32, height: u32, rgba: &str) -> ContentBlock {
-        ContentBlock::Image {
+    use crate::ThumbnailPng;
+    use base64::Engine as _;
+
+    /// A 1×1 RGBA PNG as the worker makes them.
+    const PIXEL: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGM4EaDxHwAFZAJAZFKcOgAAAABJRU5ErkJggg==";
+
+    fn reply(width: u32, height: u32, png: &str) -> ContentResponse {
+        ContentResponse::Thumbnail(ThumbnailPng {
             width,
             height,
-            rgba: rgba.to_owned(),
-            source: Some("https://never-fetch.invalid/private".into()),
-        }
+            png: png.to_owned(),
+        })
     }
-    fn reply(blocks: Vec<ContentBlock>) -> ContentResponse {
-        ContentResponse::Rendered(MessageDocument { blocks })
-    }
+
     #[test]
-    fn thumbnail_reply_has_one_bounded_image_and_no_source_authority() {
-        let output = validated_thumbnail(reply(vec![image(1, 1, "AQIDBA==")]), 300, 300).unwrap();
-        assert!(matches!(
-            output,
-            ContentBlock::Image {
-                source: None,
-                width: 1,
-                height: 1,
-                ..
-            }
-        ));
-        for blocks in [
-            vec![],
-            vec![image(1, 1, "AQIDBA=="), image(1, 1, "AQIDBA==")],
-            vec![image(0, 1, "")],
-            vec![image(401, 1, "AQIDBA==")],
-            vec![image(1, 1, "AQID")],
-            vec![image(1, 1, "AQIDBB==")],
-            vec![image(1, 1, "https://not-pixels.invalid")],
+    fn thumbnail_reply_is_one_checked_png_of_the_stated_size() {
+        let output = validated_thumbnail(reply(1, 1, PIXEL), 300, 300).unwrap();
+        assert_eq!((output.width, output.height), (1, 1));
+        assert_eq!(
+            output.png,
+            base64::engine::general_purpose::STANDARD
+                .decode(PIXEL)
+                .unwrap()
+        );
+        for response in [
+            reply(2, 1, PIXEL),
+            reply(1, 1, "AQIDBA=="),
+            reply(1, 1, "not base64!"),
+            ContentResponse::Rejected("no".into()),
+            ContentResponse::Rendered(MessageDocument { blocks: vec![] }),
         ] {
-            assert!(validated_thumbnail(reply(blocks), 400, 400).is_err());
+            assert!(validated_thumbnail(response, 400, 400).is_err());
         }
-        assert!(validated_thumbnail(reply(vec![image(2, 1, "AQIDBAUGBwg=")]), 1, 1).is_err());
-        assert!(validated_thumbnail(ContentResponse::Rejected("no".into()), 1, 1).is_err());
     }
 }
 
