@@ -78,6 +78,35 @@ pub fn decode_image(bytes: &[u8], max_width: u32, max_height: u32) -> Option<Con
     })
 }
 
+/// Decode artwork like [`decode_image`] and re-encode the shrunk pixels as an
+/// 8-bit RGBA PNG without any metadata, for browsers to show directly.
+/// Returns width, height and the PNG.
+#[cfg(feature = "images")]
+pub fn thumbnail_png(bytes: &[u8], max_width: u32, max_height: u32) -> Option<(u32, u32, Vec<u8>)> {
+    let image = decode(
+        bytes,
+        &[
+            ImageFormat::Png,
+            ImageFormat::Jpeg,
+            ImageFormat::Gif,
+            ImageFormat::WebP,
+        ],
+        MAX_SOURCE_DIMENSION,
+        64 * 1024 * 1024,
+    )?;
+    let pixels = shrink(image, max_width, max_height).to_rgba8();
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(
+            pixels.as_raw(),
+            pixels.width(),
+            pixels.height(),
+            ExtendedColorType::Rgba8,
+        )
+        .ok()?;
+    Some((pixels.width(), pixels.height(), png))
+}
+
 /// A server's website icon (favicon: often ICO), at most 64 × 64.
 #[cfg(feature = "images")]
 pub fn decode_icon(bytes: &[u8]) -> Option<ContentBlock> {
@@ -508,6 +537,60 @@ mod tests {
             )
             .unwrap();
         bytes
+    }
+
+    /// The chunk types of a PNG, in order.
+    #[cfg(feature = "images")]
+    fn chunk_types(png: &[u8]) -> Vec<String> {
+        let mut types = Vec::new();
+        let mut at = 8;
+        while at + 8 <= png.len() {
+            let length = u32::from_be_bytes(png[at..at + 4].try_into().unwrap()) as usize;
+            types.push(String::from_utf8_lossy(&png[at + 4..at + 8]).into_owned());
+            at += 12 + length;
+        }
+        types
+    }
+
+    #[test]
+    #[cfg(feature = "images")]
+    fn artwork_thumbnails_are_bare_rgba_pngs_with_the_source_pixels() {
+        // A source PNG with a text chunk after its header.
+        let source = png(8, 6);
+        let crc = |bytes: &[u8]| {
+            !bytes.iter().fold(!0u32, |crc, &byte| {
+                (0..8).fold(crc ^ byte as u32, |crc, _| {
+                    (crc >> 1) ^ (0xEDB8_8320 & (crc & 1).wrapping_neg())
+                })
+            })
+        };
+        let text = b"tEXtComment\0tracking id 1234";
+        let mut tagged = source[..33].to_vec();
+        tagged.extend_from_slice(&((text.len() - 4) as u32).to_be_bytes());
+        tagged.extend_from_slice(text);
+        tagged.extend_from_slice(&crc(text).to_be_bytes());
+        tagged.extend_from_slice(&source[33..]);
+        assert!(chunk_types(&tagged).contains(&"tEXt".to_owned()));
+
+        let (width, height, thumbnail) = thumbnail_png(&tagged, 4, 4).unwrap();
+        assert_eq!((width, height), (4, 3));
+        assert!(
+            chunk_types(&thumbnail)
+                .iter()
+                .all(|kind| ["IHDR", "IDAT", "IEND"].contains(&kind.as_str())),
+            "{:?}",
+            chunk_types(&thumbnail)
+        );
+        let decoded = image::load_from_memory(&thumbnail).unwrap();
+        assert_eq!(decoded.color(), image::ColorType::Rgba8);
+        assert_eq!((decoded.width(), decoded.height()), (4, 3));
+        // Unchanged size keeps every pixel as it was.
+        let (_, _, same) = thumbnail_png(&source, 8, 8).unwrap();
+        assert_eq!(
+            image::load_from_memory(&same).unwrap().to_rgba8(),
+            image::load_from_memory(&source).unwrap().to_rgba8()
+        );
+        assert!(thumbnail_png(b"not an image", 4, 4).is_none());
     }
 
     #[test]

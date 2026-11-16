@@ -219,13 +219,15 @@ fn same_origin(headers: &HeaderMap, site: &Site) -> bool {
 
 /// The link is a secret: no referrer, nothing from elsewhere, and nothing
 /// cached except what a handler allows (cover art, the app's hashed files).
+/// Images come from this origin only: the covers, which are PNGs the content
+/// worker made.
 async fn headers(mut response: Response) -> Response {
     let set = [
         (header::REFERRER_POLICY, "no-referrer"),
         (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
         (
             header::CONTENT_SECURITY_POLICY,
-            "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'none'; \
+            "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; \
              connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
         ),
         (HeaderName::from_static("x-robots-tag"), "noindex"),
@@ -536,13 +538,6 @@ fn snap_cover_size(requested: u32) -> u32 {
         .unwrap_or(COVER_SIZES[0])
 }
 
-#[derive(Serialize)]
-struct CoverPixels {
-    width: u32,
-    height: u32,
-    rgba: String,
-}
-
 fn content_worker_path(executable: &std::path::Path) -> Result<PathBuf, ApiError> {
     executable
         .parent()
@@ -556,10 +551,11 @@ fn content_worker_path(executable: &std::path::Path) -> Result<PathBuf, ApiError
         })
 }
 
-/// Only validated RGBA leaves this route. Never expose encoded library art to
-/// the browser's native image decoder. The owned task retains concurrency
-/// through worker completion/reaping even after its HTTP consumer disappears.
-/// Answers come from the shared cache when they can; only misses take a job.
+/// Only PNGs the confined content worker made from the decoded pixels leave
+/// this route, checked again here: encoded library art never reaches the
+/// browser. The owned task retains concurrency through worker
+/// completion/reaping even after its HTTP consumer disappears. Answers come
+/// from the shared cache when they can; only misses take a job.
 async fn art(
     State(bot): State<Arc<Bot>>,
     Path((token, library, id)): Path<(String, usize, String)>,
@@ -599,7 +595,7 @@ async fn art(
     };
     Ok((
         [
-            (header::CONTENT_TYPE, "application/json"),
+            (header::CONTENT_TYPE, "image/png"),
             (header::CACHE_CONTROL, caching),
         ],
         body,
@@ -607,8 +603,8 @@ async fn art(
         .into_response())
 }
 
-/// Fetches and decodes a cover that is not cached, and caches it, even when
-/// the HTTP client has gone by then.
+/// Fetches a cover that is not cached, has the worker re-encode it, and
+/// caches it, even when the HTTP client has gone by then.
 async fn fetch_cover(bot: &Arc<Bot>, library: usize, key: CoverKey) -> Result<Bytes, ApiError> {
     let permit = COVER_JOBS.try_acquire().map_err(|_| {
         ApiError(
@@ -639,7 +635,7 @@ async fn fetch_cover(bot: &Arc<Bot>, library: usize, key: CoverKey) -> Result<By
                 "the artwork worker is unavailable".to_owned(),
             ));
         }
-        let block = nuschl_ipc::host::thumbnail(&worker, &image.bytes, size, size)
+        let thumbnail = nuschl_ipc::host::thumbnail(&worker, &image.bytes, size, size)
             .await
             .map_err(|_| {
                 ApiError(
@@ -647,26 +643,7 @@ async fn fetch_cover(bot: &Arc<Bot>, library: usize, key: CoverKey) -> Result<By
                     "the cover image is invalid or unavailable".to_owned(),
                 )
             })?;
-        let nuschl_core::ContentBlock::Image {
-            width,
-            height,
-            rgba,
-            source: _,
-        } = block
-        else {
-            return Err(ApiError(
-                StatusCode::NOT_FOUND,
-                "the artwork worker returned invalid pixels".to_owned(),
-            ));
-        };
-        let body = Bytes::from(
-            serde_json::to_vec(&CoverPixels {
-                width,
-                height,
-                rgba,
-            })
-            .expect("cover pixels serialize"),
-        );
+        let body = Bytes::from(thumbnail.png);
         owned.covers.insert(&key, &body).await;
         Ok::<_, ApiError>(body)
     });
@@ -2661,7 +2638,8 @@ mod tests {
         let (_directory, bot, token) = test_bot(&server.url, 1);
         let art_key = bot.libraries[0].key().to_owned();
         assert_eq!(snapshot(&bot, "x").library_keys, [art_key.as_str()]);
-        let body = Bytes::from_static(br#"{"width":1,"height":1,"rgba":"AAAAAA=="}"#);
+        // A 1×1 thumbnail PNG.
+        let body = Bytes::from_static(b"\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\x0d\x49\x44\x41\x54\x78\x9c\x63\x38\x11\xa0\xf1\x1f\x00\x05\x64\x02\x40\x64\x52\x9c\x3a\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82");
         bot.covers
             .insert(&(art_key.clone(), "cover".into(), 300), &body)
             .await;
@@ -2686,6 +2664,7 @@ mod tests {
         ] {
             let response = request(v).await.ok().unwrap();
             assert_eq!(response.headers()[header::CACHE_CONTROL], caching);
+            assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
             let served = axum::body::to_bytes(response.into_body(), usize::MAX)
                 .await
                 .unwrap();
