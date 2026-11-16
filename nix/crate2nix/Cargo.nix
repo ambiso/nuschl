@@ -353,6 +353,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "nuschl-testkit" = rec {
+      packageId = "nuschl-testkit";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "nuschl-testkit";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "nuschl-transfer-worker" = rec {
       packageId = "nuschl-transfer-worker";
       build = internal.buildRustCrateWithFeatures {
@@ -23140,6 +23150,10 @@ rec {
             packageId = "nuschl-ipc";
           }
           {
+            name = "nuschl-legacy-html";
+            packageId = "nuschl-legacy-html";
+          }
+          {
             name = "nuschl-protocol";
             packageId = "nuschl-protocol";
           }
@@ -23248,6 +23262,10 @@ rec {
             features = [ "derive" ];
           }
           {
+            name = "hex";
+            packageId = "hex";
+          }
+          {
             name = "nuschl-ipc";
             packageId = "nuschl-ipc";
           }
@@ -23297,6 +23315,10 @@ rec {
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/client; };
         libName = "nuschl_client";
         dependencies = [
+          {
+            name = "hex";
+            packageId = "hex";
+          }
           {
             name = "nuschl-core";
             packageId = "nuschl-core";
@@ -23372,6 +23394,10 @@ rec {
           {
             name = "bytes";
             packageId = "bytes";
+          }
+          {
+            name = "hex";
+            packageId = "hex";
           }
           {
             name = "js-sys";
@@ -23500,6 +23526,10 @@ rec {
           {
             name = "base64";
             packageId = "base64 0.22.1";
+          }
+          {
+            name = "hex";
+            packageId = "hex";
           }
           {
             name = "html5ever";
@@ -23640,6 +23670,10 @@ rec {
             packageId = "base64 0.22.1";
           }
           {
+            name = "hex";
+            packageId = "hex";
+          }
+          {
             name = "serde";
             packageId = "serde";
             features = [ "derive" ];
@@ -23684,6 +23718,10 @@ rec {
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../apps/crypto-worker; };
         libName = "nuschl_crypto_worker";
         dependencies = [
+          {
+            name = "hex";
+            packageId = "hex";
+          }
           {
             name = "nuschl-e2ee";
             packageId = "nuschl-e2ee";
@@ -23822,6 +23860,12 @@ rec {
             packageId = "zeroize";
           }
         ];
+        devDependencies = [
+          {
+            name = "hex";
+            packageId = "hex";
+          }
+        ];
 
       };
       "nuschl-identity" = rec {
@@ -23838,6 +23882,10 @@ rec {
           {
             name = "getrandom";
             packageId = "getrandom 0.4.3";
+          }
+          {
+            name = "hex";
+            packageId = "hex";
           }
           {
             name = "hpke-rs";
@@ -23900,6 +23948,13 @@ rec {
         crateName = "nuschl-ipc";
         version = "0.2.0";
         edition = "2024";
+        crateBin = [
+          {
+            name = "faulty-content-worker";
+            path = "src/bin/faulty-content-worker.rs";
+            requiredFeatures = [ ];
+          }
+        ];
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/ipc; };
         libName = "nuschl_ipc";
         dependencies = [
@@ -23932,6 +23987,12 @@ rec {
             name = "tokio";
             packageId = "tokio";
             features = [ "io-util" "macros" "process" "time" "rt" "sync" ];
+          }
+        ];
+        devDependencies = [
+          {
+            name = "nuschl-testkit";
+            packageId = "nuschl-testkit";
           }
         ];
 
@@ -23980,6 +24041,10 @@ rec {
             packageId = "getrandom 0.4.3";
           }
           {
+            name = "hex";
+            packageId = "hex";
+          }
+          {
             name = "libcrux-ml-dsa";
             packageId = "libcrux-ml-dsa";
             usesDefaultFeatures = false;
@@ -24008,10 +24073,6 @@ rec {
           }
         ];
         devDependencies = [
-          {
-            name = "hex";
-            packageId = "hex";
-          }
           {
             name = "tokio";
             packageId = "tokio";
@@ -24264,6 +24325,10 @@ rec {
             features = [ "std" ];
           }
           {
+            name = "hex";
+            packageId = "hex";
+          }
+          {
             name = "md-5";
             packageId = "md-5 0.11.0";
           }
@@ -24351,6 +24416,11 @@ rec {
         edition = "2024";
         crateBin = [
           {
+            name = "codec-worker-canary";
+            path = "src/bin/codec-worker-canary.rs";
+            requiredFeatures = [ ];
+          }
+          {
             name = "nuschl-musicbot-codec-worker";
             path = "src/main.rs";
             requiredFeatures = [ ];
@@ -24396,9 +24466,13 @@ rec {
             packageId = "nuschl-protocol";
           }
           {
+            name = "nuschl-testkit";
+            packageId = "nuschl-testkit";
+          }
+          {
             name = "tokio";
             packageId = "tokio";
-            features = [ "macros" "rt" "sync" "time" ];
+            features = [ "io-util" "macros" "rt" "sync" "time" ];
           }
         ];
 
@@ -24472,6 +24546,10 @@ rec {
         ];
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../apps/rtc-probe; };
         dependencies = [
+          {
+            name = "hex";
+            packageId = "hex";
+          }
           {
             name = "nuschl-rtc";
             packageId = "nuschl-rtc";
@@ -24569,6 +24647,10 @@ rec {
           {
             name = "directories";
             packageId = "directories";
+          }
+          {
+            name = "hex";
+            packageId = "hex";
           }
           {
             name = "nuschl-core";
@@ -24769,6 +24851,25 @@ rec {
         ];
 
       };
+      "nuschl-testkit" = rec {
+        crateName = "nuschl-testkit";
+        version = "0.2.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/testkit; };
+        libName = "nuschl_testkit";
+        dependencies = [
+          {
+            name = "tempfile";
+            packageId = "tempfile";
+          }
+          {
+            name = "tokio";
+            packageId = "tokio";
+            features = [ "time" ];
+          }
+        ];
+
+      };
       "nuschl-transfer-worker" = rec {
         crateName = "nuschl-transfer-worker";
         version = "0.2.0";
@@ -24908,6 +25009,10 @@ rec {
             name = "cap-std";
             packageId = "cap-std";
             optional = true;
+          }
+          {
+            name = "hex";
+            packageId = "hex";
           }
           {
             name = "nuschl-sandbox";
@@ -25117,6 +25222,10 @@ rec {
             features = [ "sink" "std" ];
           }
           {
+            name = "hex";
+            packageId = "hex";
+          }
+          {
             name = "nuschl-protocol";
             packageId = "nuschl-protocol";
           }
@@ -25215,6 +25324,10 @@ rec {
           {
             name = "getrandom";
             packageId = "getrandom 0.4.3";
+          }
+          {
+            name = "hex";
+            packageId = "hex";
           }
           {
             name = "httparse";
@@ -25317,6 +25430,14 @@ rec {
             name = "clap";
             packageId = "clap";
             features = [ "derive" ];
+          }
+          {
+            name = "hex";
+            packageId = "hex";
+          }
+          {
+            name = "nuschl-core";
+            packageId = "nuschl-core";
           }
           {
             name = "nuschl-e2ee";

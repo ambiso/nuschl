@@ -7050,6 +7050,7 @@ dependencies = [
  "nuschl-client",
  "nuschl-core",
  "nuschl-ipc",
+ "nuschl-legacy-html",
  "nuschl-protocol",
  "nuschl-sandbox",
  "nuschl-session",
@@ -7080,6 +7081,7 @@ name = "nuschl-cli"
 version = "0.2.0"
 dependencies = [
  "clap",
+ "hex",
  "nuschl-ipc",
  "nuschl-protocol",
  "nuschl-sandbox",
@@ -7095,6 +7097,7 @@ dependencies = [
 name = "nuschl-client"
 version = "0.2.0"
 dependencies = [
+ "hex",
  "nuschl-core",
  "nuschl-ipc",
  "nuschl-legacy-html",
@@ -7113,6 +7116,7 @@ version = "0.2.0"
 dependencies = [
  "bytes",
  "futures-util",
+ "hex",
  "js-sys",
  "nuschl-client",
  "nuschl-core",
@@ -7142,6 +7146,7 @@ name = "nuschl-content"
 version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
+ "hex",
  "html5ever 0.40.1",
  "image",
  "markup5ever_rcdom 0.40.1+unofficial",
@@ -7181,6 +7186,7 @@ name = "nuschl-core"
 version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
+ "hex",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -7192,6 +7198,7 @@ dependencies = [
 name = "nuschl-crypto-worker"
 version = "0.2.0"
 dependencies = [
+ "hex",
  "nuschl-e2ee",
  "nuschl-identity",
  "nuschl-ipc",
@@ -7228,6 +7235,7 @@ dependencies = [
 name = "nuschl-files"
 version = "0.2.0"
 dependencies = [
+ "hex",
  "ring",
  "thiserror 2.0.21",
  "zeroize",
@@ -7239,6 +7247,7 @@ version = "0.2.0"
 dependencies = [
  "curve25519-dalek 4.1.3",
  "getrandom 0.4.3",
+ "hex",
  "hpke-rs 0.8.0",
  "hpke-rs-libcrux 0.8.0",
  "libcrux-chacha20poly1305 0.0.10",
@@ -7261,6 +7270,7 @@ dependencies = [
  "base64 0.22.1",
  "nuschl-core",
  "nuschl-sandbox",
+ "nuschl-testkit",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -7355,6 +7365,7 @@ dependencies = [
  "axum",
  "clap",
  "futures-util",
+ "hex",
  "md-5 0.11.0",
  "nuschl-core",
  "nuschl-ipc",
@@ -7382,6 +7393,7 @@ dependencies = [
  "nuschl-core",
  "nuschl-ipc",
  "nuschl-protocol",
+ "nuschl-testkit",
  "opus-pure",
  "rubato",
  "symphonia",
@@ -7412,6 +7424,7 @@ dependencies = [
 name = "nuschl-rtc-probe"
 version = "0.2.0"
 dependencies = [
+ "hex",
  "nuschl-rtc",
 ]
 
@@ -7444,6 +7457,7 @@ version = "0.2.0"
 dependencies = [
  "bytes",
  "directories",
+ "hex",
  "nuschl-core",
  "nuschl-ipc",
  "nuschl-legacy-html",
@@ -7494,6 +7508,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nuschl-testkit"
+version = "0.2.0"
+dependencies = [
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "nuschl-transfer-worker"
 version = "0.2.0"
 dependencies = [
@@ -7531,6 +7553,7 @@ name = "nuschl-update"
 version = "0.2.0"
 dependencies = [
  "cap-std",
+ "hex",
  "nuschl-sandbox",
  "semver",
  "serde",
@@ -7570,6 +7593,7 @@ dependencies = [
  "bytes",
  "clap",
  "futures-util",
+ "hex",
  "nuschl-protocol",
  "prost",
  "rand 0.9.5",
@@ -7592,6 +7616,7 @@ version = "0.2.0"
 dependencies = [
  "clap",
  "getrandom 0.4.3",
+ "hex",
  "httparse",
  "nuschl-kt",
  "nuschl-protocol",
@@ -7616,6 +7641,8 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "clap",
+ "hex",
+ "nuschl-core",
  "nuschl-e2ee",
  "nuschl-identity",
  "nuschl-ipc",

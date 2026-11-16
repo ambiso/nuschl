@@ -25,7 +25,6 @@ use prost::Message;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::atomic::{AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -1358,7 +1357,7 @@ pub async fn run(
                 below = negotiated
                     .policy
                     .as_ref()
-                    .and_then(|policy| Below::of(policy, now_ms()));
+                    .and_then(|policy| Below::of(policy, nuschl_core::now_ms()));
                 state.extension = Some(negotiated.capabilities.clone());
                 if !negotiated.kt_log.is_empty() {
                     kt_descriptor = Some(negotiated.kt_log.clone());
@@ -1456,7 +1455,7 @@ pub async fn run(
                     }
                 } => {
                     let Ok(size) = received else { continue; };
-                    let now = now_ms() as u64;
+                    let now = nuschl_core::now_ms() as u64;
                     let Some(udp) = state.udp.as_mut() else { continue; };
                     match udp.handle(&datagram[..size], now) {
                         Received::Message(UdpMessage::Audio(packet)) => if !state.local_deafened && !state.encrypted_server() {
@@ -1555,7 +1554,7 @@ pub async fn run(
                 },
                 _ = ping.tick() => {
                     ticks += 1;
-                    let now = now_ms() as u64;
+                    let now = nuschl_core::now_ms() as u64;
                     if let Some(udp) = state.udp.as_mut() {
                         udp.maybe_ping(state.version, now).await;
                         if udp.probe_failed() {
@@ -2414,7 +2413,7 @@ impl State {
             events,
             SessionEvent::Activity(Activity {
                 channels,
-                observed_at_ms: now_ms(),
+                observed_at_ms: nuschl_core::now_ms(),
                 ..line.0
             }),
         )
@@ -3575,7 +3574,7 @@ impl State {
                 body: pending.content,
                 html: false,
                 outgoing: true,
-                observed_at_ms: now_ms(),
+                observed_at_ms: nuschl_core::now_ms(),
                 seq: None,
                 pending: Some(pending.key),
             }),
@@ -3959,7 +3958,7 @@ impl State {
                 body,
                 html,
                 outgoing: true,
-                observed_at_ms: now_ms(),
+                observed_at_ms: nuschl_core::now_ms(),
                 seq: None,
                 pending: None,
             }),
@@ -4025,7 +4024,7 @@ impl State {
                     }
                     return Ok(());
                 }
-                let now = now_ms() as u64;
+                let now = nuschl_core::now_ms() as u64;
                 if let Some(timestamp) = ping.timestamp.filter(|sent| *sent <= now) {
                     self.tcp_ping.record((now - timestamp) as f32);
                 }
@@ -4349,7 +4348,7 @@ impl State {
                             body: message.message.clone(),
                             html: self.limits.allow_html,
                             outgoing: false,
-                            observed_at_ms: now_ms(),
+                            observed_at_ms: nuschl_core::now_ms(),
                             seq: None,
                             pending: None,
                         }),
@@ -5079,13 +5078,6 @@ async fn emit(events: &mpsc::Sender<SessionEvent>, event: SessionEvent) -> Resul
         .send(event)
         .await
         .map_err(|_| Error::Protocol("client event receiver closed".into()))
-}
-pub fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(i64::MAX as u128) as i64
 }
 /// Settle the extension from the server's `Version`: on if and only if ALPN
 /// selected `nuschl/1` and the server sent a hello (ours went out with our

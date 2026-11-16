@@ -22,6 +22,7 @@ nuschl-content = { path = "crates/content", version = "0.2.0" }
 nuschl-ipc = { path = "crates/ipc", version = "0.2.0" }
 nuschl-sandbox-windows = { path = "crates/sandbox-windows", version = "0.2.0" }
 nuschl-sandbox = { path = "crates/sandbox", version = "0.2.0" }
+nuschl-testkit = { path = "crates/testkit", version = "0.2.0" }
 nuschl-legacy-html = { path = "crates/legacy-html", version = "0.2.0" }
 nuschl-math = { path = "crates/math", version = "0.2.0" }
 nuschl-protocol = { path = "crates/protocol", version = "0.2.0" }

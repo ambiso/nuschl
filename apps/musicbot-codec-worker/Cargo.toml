@@ -29,7 +29,8 @@ symphonia = { version = "0.6.1", default-features = false, features = [
 [dev-dependencies]
 nuschl-core.workspace = true
 nuschl-protocol.workspace = true
-tokio = { version = "1.54.1", features = ["macros", "rt", "sync", "time"] }
+nuschl-testkit.workspace = true
+tokio = { version = "1.54.1", features = ["io-util", "macros", "rt", "sync", "time"] }
 
 [lints]
 workspace = true

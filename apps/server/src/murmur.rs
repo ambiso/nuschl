@@ -19,7 +19,6 @@
 use crate::{
     acl::{AclEntry, Group, perm},
     config::Settings,
-    conversations::hex,
     handlers::{MAX_STORED_NAME, truncate_bytes, truncate_chars},
     password,
     server::{self, StartError},
@@ -29,8 +28,9 @@ use crate::{
 };
 use bytes::Bytes;
 use nuschl_ipc::{
-    Envelope, MAX_FRAME_BYTES, PROTOCOL_VERSION,
+    Envelope, MAX_FRAME_BYTES,
     murmur::{MurmurDump, MurmurFrame, decode_blob},
+    read_frame_async,
     server::ServerStorageRequest,
 };
 use std::{
@@ -41,7 +41,7 @@ use std::{
     process::Stdio,
     time::Duration,
 };
-use tokio::{io::AsyncReadExt, process::Command};
+use tokio::process::Command;
 
 /// How long reading the Murmur database may take.
 const READ_TIMEOUT: Duration = Duration::from_secs(600);
@@ -196,25 +196,16 @@ pub async fn read_dump(worker: &Path, options: &Options) -> Result<MurmurDump, I
     let read = async {
         let mut dump = MurmurDump::default();
         loop {
-            let size = output
-                .read_u32()
+            let envelope: Envelope<MurmurFrame> = read_frame_async(&mut output, MAX_FRAME_BYTES)
                 .await
-                .map_err(|_| ImportError::Reader("the reader stopped early".into()))?
-                as usize;
-            if size > MAX_FRAME_BYTES {
-                return Err(ImportError::Reader(
-                    "oversized frame from the reader".into(),
-                ));
-            }
-            let mut body = vec![0; size];
-            output.read_exact(&mut body).await?;
-            let envelope: Envelope<MurmurFrame> = serde_json::from_slice(&body)
-                .map_err(|error| ImportError::Reader(format!("bad frame: {error}")))?;
-            if envelope.version != PROTOCOL_VERSION {
-                return Err(ImportError::Reader("reader protocol mismatch".into()));
-            }
+                .map_err(|error| {
+                    ImportError::Reader(match error {
+                        nuschl_ipc::Error::Io(_) => "the reader stopped early".into(),
+                        error => format!("bad frame: {error}"),
+                    })
+                })?;
             if dump.apply(envelope.payload).map_err(ImportError::Reader)? {
-                return Ok(dump);
+                return Ok::<_, ImportError>(dump);
             }
         }
     };
@@ -312,7 +303,7 @@ fn clear(state: &mut State) {
             state
                 .storage
                 .send(ServerStorageRequest::HistoryForgetAccount {
-                    account: hex(&removed.account),
+                    account: hex::encode(removed.account),
                 });
         }
     }
@@ -1138,20 +1129,6 @@ pub fn config_outputs(config: &[(String, String)], report: &mut Report) -> Outpu
     outputs
 }
 
-fn write_private(path: &Path, contents: &[u8], mode: u32) -> std::io::Result<()> {
-    let temporary = path.with_extension("tmp");
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, mode);
-    #[cfg(not(unix))]
-    let _ = mode;
-    let mut file = options.open(&temporary)?;
-    std::io::Write::write_all(&mut file, contents)?;
-    file.sync_all()?;
-    std::fs::rename(&temporary, path)
-}
-
 /// Write the outputs next to the state and tell the operator what to do.
 pub fn write_outputs(
     outputs: &Outputs,
@@ -1167,7 +1144,7 @@ pub fn write_outputs(
              # from murmur.ini are not in the database and need to be carried over by hand.\n",
         );
         text.push_str(&outputs.toml);
-        write_private(&path, text.as_bytes(), 0o600)?;
+        crate::files::write_atomically(&path, text.as_bytes(), 0o600)?;
         report.advice.push(format!(
             "wrote Murmur's settings to {}; merge them into the configuration",
             path.display()
@@ -1175,7 +1152,7 @@ pub fn write_outputs(
     }
     if let Some(password) = &outputs.password {
         let path = directory.join("murmur-server-password");
-        write_private(&path, password.as_bytes(), 0o600)?;
+        crate::files::write_atomically(&path, password.as_bytes(), 0o600)?;
         report.advice.push(format!(
             "wrote the server password to {}; set password_file to it (or keep it elsewhere)",
             path.display()
@@ -1201,8 +1178,8 @@ pub fn write_outputs(
                             directory.join("murmur-private-key.pem"),
                         )
                     };
-                write_private(&key_path, key.as_bytes(), 0o600)?;
-                write_private(&certificate_path, certificate.as_bytes(), 0o644)?;
+                crate::files::write_atomically(&key_path, key.as_bytes(), 0o600)?;
+                crate::files::write_atomically(&certificate_path, certificate.as_bytes(), 0o644)?;
                 let fingerprint =
                     crate::tls::Identity::from_pem(certificate.as_bytes(), key.as_bytes())
                         .map(|identity| identity.fingerprint())

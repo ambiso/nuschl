@@ -202,14 +202,14 @@ enum Input {
     /// retry idempotent.
     ChatSend {
         request_id: u64,
-        conversation: String,
+        conversation: Hex,
         content: String,
-        key: Option<String>,
+        key: Option<Hex>,
     },
     /// Nuschl servers: a history page; `before`/`after`/`around` a seq, else the latest.
     History {
         request_id: u64,
-        conversation: String,
+        conversation: Hex,
         before: Option<u64>,
         after: Option<u64>,
         around: Option<u64>,
@@ -218,24 +218,24 @@ enum Input {
     },
     Subscribe {
         request_id: u64,
-        conversations: Vec<String>,
+        conversations: Vec<Hex>,
     },
     /// Nuschl servers: replace our message `target` (a seq) in a conversation.
     ChatEdit {
         request_id: u64,
-        conversation: String,
+        conversation: Hex,
         target: u64,
         content: String,
     },
     /// Nuschl servers: delete message `target` (ours, or as a moderator).
     ChatDelete {
         request_id: u64,
-        conversation: String,
+        conversation: Hex,
         target: u64,
     },
     /// Nuschl servers: we are typing in a conversation.
     Typing {
-        conversation: String,
+        conversation: Hex,
     },
     /// Nuschl servers: open (or create) the direct conversation with a
     /// registered user, and list ours.
@@ -248,7 +248,7 @@ enum Input {
     },
     /// Nuschl servers: we read a conversation up to `seq`.
     ReadMarker {
-        conversation: String,
+        conversation: Hex,
         seq: u64,
     },
     /// Nuschl servers: text to a direct conversation (32 hex digits), sent
@@ -309,27 +309,29 @@ enum Input {
     /// On the new device: the code and the existing device's message (hex).
     LinkJoin {
         code: String,
-        pake: String,
+        pake: Hex,
         device_name: Option<String>,
     },
     /// On the existing device: the new device's messages (hex).
     LinkApprove {
-        pake: String,
-        device_keys: String,
+        pake: Hex,
+        device_keys: Hex,
     },
     /// On the new device: the sealed bundle (hex).
     LinkComplete {
-        bundle: String,
+        bundle: Hex,
     },
     Disconnect,
 }
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-fn unhex(text: &str) -> Vec<u8> {
-    (0..text.len() / 2)
-        .filter_map(|index| u8::from_str_radix(text.get(index * 2..index * 2 + 2)?, 16).ok())
-        .collect()
+/// Bytes written as hex; malformed hex fails the command.
+#[derive(Deserialize)]
+#[serde(try_from = "String")]
+struct Hex(Vec<u8>);
+impl TryFrom<String> for Hex {
+    type Error = hex::FromHexError;
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        hex::decode(text).map(Hex)
+    }
 }
 fn message_json(message: &v1::Message) -> serde_json::Value {
     let author = message.author.clone().unwrap_or_default();
@@ -338,7 +340,7 @@ fn message_json(message: &v1::Message) -> serde_json::Value {
         "deleted":message.deleted_ms != 0, "edits":message.edits, "delete_reason":message.delete_reason})
 }
 fn direct_json(direct: &v1::Direct) -> serde_json::Value {
-    json!({"conversation":hex(&direct.conversation), "user_id":direct.user_id, "name":direct.name,
+    json!({"conversation":hex::encode(&direct.conversation), "user_id":direct.user_id, "name":direct.name,
         "head":direct.head, "read":direct.read})
 }
 fn nuschl_json(event: &NuschlEvent) -> serde_json::Value {
@@ -347,25 +349,25 @@ fn nuschl_json(event: &NuschlEvent) -> serde_json::Value {
             json!({"kind":"nuschl_error", "request_id":error.request_id, "code":error.code, "detail":error.detail})
         }
         NuschlEvent::Ack(ack) => {
-            json!({"kind":"chat_ack", "request_id":ack.request_id, "conversation":hex(&ack.conversation), "seq":ack.seq})
+            json!({"kind":"chat_ack", "request_id":ack.request_id, "conversation":hex::encode(&ack.conversation), "seq":ack.seq})
         }
         NuschlEvent::Chat(event) => {
-            json!({"kind":"chat", "conversation":hex(&event.conversation), "message":event.message.as_ref().map(message_json)})
+            json!({"kind":"chat", "conversation":hex::encode(&event.conversation), "message":event.message.as_ref().map(message_json)})
         }
         NuschlEvent::Page(page) | NuschlEvent::DecryptedPage { page, .. } => {
-            json!({"kind":"history_page", "request_id":page.request_id, "conversation":hex(&page.conversation),
+            json!({"kind":"history_page", "request_id":page.request_id, "conversation":hex::encode(&page.conversation),
             "messages":page.messages.iter().map(message_json).collect::<Vec<_>>(), "more_before":page.more_before,
             "more_after":page.more_after, "restricted":page.restricted, "head":page.head})
         }
         NuschlEvent::Subscribed(subscribed) => {
             json!({"kind":"subscribed", "request_id":subscribed.request_id,
-            "conversations":subscribed.conversations.iter().map(|state| json!({"conversation":hex(&state.conversation), "head":state.head, "read":state.read})).collect::<Vec<_>>()})
+            "conversations":subscribed.conversations.iter().map(|state| json!({"conversation":hex::encode(&state.conversation), "head":state.head, "read":state.read})).collect::<Vec<_>>()})
         }
         NuschlEvent::Unsubscribed(gone) => {
-            json!({"kind":"unsubscribed", "conversation":hex(&gone.conversation)})
+            json!({"kind":"unsubscribed", "conversation":hex::encode(&gone.conversation)})
         }
         NuschlEvent::Typing(typing) => {
-            json!({"kind":"typing", "conversation":hex(&typing.conversation), "session":typing.session})
+            json!({"kind":"typing", "conversation":hex::encode(&typing.conversation), "session":typing.session})
         }
         NuschlEvent::DirectOpened(opened) => {
             json!({"kind":"direct_opened", "request_id":opened.request_id, "direct":opened.direct.as_ref().map(direct_json)})
@@ -374,7 +376,7 @@ fn nuschl_json(event: &NuschlEvent) -> serde_json::Value {
             json!({"kind":"direct_list", "request_id":list.request_id, "directs":list.directs.iter().map(direct_json).collect::<Vec<_>>()})
         }
         NuschlEvent::ReadMarker(marker) => {
-            json!({"kind":"read_marker", "conversation":hex(&marker.conversation), "seq":marker.seq})
+            json!({"kind":"read_marker", "conversation":hex::encode(&marker.conversation), "seq":marker.seq})
         }
         other => json!({"kind":"nuschl", "event":format!("{other:?}")}),
     }
@@ -389,7 +391,7 @@ fn identity_json(event: &IdentityEvent) -> serde_json::Value {
         }
         IdentityEvent::Monitor(outcome) => json!({"kind":"identity_monitor", "outcome":outcome}),
         IdentityEvent::Contact { user_id, view } => json!({"kind":"identity_contact",
-            "user_id":user_id, "account":hex(&view.account), "state":view.state,
+            "user_id":user_id, "account":hex::encode(&view.account), "state":view.state,
             "identity":view.identity, "safety_number":view.safety_number, "notice":view.notice}),
         IdentityEvent::Failed(reason) => json!({"kind":"identity_failed", "reason":reason}),
     }
@@ -397,32 +399,32 @@ fn identity_json(event: &IdentityEvent) -> serde_json::Value {
 fn mls_json(event: &MlsEvent) -> serde_json::Value {
     match event {
         MlsEvent::Conversation { view, peer } => json!({"kind":"e2ee_conversation",
-            "conversation":hex(&view.conversation), "peer":peer, "view":view}),
+            "conversation":hex::encode(&view.conversation), "peer":peer, "view":view}),
         MlsEvent::Received {
             conversation,
             received,
             author,
         } => json!({"kind":"e2ee_received",
-            "conversation":hex(conversation), "received":received,
-            "author":author.as_ref().map(|author| json!({"account":hex(&author.account),
+            "conversation":hex::encode(conversation), "received":received,
+            "author":author.as_ref().map(|author| json!({"account":hex::encode(&author.account),
                 "user_id":author.user_id, "name":author.name}))}),
         MlsEvent::Activity { conversation, seq } => json!({"kind":"e2ee_activity",
-            "conversation":hex(conversation), "seq":seq}),
+            "conversation":hex::encode(conversation), "seq":seq}),
         MlsEvent::Sent {
             conversation,
             key,
             seq,
             ..
         } => json!({"kind":"e2ee_sent",
-            "conversation":hex(conversation), "key":hex(key), "seq":seq}),
+            "conversation":hex::encode(conversation), "key":hex::encode(key), "seq":seq}),
         MlsEvent::NotSent {
             conversation,
             key,
             reason,
         } => json!({"kind":"e2ee_not_sent",
-            "conversation":hex(conversation), "key":hex(key), "reason":reason}),
+            "conversation":hex::encode(conversation), "key":hex::encode(key), "reason":reason}),
         MlsEvent::PlaintextRefused { conversation, seq } => json!({"kind":"e2ee_plaintext_refused",
-            "conversation":hex(conversation), "seq":seq}),
+            "conversation":hex::encode(conversation), "seq":seq}),
         MlsEvent::KeyPackages { one_time } => {
             json!({"kind":"e2ee_key_packages", "one_time":one_time})
         }
@@ -464,16 +466,14 @@ async fn offline(
                 device_name,
             }) => CryptoRequest::LinkJoin {
                 code,
-                pake: unhex(&pake),
+                pake: pake.0,
                 device_name: device_name.unwrap_or_else(|| format!("{username} (nuschl-cli)")),
             },
             Ok(Input::LinkApprove { pake, device_keys }) => CryptoRequest::LinkApprove {
-                pake: unhex(&pake),
-                device_keys: unhex(&device_keys),
+                pake: pake.0,
+                device_keys: device_keys.0,
             },
-            Ok(Input::LinkComplete { bundle }) => CryptoRequest::LinkComplete {
-                bundle: unhex(&bundle),
-            },
+            Ok(Input::LinkComplete { bundle }) => CryptoRequest::LinkComplete { bundle: bundle.0 },
             Ok(Input::IdentityOwn) => CryptoRequest::Identity,
             Ok(Input::Disconnect) => break,
             Ok(_) => {
@@ -487,13 +487,13 @@ async fn offline(
         };
         let event = match crypto.request(request).await {
             Ok(CryptoResponse::LinkOffer { code, pake }) => {
-                json!({"kind":"link_offer", "code":code, "pake":hex(&pake)})
+                json!({"kind":"link_offer", "code":code, "pake":hex::encode(&pake)})
             }
             Ok(CryptoResponse::LinkJoin { pake, device_keys }) => {
-                json!({"kind":"link_join", "pake":hex(&pake), "device_keys":hex(&device_keys)})
+                json!({"kind":"link_join", "pake":hex::encode(&pake), "device_keys":hex::encode(&device_keys)})
             }
             Ok(CryptoResponse::LinkBundle(bundle)) => {
-                json!({"kind":"link_bundle", "bundle":hex(&bundle)})
+                json!({"kind":"link_bundle", "bundle":hex::encode(&bundle)})
             }
             Ok(CryptoResponse::Identity(view)) => json!({"kind":"identity_own", "view":view}),
             Ok(other) => json!({"kind":"error", "message":format!("unexpected answer {other:?}")}),
@@ -505,7 +505,7 @@ async fn offline(
     Ok(())
 }
 fn account(text: &str) -> Option<[u8; 16]> {
-    unhex(text).try_into().ok()
+    hex::FromHex::from_hex(text).ok()
 }
 fn yes() -> bool {
     true
@@ -853,10 +853,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     key,
                 }) => Command::Nuschl(NuschlRequest::Send(v1::ChatSend {
                     request_id,
-                    conversation: unhex(&conversation),
+                    conversation: conversation.0,
                     idempotency_key: key
-                        .map(|key| unhex(&key))
-                        .unwrap_or_else(|| connection::random_key().to_vec()),
+                        .map_or_else(|| connection::random_key().to_vec(), |key| key.0),
                     format: v1::Format::Text as i32,
                     content,
                     reply_to: 0,
@@ -878,7 +877,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     };
                     Command::Nuschl(NuschlRequest::History(v1::HistoryRequest {
                         request_id,
-                        conversation: unhex(&conversation),
+                        conversation: conversation.0,
                         anchor: Some(anchor),
                         limit,
                     }))
@@ -888,7 +887,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     conversations,
                 }) => Command::Nuschl(NuschlRequest::Subscribe(v1::Subscribe {
                     request_id,
-                    conversations: conversations.iter().map(|id| unhex(id)).collect(),
+                    conversations: conversations.into_iter().map(|id| id.0).collect(),
                 })),
                 Ok(Input::ChatEdit {
                     request_id,
@@ -897,7 +896,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     content,
                 }) => Command::Nuschl(NuschlRequest::Edit(v1::ChatEdit {
                     request_id,
-                    conversation: unhex(&conversation),
+                    conversation: conversation.0,
                     target,
                     format: v1::Format::Text as i32,
                     content,
@@ -908,12 +907,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     target,
                 }) => Command::Nuschl(NuschlRequest::Delete(v1::ChatDelete {
                     request_id,
-                    conversation: unhex(&conversation),
+                    conversation: conversation.0,
                     target,
                 })),
                 Ok(Input::Typing { conversation }) => {
                     Command::Nuschl(NuschlRequest::Typing(v1::Typing {
-                        conversation: unhex(&conversation),
+                        conversation: conversation.0,
                         session: 0,
                     }))
                 }
@@ -926,28 +925,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 })),
                 Ok(Input::ReadMarker { conversation, seq }) => {
                     Command::Nuschl(NuschlRequest::ReadMarker(v1::ReadMarker {
-                        conversation: unhex(&conversation),
+                        conversation: conversation.0,
                         seq,
                     }))
                 }
                 Ok(Input::ListDirect { request_id }) => {
                     Command::Nuschl(NuschlRequest::ListDirect(v1::ListDirect { request_id }))
                 }
-                Ok(Input::DirectText { conversation, body }) => {
-                    match <[u8; 16]>::try_from(unhex(&conversation).as_slice()) {
-                        Ok(id) => Command::SendText {
-                            target: TextTarget::DirectConversation(id),
-                            body,
-                            expected_peer: None,
-                        },
-                        Err(_) => {
-                            let _ = output(
-                                json!({"kind":"error", "message":"conversation must be 32 hex digits"}),
-                            );
-                            continue;
-                        }
+                Ok(Input::DirectText { conversation, body }) => match account(&conversation) {
+                    Some(id) => Command::SendText {
+                        target: TextTarget::DirectConversation(id),
+                        body,
+                        expected_peer: None,
+                    },
+                    None => {
+                        let _ = output(
+                            json!({"kind":"error", "message":"conversation must be 32 hex digits"}),
+                        );
+                        continue;
                     }
-                }
+                },
                 Ok(Input::PluginAccept { accept }) => Command::AcceptPluginData(accept),
                 Ok(Input::PluginData {
                     request,
@@ -1025,17 +1022,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 SessionEvent::UserNames(names) => json!({"kind":"user_names", "names":names}),
                 SessionEvent::UnsupportedCodec { session } => json!({"kind":"unsupported_codec", "session":session}),
                 SessionEvent::Outbox { sent, total } => json!({"kind":"outbox", "sent":sent, "total":total}),
-                SessionEvent::ChannelInfo { channel, info } => json!({"kind":"channel_info", "channel":channel, "conversation":hex(&info.conversation), "visibility":info.visibility}),
+                SessionEvent::ChannelInfo { channel, info } => json!({"kind":"channel_info", "channel":channel, "conversation":hex::encode(&info.conversation), "visibility":info.visibility}),
                 SessionEvent::Nuschl(event) => nuschl_json(&event),
-                SessionEvent::ChatPending(pending) => json!({"kind":"chat_pending", "target":pending.target, "key":hex(&pending.key)}),
-                SessionEvent::ChatAcked { key, seq } => json!({"kind":"chat_acked", "key":hex(&key), "seq":seq}),
-                SessionEvent::ChatFailed { key, reason } => json!({"kind":"chat_failed", "key":hex(&key), "reason":reason}),
+                SessionEvent::ChatPending(pending) => json!({"kind":"chat_pending", "target":pending.target, "key":hex::encode(pending.key)}),
+                SessionEvent::ChatAcked { key, seq } => json!({"kind":"chat_acked", "key":hex::encode(key), "seq":seq}),
+                SessionEvent::ChatFailed { key, reason } => json!({"kind":"chat_failed", "key":hex::encode(key), "reason":reason}),
                 SessionEvent::ConversationState { channel, head, read } => json!({"kind":"conversation_state", "channel":channel, "head":head, "read":read}),
                 SessionEvent::Identity(event) => identity_json(&event),
                 SessionEvent::Mls(event) => mls_json(&event),
                 SessionEvent::PluginData(data) => json!({"kind":"plugin_data", "sender":data.sender, "sender_instance":data.sender_instance,
                     "sender_user_id":data.sender_user_id, "sender_certificate_hash":data.sender_certificate_hash,
-                    "data_id":data.payload.data_id(), "data":hex(data.payload.data())}),
+                    "data_id":data.payload.data_id(), "data":hex::encode(data.payload.data())}),
                 SessionEvent::PluginDataAdmission { request, result } => json!({"kind":"plugin_data_admission", "request":request,
                     "admitted":result.is_ok(), "error":result.as_ref().err().map(ToString::to_string),
                     "retry_after_ms":match result { Err(nuschl_protocol::plugin::Refusal::RateLimited { retry_after_ms }) => Some(retry_after_ms), _ => None }}),
@@ -1044,4 +1041,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     output(json!({"kind":"disconnected", "message":"Disconnected"}))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Input;
+
+    #[test]
+    fn malformed_hex_fails_the_command() {
+        let typing = |conversation: &str| {
+            serde_json::from_value::<Input>(
+                serde_json::json!({"kind": "typing", "conversation": conversation}),
+            )
+        };
+        assert!(
+            matches!(typing("00ff"), Ok(Input::Typing { conversation }) if conversation.0 == [0, 255])
+        );
+        assert!(typing("0g").is_err());
+    }
 }

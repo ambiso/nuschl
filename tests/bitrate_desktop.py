@@ -10,13 +10,14 @@ sink with a 440 Hz tone is the microphone; transmission is continuous; a
 audio device, profile or recording is used. Checks and screenshots:
 
 - a profile without the setting starts at 128 kb/s and writes no new file;
-- Settings → VOICE QUALITY names the requested rate and, per server, the
-  effective one and its reason; choosing 256 kb/s writes voice-quality.json
-  only (settings.json keeps the keys Nuschl 0.1.0 reads);
+- Settings → VOICE QUALITY names each server below the requested rate with
+  its effective rate and reason, and the rest in one line; choosing 256 kb/s
+  writes voice-quality.json only (settings.json keeps the keys Nuschl 0.1.0
+  reads); Narrow's Connection info shows the same rate and reason;
 - the change reconfigures the encoder only: the same media worker and
   capture stream, frames up to the new per-frame allowance;
 - the voice card shows each server's rate; speaking on both lowers Wide to
-  Narrow's 48 kb/s ("shared with another server");
+  Narrow's 48 kb/s ("shared encoder");
 - a live ServerConfig (setConf) lowers Narrow's rate, and one too small for
   voice stops sending there without stopping playback;
 - narrow and zoomed layouts (layout-narrow.json): a window requested at
@@ -68,6 +69,7 @@ from accessibility import FOCUSED, INTERACTIVE, ROLES, Node, snapshot, start_reg
 from bitrate_matrix import Bus, allowance, received  # noqa: E402
 from desktop_mumble import media_workers  # noqa: E402
 from gnome_session import GnomeSession  # noqa: E402
+from layout_regression import inside  # noqa: E402
 from local_murmur import Murmur, eventually, free_port  # noqa: E402
 from mumble_client import Client, certificate_pin  # noqa: E402
 
@@ -109,12 +111,6 @@ def make_png(width, height):
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
-
-
-def inside(box, outer):
-    x, y, w, h = box
-    ox, oy, ow, oh = outer
-    return w > 0 and h > 0 and x >= ox - 1 and y >= oy - 1 and x + w <= ox + ow + 1 and y + h <= oy + oh + 1
 
 
 class DesktopBitrate:
@@ -238,6 +234,19 @@ class DesktopBitrate:
                 print(f"  {server:<7} {step:<44} first accepted frame after {seconds:.1f} s", flush=True)
                 return seconds
         raise AssertionError(f"{server} {step}: no voice within 90 s")
+
+    def connection_bitrate(self, server):
+        """The Voice bitrate row of `server`'s Connection info."""
+        self.select(server)
+        bx, by, _, _ = self.rects()["buffer"]
+        x, y, width, height = self.find("push button", "Server options").extents()
+        self.shell.click(bx + x + width // 2, by + y + height // 2)
+        self.press("menu item", "Connection info")
+        self.named("Voice bitrate")
+        names = [name for _, _, _, name in self.nodes() if name]
+        self.shot(f"connection-{server.lower()}")
+        self.press("push button", "Done")
+        return names[names.index("Voice bitrate") + 1]
 
     def files(self):
         config = self.profile / "config"
@@ -669,14 +678,13 @@ class DesktopBitrate:
         self.check("Wide", "default request (128 kb/s)", 128_000)
         self.shot("1-voice-card-default")
 
-        # Settings: the requested rate and each server's effective one.
+        # Settings: the server below the requested rate, and the rest.
         self.press("push button", "Settings")
         self.find("dialog", "Settings")
         group = self.find("radio button", "128 kb/s")
         group.call("Component", "ScrollTo", "u", "0")
-        self.named("Wide: 128 kb/s, as requested.")
-        self.named("Narrow: 48 kb/s: this server allows 72 kb/s per user, 24 kb/s of which is kept for "
-                   "Mumble packet overhead.")
+        self.named("Other servers: 128 kb/s")
+        self.named("Narrow: 48 of 128 kb/s · server limit")
         self.shot("2-settings-default")
         capture = self.capture_streams()
         assert len(capture) == 1, capture
@@ -687,9 +695,8 @@ class DesktopBitrate:
                                        "voice-quality.json was not written")
         assert sidecar == {"version": 1, "voice_bitrate": 256_000}, sidecar
         assert set(settings) <= RELEASED_KEYS and "voice_bitrate" not in settings, settings
-        self.named("Wide: 256 kb/s, as requested.")
-        self.named("Narrow: 48 kb/s: this server allows 72 kb/s per user, 24 kb/s of which is kept for "
-                   "Mumble packet overhead.")
+        self.named("Other servers: 256 kb/s")
+        self.named("Narrow: 48 of 256 kb/s · server limit")
         self.find("radio button", "256 kb/s").call("Component", "ScrollTo", "u", "0")
         self.shot("3-settings-256")
         time.sleep(1.0)
@@ -706,6 +713,8 @@ class DesktopBitrate:
         self.named("256 kb/s")
         self.named("48 of 256 kb/s · server limit")
         self.shot("4-voice-card-256")
+        value = self.connection_bitrate("Narrow")
+        assert value == "48 of 256 kb/s · server limit", value
 
         # Speaking on both: one encoder, Narrow's 48 kb/s for both.
         self.select("Narrow")
