@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""Print the issue queue: approved open issues by priority, then thumbs-up.
+
+Approved issues are labelled status:approved. Issues that are in progress,
+assigned, awaiting approval, held (deferred, tracking, operator action, closed
+as duplicate and the like), parents of open sub-issues or blocked by an open
+issue stay out of the queue. An open blocker takes the highest priority of the
+approved work that waits on it, directly or through other blockers; blockers
+that are not approved are listed for the owner.
+"""
+import json
+import subprocess
+
+PRIORITIES = ["urgent", "high", "medium", "low"]
+PAUSED = {"status:in-progress", "status:needs-approval", "status:deferred",
+          "type:tracking", "type:operator-action", "duplicate", "invalid", "wontfix", "question"}
+
+issues = {issue["number"]: issue for issue in json.loads(subprocess.run(
+    ["gh", "issue", "list", "--state", "open", "--limit", "1000",
+     "--json", "number,title,url,labels,assignees,reactionGroups,blockedBy,subIssuesSummary"],
+    check=True, capture_output=True, text=True).stdout)}
+
+for issue in issues.values():
+    issue["labels"] = {label["name"] for label in issue["labels"]}
+    sub = issue["subIssuesSummary"]
+    issue["paused"] = bool(issue["labels"] & PAUSED or issue["assignees"] or sub["total"] > sub["completed"])
+    issue["approved"] = "status:approved" in issue["labels"]
+    # The highest priority label counts; an unset priority counts as medium.
+    issue["rank"] = next((i for i, p in enumerate(PRIORITIES) if f"priority:{p}" in issue["labels"]), 2)
+    issue["up"] = sum(g["users"]["totalCount"] for g in issue["reactionGroups"] if g["content"] == "THUMBS_UP")
+    repo = issue["url"].rsplit("/", 1)[0]
+    open_blockers = [b for b in issue["blockedBy"]["nodes"] if b["state"] == "OPEN"]
+    # Blockers in other repositories block too; priority is lent only within this one.
+    issue["blocked"] = bool(open_blockers) or issue["blockedBy"]["totalCount"] > len(issue["blockedBy"]["nodes"])
+    issue["blockers"] = [b["number"] for b in open_blockers if b["url"].rsplit("/", 1)[0] == repo]
+
+# Approved, unpaused work lends its priority to every open blocker it waits on.
+effective = {number: issue["rank"] for number, issue in issues.items()}
+waiting = {}
+for number, issue in issues.items():
+    if not issue["approved"] or issue["paused"]:
+        continue
+    stack, seen = list(issue["blockers"]), set()
+    while stack:
+        blocker = stack.pop()
+        if blocker in seen or blocker not in issues:
+            continue
+        seen.add(blocker)
+        effective[blocker] = min(effective[blocker], issue["rank"])
+        waiting.setdefault(blocker, set()).add(number)
+        stack += issues[blocker]["blockers"]
+
+def line(number):
+    issue = issues[number]
+    lent = "^" if effective[number] < issue["rank"] else ""
+    return f"{PRIORITIES[effective[number]]}{lent}\t+{issue['up']}\t#{number}\t{issue['title']}"
+
+def order(number):
+    return effective[number], -issues[number]["up"], number
+
+ready = [n for n, i in issues.items() if i["approved"] and not i["paused"] and not i["blocked"]]
+for number in sorted(ready, key=order):
+    print(line(number))
+
+held = [n for n in waiting if n not in ready and not issues[n]["blocked"]
+        and "status:in-progress" not in issues[n]["labels"] and not issues[n]["assignees"]]
+if held:
+    print("\nBlockers of approved work that need the owner (^: priority lent by the work waiting on it):")
+    for number in sorted(held, key=order):
+        print(line(number) + "\tblocks " + ", ".join(f"#{n}" for n in sorted(waiting[number])))
