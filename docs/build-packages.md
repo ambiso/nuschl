@@ -1,6 +1,6 @@
 # Standalone server and RTC packages
 
-`nix build .#server .#rtc-probe --cores 2 --max-jobs 2` now assembles existing
+`nix build .#server .#rtc-probe` now assembles existing
 crate2nix members. No workspace/package manifest, Cargo.lock or generated graph
 changed. Windows/Darwin cross builds and the explicit `default-crane` fallback
 remain on their separately tracked migration paths. Notice metadata tools may
