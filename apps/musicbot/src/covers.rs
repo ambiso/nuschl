@@ -338,6 +338,19 @@ mod tests {
 
         // A new run finds them; a smaller budget keeps the newest files.
         drop(cache);
+        let newest = path.join(file_name(&key("i")));
+        for entry in std::fs::read_dir(&path).unwrap() {
+            let file = entry.unwrap().path();
+            if file != newest {
+                let older = SystemTime::now() - Duration::from_secs(60);
+                std::fs::File::options()
+                    .write(true)
+                    .open(&file)
+                    .unwrap()
+                    .set_modified(older)
+                    .unwrap();
+            }
+        }
         let reopened = CoverCache::open(path.clone(), file_size("a") * 2).unwrap();
         assert_eq!(std::fs::read_dir(&path).unwrap().count(), 2);
         assert_eq!(reopened.get(&key("i")).await.as_deref(), Some(BODY));
