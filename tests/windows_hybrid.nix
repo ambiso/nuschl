@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: EUPL-1.2
 # Test-only cross products, no production trust input or desktop compilation.
-# nix build --impure --file tests/windows_hybrid.nix ed ml fixture --cores 2 --max-jobs 2
+# nix build --impure --file tests/windows_hybrid.nix ed ml fixture
 # The feature roots remain separate; only the non-distributed fixture enables
 # signing to generate its own temporary pair inside the guest.
 let

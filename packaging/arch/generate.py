@@ -35,7 +35,7 @@ pkgver={version}
 pkgrel={package_revision}
 pkgdesc='Mumble-compatible voice and text chat with isolated helpers'
 arch=('x86_64')
-url='https://github.com/ambiso/nuschl'
+url='https://github.com/nuschl-eu/nuschl'
 license=('EUPL-1.2')
 provides=("nuschl=$pkgver")
 conflicts=('nuschl')
