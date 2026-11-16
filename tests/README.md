@@ -13,6 +13,9 @@ Steps listed in `quarantine.txt` are known to be flaky: they still run, and a
 failure is logged as `QUARANTINED FAIL` with its issue and does not fail the
 check (`quarantine.py`). A feature that relies on a quarantined step needs its own proof.
 
+Every file here runs in a check or is listed in `local-only.txt` with the reason;
+the `tests-wired` check fails for any other file nothing references (#313).
+
 Flake checks run their VMs inside the Nix daemon. Built drivers run by hand go
 through `tests/vm_driver.py` ([development.md](../docs/development.md#recipes)),
 which places all VM state in a fresh owned disk root and runs
