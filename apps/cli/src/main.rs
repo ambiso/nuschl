@@ -202,14 +202,14 @@ enum Input {
     /// retry idempotent.
     ChatSend {
         request_id: u64,
-        conversation: String,
+        conversation: Hex,
         content: String,
-        key: Option<String>,
+        key: Option<Hex>,
     },
     /// Nuschl servers: a history page; `before`/`after`/`around` a seq, else the latest.
     History {
         request_id: u64,
-        conversation: String,
+        conversation: Hex,
         before: Option<u64>,
         after: Option<u64>,
         around: Option<u64>,
@@ -218,24 +218,24 @@ enum Input {
     },
     Subscribe {
         request_id: u64,
-        conversations: Vec<String>,
+        conversations: Vec<Hex>,
     },
     /// Nuschl servers: replace our message `target` (a seq) in a conversation.
     ChatEdit {
         request_id: u64,
-        conversation: String,
+        conversation: Hex,
         target: u64,
         content: String,
     },
     /// Nuschl servers: delete message `target` (ours, or as a moderator).
     ChatDelete {
         request_id: u64,
-        conversation: String,
+        conversation: Hex,
         target: u64,
     },
     /// Nuschl servers: we are typing in a conversation.
     Typing {
-        conversation: String,
+        conversation: Hex,
     },
     /// Nuschl servers: open (or create) the direct conversation with a
     /// registered user, and list ours.
@@ -248,7 +248,7 @@ enum Input {
     },
     /// Nuschl servers: we read a conversation up to `seq`.
     ReadMarker {
-        conversation: String,
+        conversation: Hex,
         seq: u64,
     },
     /// Nuschl servers: text to a direct conversation (32 hex digits), sent
@@ -309,23 +309,29 @@ enum Input {
     /// On the new device: the code and the existing device's message (hex).
     LinkJoin {
         code: String,
-        pake: String,
+        pake: Hex,
         device_name: Option<String>,
     },
     /// On the existing device: the new device's messages (hex).
     LinkApprove {
-        pake: String,
-        device_keys: String,
+        pake: Hex,
+        device_keys: Hex,
     },
     /// On the new device: the sealed bundle (hex).
     LinkComplete {
-        bundle: String,
+        bundle: Hex,
     },
     Disconnect,
 }
-/// Malformed hex becomes empty bytes, which the server or worker rejects.
-fn unhex(text: &str) -> Vec<u8> {
-    hex::decode(text).unwrap_or_default()
+/// Bytes written as hex; malformed hex fails the command.
+#[derive(Deserialize)]
+#[serde(try_from = "String")]
+struct Hex(Vec<u8>);
+impl TryFrom<String> for Hex {
+    type Error = hex::FromHexError;
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        hex::decode(text).map(Hex)
+    }
 }
 fn message_json(message: &v1::Message) -> serde_json::Value {
     let author = message.author.clone().unwrap_or_default();
@@ -460,16 +466,14 @@ async fn offline(
                 device_name,
             }) => CryptoRequest::LinkJoin {
                 code,
-                pake: unhex(&pake),
+                pake: pake.0,
                 device_name: device_name.unwrap_or_else(|| format!("{username} (nuschl-cli)")),
             },
             Ok(Input::LinkApprove { pake, device_keys }) => CryptoRequest::LinkApprove {
-                pake: unhex(&pake),
-                device_keys: unhex(&device_keys),
+                pake: pake.0,
+                device_keys: device_keys.0,
             },
-            Ok(Input::LinkComplete { bundle }) => CryptoRequest::LinkComplete {
-                bundle: unhex(&bundle),
-            },
+            Ok(Input::LinkComplete { bundle }) => CryptoRequest::LinkComplete { bundle: bundle.0 },
             Ok(Input::IdentityOwn) => CryptoRequest::Identity,
             Ok(Input::Disconnect) => break,
             Ok(_) => {
@@ -849,10 +853,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     key,
                 }) => Command::Nuschl(NuschlRequest::Send(v1::ChatSend {
                     request_id,
-                    conversation: unhex(&conversation),
+                    conversation: conversation.0,
                     idempotency_key: key
-                        .map(|key| unhex(&key))
-                        .unwrap_or_else(|| connection::random_key().to_vec()),
+                        .map_or_else(|| connection::random_key().to_vec(), |key| key.0),
                     format: v1::Format::Text as i32,
                     content,
                     reply_to: 0,
@@ -874,7 +877,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     };
                     Command::Nuschl(NuschlRequest::History(v1::HistoryRequest {
                         request_id,
-                        conversation: unhex(&conversation),
+                        conversation: conversation.0,
                         anchor: Some(anchor),
                         limit,
                     }))
@@ -884,7 +887,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     conversations,
                 }) => Command::Nuschl(NuschlRequest::Subscribe(v1::Subscribe {
                     request_id,
-                    conversations: conversations.iter().map(|id| unhex(id)).collect(),
+                    conversations: conversations.into_iter().map(|id| id.0).collect(),
                 })),
                 Ok(Input::ChatEdit {
                     request_id,
@@ -893,7 +896,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     content,
                 }) => Command::Nuschl(NuschlRequest::Edit(v1::ChatEdit {
                     request_id,
-                    conversation: unhex(&conversation),
+                    conversation: conversation.0,
                     target,
                     format: v1::Format::Text as i32,
                     content,
@@ -904,12 +907,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     target,
                 }) => Command::Nuschl(NuschlRequest::Delete(v1::ChatDelete {
                     request_id,
-                    conversation: unhex(&conversation),
+                    conversation: conversation.0,
                     target,
                 })),
                 Ok(Input::Typing { conversation }) => {
                     Command::Nuschl(NuschlRequest::Typing(v1::Typing {
-                        conversation: unhex(&conversation),
+                        conversation: conversation.0,
                         session: 0,
                     }))
                 }
@@ -922,28 +925,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 })),
                 Ok(Input::ReadMarker { conversation, seq }) => {
                     Command::Nuschl(NuschlRequest::ReadMarker(v1::ReadMarker {
-                        conversation: unhex(&conversation),
+                        conversation: conversation.0,
                         seq,
                     }))
                 }
                 Ok(Input::ListDirect { request_id }) => {
                     Command::Nuschl(NuschlRequest::ListDirect(v1::ListDirect { request_id }))
                 }
-                Ok(Input::DirectText { conversation, body }) => {
-                    match <[u8; 16]>::try_from(unhex(&conversation).as_slice()) {
-                        Ok(id) => Command::SendText {
-                            target: TextTarget::DirectConversation(id),
-                            body,
-                            expected_peer: None,
-                        },
-                        Err(_) => {
-                            let _ = output(
-                                json!({"kind":"error", "message":"conversation must be 32 hex digits"}),
-                            );
-                            continue;
-                        }
+                Ok(Input::DirectText { conversation, body }) => match account(&conversation) {
+                    Some(id) => Command::SendText {
+                        target: TextTarget::DirectConversation(id),
+                        body,
+                        expected_peer: None,
+                    },
+                    None => {
+                        let _ = output(
+                            json!({"kind":"error", "message":"conversation must be 32 hex digits"}),
+                        );
+                        continue;
                     }
-                }
+                },
                 Ok(Input::PluginAccept { accept }) => Command::AcceptPluginData(accept),
                 Ok(Input::PluginData {
                     request,
@@ -1040,4 +1041,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     output(json!({"kind":"disconnected", "message":"Disconnected"}))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Input;
+
+    #[test]
+    fn malformed_hex_fails_the_command() {
+        let typing = |conversation: &str| {
+            serde_json::from_value::<Input>(
+                serde_json::json!({"kind": "typing", "conversation": conversation}),
+            )
+        };
+        assert!(
+            matches!(typing("00ff"), Ok(Input::Typing { conversation }) if conversation.0 == [0, 255])
+        );
+        assert!(typing("0g").is_err());
+    }
 }
