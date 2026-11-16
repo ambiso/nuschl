@@ -6,6 +6,7 @@ use std::{io, path::Path, time::Duration};
 use nuschl_core::MessageDocument;
 pub use nuschl_sandbox::PreviewOperation;
 use nuschl_sandbox::{Role, Worker};
+use serde::de::DeserializeOwned;
 use thiserror::Error;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -13,8 +14,8 @@ use tokio::{
 };
 
 use crate::{
-    ContentRequest, ContentResponse, EncodedImage, Envelope, MAX_FRAME_BYTES, PROTOCOL_VERSION,
-    PreparedContent, write_frame,
+    ContentRequest, ContentResponse, EncodedImage, Envelope, MAX_FRAME_BYTES, PreparedContent,
+    write_frame,
 };
 
 pub mod preview_lifecycle;
@@ -263,7 +264,7 @@ async fn bounded_content_request(
                     io::Result::Ok(())
                 };
                 let read = async {
-                    let reply = read_thumbnail_reply(&mut output, maximum).await?;
+                    let reply = read_reply::<ContentResponse>(&mut output, maximum).await?;
                     if reply.request_id != 1 {
                         return Err(Error::InvalidResponse);
                     }
@@ -305,23 +306,6 @@ async fn bounded_content_request(
         None => nuschl_sandbox::reap(&mut child).await,
     }
     reply
-}
-
-async fn read_thumbnail_reply(
-    output: &mut tokio::process::ChildStdout,
-    maximum: usize,
-) -> Result<Envelope<ContentResponse>, Error> {
-    let size = output.read_u32().await? as usize;
-    if size == 0 || size > maximum {
-        return Err(Error::Frame(crate::Error::TooLarge));
-    }
-    let mut bytes = vec![0; size];
-    output.read_exact(&mut bytes).await?;
-    let response: Envelope<ContentResponse> = serde_json::from_slice(&bytes)?;
-    if response.version != PROTOCOL_VERSION {
-        return Err(Error::InvalidResponse);
-    }
-    Ok(response)
 }
 
 fn validated_thumbnail(
@@ -638,9 +622,12 @@ async fn converse(
         };
         let read = async {
             for budget in budgets {
-                let reply = timeout(Duration::from_secs(*budget), read_reply(&mut output))
-                    .await
-                    .map_err(|_| Error::Timeout)??;
+                let reply = timeout(
+                    Duration::from_secs(*budget),
+                    read_reply::<ContentResponse>(&mut output, MAX_FRAME_BYTES),
+                )
+                .await
+                .map_err(|_| Error::Timeout)??;
                 if reply.request_id != results.len() as u64 + 1 {
                     return Err(Error::InvalidResponse);
                 }
@@ -675,20 +662,20 @@ async fn converse(
     outcome
 }
 
-async fn read_reply(
+/// A worker's reply of at most `maximum` bytes. A closed pipe stays
+/// [`Error::Io`]; another protocol version is an invalid response.
+pub(crate) async fn read_reply<T: DeserializeOwned>(
     output: &mut tokio::process::ChildStdout,
-) -> Result<Envelope<ContentResponse>, Error> {
-    let size = output.read_u32().await? as usize;
-    if size > MAX_FRAME_BYTES {
-        return Err(Error::Frame(crate::Error::TooLarge));
-    }
-    let mut bytes = vec![0; size];
-    output.read_exact(&mut bytes).await?;
-    let reply: Envelope<ContentResponse> = serde_json::from_slice(&bytes)?;
-    if reply.version != PROTOCOL_VERSION {
-        return Err(Error::InvalidResponse);
-    }
-    Ok(reply)
+    maximum: usize,
+) -> Result<Envelope<T>, Error> {
+    crate::read_frame_async(output, maximum)
+        .await
+        .map_err(|error| match error {
+            crate::Error::Io(error) => Error::Io(error),
+            crate::Error::Json(error) => Error::Json(error),
+            crate::Error::Version(_) => Error::InvalidResponse,
+            error @ crate::Error::TooLarge => Error::Frame(error),
+        })
 }
 #[cfg(test)]
 mod thumbnail_validation_tests {

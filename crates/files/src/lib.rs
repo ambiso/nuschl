@@ -914,10 +914,6 @@ mod tests {
         finish(hash)
     }
 
-    fn hex_of(hash: &Hash) -> String {
-        hash.iter().map(|byte| format!("{byte:02x}")).collect()
-    }
-
     /// The BEP 52 tree from its definition, written apart from the code above: SHA-256
     /// leaves of 16 KiB blocks, zero leaves up to a power of two, nodes
     /// `SHA-256(left || right)`, recursively. Subtree hashes are remembered, so that
@@ -1125,7 +1121,7 @@ mod tests {
             tree.pieces_root().to_string(),
             "f5ec81805c832fe6e9f01bb4faa536d11092746a30a10a2a86138f2f056d35e5"
         );
-        let layer: Vec<String> = tree.piece_layer().iter().map(hex_of).collect();
+        let layer: Vec<String> = tree.piece_layer().iter().map(hex::encode).collect();
         assert_eq!(
             layer,
             [
@@ -1168,7 +1164,7 @@ mod tests {
             "babf8fac8beb11bc9c94087a99d14a264a3c73fd62d40e27d9346f5c31b39dd5"
         );
         assert_eq!(
-            hex_of(&sha(&[&tree.piece_layer().concat()])),
+            hex::encode(sha(&[&tree.piece_layer().concat()])),
             "554137285d65b3b9139e36622935a02f009e537e4373b5378fd6eca023d876f2"
         );
         assert_eq!(

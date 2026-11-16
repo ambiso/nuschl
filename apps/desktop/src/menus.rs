@@ -931,7 +931,7 @@ impl Desktop {
                 if mine {
                     entries.push(item("Edit comment…", "pencil", move |this, index, window, cx| {
                         let current = this.client.servers[index].users.get(&session).and_then(|user| user.comment.clone()).unwrap_or_default();
-                        this.open_prompt(index, PromptAction::Comment, "Your comment", "Shown to others in your profile. Plain text; line breaks are kept.", strip_tags(&current), window, cx);
+                        this.open_prompt(index, PromptAction::Comment, "Your comment", "Shown to others in your profile. Plain text; line breaks are kept.", nuschl_legacy_html::html_text(&current, '\n'), window, cx);
                     }));
                     if user.user_id.is_none() && server.may_try(0, perm::SELF_REGISTER) {
                         entries.push(item(
@@ -1593,7 +1593,7 @@ impl Desktop {
                 .channels
                 .iter()
                 .find(|entry| entry.target == TextTarget::Channel(id))?;
-            path.push(percent_encode(&view.name));
+            path.push(nuschl_core::percent::encode(&view.name, ""));
             current = view.parent;
             if path.len() > 64 {
                 return None;
@@ -1637,7 +1637,8 @@ impl Desktop {
         });
         let description = cx.new(|cx| {
             crate::state::accessible(
-                InputState::new(window, cx).default_value(strip_tags(&view.description_raw)),
+                InputState::new(window, cx)
+                    .default_value(nuschl_legacy_html::html_text(&view.description_raw, '\n')),
                 "Channel description",
                 false,
                 false,
@@ -1828,55 +1829,6 @@ fn people_entries(
             );
         },
     ));
-}
-
-/// Plain text from Mumble's HTML for editing fields. Display goes through the content worker.
-pub fn strip_tags(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    let mut tag = String::new();
-    for c in html.chars() {
-        match c {
-            '<' => {
-                in_tag = true;
-                tag.clear();
-            }
-            '>' if in_tag => {
-                in_tag = false;
-                let name = tag
-                    .trim_start_matches('/')
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("")
-                    .to_ascii_lowercase();
-                if matches!(name.trim_end_matches('/'), "br" | "p" | "div") {
-                    out.push('\n');
-                }
-            }
-            _ if in_tag => tag.push(c),
-            _ => out.push(c),
-        }
-    }
-    out.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .trim()
-        .to_string()
-}
-
-fn percent_encode(segment: &str) -> String {
-    segment
-        .bytes()
-        .map(|byte| match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                (byte as char).to_string()
-            }
-            other => format!("%{other:02X}"),
-        })
-        .collect()
 }
 
 struct MenuSurfaceState {
@@ -2258,23 +2210,6 @@ pub fn prompt(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
         cx,
         |this| this.prompt = None,
     ))
-}
-
-#[cfg(test)]
-mod tests {
-    // Not `super::*`: that glob includes GPUI's `test` macro, which shadows `#[test]`.
-    use super::{percent_encode, strip_tags};
-    #[test]
-    fn strips_mumble_html_for_editing() {
-        assert_eq!(
-            strip_tags("<p>Hi <b>there</b><br/>line&amp;more</p>"),
-            "Hi there\nline&more"
-        );
-    }
-    #[test]
-    fn encodes_url_path_segments() {
-        assert_eq!(percent_encode("Dev Talk/ü"), "Dev%20Talk%2F%C3%BC");
-    }
 }
 
 #[cfg(test)]

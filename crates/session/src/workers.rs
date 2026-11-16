@@ -3,15 +3,15 @@
 use crate::Error;
 use nuschl_core::{ChatMessage, HistoryPage, SearchCursor, SearchPage, ServerRecord};
 use nuschl_ipc::{
-    Envelope, LiveMediaEvent, LiveMediaRequest, MAX_FRAME_BYTES, PROTOCOL_VERSION, StorageRequest,
-    StorageResponse, TransferEvent, TransferRequest, write_frame,
+    Envelope, LiveMediaEvent, LiveMediaRequest, MAX_FRAME_BYTES, StorageRequest, StorageResponse,
+    TransferEvent, TransferRequest, read_frame_async, write_frame,
 };
 use nuschl_sandbox::{Role, Worker};
-use serde::{Serialize, de::DeserializeOwned};
+use serde::Serialize;
 use std::path::Path;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    process::{ChildStdin, ChildStdout},
+    io::AsyncWriteExt,
+    process::ChildStdin,
     sync::mpsc,
     time::{Duration, timeout},
 };
@@ -42,7 +42,8 @@ impl Storage {
         let id = self.request_id;
         let exchange = async {
             send(&mut self.worker.input, &Envelope::new(id, payload)).await?;
-            let response: Envelope<StorageResponse> = receive(&mut self.worker.output).await?;
+            let response: Envelope<StorageResponse> =
+                read_frame_async(&mut self.worker.output, MAX_FRAME_BYTES).await?;
             if response.request_id != id {
                 return Err(Error::Worker("storage response ID mismatch".into()));
             }
@@ -305,7 +306,9 @@ impl Media {
             // The worker lives exactly as long as this task holds its containment.
             let _containment = containment;
             let mut reader = tokio::spawn(async move {
-                while let Ok(frame) = receive::<LiveMediaEvent>(&mut output).await {
+                while let Ok(frame) =
+                    read_frame_async::<LiveMediaEvent>(&mut output, MAX_FRAME_BYTES).await
+                {
                     if events_tx.send(frame.payload).await.is_err() {
                         break;
                     }
@@ -377,7 +380,9 @@ impl Transfer {
         let task = tokio::spawn(async move {
             let _containment = containment;
             let mut reader = tokio::spawn(async move {
-                while let Ok(frame) = receive::<TransferEvent>(&mut output).await {
+                while let Ok(frame) =
+                    read_frame_async::<TransferEvent>(&mut output, MAX_FRAME_BYTES).await
+                {
                     if events_tx.send(frame.payload).await.is_err() {
                         break;
                     }
@@ -417,23 +422,9 @@ impl Drop for Transfer {
 
 async fn send<T: Serialize>(input: &mut ChildStdin, frame: &Envelope<T>) -> Result<(), Error> {
     let mut bytes = Vec::new();
-    write_frame(&mut bytes, frame).map_err(|e| Error::Worker(e.to_string()))?;
+    write_frame(&mut bytes, frame)?;
     timeout(Duration::from_secs(3), input.write_all(&bytes))
         .await
         .map_err(|_| Error::Timeout("writing to worker"))??;
     Ok(())
-}
-async fn receive<T: DeserializeOwned>(output: &mut ChildStdout) -> Result<Envelope<T>, Error> {
-    let size = output.read_u32().await? as usize;
-    if size > MAX_FRAME_BYTES {
-        return Err(Error::Worker("oversized worker response".into()));
-    }
-    let mut bytes = vec![0; size];
-    output.read_exact(&mut bytes).await?;
-    let response: Envelope<T> =
-        serde_json::from_slice(&bytes).map_err(|e| Error::Worker(e.to_string()))?;
-    if response.version != PROTOCOL_VERSION {
-        return Err(Error::Worker("worker protocol mismatch".into()));
-    }
-    Ok(response)
 }
