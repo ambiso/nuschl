@@ -17,14 +17,19 @@ negation. State constraints as direct rules.
 - Use memory-safe Rust. First-party crates keep `unsafe_code = "forbid"` and the
   workspace Clippy rules; SECURITY.md lists the only exceptions. A safe wrapper
   around unsafe code still needs a review of its features and transitive code.
-- Parse untrusted content (codecs, images, HTML, formulas) only in the isolated
-  workers SECURITY.md names. Only a separate, confined process isolates; extend
-  an exception only by changing SECURITY.md with the owner.
+- Decode untrusted content (codecs, images, HTML, formulas) in the workers
+  SECURITY.md names. A worker's OS limits bound its memory, CPU and time; code
+  inside it adds limits only where correctness or latency needs them. When a
+  worker crashes or hits a limit, the request it held fails without a retry,
+  restarts back off, and after repeated crashes the supervisor stops and tells
+  the user. Native or unsafe code beyond
+  SECURITY.md's exceptions needs a SECURITY.md change with the owner.
 - Workers get a fixed executable and arguments, versioned bounded framing, and
   only the files, network, devices and environment their role needs. Fail closed
   when confinement, helper discovery or validation fails.
-- Bound inputs and aggregate outputs: bytes, items, decoded pixels, queued work,
-  memory, CPU and time. Validate a reply before allocating from its lengths.
+- Trusted code bounds what it reads: one frame limit for worker replies and the
+  protocol's limits for network input. Validate a reply before allocating from
+  its lengths.
 - Bind asynchronous results to the connection, conversation and request that
   started them; a result updates only the target it was requested for.
 - Keep a child's process credit until it is reaped, also after a requested kill.
