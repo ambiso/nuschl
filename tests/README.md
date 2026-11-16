@@ -37,12 +37,22 @@ across the restart). The module test also checks actual codec child
 PID/network namespaces, role arguments, credential/environment/FD absence and
 address-space bounds. Non-mutating checks under the service UID verify empty
 effective capabilities and unwritable host sysctl/sysrq paths. The fixture uses
-restricted VM networking and no host audio devices. Separate launcher canaries and
-actual child role/framing tests are described in
-[musicbot.md](../docs/musicbot.md). `musicbot_artwork.py` adds actual HTTP
-cancellation/reaping and packaged cover image checks at phone/desktop widths;
-`musicbot_artwork_boundary.py` checks the confined thumbnail helper's malformed,
-size, deadline and missing-helper boundaries. These use generated art only.
+restricted VM networking and no host audio devices. The standalone run decodes
+the bot's Opus with the reference libopus. The module evaluation in
+`nix/vm-musicbot.nix` checks that inline ACL tokens are refused.
+`musicbot_artwork.py` checks packaged cover images at phone/desktop widths
+with generated art.
+
+The confined workers' integration tests run with `cargo test` and in the
+`<crate>-unit` checks, with fixtures from `nuschl-testkit`
+(`crates/testkit`). `apps/content-worker/tests/thumbnail.rs` drives the cover
+thumbnail supervisor against the real content worker and a faulty one:
+malformed, duplicate and oversized replies, crashes, a worker that stays after
+its reply, a caller that stops waiting, missing sandbox programs and an image
+wider than the decoder admits. `apps/musicbot-codec-worker/tests/confined.rs`
+covers the codec roles and a canary child started by the bot's launcher: files
+outside it are hidden, loopback connections fail and its environment holds only
+`PWD`.
 Windows/macOS runtime confinement remains outside this proof.
 
 The iOS app track is cancelled/deferred by the user; its stopped environment experiment is documented in [ios-vm.md](../docs/ios-vm.md).

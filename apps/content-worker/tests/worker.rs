@@ -93,10 +93,11 @@ async fn a_burst_of_received_messages_prepares_in_order_in_one_worker() {
     }
 }
 
+/// A 2×2 RGB PNG.
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x02\0\0\0\x02\x08\x02\0\0\0\xfd\xd4\x9as\0\0\0\x12IDATx\x9cc\xf8\xcf\xc0\xc0\0\xc2\x0c\xff\x81\0\0\x1f\xee\x05\xfb\x0b\xd9h\x8b\0\0\0\0IEND\xaeB`\x82";
+
 #[tokio::test]
 async fn a_pasted_image_becomes_a_stock_mumble_image_message() {
-    // A 2×2 RGB PNG.
-    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x02\0\0\0\x02\x08\x02\0\0\0\xfd\xd4\x9as\0\0\0\x12IDATx\x9cc\xf8\xcf\xc0\xc0\0\xc2\x0c\xff\x81\0\0\x1f\xee\x05\xfb\x0b\xd9h\x8b\0\0\0\0IEND\xaeB`\x82";
     let encoded = nuschl_ipc::host::encode_image(worker(), PNG, 131_072)
         .await
         .unwrap();
@@ -125,6 +126,22 @@ async fn a_pasted_image_becomes_a_stock_mumble_image_message() {
         nuschl_ipc::host::encode_image(worker(), b"GIF89a, but not really", 131_072).await,
         Err(nuschl_ipc::host::Error::Rejected(_))
     ));
+}
+
+/// The music bot's covers, through the thumbnail supervisor.
+#[tokio::test]
+async fn a_cover_becomes_a_png_thumbnail_and_unreadable_art_is_refused() {
+    use base64::Engine as _;
+    let thumbnail = |image| nuschl_ipc::host::thumbnail(worker(), image, 400, 400);
+    let made = thumbnail(PNG).await.unwrap();
+    assert_eq!((made.width, made.height), (2, 2));
+    let refused = |result| matches!(result, Err(nuschl_ipc::host::Error::InvalidResponse));
+    assert!(refused(thumbnail(b"not an image").await));
+    // An 8192×1 RGB PNG, wider than the decoder admits.
+    let wide = base64::engine::general_purpose::STANDARD
+        .decode("iVBORw0KGgoAAAANSUhEUgAAIAAAAAABCAIAAAD5Kbc3AAAAL0lEQVR42u3BMQEAAADCoPVPbQhfoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgNsAYAEAASOdEqQAAAAASUVORK5CYII=")
+        .unwrap();
+    assert!(refused(thumbnail(&wide).await));
 }
 
 /// `cargo test -p nuschl-content-worker --test worker -- --ignored --nocapture`

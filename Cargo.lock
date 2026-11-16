@@ -7269,6 +7269,7 @@ dependencies = [
  "base64 0.22.1",
  "nuschl-core",
  "nuschl-sandbox",
+ "nuschl-testkit",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -7391,6 +7392,7 @@ dependencies = [
  "nuschl-core",
  "nuschl-ipc",
  "nuschl-protocol",
+ "nuschl-testkit",
  "opus-pure",
  "rubato",
  "symphonia",
@@ -7500,6 +7502,14 @@ dependencies = [
  "nuschl-ipc",
  "nuschl-sandbox-windows",
  "nuschl-storage",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "nuschl-testkit"
+version = "0.2.0"
+dependencies = [
  "tempfile",
  "tokio",
 ]
