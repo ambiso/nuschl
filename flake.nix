@@ -362,6 +362,61 @@
         # The desktop package from per-crate derivations (crate2nix): a change
         # rebuilds only the crates that depend on it.
         crates = import ./nix/crate2nix.nix { inherit pkgs toolchain; };
+        # One `<crate>-unit` check per workspace member, generated from the
+        # member list, so a member starts with its unit tests running in
+        # `ci`. unitExtras gives a member's leaf the test inputs it needs;
+        # unitOptOut moves a member's tests to where they run.
+        unitExtras = {
+          nuschl-sandbox.testInputs = [ pkgs.bubblewrap pkgs.util-linux ];
+          nuschl-ipc.testInputs = [ pkgs.bubblewrap pkgs.util-linux ];
+          nuschl-content-worker.testInputs = [ pkgs.bubblewrap pkgs.util-linux ];
+          nuschl-musicbot-codec-worker.testInputs = [ pkgs.bubblewrap pkgs.util-linux ];
+          # The math worker's confinement tests spawn sandboxed workers, and
+          # the CLI's e2ee tests run the crypto worker through the sandbox.
+          nuschl-math-worker.testInputs = [ pkgs.bubblewrap pkgs.util-linux ];
+          nuschl-cli.testInputs = [ pkgs.bubblewrap pkgs.util-linux ];
+          nuschl-crypto-worker.testInputs = [ pkgs.bubblewrap pkgs.util-linux ];
+          # The signer's tests need its feature; the default build has none.
+          nuschl-update-worker.features = [ "signer" ];
+          nuschl-link-preview.testInputs = [ pkgs.python3 ];
+          # One throwaway server in the build directory, on a unix socket
+          # there; nothing listens on the network. The ignored checks run too.
+          nuschl-storage = {
+            testInputs = [ pkgs.postgresql ];
+            testCrateFlags = [ "--include-ignored" ];
+            testPreRun = ''
+              export NUSCHL_PG="$(pwd)/postgres"
+              # Runs before each test binary; the first one creates the server.
+              fresh=
+              if [ ! -d "$NUSCHL_PG" ]; then
+                initdb --auth=trust --no-locale --username=postgres \
+                  --pgdata="$NUSCHL_PG" > initdb.log 2>&1
+                fresh=1
+              fi
+              pg_ctl --pgdata="$NUSCHL_PG" --log="$NUSCHL_PG/server.log" \
+                --options="-k $NUSCHL_PG -c listen_addresses=" --wait start
+              [ -z "$fresh" ] || createdb --host="$NUSCHL_PG" --username=postgres nuschl_test
+              export NUSCHL_TEST_POSTGRES_URL="postgresql:///nuschl_test?host=$NUSCHL_PG&user=postgres"
+            '';
+            testPostRun = ''
+              pg_ctl --pgdata="$NUSCHL_PG" stop
+            '';
+          };
+          nuschl-storage-worker.testInputs = [ pkgs.postgresql ];
+        };
+        unitOptOut = {
+          # These run on another platform or target.
+          nuschl-sandbox-windows = "Windows adapter; the tests run under Miri (`just miri`)";
+          # Fix the named blocker, then remove the entry. The cover cache's
+          # fix is the sibling change "musicbot: rank the cover cache by its
+          # persisted write time".
+          nuschl-musicbot = "pending the cover-cache restart flake";
+        };
+        unitChecks = lib.mapAttrs'
+          (name: member:
+            lib.nameValuePair "${name}-unit"
+              (member.build.override ({ runTests = true; } // unitExtras.${name} or { })))
+          (removeAttrs crates.project.workspaceMembers (lib.attrNames unitOptOut));
         # Explicit operator/CI tool; never included in client worker payloads.
         updateSigner = crates.project.workspaceMembers."nuschl-update-worker".build.override {
           features = [ "signer" ];
@@ -695,23 +750,8 @@
               cargoClippyExtraArgs = "--all-targets -- --deny warnings";
             }
           );
-          update-ipc-policy = crates.project.workspaceMembers."nuschl-ipc".build.override {
-            runTests = true;
-            testInputs = [
-              pkgs.bubblewrap
-              pkgs.util-linux
-            ];
-          };
-          # The launch commands each role gets; their builder needs the helpers on PATH.
-          sandbox-unit = crates.project.workspaceMembers."nuschl-sandbox".build.override {
-            runTests = true;
-            testInputs = [
-              pkgs.bubblewrap
-              pkgs.util-linux
-            ];
-          };
-          # exchange.rs has its own main (harness=false); the unit-test leaf
-          # alone compiles it under libtest and reports zero tests.
+          # exchange.rs has its own main (harness = false) and its own check;
+          # the unit-test leaf compiles it under libtest and reports zero tests.
           ipc-exchange = import ./nix/ipc-exchange-check.nix {
             inherit pkgs toolchain;
             ipc = crates.project.workspaceMembers."nuschl-ipc".build;
@@ -721,41 +761,6 @@
               inherit name path;
             }) self.checks.${system}.ipc-exchange.negativeControls
           );
-          update-unit = crates.project.workspaceMembers."nuschl-update".build.override { runTests = true; };
-          # Scoped unit-test leaves over the cached per-crate graph (no Cargo target).
-          desktop-unit = crates.project.workspaceMembers."nuschl".build.override { runTests = true; };
-          core-unit = crates.project.workspaceMembers."nuschl-core".build.override { runTests = true; };
-          protocol-unit = crates.project.workspaceMembers."nuschl-protocol".build.override {
-            runTests = true;
-          };
-          client-unit = crates.project.workspaceMembers."nuschl-client".build.override {
-            runTests = true;
-          };
-          session-unit = crates.project.workspaceMembers."nuschl-session".build.override {
-            runTests = true;
-          };
-          content-worker-unit = crates.project.workspaceMembers."nuschl-content-worker".build.override {
-            runTests = true;
-            testInputs = [
-              pkgs.bubblewrap
-              pkgs.util-linux
-            ];
-          };
-          content-unit = crates.project.workspaceMembers."nuschl-content".build.override {
-            runTests = true;
-          };
-          link-preview-unit = crates.project.workspaceMembers."nuschl-link-preview".build.override {
-            runTests = true;
-            testInputs = [ pkgs.python3 ];
-          };
-          server-unit = crates.project.workspaceMembers."nuschld".build.override { runTests = true; };
-          media-unit = crates.project.workspaceMembers."nuschl-media-worker".build.override {
-            runTests = true;
-          };
-          update-crypto = crates.project.workspaceMembers."nuschl-update-worker".build.override {
-            features = [ "signer" ];
-            runTests = true;
-          };
           fmt = craneLib.cargoFmt { inherit src; };
           deny = craneLib.cargoDeny (
             common
@@ -795,7 +800,7 @@
               cp ${pkgs.writeText "nuschl-sandbox-audit.toml" "[yanked]\nenabled = false\n"} .cargo/audit.toml
             '';
           };
-        }
+        } // unitChecks
         // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
           let
             homeManagerChecks = import ./nix/home-manager-test.nix {
