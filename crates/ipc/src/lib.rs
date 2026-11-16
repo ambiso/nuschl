@@ -321,7 +321,7 @@ pub fn read_frame_within<T: DeserializeOwned>(
 }
 
 /// Async [`read_frame_within`] for a worker's replies; a closed pipe is an
-/// [`Error::Io`], not `None`.
+/// [`Error::Io`].
 pub async fn read_frame_async<T: DeserializeOwned>(
     reader: &mut (impl AsyncRead + Unpin),
     maximum: usize,

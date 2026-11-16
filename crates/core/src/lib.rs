@@ -327,7 +327,7 @@ impl PreviewPolicy {
 /// the file extension for its type, from at most [`MAX_CONTENT_BYTES`] of
 /// payload. Stock Mumble percent-encodes the base64 text (`+` as %2B, `/` as
 /// %2F, `=` as %3D) and wraps it every 72 characters (Log::imageToImg). The
-/// image format itself is not parsed here.
+/// image bytes are returned undecoded.
 pub fn data_uri_image(uri: &str) -> Option<(Vec<u8>, &'static str)> {
     let rest = uri.trim().strip_prefix("data:image/")?;
     let (kind, payload) = rest.split_once(";base64,")?;
@@ -349,7 +349,7 @@ pub fn data_uri_image(uri: &str) -> Option<(Vec<u8>, &'static str)> {
 }
 
 /// Wall-clock Unix time in milliseconds: 0 before 1970, saturating far in the
-/// future. Not in browsers, where the system clock is unavailable.
+/// future. Native targets only.
 #[cfg(not(target_family = "wasm"))]
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()

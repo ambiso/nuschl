@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 //! Files the server creates with a fixed Unix mode: keys, passwords, exports
-//! and the SQLite database. Elsewhere the mode is ignored.
+//! and the SQLite database. The mode applies on Unix.
 
 use std::{
     fs::OpenOptions,
