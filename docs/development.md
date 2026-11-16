@@ -31,7 +31,7 @@ the `stable` channel independently of `flake.lock`. Commits are made with `jj`.
 | `just vm-driver --root ROOT DRIVER` | a built NixOS test driver run by hand, with all VM state on disk (below) |
 | `just vm-driver-check` | the hand runner's and its pre-boot guard's tests, without a VM |
 | `just test-postgres` | the storage worker on a throwaway PostgreSQL |
-| `just fuzz <target> [seconds]` | a libFuzzer target from `fuzz/` (`just fuzz-list` lists them; SECURITY.md, "Fuzzing") |
+| `just fuzz <target> [seconds]` | a libFuzzer target from `fuzz/` ([below](#fuzzing)) |
 | `just miri` | the Windows sandbox adapter's unit tests under Miri |
 | `just rtc` | the WebRTC trial with the worker's Opus (below) |
 | `just readme-screenshot` | the picture at the top of the README (`tests/readme_screenshot.py`) |
@@ -138,6 +138,36 @@ one. This removes workspace outputs while retaining third-party dependencies;
 do not clean another agent's build or the shared artifact source. Confirm from the
 build log that the intended workspace packages were checked or compiled. Record
 the source revision, seed artifact, command and result with the evidence.
+
+## Fuzzing
+
+`fuzz/` is a cargo-fuzz workspace of its own; its committed lock is the main lock
+cut down. `just fuzz <target> [seconds] [libFuzzer flags]` runs one target in the
+flake's fuzz shell (`nix develop .#fuzz`: the newest nightly in the pinned
+rust-overlay, and cargo-fuzz) from `fuzz/seeds/<target>` into `fuzz/corpus/<target>`,
+with debug assertions, 10 seconds per input and 2 GiB of memory. Findings land in
+`fuzz/artifacts/<target>`; corpus and artifacts stay uncommitted. Targets build
+without a sanitizer, which safe Rust does not need and which costs three quarters
+of the speed; `FUZZ_SANITIZER=address` checks the unsafe code in dependencies
+(html5ever, the image decoders), for example over a corpus with
+`just fuzz <target> 0 -runs=0`. Rerun a finding with `nix develop .#fuzz -c cargo
+fuzz run --fuzz-dir fuzz -s none -a <target> fuzz/artifacts/<target>/<file>`, and
+minimise it with `cargo fuzz tmin`. [SECURITY.md](../SECURITY.md#fuzzing) has the
+rules for findings.
+
+| Targets | Input |
+| --- | --- |
+| `html`, `legacy_html`, `markdown` | legacy HTML, Markdown and plain messages into documents; text into the copy for stock clients and back |
+| `images`, `favicon` | avatars, website icons, `data:` and pasted images through the content worker's decoders; a website's page through the icon lookup |
+| `control_frames`, `server_messages`, `extension_messages`, `kt_messages` | frames and Mumble, extension and `kt/1` messages from several connections into nuschld's state; the crypto worker's IPC |
+| `client_messages` | a hostile server's frames into the client session's state |
+| `relay`, `crypt`, `voice`, `voice_playback` | voice: the server's relay, OCB2 decryption, the client's decoding, the media worker's jitter buffer and Opus decoder |
+| `identity`, `kt` | identity and key-transparency encodings and verifiers |
+| `mls` | MLS input from hostile peers: structural checks before OpenMLS, key packages, Welcome routing, `mls/1` messages |
+| `tunnel` | the web relay's tunnel frames and TLS shape checks |
+| `kt_witness` | witnessing's formats: C2SP signed notes, checkpoints and verifier keys, `WitnessedHead` through the client's check, the auditor's `AddEpochs` through its check and its state files |
+| `transfer_offer`, `mumble_url`, `policy_file` | file offers in messages, `mumble://` links and invites, `nuschl-policy.json` |
+| `math`, `math_tokens` | LaTeX through the converter, its check, Typst and the rasteriser; message text through the formula grammar |
 
 ## Emoji assets
 
