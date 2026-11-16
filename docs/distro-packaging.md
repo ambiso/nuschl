@@ -176,10 +176,10 @@ role-specific data paths; no whole `/etc` or home grant is proposed.
 The flake exposes these local validation artifacts on `x86_64-linux`:
 
 ```sh
-nix build --cores 2 --max-jobs 2 .#deb
-nix build --cores 2 --max-jobs 2 .#arch-bin
-nix build --cores 2 --max-jobs 2 .#deb-source .#deb-source-check
-nix build --cores 2 --max-jobs 2 \
+nix build .#deb
+nix build .#arch-bin
+nix build .#deb-source .#deb-source-check
+nix build \
   .#checks.x86_64-linux.distro-metadata \
   .#checks.x86_64-linux.distro-source-assets
 ```
@@ -209,7 +209,9 @@ The underlying library interfaces are:
   orig/Debian tarballs and `_source.changes`; its `debian/rules` compiles all nine
   executables offline, with verifier features built separately. Original icons
   and required corresponding-source archives are explicit quilt binary inputs;
-  no prebuilt application/helper is used as source.
+  no prebuilt application/helper is used as source. The orig tarball also carries
+  `emoji-assets/`, the pinned Twemoji images and picker data with their notices
+  (nix/emoji.nix, docs/emoji.md), where the desktop's build script reads them.
 
 The source upload redistributes more than a runtime package. `SOURCE-NOTICES.json`
 inventories every registry source, including build/dev and unselected-platform

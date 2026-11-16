@@ -56,8 +56,8 @@ OS before universal lipo and app signing. Existing complete notice scopes remain
 Build the engines independently:
 
 ```console
-nix build .#windows-update-ed25519 .#windows-update-mldsa44 --cores 2 --max-jobs 2
-nix build .#macos-x86_64-update-ed25519 .#macos-x86_64-update-mldsa44 .#macos-aarch64-update-ed25519 .#macos-aarch64-update-mldsa44 --cores 2 --max-jobs 2
+nix build .#windows-update-ed25519 .#windows-update-mldsa44
+nix build .#macos-x86_64-update-ed25519 .#macos-x86_64-update-mldsa44 .#macos-aarch64-update-ed25519 .#macos-aarch64-update-mldsa44
 python3 tests/build_cache_cross.py --artifacts --output /disk/new-cross-proof
 ```
 
