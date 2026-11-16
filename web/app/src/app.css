@@ -39,18 +39,18 @@ dialog{color:var(--text);background:var(--surface);border:1px solid var(--border
 .processing-list{display:grid;gap:6px;margin:0 0 10px;font-size:.78rem}.processing-list div{display:flex;justify-content:space-between;gap:12px;min-width:0}.processing-list dt{color:var(--muted);font-weight:600}.processing-list dd{margin:0;text-align:end;overflow-wrap:anywhere}.processing-list dd[data-state="on"]{color:var(--good)}.settings-section .processing-hint{color:var(--text)}
 
 /* Voice toggles (mute, deafen) as on the desktop: on is a red tint and a struck
-   icon, easing in 180 ms. Hover only where there is hover, and it never hides the
-   state; on touch a tap shows the new state, not a highlight. */
+   icon, easing in 180 ms. Hover applies on devices that hover and keeps the state
+   visible; on touch a tap shows the new state. */
 .voice-toggle{-webkit-tap-highlight-color:transparent;transition:background-color var(--toggle-time) var(--toggle-ease),color var(--toggle-time) var(--toggle-ease)}.voice-toggle[aria-pressed="true"]{color:var(--bad);background:color-mix(in srgb,var(--bad) 18%,transparent)}
 @media(hover:hover){.voice-toggle[aria-pressed="true"]:hover:not(:disabled){color:var(--bad);background:color-mix(in srgb,var(--bad) 28%,transparent)}}
 .icon .strike{stroke-width:2.2;stroke-dasharray:1 2;stroke-dashoffset:1;visibility:hidden;transition:stroke-dashoffset var(--toggle-time) var(--toggle-ease),visibility var(--toggle-time)}.icon.struck .strike{stroke-dashoffset:0;visibility:visible}
 
 /* The mobile drawer: its backdrop fades with the slide (App.svelte drawerSlide).
-   On phones a sideways drag on the chat is a drawer swipe, never the browser's
-   history swipe; once the drawer is open, a back swipe on it goes back as usual. */
+   On phones a sideways drag on the chat is a drawer swipe; the browser's history
+   swipe works while the drawer is open. */
 .navigation-drawer::backdrop{opacity:var(--drawer-shown,1)}
 @media(max-width:760px){.chat,.messages{touch-action:pan-y pinch-zoom}.navigation-drawer,.navigation-drawer .server-scroll,.navigation-drawer .channel-tree{touch-action:pan-y pan-left pinch-zoom}html:not(:has(.navigation-drawer[open])){overscroll-behavior-x:none}}
-/* Sideways drags past the end of code never turn into the history swipe. */
+/* Sideways drags past the end of code stay in the code block. */
 pre{overscroll-behavior-x:contain}
 /* Emoji (emoji.js, EmojiPicker.svelte): Twemoji in messages, the picker above the composer. */
 .emoji{display:inline-block;width:1.375em;height:1.375em;line-height:1.375em;vertical-align:-.3em;margin:0 .05em;overflow:hidden;white-space:nowrap;text-align:center;color:transparent;background:center/contain no-repeat}.emoji::selection{color:transparent}
