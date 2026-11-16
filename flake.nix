@@ -770,6 +770,15 @@
               cargoDenyChecks = "bans licenses sources";
             }
           );
+          # Unit tests of the browser modules outside the web build: content_window
+          # also reads the Rust content broker it checks against.
+          web-unit = pkgs.runCommand "nuschl-web-unit" { nativeBuildInputs = [ pkgs.nodejs ]; } ''
+            cd ${./.}
+            node --test tests/content_window.unit.mjs tests/sdk_rpc.unit.mjs tests/sdk_rpc_startup.unit.mjs \
+              tests/web_audio.unit.mjs tests/web_content.unit.mjs tests/share_links.mjs \
+              tests/web_output_quality.mjs tests/web_playout_clock.mjs
+            touch $out
+          '';
           # Every file under tests/ runs in a check or is listed in tests/local-only.txt (#313).
           tests-wired = pkgs.runCommand "nuschl-tests-wired" { } ''
             cd ${./.}
