@@ -30,10 +30,11 @@ Orca would and checks that:
   composer lands on the newest message and the arrow keys and Home walk to
   the oldest; Tab walks the newest message's links, each announced with its
   address, and a letter typed in the timeline goes to the composer;
-- with --gnome-shell: a prompt opened over Settings (Export…) keeps the
-  focus when Shift+Tab leaves its field, and no frame of the whole run has
-  two focused nodes or two active descendants (GPUI panics on that in debug
-  builds and logs it in release builds).
+- a prompt opened over Settings (Export…) holds the focus (with --gnome-shell
+  also through Shift+Tab out of its field) and alone takes presses; every
+  frame of the whole run has at most one focused node and one active
+  descendant (GPUI panics on more in debug builds and logs it in release
+  builds).
 
 Uses busctl for D-Bus calls, so no Python bindings are needed.
 """
@@ -293,8 +294,8 @@ class AccessibilityTest:
             print("Unmuted through the AT-SPI Action interface; the server saw it and the button became Mute.",
                   flush=True)
             self.check_shortcuts(nuschl)
+            self.check_stacked_dialogs(nuschl)
             if self.shell:
-                self.check_stacked_dialogs(nuschl)
                 self.check_attachments(nuschl)
                 self.check_word_deletion(nuschl, peer)
                 # Ctrl+K: the switcher's field names the result count and the
@@ -420,38 +421,41 @@ class AccessibilityTest:
               flush=True)
 
     def check_stacked_dialogs(self, nuschl):
-        """A prompt over Settings keeps the focus: Shift+Tab out of its field
-        returns it to the prompt, the dialog in front. Both dialogs once
-        tracked one focus handle, which then made both the focused node."""
+        """A prompt over Settings keeps the focus and takes the presses: with
+        --gnome-shell, Shift+Tab out of its field returns it to the prompt, the
+        dialog in front. Both dialogs once tracked one focus handle, which then
+        made both the focused node."""
         def named(role, name):
             return next((node for _, node, r, n in snapshot(nuschl) if r == role and n == name), None)
 
-        def in_prompt():
+        def prompt():
             nodes = snapshot(nuschl)
             start = next(index for index, (_, _, role, name) in enumerate(nodes)
                          if role == "dialog" and name == "Input")
             depth = nodes[start][0]
-            subtree = [nodes[start]] + list(takewhile(lambda entry: entry[0] > depth, nodes[start + 1:]))
-            return any(node.focused for _, node, _, _ in subtree)
+            return [nodes[start]] + list(takewhile(lambda entry: entry[0] > depth, nodes[start + 1:]))
+
+        def in_prompt():
+            return any(node.focused for _, node, _, _ in prompt())
 
         self.find(snapshot(nuschl), "push button", "Settings").press()
-        export = eventually(lambda: named("push button", "Export…"), "Settings has no Export… button", timeout=15)
-        # The Click action clicks the node's centre, which may be scrolled out
-        # of Settings' view; focus scrolls it into view.
-        assert export.call("Component", "GrabFocus")[0]
-        time.sleep(0.5)
-        self.shell.key("Return")
+        eventually(lambda: named("push button", "Export…"), "Settings has no Export… button", timeout=15).press()
         eventually(lambda: named("dialog", "Input"), "the export prompt did not open over Settings", timeout=15)
         eventually(in_prompt, "the prompt's field did not take the focus", timeout=10)
-        self.shell.chord("Shift_L", "Tab")
-        time.sleep(1)
-        eventually(in_prompt, "Shift+Tab took the focus out of the prompt", timeout=10)
+        if self.shell:
+            self.shell.chord("Shift_L", "Tab")
+            time.sleep(1)
+            eventually(in_prompt, "Shift+Tab took the focus out of the prompt", timeout=10)
         self.check_single_focus()
-        self.shell.key("Escape")
-        eventually(lambda: not named("dialog", "Input"), "Escape did not close the prompt", timeout=10)
-        self.shell.key("Escape")
-        eventually(lambda: not named("dialog", "Settings"), "Escape did not close Settings", timeout=10)
-        print("A prompt over Settings kept the focus through Shift+Tab.", flush=True)
+        # Settings' Done is behind the prompt.
+        named("push button", "Done").press()
+        time.sleep(1)
+        assert named("dialog", "Settings"), "Done acted behind the prompt"
+        self.find(prompt(), "push button", "Cancel").press()
+        eventually(lambda: not named("dialog", "Input"), "Cancel did not close the prompt", timeout=10)
+        named("push button", "Done").press()
+        eventually(lambda: not named("dialog", "Settings"), "Done did not close Settings", timeout=10)
+        print("A prompt over Settings kept the focus and the presses.", flush=True)
 
     def check_single_focus(self):
         """No frame so far had two focused nodes or two active descendants."""

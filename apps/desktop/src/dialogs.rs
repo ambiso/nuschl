@@ -27,7 +27,7 @@ fn activation(event: &KeyDownEvent) -> bool {
 /// built-in fallback clicks the node's centre instead, which misses (or hits
 /// another control) while a scroll region clips the button. As for keys
 /// (`keep_dialog_focus`) and the pointer (the backdrop), only controls inside
-/// an open dialog act.
+/// the dialog in front act.
 fn accessible_click<F>(
     action: Rc<F>,
     cx: &mut Context<Desktop>,
@@ -39,7 +39,12 @@ where
     move |control, window, cx| {
         entity
             .update(cx, |this, cx| {
-                if !this.dialog_open() || this.modal_focus.contains(control, window) {
+                if !this.dialog_open()
+                    || this
+                        .modal_seen
+                        .get()
+                        .is_some_and(|front| this.dialog_focus(front, cx).contains(control, window))
+                {
                     action(this, window, cx);
                 }
             })
