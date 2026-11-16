@@ -48,6 +48,8 @@ negation. State constraints as direct rules.
 - Validate/sanitize replies before allocating from advertised lengths or rendering.
   Use inert typed documents and validated pixels/masks, never executable HTML or
   worker-selected resource fetches. Keep links subject to the existing URL policy.
+  Raw pixels stay in-process or on the device; a browser served over the
+  network receives a bounded PNG re-encoded by the worker.
 - Bind asynchronous results to their original connection/conversation, generation,
   source/revision and request. Obsolete results cannot repaint or mutate a new target.
 - Cancellation or a requested kill is not confirmed child exit. Retain process and
