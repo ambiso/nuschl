@@ -80,6 +80,8 @@ lack an AT-SPI Text counterpart. Pixel and geometry JSON is scoped to the actual
 tested Linux artifact; it does not prove physical platform, precise-touchpad or
 matched frame-time performance. No host clipboard or devices are used.
 
+- `screenshots.py --scenes dialog-overscroll --at-spi` (local-only: GNOME Shell on the real GPU): Settings and "Profile and connection" end at their content at 100% and 200% zoom.
+
 ## Suites in the VM run
 
 | Script | What it proves |
@@ -91,14 +93,15 @@ matched frame-time performance. No host clipboard or devices are used.
 | `opus_eval.py` | opus-pure against reference libopus: decoder conformance in SILK, Hybrid and CELT, encoder interop both ways, 5,000 hostile packets |
 | `stock_client.py` | The real stock Mumble GUI with a certificate exported by Nuschl; voice in both directions |
 | `desktop_recovery.py` | Media and storage worker crashes keep the session and history; server restart reconnects with backoff, rejoins the channel muted and marks the gap |
-| `accessibility.py` | The AT-SPI tree as a screen reader sees it: named controls, channel tree, users and composer; Mute operated through the Action interface alone; every message of a long conversation is a list item, the oldest (screens above the viewport) scrolled into view by AT-SPI ScrollTo and GrabFocus |
+| `accessibility.py` | The AT-SPI tree as a screen reader sees it: named controls, channel tree, users and composer; Mute operated through the Action interface alone; every message of a long conversation is a list item, the oldest (screens above the viewport) scrolled into view by AT-SPI ScrollTo and GrabFocus; a prompt over Settings holds the focus and alone takes presses, with at most one focused node per frame |
 | 1.4 / 1.3 loops | `mumble_client.py`, `udp_voice.py` and `protocol_features.py` against stock Mumble 1.4.287 and 1.3.4 (legacy UDP format) |
 
 Development aids outside the VM: `screenshots.py` (scenes under a private headless
 GNOME Shell on the real GPU; it never touches the user's session) and
 `accessibility.py --gnome-shell` (the same check with Nuschl's own window controls,
 and the timeline walked with the keyboard: Shift+Tab, arrows, Home and End, Tab through
-a message's links, a letter typed into the composer). `voice_servers.py` (voice on two
+a message's links, a letter typed into the composer, Shift+Tab inside a prompt over
+Settings). `voice_servers.py` (voice on two
 loopback Murmurs at once, operated over AT-SPI in the private GNOME Shell with a private
 PulseAudio: one media worker, both servers heard, push-to-talk only to the talk server,
 "Speak on two servers?", the mute shortcut, a crashed worker coming back; screenshots of

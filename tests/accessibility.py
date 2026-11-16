@@ -29,7 +29,12 @@ Orca would and checks that:
   AT-SPI bring such items into view; with --gnome-shell, Shift+Tab from the
   composer lands on the newest message and the arrow keys and Home walk to
   the oldest; Tab walks the newest message's links, each announced with its
-  address, and a letter typed in the timeline goes to the composer.
+  address, and a letter typed in the timeline goes to the composer;
+- a prompt opened over Settings (Export…) holds the focus (with --gnome-shell
+  also through Shift+Tab out of its field) and alone takes presses; every
+  frame of the whole run has at most one focused node and one active
+  descendant (GPUI panics on more in debug builds and logs it in release
+  builds).
 
 Uses busctl for D-Bus calls, so no Python bindings are needed.
 """
@@ -59,6 +64,10 @@ ROLES = {23: "frame", 29: "label", 43: "push button", 54: "status bar", 61: "tex
          113: "math", 44: "radio button"}
 INTERACTIVE = {"push button", "toggle button", "text", "entry", "password text", "tree item", "menu item"}
 FOCUSED = 1 << 12  # ATSPI_STATE_FOCUSED, in the first word of GetState
+# What GPUI's accessibility tree builder logs (release) or panics with (debug)
+# when two nodes claim focus, or the active descendant, in one frame.
+DOUBLE_FOCUS = ("set_focus called more than once in a single frame",
+                "multiple nodes claimed the active descendant")
 # Messages in the long conversation: many screens of them.
 HISTORY = 150
 # A 2×2 RGB PNG.
@@ -224,9 +233,11 @@ class AccessibilityTest:
             (profile / "config/servers.json").write_text(json.dumps([dict(
                 id=str(uuid.uuid4()), name="Accessible server", host="127.0.0.1", port=port, username="Andi",
                 certificate_sha256=pin)]))
+            # GPUI's accessibility warnings, for check_single_focus.
+            logging = env.get("RUST_LOG", "nuschl=info") + ",gpui::window::a11y=warn"
             app = self.spawn([str(self.args.binaries / "nuschl"), "--profile-dir", str(profile),
                               f"mumble://Andi@127.0.0.1:{port}/Lobby/Development"],
-                             env, "desktop.log")
+                             env | {"RUST_LOG": logging}, "desktop.log")
             desktop = peer.wait(lambda e: e["kind"] == "user" and e["user"]["name"] == "Andi"
                                 and e["user"]["channel"] == 2, timeout=40)["user"]
 
@@ -259,10 +270,17 @@ class AccessibilityTest:
             def ready():
                 nodes = snapshot(nuschl)
                 names = {name for _, _, _, name in nodes}
+                voice = [name for name in names if name.startswith("Accessible server")]
                 # The voice controls come once the desktop knows it joined, which
-                # can be after the server has told the peer.
-                return nodes if "Ada Lovelace" in " ".join(names) and {"Send", "Disconnect from Accessible server (voice and chat)"} <= names else None
-            nodes = eventually(ready, "the accessibility tree did not fill in", timeout=30)
+                # can be after the server has told the peer. The first frames can
+                # also come before the desktop has applied the server's echo of the
+                # self-mute and the channel ("· awaiting server" in #Root);
+                # check_tree checks the state that follows, whatever it is.
+                return nodes if "Ada Lovelace" in " ".join(names) \
+                    and {"Send", "Disconnect from Accessible server (voice and chat)"} <= names \
+                    and any(name.startswith("Accessible server #Development: ") for name in voice) \
+                    and not any(name.endswith(" · awaiting server") for name in voice) else None
+            nodes = eventually(ready, "the accessibility tree did not fill in and settle", timeout=30)
             self.write_tree(nodes, "tree.txt")
             self.check_tree(nodes)
             print(f"Accessibility tree: {len(nodes)} nodes; window controls, voice controls, channel tree, "
@@ -283,6 +301,7 @@ class AccessibilityTest:
             print("Unmuted through the AT-SPI Action interface; the server saw it and the button became Mute.",
                   flush=True)
             self.check_shortcuts(nuschl)
+            self.check_stacked_dialogs(nuschl)
             if self.shell:
                 self.check_attachments(nuschl)
                 self.check_word_deletion(nuschl, peer)
@@ -308,6 +327,8 @@ class AccessibilityTest:
                 print(f"Switcher announced through its field: {field!r}; options: {options}.", flush=True)
             self.check_math(nuschl, peer)
             self.check_timeline(nuschl, peer)
+            assert app.poll() is None, (self.root / "desktop.log").read_text()[-3000:]
+            self.check_single_focus()
         finally:
             if peer:
                 peer.close()
@@ -405,6 +426,49 @@ class AccessibilityTest:
                    "Settings did not close", timeout=10)
         print("Settings: every shortcut row has a named Record button; recording is announced as a status.",
               flush=True)
+
+    def check_stacked_dialogs(self, nuschl):
+        """A prompt over Settings keeps the focus and takes the presses: with
+        --gnome-shell, Shift+Tab out of its field returns it to the prompt, the
+        dialog in front. Both dialogs once tracked one focus handle, which then
+        made both the focused node."""
+        def named(role, name):
+            return next((node for _, node, r, n in snapshot(nuschl) if r == role and n == name), None)
+
+        def prompt():
+            nodes = snapshot(nuschl)
+            start = next(index for index, (_, _, role, name) in enumerate(nodes)
+                         if role == "dialog" and name == "Input")
+            depth = nodes[start][0]
+            return [nodes[start]] + list(takewhile(lambda entry: entry[0] > depth, nodes[start + 1:]))
+
+        def in_prompt():
+            return any(node.focused for _, node, _, _ in prompt())
+
+        self.find(snapshot(nuschl), "push button", "Settings").press()
+        eventually(lambda: named("push button", "Export…"), "Settings has no Export… button", timeout=15).press()
+        eventually(lambda: named("dialog", "Input"), "the export prompt did not open over Settings", timeout=15)
+        eventually(in_prompt, "the prompt's field did not take the focus", timeout=10)
+        if self.shell:
+            self.shell.chord("Shift_L", "Tab")
+            time.sleep(1)
+            eventually(in_prompt, "Shift+Tab took the focus out of the prompt", timeout=10)
+        self.check_single_focus()
+        # Settings' Done is behind the prompt.
+        named("push button", "Done").press()
+        time.sleep(1)
+        assert named("dialog", "Settings"), "Done acted behind the prompt"
+        self.find(prompt(), "push button", "Cancel").press()
+        eventually(lambda: not named("dialog", "Input"), "Cancel did not close the prompt", timeout=10)
+        named("push button", "Done").press()
+        eventually(lambda: not named("dialog", "Settings"), "Done did not close Settings", timeout=10)
+        print("A prompt over Settings kept the focus and the presses.", flush=True)
+
+    def check_single_focus(self):
+        """No frame so far had two focused nodes or two active descendants."""
+        log = (self.root / "desktop.log").read_text(errors="replace")
+        found = [line for line in log.splitlines() if any(message in line for message in DOUBLE_FOCUS)]
+        assert not found, "two nodes claimed the focus in one frame:\n" + "\n".join(found[:5])
 
     def check_math(self, nuschl, peer):
         """Formulas are math nodes named by their LaTeX source, as typed."""
