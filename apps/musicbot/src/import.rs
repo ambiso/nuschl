@@ -329,10 +329,6 @@ impl Client {
         if !response.status().is_success() {
             return Err(refused(response.status(), &body));
         }
-        let declared = response.body().mime_type().unwrap_or_default();
-        if !declared.eq_ignore_ascii_case("image/jpeg") {
-            return Err(Failure::Unavailable);
-        }
         Ok(body)
     }
 
@@ -927,12 +923,6 @@ mod tests {
         let mut cover = vec![0xff; MAX_REPLY_BYTES as usize + 1];
         cover[..3].copy_from_slice(&[0xff, 0xd8, 0xff]);
         let server = serve(response("200 OK", "image/jpeg", &cover));
-        assert_eq!(
-            Client::new(&server.url, "key").cover("r1", "0123456789abcdef"),
-            Err(Failure::Unavailable)
-        );
-        // A cover in another format is refused as well.
-        let server = serve(response("200 OK", "image/svg+xml", b"<svg/>"));
         assert_eq!(
             Client::new(&server.url, "key").cover("r1", "0123456789abcdef"),
             Err(Failure::Unavailable)

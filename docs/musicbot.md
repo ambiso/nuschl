@@ -617,9 +617,10 @@ none waiting), a 30-second deadline and a 1 MiB cap on its reply. Ids are exactl
 16 lowercase hexadecimal characters before they enter a URL path; replies are
 parsed into typed values and checked (bounded texts without control characters,
 sane numbers, at most 50 albums or imports and 200 tracks) before a viewer sees
-them, and no text of the import service is passed on. Covers are JPEG files the
-confined content worker re-encodes as PNGs like library covers, and cached in `covers/` under the key namespace `import`, which no library key (32
-hexadecimal digits) can take.
+them; the import service's error texts become the fixed texts above. The confined
+content worker re-encodes covers as PNGs like library covers; they are cached in
+`covers/` under the key namespace `import`, which no library key (32 hexadecimal
+digits) can take.
 
 A background task asks for the import list once at start, every 3 seconds while
 an import is queued or being added and every 30 seconds otherwise or after a
