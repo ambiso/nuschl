@@ -146,16 +146,11 @@ async fn exchange(
     request: &CryptoRequest,
 ) -> Result<CryptoResponse, Error> {
     let mut bytes = Vec::new();
-    write_frame(&mut bytes, &Envelope::new(id, request))
-        .map_err(|e| Error::Worker(e.to_string()))?;
+    write_frame(&mut bytes, &Envelope::new(id, request))?;
     worker.input.write_all(&bytes).await?;
     worker.input.flush().await?;
-    let envelope: Envelope<CryptoResponse> = read_frame_async(&mut worker.output, MAX_FRAME_BYTES)
-        .await
-        .map_err(|error| match error {
-            nuschl_ipc::Error::Io(error) => Error::Io(error),
-            error => Error::Worker(error.to_string()),
-        })?;
+    let envelope: Envelope<CryptoResponse> =
+        read_frame_async(&mut worker.output, MAX_FRAME_BYTES).await?;
     if envelope.request_id != id {
         return Err(Error::Worker("crypto worker protocol mismatch".into()));
     }

@@ -28,8 +28,9 @@ use crate::{
 };
 use bytes::Bytes;
 use nuschl_ipc::{
-    Envelope, MAX_FRAME_BYTES, PROTOCOL_VERSION,
+    Envelope, MAX_FRAME_BYTES,
     murmur::{MurmurDump, MurmurFrame, decode_blob},
+    read_frame_async,
     server::ServerStorageRequest,
 };
 use std::{
@@ -40,7 +41,7 @@ use std::{
     process::Stdio,
     time::Duration,
 };
-use tokio::{io::AsyncReadExt, process::Command};
+use tokio::process::Command;
 
 /// How long reading the Murmur database may take.
 const READ_TIMEOUT: Duration = Duration::from_secs(600);
@@ -195,25 +196,16 @@ pub async fn read_dump(worker: &Path, options: &Options) -> Result<MurmurDump, I
     let read = async {
         let mut dump = MurmurDump::default();
         loop {
-            let size = output
-                .read_u32()
+            let envelope: Envelope<MurmurFrame> = read_frame_async(&mut output, MAX_FRAME_BYTES)
                 .await
-                .map_err(|_| ImportError::Reader("the reader stopped early".into()))?
-                as usize;
-            if size > MAX_FRAME_BYTES {
-                return Err(ImportError::Reader(
-                    "oversized frame from the reader".into(),
-                ));
-            }
-            let mut body = vec![0; size];
-            output.read_exact(&mut body).await?;
-            let envelope: Envelope<MurmurFrame> = serde_json::from_slice(&body)
-                .map_err(|error| ImportError::Reader(format!("bad frame: {error}")))?;
-            if envelope.version != PROTOCOL_VERSION {
-                return Err(ImportError::Reader("reader protocol mismatch".into()));
-            }
+                .map_err(|error| {
+                    ImportError::Reader(match error {
+                        nuschl_ipc::Error::Io(_) => "the reader stopped early".into(),
+                        error => format!("bad frame: {error}"),
+                    })
+                })?;
             if dump.apply(envelope.payload).map_err(ImportError::Reader)? {
-                return Ok(dump);
+                return Ok::<_, ImportError>(dump);
             }
         }
     };

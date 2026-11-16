@@ -293,6 +293,16 @@ pub enum Error {
     Json(#[from] serde_json::Error),
 }
 
+/// An I/O error stays itself; the others become [`io::ErrorKind::Other`].
+impl From<Error> for io::Error {
+    fn from(error: Error) -> Self {
+        match error {
+            Error::Io(error) => error,
+            error => io::Error::other(error),
+        }
+    }
+}
+
 pub fn read_frame<T: DeserializeOwned>(
     reader: &mut impl Read,
 ) -> Result<Option<Envelope<T>>, Error> {

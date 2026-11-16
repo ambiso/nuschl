@@ -69,6 +69,16 @@ fn removed_text(actor: Option<&str>, reason: Option<&str>, ban: bool) -> String 
     }
 }
 
+/// A worker's I/O error stays [`Error::Io`]; the others are [`Error::Worker`].
+impl From<nuschl_ipc::Error> for Error {
+    fn from(error: nuschl_ipc::Error) -> Self {
+        match error {
+            nuschl_ipc::Error::Io(error) => Error::Io(error),
+            error => Error::Worker(error.to_string()),
+        }
+    }
+}
+
 impl Error {
     /// Whether reconnecting automatically could help. Certificates, rejected
     /// logins and moderation need a decision from the user instead.
