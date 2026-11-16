@@ -115,9 +115,6 @@ pub fn parse(bytes: &[u8], now: u64) -> Result<Manifest, Error> {
             "invalid release/expiry interval or clock in the future",
         ));
     }
-    if manifest.expires <= now {
-        return Err(Error::Expired);
-    }
     if manifest.platforms.is_empty() || manifest.platforms.len() > 2 {
         return Err(invalid("platform count"));
     }
@@ -227,7 +224,8 @@ mod tests {
     #[test]
     fn exact_v2_expiry_and_duplicate_maps_are_required() {
         assert!(parse(&valid(), NOW).is_ok());
-        assert!(matches!(parse(&valid(), NOW + 86400), Err(Error::Expired)));
+        // Expiry is the caller's decision (client::newer); the interval stays checked.
+        assert!(parse(&valid(), NOW + 86400).is_ok());
         let mut value: serde_json::Value = serde_json::from_slice(&valid()).unwrap();
         for field in ["format", "algorithm", "expires"] {
             let old = value.as_object_mut().unwrap().remove(field).unwrap();

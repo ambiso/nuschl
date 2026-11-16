@@ -24,7 +24,7 @@ pub enum Error {
     Verifier,
     #[error("the update manifest is not signed by the release key")]
     Signature,
-    #[error("the signed update manifest has expired; check for a current signed release")]
+    #[error("could not confirm the newest version: the signed update information has expired")]
     Expired,
     #[error("invalid update manifest: {0}")]
     Manifest(String),

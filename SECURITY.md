@@ -156,7 +156,9 @@ Exported PKCS#12 identities are written atomically and owner-only (0600).
 workers (Ed25519, ML-DSA-44) must both accept a manifest. The trust roots are
 embedded; there is no key file or minisign fallback. The updater refuses a
 manifest whose release time or version is older than the newest it accepted.
-Signed v2 metadata expires within 30 days, and the local clock gates acceptance.
+Signed v2 metadata expires within 30 days. A newer signed release still installs
+from expired metadata; without one, the client reports that it could not confirm
+the newest version.
 The hybrid signing pair stays on the local signing machine; hosted CI holds no
 signing secret or publication authority.
 

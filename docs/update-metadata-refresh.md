@@ -18,8 +18,9 @@ immutable release/tag/source/build records and the retained chain of old metadat
 and renewal receipts; do not relabel a refreshed date as a binary build date.
 
 The normal client accepts at most 30 days between issuance and expiry and at most
-five minutes of future-clock skew. An expired document remains unusable by clients
-even when its signatures are authentic. The operator-only `authenticate` command
+five minutes of future-clock skew. With expired metadata a client installs a newer
+signed release; for its current version it reports that it could not confirm the
+newest version. The operator-only `authenticate` command
 checks both signatures on the exact raw bytes/full public pair and every v2
 structural/interval limit, separately reporting `current`, `expired` or
 `not-yet-valid` status. It is excluded from clients and is not an installation
@@ -124,14 +125,14 @@ malformed, wrong-pair or overlong-validity input remains rejected.
 
 For a **client** reporting expiry, check local date/time first and then retrieve
 the currently published signed metadata from the official source. If the operator
-has not renewed it, wait for a valid signed refresh; do not install expired data.
+has not renewed it, a valid signed refresh or a new release clears the report.
 For a future-clock error, correct the clock and retry. For rollback rejection,
 retrieve the actual latest release/metadata and investigate the ledger/source;
 renewing an older version does not defeat a newer version already remembered.
 
 After normal verification, same-version metadata advances the remembered issuance
 but does not reinstall an already-current binary. Its older metadata is then
-rejected as stale. Expiry is still checked again before download and apply.
+rejected as stale.
 
 ## Publication remains a separate action
 
@@ -149,6 +150,6 @@ performed by this work.
 Actual fixture evidence: 9 offline raw-span/signature/recovery tests, 13 updater
 unit tests including same-version persisted anti-rollback and clock/expiry checks,
 and the existing 15 release-gate regressions pass with temporary fixture keys.
-The native Linux/Windows runtime fixtures separately reject expired manifests;
-the new operator command changes neither runtime. No public service is contacted
+The native Linux/Windows runtime fixtures accept an expired manifest in both
+engines; whether it installs is the client's decision. No public service is contacted
 by these tests.
