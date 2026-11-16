@@ -10,6 +10,7 @@
 }:
 pkgs.testers.runNixOSTest {
   name = "nuschl-web";
+  globalTimeout = 1800;
   nodes = {
     web =
       { ... }:
