@@ -258,47 +258,14 @@ fn confine(path: &std::path::Path) -> Result<(), String> {
         .and_then(|ruleset| ruleset.add_rules(path_beneath_rules([path], AccessFs::from_read(abi))))
         .and_then(|ruleset| ruleset.restrict_self())
         .map_err(|error| format!("not confined (Landlock failed: {error})"))?;
-    enforced(&status.ruleset, status.landlock)
-}
-
-/// Whether Landlock enforced every rule; if not, what it left out.
-#[cfg(target_os = "linux")]
-fn enforced(
-    ruleset: &landlock::RulesetStatus,
-    landlock: landlock::LandlockStatus,
-) -> Result<(), String> {
-    use landlock::{ABI, LandlockStatus, RulesetStatus};
-    let abi = match (ruleset, landlock) {
-        (RulesetStatus::FullyEnforced, _) => return Ok(()),
-        (_, LandlockStatus::NotEnabled) => {
-            return Err("not confined (Landlock is not enabled in this kernel's lsm=)".into());
-        }
-        (_, LandlockStatus::NotImplemented) => {
-            return Err(
-                "not confined (no Landlock in this kernel, or a seccomp filter blocks it)".into(),
-            );
-        }
-        (_, LandlockStatus::Available { effective_abi, .. }) => effective_abi,
-    };
-    let missing: Vec<_> = [
-        (ABI::V3, "truncation"),
-        (ABI::V4, "TCP"),
-        (ABI::V5, "device ioctls"),
-        (ABI::V6, "abstract Unix sockets, signals"),
-    ]
-    .into_iter()
-    .filter(|(needed, _)| abi < *needed)
-    .map(|(_, what)| what)
-    .collect();
-    Err(if missing.is_empty() {
-        "only partly confined (Landlock did not enforce every rule)".into()
+    if status.ruleset == landlock::RulesetStatus::FullyEnforced {
+        Ok(())
     } else {
-        format!(
-            "only partly confined (this kernel's Landlock ABI {} leaves out {})",
-            abi as i32,
-            missing.join(", ")
-        )
-    })
+        Err(format!(
+            "not fully confined (Landlock {:?}); Linux 6.12 or later is required",
+            status.landlock
+        ))
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -488,44 +455,4 @@ async fn serve_server_state(arguments: Arguments) -> Result<(), Box<dyn std::err
         write_frame(&mut output, &Envelope::new(request.request_id, payload))?;
     }
     Ok(())
-}
-
-#[cfg(all(test, target_os = "linux"))]
-mod tests {
-    use super::enforced;
-    use landlock::{ABI, LandlockStatus, RulesetStatus};
-
-    fn available(abi: ABI) -> LandlockStatus {
-        LandlockStatus::Available {
-            effective_abi: abi,
-            kernel_abi: None,
-        }
-    }
-
-    #[test]
-    fn only_full_enforcement_passes() {
-        assert_eq!(
-            enforced(&RulesetStatus::FullyEnforced, available(ABI::V6)),
-            Ok(())
-        );
-        let partial = |abi| enforced(&RulesetStatus::PartiallyEnforced, available(abi));
-        assert_eq!(
-            partial(ABI::V4),
-            Err(
-                "only partly confined (this kernel's Landlock ABI 4 leaves out device ioctls, \
-                 abstract Unix sockets, signals)"
-                    .into()
-            )
-        );
-        assert!(
-            partial(ABI::V1)
-                .unwrap_err()
-                .contains("ABI 1 leaves out truncation, TCP")
-        );
-        assert!(partial(ABI::V6).is_err());
-        for landlock in [LandlockStatus::NotEnabled, LandlockStatus::NotImplemented] {
-            let error = enforced(&RulesetStatus::NotEnforced, landlock).unwrap_err();
-            assert!(error.starts_with("not confined"), "{error}");
-        }
-    }
 }

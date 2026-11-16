@@ -259,7 +259,7 @@ pkgs.testers.runNixOSTest {
         " admin import-murmur /tmp/murmur.sqlite"
     )
     refused = server.fail(f"{unconfined} 2>&1")
-    assert "reader: not confined (no Landlock in this kernel" in refused, refused
+    assert "reader: not fully confined (Landlock NotImplemented)" in refused, refused
     assert "the file was not read" in refused, refused
     server.succeed("/run/current-system/specialisation/murmur/bin/switch-to-configuration test")
     server.wait_until_succeeds("test -e /var/lib/nuschl/murmur-imported", timeout=120)
