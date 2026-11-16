@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: EUPL-1.2
 //! Test-only real/faulting content-worker harness; uses the production supervisor.
-use nuschl_core::{ContentBlock, MessageDocument};
-use nuschl_ipc::{ContentRequest, ContentResponse, Envelope};
+//! Link it against the nuschl-core, nuschl-ipc and nuschl-sandbox rlibs.
+use nuschl_core::MessageDocument;
+use nuschl_ipc::{ContentRequest, ContentResponse, Envelope, ThumbnailPng};
+
+/// A 1×1 RGBA PNG as the worker makes them.
+const PIXEL: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGM4EaDxHwAFZAJAZFKcOgAAAABJRU5ErkJggg==";
+/// The same PNG with a byte after `IEND`.
+const TRAILING: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGM4EaDxHwAFZAJAZFKcOgAAAABJRU5ErkJgggA=";
 use std::{
     io::{self, Read, Write},
     path::Path,
@@ -42,25 +48,19 @@ fn fault_worker() {
         output.flush().unwrap();
         return;
     }
-    let image = || ContentBlock::Image {
-        width: if mode == "dimensions" { 2 } else { 1 },
-        height: 1,
-        rgba: match mode {
-            "bytes" => "AA==",
-            "trailing-bits" => "AQIDBB==",
-            _ => "AQIDBA==",
-        }
-        .into(),
-        source: Some("https://never-fetch.invalid/not-authority".into()),
-    };
-    let response = || {
-        ContentResponse::Rendered(MessageDocument {
-            blocks: if mode == "two" {
-                vec![image(), image()]
-            } else {
-                vec![image()]
-            },
-        })
+    // "two" answers with a rendered document, the reply to other requests.
+    let response = || match mode {
+        "two" => ContentResponse::Rendered(MessageDocument { blocks: vec![] }),
+        _ => ContentResponse::Thumbnail(ThumbnailPng {
+            width: if mode == "dimensions" { 2 } else { 1 },
+            height: 1,
+            png: match mode {
+                "bytes" => "AQIDBA==",
+                "trailing-bits" => TRAILING,
+                _ => PIXEL,
+            }
+            .into(),
+        }),
     };
     nuschl_ipc::write_frame(
         &mut output,
@@ -111,17 +111,12 @@ fn main() {
     let start = Instant::now();
     let result = runtime.block_on(nuschl_ipc::host::thumbnail(&worker, &bytes, edge, edge));
     let (kind, width, height) = match result {
-        Ok(ContentBlock::Image {
-            width,
-            height,
-            source: None,
-            ..
-        }) => ("accepted", width, height),
-        Ok(_) => panic!("worker authority/shape escaped validation"),
+        Ok(thumbnail) if nuschl_ipc::thumbnail::check_png(&thumbnail.png, edge, edge).is_some() => {
+            ("accepted", thumbnail.width, thumbnail.height)
+        }
+        Ok(_) => panic!("an unchecked PNG escaped validation"),
         Err(nuschl_ipc::host::Error::Frame(nuschl_ipc::Error::TooLarge)) => ("too_large", 0, 0),
-        Err(error @ nuschl_ipc::host::Error::Sandbox(_))
-            if error.to_string().starts_with("required sandbox helper") =>
-        {
+        Err(nuschl_ipc::host::Error::Sandbox(nuschl_sandbox::Error::MissingSandboxHelper(_))) => {
             ("missing_helper", 0, 0)
         }
         Err(nuschl_ipc::host::Error::Timeout) => ("timeout", 0, 0),

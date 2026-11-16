@@ -5,14 +5,25 @@ use base64::Engine as _;
 use nuschl_content::ContentRenderer;
 use nuschl_core::{ContentBlock, MessageDocument};
 use nuschl_ipc::{
-    ContentRequest, ContentResponse, EncodedImage, Envelope, PreparedContent, read_frame,
-    write_frame,
+    ContentRequest, ContentResponse, EncodedImage, Envelope, PreparedContent, ThumbnailPng,
+    read_frame, write_frame,
 };
+
+mod preview;
+mod preview_fetch;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // On Windows, the launch stage starts this worker again in its AppContainer.
     #[cfg(windows)]
     nuschl_sandbox_windows::launch_if_requested();
+    let mut arguments = std::env::args_os().skip(1);
+    match (arguments.next(), arguments.next()) {
+        (None, None) => {}
+        (Some(role), None) if role == "--preview-fetch" => {
+            return Ok(preview_fetch::run()?);
+        }
+        _ => return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid worker role").into()),
+    }
     let renderer = ContentRenderer::new()?;
     let mut input = io::stdin().lock();
     let mut output = io::stdout().lock();
@@ -39,6 +50,7 @@ fn answer(renderer: &ContentRenderer, request: ContentRequest) -> Result<Content
             .map_err(|_| "invalid base64".to_owned())
     };
     match request {
+        ContentRequest::Preview(request) => Ok(ContentResponse::Preview(preview::answer(request))),
         ContentRequest::Render { text } => renderer
             .render(&text)
             .map(ContentResponse::Rendered)
@@ -75,7 +87,13 @@ fn answer(renderer: &ContentRenderer, request: ContentRequest) -> Result<Content
             if bytes.len() > nuschl_ipc::MAX_THUMBNAIL_INPUT_BYTES {
                 return Err("thumbnail input exceeds its budget".to_owned());
             }
-            image(nuschl_content::decode_image(&bytes, max_width, max_height))
+            let (width, height, png) = nuschl_content::thumbnail_png(&bytes, max_width, max_height)
+                .ok_or_else(|| "unsupported or invalid image".to_owned())?;
+            Ok(ContentResponse::Thumbnail(ThumbnailPng {
+                width,
+                height,
+                png: base64::engine::general_purpose::STANDARD.encode(png),
+            }))
         }
         ContentRequest::Icon { image: encoded } => {
             image(nuschl_content::decode_icon(&base64(&encoded)?))
@@ -93,33 +111,21 @@ fn answer(renderer: &ContentRenderer, request: ContentRequest) -> Result<Content
 mod thumbnail_tests {
     use super::*;
     #[test]
-    fn thumbnail_bounds_invalid_input_and_exact_pixels() {
+    fn thumbnail_bounds_invalid_input_and_bare_png() {
         let renderer = ContentRenderer::new().unwrap();
         let request = |image: &str, width, height| ContentRequest::Thumbnail {
             image: image.to_owned(),
             max_width: width,
             max_height: height,
         };
-        let ContentResponse::Rendered(document) = answer(&renderer, request("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGM4EaABAAMkAUEdGZ/EAAAAAElFTkSuQmCC", 1, 1)).unwrap()
-            else { panic!("expected pixels"); };
-        assert_eq!(document.blocks.len(), 1);
-        let ContentBlock::Image {
-            width,
-            height,
-            rgba,
-            source,
-        } = &document.blocks[0]
-        else {
-            panic!("expected one Image");
-        };
-        assert_eq!((*width, *height), (1, 1));
-        assert!(source.is_none());
-        assert_eq!(
-            base64::engine::general_purpose::STANDARD
-                .decode(rgba)
-                .unwrap(),
-            [200, 80, 40, 255]
-        );
+        let ContentResponse::Thumbnail(reply) = answer(&renderer, request("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGM4EaABAAMkAUEdGZ/EAAAAAElFTkSuQmCC", 1, 1)).unwrap()
+            else { panic!("expected a PNG"); };
+        assert_eq!((reply.width, reply.height), (1, 1));
+        let png = base64::engine::general_purpose::STANDARD
+            .decode(&reply.png)
+            .unwrap();
+        // Only the chunks a browser needs, in the shape the bot checks.
+        assert_eq!(nuschl_ipc::thumbnail::check_png(&png, 1, 1), Some((1, 1)));
         for (image, width, height) in [
             (
                 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGM4EaABAAMkAUEdGZ/EAAAAAElFTkSuQmCC",

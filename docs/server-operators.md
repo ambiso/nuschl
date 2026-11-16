@@ -352,7 +352,7 @@ real Pebble/lego HTTP-01 issuance, with validation enabled. Build its driver wit
 a previously built native server package (including its adjacent storage helper):
 
 ```sh
-nix build --no-link --print-out-paths --cores 2 --max-jobs 2 --impure \
+nix build --no-link --print-out-paths --impure \
   --file tests/server_http01_vm.nix \
   --argstr packagePath /nix/store/REPLACE-with-built-nuschld-package driver
 ```

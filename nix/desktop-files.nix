@@ -4,7 +4,7 @@
 #
 # apps/desktop/build.rs compiles the Windows icon into nuschl.exe, so it is
 # committed as apps/desktop/assets/nuschl.ico. After changing the SVG:
-#   nix build --cores 2 --max-jobs 1 --impure --expr \
+#   nix build --impure --expr \
 #     '(import ./nix/desktop-files.nix { pkgs = (builtins.getFlake (toString ./.)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem}; }).windowsIcon'
 #   install -m644 result apps/desktop/assets/nuschl.ico
 { pkgs }:

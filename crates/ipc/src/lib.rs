@@ -8,7 +8,10 @@ pub mod math;
 pub mod murmur;
 #[cfg(not(target_family = "wasm"))]
 pub mod musicbot;
+pub mod preview;
+pub mod preview_fetch;
 pub mod server;
+pub mod thumbnail;
 
 use std::io::{self, Read, Write};
 
@@ -42,7 +45,9 @@ impl<T> Envelope<T> {
 /// Thumbnail admission shared by the isolated worker and trusted adapters.
 pub const MAX_THUMBNAIL_EDGE: u32 = 400;
 pub const MAX_THUMBNAIL_INPUT_BYTES: usize = 8 * 1024 * 1024;
-pub const MAX_THUMBNAIL_RGBA_BYTES: usize = 400 * 400 * 4;
+/// A 400×400 RGBA PNG stored without compression, with room for zlib and
+/// chunk framing. Real thumbnails are far smaller.
+pub const MAX_THUMBNAIL_PNG_BYTES: usize = 700 * 1024;
 
 /// One untrusted input for the content worker, and what to make of it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -54,12 +59,15 @@ pub enum ContentRequest {
     LegacyHtml { html: String },
     /// A base64-encoded avatar image; answered with a small `Rendered` thumbnail.
     Avatar { image: String },
-    /// Bounded encoded artwork; replied with exactly one source-free Image.
+    /// Bounded encoded artwork; answered with `Thumbnail`, a PNG made from
+    /// the decoded pixels (see [`thumbnail::check_png`]).
     Thumbnail {
         image: String,
         max_width: u32,
         max_height: u32,
     },
+    /// Sender-only metadata or a bounded carried image; never a fetch instruction.
+    Preview(preview::Request),
     /// A base64-encoded website icon (favicon, also ICO/BMP); answered like `Avatar`.
     Icon { image: String },
     /// An inline `data:` image; answered with a `Rendered` image at the viewer's size.
@@ -96,7 +104,19 @@ pub enum ContentResponse {
     Prepared(PreparedContent),
     /// Mumble rich text to send as it is.
     Encoded(EncodedImage),
+    Preview(preview::Response),
+    /// A re-encoded artwork thumbnail.
+    Thumbnail(ThumbnailPng),
     Rejected(String),
+}
+
+/// A PNG thumbnail, base64-encoded for the JSON frame.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThumbnailPng {
+    pub width: u32,
+    pub height: u32,
+    pub png: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

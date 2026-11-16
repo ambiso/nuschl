@@ -293,7 +293,7 @@ python3 tests/server_pki_vm.py prepare --directory "$pkiWork/fixture"
 driver=$(nix build --impure --file tests/server_pki_vm.nix driver \
   --argstr packagePath "$cachedPackage" \
   --argstr trustedCaFile "$pkiWork/fixture/root.pem" \
-  --cores 2 --max-jobs 2 --no-link --print-out-paths)
+  --no-link --print-out-paths)
 just vm-driver --root "$pkiWork/vm" \
   --env NUSCHL_PKI_FIXTURE_DIRECTORY="$pkiWork/fixture" "$driver"
 ```
@@ -874,5 +874,5 @@ descriptor exhaustion.
 | `just test-postgres` (`cargo test -p nuschl-storage-worker --test postgres`) | the storage worker as `nuschld` drives it, on SQLite and on a throwaway PostgreSQL from nixpkgs (`initdb` in a temporary directory, a unix socket only, no TCP): migrations, users, history pages, idempotency, edits, deletions, retention, live-only heads, erasure, purging, a second worker on the same database, and the operator lock (one holder; the others answer `Held` without opening the database). Without `initdb`/`postgres` on `PATH` (or in `NUSCHL_POSTGRES_BIN`) the PostgreSQL half says SKIPPED and passes |
 | `cargo test -p nuschl-crypto-worker` | key transparency end to end: nuschld, the session and the crypto worker in its sandbox (publish and look up, TOFU and verification, key changes, the self-monitoring alarm, a forked and a replaced log), and the worker against a malicious directory in process |
 | `python3 tests/with_local_nuschld.py <bins> tests/<suite>.py <bins> --port PORT …` | `mumble_client.py`, `udp_voice.py`, `protocol_features.py` against nuschld; `with_local_murmur.py` runs the same scripts against stock Murmur |
-| `nix build .#checks.x86_64-linux.vm-server --cores 2` | the module with SQLite and PostgreSQL, restarts, the client suites (with loss and blocked UDP), key transparency (`tests/key_transparency.py`, keys as credentials and generated), and the stock Mumble GUI (login with a Nuschl-exported certificate, voice both ways); the statistics line, SIGHUP, the Murmur reader refusing where Landlock is unavailable, and `services.nuschl.importMurmur` importing the Murmur fixture into a fresh database, then logins with its PBKDF2 and SHA-1 passwords (tests/murmur_import.py) |
+| `nix build .#checks.x86_64-linux.vm-server` | the module with SQLite and PostgreSQL, restarts, the client suites (with loss and blocked UDP), key transparency (`tests/key_transparency.py`, keys as credentials and generated), and the stock Mumble GUI (login with a Nuschl-exported certificate, voice both ways); the statistics line, SIGHUP, the Murmur reader refusing where Landlock is unavailable, and `services.nuschl.importMurmur` importing the Murmur fixture into a fresh database, then logins with its PBKDF2 and SHA-1 passwords (tests/murmur_import.py) |
 | `just fuzz server_messages [seconds]` (SECURITY.md, "Fuzzing") | also `control_frames`, `relay`, `crypt`, `extension_messages`, `kt_messages` |

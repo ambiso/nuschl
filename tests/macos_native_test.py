@@ -45,7 +45,7 @@ class ActualArchive(unittest.TestCase):
         # replace this link with a NEW file; they never mutate the original.
         os.link(args.artifact / "install.tar", self.artifact / "install.tar")
         self.info = json.loads((args.artifact / "build-info.json").read_bytes())
-        self.info.update(repository="ambiso/nuschl", commit=args.commit, run_id="4242", run_attempt="1")
+        self.info.update(repository="nuschl-eu/nuschl", commit=args.commit, run_id="4242", run_attempt="1")
         self.info["local_test_fixture"] = True
         self.write_metadata()
 
@@ -55,7 +55,7 @@ class ActualArchive(unittest.TestCase):
                                                         for name in ("install.tar", "build-info.json")))
 
     def prepare(self, **overrides):
-        options = dict(source=args.source, repository="ambiso/nuschl", commit=args.commit,
+        options = dict(source=args.source, repository="nuschl-eu/nuschl", commit=args.commit,
                        run_id="4242", attempt=1, artifact_name="nuschl-macos-universal-" + args.commit)
         options.update(overrides)
         return module.prepare_artifact(self.artifact, self.root / "checked", **options)
@@ -143,7 +143,7 @@ class ActualArchive(unittest.TestCase):
     def test_prepare_only_is_forbidden_in_github_actions(self):
         command = [module.sys.executable, str(Path(module.__file__)), "--prepare-only",
             "--artifact", str(self.artifact), "--artifact-name", "nuschl-macos-universal-" + args.commit,
-            "--repository", "ambiso/nuschl", "--commit", args.commit, "--run-id", "4242", "--attempt", "1",
+            "--repository", "nuschl-eu/nuschl", "--commit", args.commit, "--run-id", "4242", "--attempt", "1",
             "--output", str(self.root / "must-not-open")]
         result = subprocess.run(command, env=os.environ | {"GITHUB_ACTIONS": "true"}, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
