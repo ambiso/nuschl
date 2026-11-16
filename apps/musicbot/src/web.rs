@@ -1869,7 +1869,7 @@ async fn import_request(
     let album_id = body.album_id;
     let (request, existing) =
         import_call(&adding, move |client| client.request(&requester, &album_id)).await?;
-    adding.requested(&bot.changes);
+    adding.requested();
     Ok(Json(ImportRequestView { request, existing }))
 }
 
@@ -3843,8 +3843,6 @@ mod tests {
             serde_json::json!({"requests": [import], "budget": {"mine": budget, "total": budget}})
         );
 
-        let mut changes = bot.changes.subscribe();
-        changes.borrow_and_update();
         let added = import_request(
             State(bot.clone()),
             Path(token.clone()),
@@ -3859,9 +3857,6 @@ mod tests {
             value(&added.0),
             serde_json::json!({"request": import, "existing": false})
         );
-        assert!(changes.has_changed().unwrap());
-        let state = serde_json::to_value(snapshot(&bot, "Listener")).unwrap();
-        assert_eq!(state["import"]["revision"], 1);
         let posted = service.requests().pop().unwrap();
         assert!(
             posted.starts_with("POST /api/integration/v1/imports "),

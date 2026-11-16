@@ -521,11 +521,9 @@ impl Adding {
         })
     }
 
-    /// After a successful request through the bot: viewers refetch and the
-    /// poller looks again soon.
-    pub fn requested(&self, changes: &Changes) {
-        self.revision.fetch_add(1, Ordering::SeqCst);
-        changes.notify();
+    /// After a successful request through the bot: the poller looks again now
+    /// and raises the revision when it sees the change.
+    pub fn requested(&self) {
         self.wake.notify_one();
     }
 }

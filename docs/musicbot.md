@@ -626,7 +626,7 @@ A background task asks for the import list once at start, every 3 seconds while
 an import is queued or being added and every 30 seconds otherwise or after a
 failure. When an import's status or progress changes, `state.import.revision`
 advances and viewers receive the new state; the page then reloads its requests.
-A request through the bot advances the revision as well.
+A request through the bot makes the task look again at once.
 
 ## Web API
 
