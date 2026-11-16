@@ -85,12 +85,12 @@ in
       certificateFile = mkOption {
         type = types.nullOr types.str;
         default = null;
-        description = "Runtime PEM certificate chain (instead of useACMEHost).";
+        description = "Runtime PEM certificate chain, used with keyFile when useACMEHost is null.";
       };
       keyFile = mkOption {
         type = types.nullOr types.str;
         default = null;
-        description = "Runtime PEM private key (instead of useACMEHost).";
+        description = "Runtime PEM private key, used with certificateFile when useACMEHost is null.";
       };
     };
   };
@@ -106,7 +106,7 @@ in
       }
       {
         assertion = config.services.coturn.static-auth-secret == null;
-        message = "Use services.nuschl-turn.secretFile, not services.coturn.static-auth-secret.";
+        message = "services.nuschl-turn.secretFile replaces services.coturn.static-auth-secret.";
       }
       {
         assertion = useFiles == (cfg.tls.keyFile != null) && !(useFiles && cfg.tls.useACMEHost != null);
@@ -129,8 +129,8 @@ in
       cert = if useTLS then "${credentials}/tls-certificate" else null;
       pkey = if useTLS then "${credentials}/tls-key" else null;
       # Deny every peer, then allow the SFU: allowed-peer-ip overrides
-      # denied-peer-ip, but never allow-loopback-peers, which stays unset.
-      # coturn 4.17 starts no CLI unless asked.
+      # denied-peer-ip. allow-loopback-peers stays unset, so loopback peers
+      # stay denied. coturn 4.17 starts its CLI only when asked.
       extraConfig = ''
         no-multicast-peers
         denied-peer-ip=0.0.0.0-255.255.255.255

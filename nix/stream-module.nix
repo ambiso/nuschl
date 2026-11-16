@@ -17,8 +17,8 @@ let
     "require-trusted-types-for 'script'"
   ];
   # No identity code runs here, so passkeys are denied too. nginx drops
-  # inherited add_header lines in a block with its own, so every location
-  # repeats the full set.
+  # inherited add_header lines in a block with its own, so /share, which
+  # allows display capture, repeats the full set.
   headers = displayCapture: ''
     add_header Content-Security-Policy "${csp}" always;
     add_header Cross-Origin-Opener-Policy same-origin always;
@@ -62,25 +62,17 @@ in
       virtualHosts.${cfg.hostName} = {
         inherit (cfg) enableACME forceSSL;
         root = cfg.site;
-        extraConfig = "access_log off;";
+        extraConfig = ''
+          access_log off;
+          ${headers "()"}
+        '';
         locations =
           if cfg.site == null then
-            {
-              "/" = {
-                return = "404";
-                extraConfig = headers "()";
-              };
-            }
+            { "/".return = "404"; }
           else
             {
-              "/" = {
-                tryFiles = "$uri =404";
-                extraConfig = headers "()";
-              };
-              "= /watch" = {
-                tryFiles = "/watch.html =404";
-                extraConfig = headers "()";
-              };
+              "/".tryFiles = "$uri =404";
+              "= /watch".tryFiles = "/watch.html =404";
               "= /share" = {
                 tryFiles = "/share.html =404";
                 extraConfig = headers "(self)";
