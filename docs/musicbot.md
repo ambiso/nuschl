@@ -594,7 +594,8 @@ person: `"r"` and the first 32 hexadecimal digits of HMAC-SHA256
 over the Mumble server, a zero byte and the person's certificate hash, keyed with
 a 32-byte secret the bot makes on first use in `import_requester.key` in its
 state directory. People without a certificate share one pseudonym per server. The
-bot watches the import list as `musicbot`.
+bot watches the import list and fetches covers, which every viewer shares, as
+`musicbot`.
 
 **Limits.** The import service enforces them: lookups per requester and in total
 per minute, and tracks added per requester and in total over a rolling day. Its

@@ -1886,7 +1886,7 @@ async fn import_art(
     Path((token, id)): Path<(String, String)>,
     Query(query): Query<ImportArtQuery>,
 ) -> Result<Response, ApiError> {
-    let owner = owner(&bot, &token)?;
+    owner(&bot, &token)?;
     let adding = adding(&bot)?;
     if !import::valid_id(&id) {
         return Err(import_error(import::Failure::NotAvailable));
@@ -1896,14 +1896,14 @@ async fn import_art(
     let body = match bot.covers.get(&key).await {
         Some(body) => body,
         None => {
-            let requester = adding.pseudonyms.of(&owner);
+            // The cache is shared, so the bot asks: no viewer's lookups are spent.
             let image = async move {
-                import_call(&adding, move |client| client.cover(&requester, &id)).await
+                import_call(&adding, move |client| client.cover(import::BOT_REQUESTER, &id)).await
             };
             fetch_cover(&bot, key, image).await?
         }
     };
-    self::owner(&bot, &token)?;
+    owner(&bot, &token)?;
     Ok((
         [
             (header::CONTENT_TYPE, "image/png"),
