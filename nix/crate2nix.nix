@@ -8,6 +8,8 @@
 }:
 let
   inherit (pkgs) lib;
+  # Read by the desktop's build script (apps/desktop/build.rs).
+  emojiAssets = import ./emoji.nix { inherit pkgs; };
   pkgConfig = [ pkgs.pkg-config ];
   # Libraries the final binaries link against (and whose -sys crates probe).
   linuxLibraries = [
@@ -43,6 +45,11 @@ let
       nativeBuildInputs = [ pkgs.protobuf ];
       PROTOC = "${pkgs.protobuf}/bin/protoc";
     };
+    # Server integration tests read the unchanged workspace import fixture.
+    # Isolated crate sources do not contain the repository's tests directory.
+    nuschld = _: {
+      NUSCHL_TEST_MURMUR_FIXTURE = "${../tests/fixtures/murmur-1.5.json}";
+    };
     # The probe embeds the actual workspace fixture; isolated crate sources do
     # not contain ../../../tests. Keep identical frame bytes as an explicit input.
     nuschl-rtc-probe = _: {
@@ -52,9 +59,31 @@ let
           '"${../tests/fixtures/rtc-keyframe.vp8}"'
       '';
     };
-    nuschl = withLibraries;
+    # The Murmur tests read the workspace fixtures; isolated crate sources do
+    # not contain ../../tests.
+    nuschl-storage = _: {
+      postPatch = ''
+        substituteInPlace src/murmur.rs --replace-fail \
+          '"../../tests/fixtures"' '"${../tests/fixtures}"'
+      '';
+    };
+    nuschl = attrs: withLibraries attrs // { NUSCHL_EMOJI_ASSETS = emojiAssets; };
     nuschl-media-worker = withLibraries;
-    nuschl-cli = withLibraries;
+    # The cli's e2ee tests exec the crypto worker beside the cli binary the
+    # harness records at test-compile time (CARGO_BIN_EXE_nuschl-cli); the
+    # merged dev dependency nuschld marks that compilation, and the worker
+    # joins its bin directory.
+    nuschl-cli = attrs:
+      withLibraries attrs
+      // lib.optionalAttrs
+        (lib.any (d: lib.hasInfix "rust_nuschld" (d.name or (toString d)))
+          (attrs.dependencies or [ ]))
+        {
+          postInstall = (attrs.postInstall or "") + ''
+            cp ${project.workspaceMembers.nuschl-crypto-worker.build}/bin/nuschl-crypto-worker \
+              $out/bin/nuschl-crypto-worker
+          '';
+        };
   };
   project = import ./crate2nix/Cargo.nix {
     inherit pkgs;

@@ -13,7 +13,7 @@ let
   toml = pkgs.formats.toml { };
   json = pkgs.formats.json { };
   system = pkgs.stdenv.hostPlatform.system;
-  defaultInstallUrl = "https://github.com/ambiso/nuschl/releases/latest";
+  defaultInstallUrl = "https://github.com/nuschl-eu/nuschl/releases/latest";
   https = cfg.forceSSL || cfg.enableACME;
   origin = "${if https then "https" else "http"}://${cfg.hostName}";
   socketDirectory = "/run/nuschl-web-relay";
@@ -78,6 +78,7 @@ let
     add_header Content-Security-Policy "${contentSecurityPolicy}" always;
     add_header Referrer-Policy no-referrer always;
     add_header X-Content-Type-Options nosniff always;
+    add_header X-DNS-Prefetch-Control off always;
     add_header Cross-Origin-Opener-Policy same-origin always;
     add_header Permissions-Policy "camera=(), geolocation=(), microphone=(self)" always;
   '';
