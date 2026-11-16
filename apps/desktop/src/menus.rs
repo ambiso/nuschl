@@ -931,7 +931,7 @@ impl Desktop {
                 if mine {
                     entries.push(item("Edit comment…", "pencil", move |this, index, window, cx| {
                         let current = this.client.servers[index].users.get(&session).and_then(|user| user.comment.clone()).unwrap_or_default();
-                        this.open_prompt(index, PromptAction::Comment, "Your comment", "Shown to others in your profile. Plain text; line breaks are kept.", strip_tags(&current), window, cx);
+                        this.open_prompt(index, PromptAction::Comment, "Your comment", "Shown to others in your profile. Plain text; line breaks are kept.", nuschl_legacy_html::html_text(&current, '\n'), window, cx);
                     }));
                     if user.user_id.is_none() && server.may_try(0, perm::SELF_REGISTER) {
                         entries.push(item(
@@ -1637,7 +1637,8 @@ impl Desktop {
         });
         let description = cx.new(|cx| {
             crate::state::accessible(
-                InputState::new(window, cx).default_value(strip_tags(&view.description_raw)),
+                InputState::new(window, cx)
+                    .default_value(nuschl_legacy_html::html_text(&view.description_raw, '\n')),
                 "Channel description",
                 false,
                 false,
@@ -1828,11 +1829,6 @@ fn people_entries(
             );
         },
     ));
-}
-
-/// Plain text from Mumble's HTML for editing fields. Display goes through the content worker.
-pub fn strip_tags(html: &str) -> String {
-    nuschl_legacy_html::html_text(html, '\n').trim().to_string()
 }
 
 struct MenuSurfaceState {
@@ -2214,19 +2210,6 @@ pub fn prompt(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
         cx,
         |this| this.prompt = None,
     ))
-}
-
-#[cfg(test)]
-mod tests {
-    // Not `super::*`: that glob includes GPUI's `test` macro, which shadows `#[test]`.
-    use super::strip_tags;
-    #[test]
-    fn strips_mumble_html_for_editing() {
-        assert_eq!(
-            strip_tags("<p>Hi <b>there</b><br/>line&amp;more</p>"),
-            "Hi there\nline&more"
-        );
-    }
 }
 
 #[cfg(test)]

@@ -7234,6 +7234,7 @@ dependencies = [
 name = "nuschl-files"
 version = "0.2.0"
 dependencies = [
+ "hex",
  "ring",
  "thiserror 2.0.21",
  "zeroize",
@@ -7630,6 +7631,7 @@ dependencies = [
  "bytes",
  "clap",
  "hex",
+ "nuschl-core",
  "nuschl-e2ee",
  "nuschl-identity",
  "nuschl-ipc",

@@ -16,3 +16,6 @@ workspace = true
 ring = "0.17.14"
 thiserror = "2.0.21"
 zeroize = "1.9.1"
+
+[dev-dependencies]
+hex = "0.4.3"

@@ -437,7 +437,7 @@ pub async fn open(
 }
 
 pub fn now_ms() -> u64 {
-    u64::try_from(crate::chat::now_ms()).unwrap_or(0)
+    u64::try_from(nuschl_core::now_ms()).unwrap_or(0)
 }
 
 fn sha256(bytes: &[u8]) -> [u8; 32] {

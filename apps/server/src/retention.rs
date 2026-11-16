@@ -11,9 +11,8 @@
 //! in batches (`nuschl_ipc::server::expirable` is the hook for records that
 //! must stay); history pages hide expired content at once, so a message older
 //! than its conversation's retention is never served, whenever the timer runs.
-use crate::{
-    chat::now_ms, conversations::Id, server::Server, state::State, storage::StorageHandle,
-};
+use crate::{conversations::Id, server::Server, state::State, storage::StorageHandle};
+use nuschl_core::now_ms;
 use nuschl_ipc::server::{
     EXPIRE_BATCH, Retention, ServerStorageRequest as Request, ServerStorageResponse as Response,
 };

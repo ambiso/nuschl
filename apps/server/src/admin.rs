@@ -493,7 +493,7 @@ async fn channels(opened: &mut Opened, command: Channels) -> Result<()> {
             let before = state.retention(&id);
             let after = state.retention_with(own);
             if after.shorter_than(before) {
-                let now = crate::chat::now_ms();
+                let now = nuschl_core::now_ms();
                 let cutoff = after.cutoff_ms(now).unwrap_or(i64::MIN);
                 let removed = match opened
                     .storage
@@ -688,7 +688,7 @@ async fn history_command(opened: &mut Opened, command: HistoryCommand) -> Result
 /// conversation's retention is left out as pages leave it out.
 async fn export(opened: &Opened, id: Id, name: &str) -> Result<serde_json::Value> {
     use serde_json::json;
-    let now = crate::chat::now_ms();
+    let now = nuschl_core::now_ms();
     let retention = opened.state.retention(&id);
     let cutoff = retention.cutoff_ms(now);
     let mut rows = Vec::new();

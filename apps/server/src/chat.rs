@@ -12,6 +12,7 @@ use crate::{
     state::{State, random},
     text,
 };
+use nuschl_core::now_ms;
 use nuschl_ipc::server::{
     Anchor, HistoryVisibility, MessageKind, PageQuery, ServerStorageRequest as Request,
     ServerStorageResponse as Response, StoredDirect, StoredMessage, StoredPage,
@@ -25,23 +26,12 @@ use nuschl_protocol::{
     },
 };
 use prost::Message as _;
-use std::{
-    sync::atomic::Ordering,
-    time::{Instant, SystemTime, UNIX_EPOCH},
-};
+use std::{sync::atomic::Ordering, time::Instant};
 
 type Failure = (Code, u64);
 
 fn fail(code: Code) -> Failure {
     (code, 0)
-}
-
-pub fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            elapsed.as_millis().min(i64::MAX as u128) as i64
-        })
 }
 
 fn conversation(bytes: &[u8]) -> Result<Id, Failure> {

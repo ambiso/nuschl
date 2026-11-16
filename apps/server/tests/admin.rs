@@ -88,7 +88,7 @@ async fn prepared() -> (
     };
     running.shutdown().await;
     // Two old messages and a recent one, as the server would have stored them.
-    let now = nuschld::chat::now_ms();
+    let now = nuschl_core::now_ms();
     let mut memory = store.lock().unwrap();
     for (seq, author, age_days, content) in [
         (1, 1_u8, 40, "old from Alice"),

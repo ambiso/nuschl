@@ -2050,7 +2050,7 @@ impl State {
             author_name: name,
             format,
             content,
-            sent_ms: crate::chat::now_ms(),
+            sent_ms: nuschl_core::now_ms(),
             idempotency_key: Some(hex::encode(key)),
             // The key names the message: a resend after STALE_EPOCH re-encrypts the
             // same envelope and gets the original seq back.
@@ -2188,7 +2188,7 @@ impl State {
                 author_name: String::new(),
                 format: v1::Format::MlsHandshake as u8,
                 content: base64(&row),
-                sent_ms: crate::chat::now_ms(),
+                sent_ms: nuschl_core::now_ms(),
                 idempotency_key: None,
                 body_hash: Some(hex::encode(sha256(&[&row]))),
                 ..StoredMessage::default()
@@ -2445,7 +2445,7 @@ impl State {
             author_name: name,
             format: v1::Format::MlsHandshake as u8,
             content: base64(&commit),
-            sent_ms: crate::chat::now_ms(),
+            sent_ms: nuschl_core::now_ms(),
             idempotency_key: Some(hex::encode(key)),
             body_hash: Some(hex::encode(hash)),
             ..StoredMessage::default()

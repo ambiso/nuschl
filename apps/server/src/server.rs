@@ -598,7 +598,7 @@ pub async fn erase_account(
     match storage
         .request(nuschl_ipc::server::ServerStorageRequest::HistoryErase {
             account: hex::encode(account),
-            deleted_ms: crate::chat::now_ms(),
+            deleted_ms: nuschl_core::now_ms(),
         })
         .await
     {

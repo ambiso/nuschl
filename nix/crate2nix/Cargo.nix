@@ -23844,6 +23844,12 @@ rec {
             packageId = "zeroize";
           }
         ];
+        devDependencies = [
+          {
+            name = "hex";
+            packageId = "hex";
+          }
+        ];
 
       };
       "nuschl-identity" = rec {
@@ -25371,6 +25377,10 @@ rec {
           {
             name = "hex";
             packageId = "hex";
+          }
+          {
+            name = "nuschl-core";
+            packageId = "nuschl-core";
           }
           {
             name = "nuschl-e2ee";

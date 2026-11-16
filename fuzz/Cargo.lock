@@ -3477,6 +3477,7 @@ dependencies = [
  "bytes",
  "clap",
  "hex",
+ "nuschl-core",
  "nuschl-e2ee",
  "nuschl-identity",
  "nuschl-ipc",

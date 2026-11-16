@@ -125,8 +125,8 @@ pub fn escape_html(body: &str) -> String {
     out
 }
 
-/// The text of Mumble HTML: tags dropped, `<br>`, `<p>` and `<div>` (opening
-/// or closing) as `block_break`, and the entities Mumble writes decoded.
+/// The trimmed text of Mumble HTML: tags dropped, `<br>`, `<p>` and `<div>`
+/// (opening or closing) as `block_break`, and the entities Mumble writes decoded.
 pub fn html_text(html: &str, block_break: char) -> String {
     let mut out = String::with_capacity(html.len());
     let mut tag: Option<String> = None;
@@ -158,6 +158,8 @@ pub fn html_text(html: &str, block_break: char) -> String {
         .replace("&#39;", "'")
         .replace("&nbsp;", " ")
         .replace("&amp;", "&")
+        .trim()
+        .to_string()
 }
 
 #[cfg(test)]
@@ -167,8 +169,8 @@ mod tests {
     #[test]
     fn mumble_html_reads_as_text() {
         let html = "<p>Hi <b>there</b><br/>line&amp;more&#39;s</P><div>a&nbsp;&lt;b&gt;</div>";
-        assert_eq!(html_text(html, '\n'), "\nHi there\nline&more's\n\na <b>\n");
-        assert_eq!(html_text(html, ' '), " Hi there line&more's  a <b> ");
+        assert_eq!(html_text(html, '\n'), "Hi there\nline&more's\n\na <b>");
+        assert_eq!(html_text(html, ' '), "Hi there line&more's  a <b>");
         // Entities are decoded once.
         assert_eq!(html_text("&amp;lt;", ' '), "&lt;");
     }
