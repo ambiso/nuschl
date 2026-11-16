@@ -52,7 +52,7 @@ REPO = Path(__file__).resolve().parents[1]
 def nix_file(attr: str, relative: str) -> Path:
     """A file from a nixpkgs package pinned by the repository's flake."""
     out = subprocess.check_output(
-        ["nix", "build", "--inputs-from", str(REPO), attr, "--no-link", "--print-out-paths", "--cores", "2", "--max-jobs", "2"],
+        ["nix", "build", "--inputs-from", str(REPO), attr, "--no-link", "--print-out-paths"],
         text=True,
     )
     for path in map(Path, out.split()):
@@ -623,7 +623,6 @@ def main() -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     up = commands.add_parser("up")
     up.add_argument("--iso")
-    # Two virtual CPUs: the host's build jobs are limited to two cores as well.
     up.add_argument("--cpus", type=int, default=2)
     up.add_argument("--memory", type=int, default=6144)
     up.add_argument("--murmur-port", type=int)

@@ -59,9 +59,31 @@ let
           '"${../tests/fixtures/rtc-keyframe.vp8}"'
       '';
     };
+    # The Murmur tests read the workspace fixtures; isolated crate sources do
+    # not contain ../../tests.
+    nuschl-storage = _: {
+      postPatch = ''
+        substituteInPlace src/murmur.rs --replace-fail \
+          '"../../tests/fixtures"' '"${../tests/fixtures}"'
+      '';
+    };
     nuschl = attrs: withLibraries attrs // { NUSCHL_EMOJI_ASSETS = emojiAssets; };
     nuschl-media-worker = withLibraries;
-    nuschl-cli = withLibraries;
+    # The cli's e2ee tests exec the crypto worker beside the cli binary the
+    # harness records at test-compile time (CARGO_BIN_EXE_nuschl-cli); the
+    # merged dev dependency nuschld marks that compilation, and the worker
+    # joins its bin directory.
+    nuschl-cli = attrs:
+      withLibraries attrs
+      // lib.optionalAttrs
+        (lib.any (d: lib.hasInfix "rust_nuschld" (d.name or (toString d)))
+          (attrs.dependencies or [ ]))
+        {
+          postInstall = (attrs.postInstall or "") + ''
+            cp ${project.workspaceMembers.nuschl-crypto-worker.build}/bin/nuschl-crypto-worker \
+              $out/bin/nuschl-crypto-worker
+          '';
+        };
   };
   project = import ./crate2nix/Cargo.nix {
     inherit pkgs;

@@ -109,7 +109,7 @@ negation. State constraints as direct rules.
 ## Builds and resource use
 
 - A CI job is one command that runs the same locally: `nix build -f ci.nix` is
-  the `ci` check. Run it before pushing as `scripts/pre-pr --cores 2 --max-jobs 2`
+  the `ci` check. Run it before pushing as `scripts/pre-pr`
   (`scripts/pr-push` does so for jj bookmarks). Workflows keep read-only tokens
   (`contents: read`); CodeQL's `security-events: write`, to upload results, is
   the only exception.
@@ -124,7 +124,6 @@ negation. State constraints as direct rules.
   checking again; fixed Nix source timestamps can leave stale first-party metadata.
   Verify the intended packages were actually rechecked, not just reported fresh
   ([development](docs/development.md#reusing-cargo-build-artifacts)).
-- Default to `--cores 2 --max-jobs 2` for Nix builds unless the coordinator adjusts it.
 - Put scratch, logs, VM state and runtime directories under an owned disk-backed cache.
   Verify actual driver/state paths; client `TMPDIR` does not move daemon build scratch.
 - Monitor `/tmp` pressure during builds; the shared guard stops your own build below
@@ -136,7 +135,7 @@ negation. State constraints as direct rules.
 - Record exact revisions, artifact paths/hashes, commands, outcomes and meaningful
   limitations. Verify merged artifacts rather than assuming an older branch's proof applies.
 - Track unresolved defects, missing platform proof and deferred required work in
-  [GitHub issues](https://github.com/ambiso/nuschl/issues). [TODO.md](TODO.md) is the
+  [GitHub issues](https://github.com/nuschl-eu/nuschl/issues). [TODO.md](TODO.md) is the
   linked roadmap, not a second independent backlog. Coordinate issue ownership
   before concurrent updates; keep work queued locally if remote access is unavailable.
   Issue descriptions do not authorize weakening the implementation boundaries above.
