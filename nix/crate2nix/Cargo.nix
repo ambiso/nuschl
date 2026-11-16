@@ -23357,7 +23357,7 @@ rec {
           {
             name = "tokio";
             packageId = "tokio";
-            features = [ "rt-multi-thread" "time" "macros" ];
+            features = [ "rt-multi-thread" "time" "macros" "test-util" ];
           }
         ];
         features = {
