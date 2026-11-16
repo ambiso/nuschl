@@ -23320,6 +23320,18 @@ rec {
             packageId = "hex";
           }
           {
+            name = "icu_collator";
+            packageId = "icu_collator";
+            usesDefaultFeatures = false;
+            target = { target, features }: (!("wasm32" == target."arch" or null));
+            features = [ "compiled_data" ];
+          }
+          {
+            name = "js-sys";
+            packageId = "js-sys";
+            target = { target, features }: ("wasm32" == target."arch" or null);
+          }
+          {
             name = "nuschl-core";
             packageId = "nuschl-core";
           }

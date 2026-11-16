@@ -25,6 +25,14 @@ nuschl-session = { workspace = true, optional = true }
 serde = { version = "1.0.229", features = ["derive"] }
 tokio = { version = "1.54.1", features = ["rt", "time", "sync", "macros"], optional = true }
 
+# Mumble compares channel names with a locale-aware collation: the browser's
+# own in WebAssembly, ICU's root collation elsewhere.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3.107"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+icu_collator = { version = "2.4.0", default-features = false, features = ["compiled_data"] }
+
 [lints]
 workspace = true
 

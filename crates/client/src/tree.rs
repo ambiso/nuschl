@@ -184,13 +184,38 @@ impl ServerState {
             }
         }
     }
-    /// Channels in display order: by position, then name.
+    /// Channels in display order, as Mumble shows them: by position, then by
+    /// name in collation order (Mumble uses `QString::localeAwareCompare`).
     pub fn sort_channels(&mut self) {
+        let collate = name_collation();
         self.channels.sort_by(|a, b| {
             a.position
                 .cmp(&b.position)
+                .then_with(|| collate(&a.name, &b.name))
                 .then_with(|| a.name.cmp(&b.name))
         });
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn name_collation() -> impl Fn(&str, &str) -> std::cmp::Ordering {
+    let collator = icu_collator::Collator::try_new(Default::default(), Default::default())
+        .expect("compiled collation data");
+    move |a, b| collator.compare(a, b)
+}
+
+/// The browser's collation for its locale, at no cost to the download.
+#[cfg(target_arch = "wasm32")]
+fn name_collation() -> impl Fn(&str, &str) -> std::cmp::Ordering {
+    let compare =
+        js_sys::Intl::Collator::new(&js_sys::Array::new(), &js_sys::Object::new()).compare();
+    move |a, b| {
+        let order = compare
+            .call2(&js_sys::wasm_bindgen::JsValue::NULL, &a.into(), &b.into())
+            .ok()
+            .and_then(|order| order.as_f64())
+            .unwrap_or(0.0);
+        order.partial_cmp(&0.0).unwrap_or(std::cmp::Ordering::Equal)
     }
 }
 
@@ -318,6 +343,25 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn siblings_sort_by_position_then_name_as_mumble_does() {
+        let mut server =
+            ServerState::new(ServerBookmark::new("Test", "localhost", 64738, "andi").unwrap());
+        server.channels = ["Zebra", "Lobby", "admin", "_AFK", "Ärger", "Music"]
+            .into_iter()
+            .enumerate()
+            .map(|(id, name)| channel(id as u32 + 1, Some(0), name, i32::from(name == "Music") - 1))
+            .collect();
+        server.sort_channels();
+        let names: Vec<_> = server
+            .channels
+            .iter()
+            .map(|channel| channel.name.as_str())
+            .collect();
+        // Case and accents count after letters, punctuation before them.
+        assert_eq!(names, ["_AFK", "admin", "Ärger", "Lobby", "Zebra", "Music"]);
     }
 
     #[test]
