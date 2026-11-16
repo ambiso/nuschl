@@ -89,9 +89,9 @@ bookmarks with `scripts/pr-push --bookmark NAME`. With plain git,
 `git config core.hooksPath .githooks` runs it before each push.
 
 Unit tests run as one `<crate>-unit` check per workspace member, generated
-from the member list in flake.nix. A member whose tests run elsewhere, such
-as PostgreSQL or a foreign platform, appears in `unitOptOut` there with its
-reason.
+from the member list in flake.nix. `unitExtras` there gives a leaf the inputs
+its tests need (bubblewrap, PostgreSQL, features); a member whose tests run
+elsewhere appears in `unitOptOut` with its reason.
 
 Changes reach `main` only through pull requests from this repository's branches
 whose required checks pass. The `ci` check fails pull requests from forks

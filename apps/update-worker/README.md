@@ -197,7 +197,7 @@ download, apply and cleanup also pass. See [Windows proof](../../docs/windows-hy
 ```sh
 nix build .#update-verifier-ed25519 .#update-verifier-mldsa44 \
   .#update-runtime-fixture .#checks.x86_64-linux.nuschl-update-unit \
-  .#checks.x86_64-linux.update-crypto
+  .#checks.x86_64-linux.nuschl-update-worker-unit
 # Run the fixture outside the Nix build sandbox with disk TMPDIR and these
 # output paths: nuschl-update-runtime-fixture ED_VERIFIER ML_VERIFIER PYTHON
 python3 tests/update_release.py --signer /nix/store/…/bin/nuschl-update-sign

@@ -375,6 +375,9 @@
           # the CLI's e2ee tests run the crypto worker through the sandbox.
           nuschl-math-worker.testInputs = [ pkgs.bubblewrap pkgs.util-linux ];
           nuschl-cli.testInputs = [ pkgs.bubblewrap pkgs.util-linux ];
+          nuschl-crypto-worker.testInputs = [ pkgs.bubblewrap pkgs.util-linux ];
+          # The signer's tests need its feature; the default build has none.
+          nuschl-update-worker.features = [ "signer" ];
           nuschl-link-preview.testInputs = [ pkgs.python3 ];
           # One throwaway server in the build directory, on a unix socket
           # there; nothing listens on the network. The ignored checks run too.
@@ -383,11 +386,16 @@
             testCrateFlags = [ "--include-ignored" ];
             testPreRun = ''
               export NUSCHL_PG="$(pwd)/postgres"
-              initdb --auth=trust --no-locale --username=postgres \
-                --pgdata="$NUSCHL_PG" > initdb.log 2>&1
+              # Runs before each test binary; the first one creates the server.
+              fresh=
+              if [ ! -d "$NUSCHL_PG" ]; then
+                initdb --auth=trust --no-locale --username=postgres \
+                  --pgdata="$NUSCHL_PG" > initdb.log 2>&1
+                fresh=1
+              fi
               pg_ctl --pgdata="$NUSCHL_PG" --log="$NUSCHL_PG/server.log" \
                 --options="-k $NUSCHL_PG -c listen_addresses=" --wait start
-              createdb --host="$NUSCHL_PG" --username=postgres nuschl_test
+              [ -z "$fresh" ] || createdb --host="$NUSCHL_PG" --username=postgres nuschl_test
               export NUSCHL_TEST_POSTGRES_URL="postgresql:///nuschl_test?host=$NUSCHL_PG&user=postgres"
             '';
             testPostRun = ''
@@ -407,17 +415,7 @@
         unitChecks = lib.mapAttrs'
           (name: member:
             lib.nameValuePair "${name}-unit"
-              (let
-                extra = unitExtras.${name} or { };
-                # crate2nix pipes its harness through tee, whose success would
-                # otherwise pass a failing suite.
-                wrapped = {
-                  runTests = true;
-                  testPreRun = "set -o pipefail\n" + lib.optionalString
-                    (extra ? testPreRun) extra.testPreRun;
-                };
-              in
-                member.build.override (wrapped // (removeAttrs extra [ "testPreRun" ]))))
+              (member.build.override ({ runTests = true; } // unitExtras.${name} or { })))
           (removeAttrs crates.project.workspaceMembers (lib.attrNames unitOptOut));
         # Explicit operator/CI tool; never included in client worker payloads.
         updateSigner = crates.project.workspaceMembers."nuschl-update-worker".build.override {
@@ -752,9 +750,8 @@
               cargoClippyExtraArgs = "--all-targets -- --deny warnings";
             }
           );
-          # The worker exchange diagnostic has its own main and its own check.
-          # exchange.rs has its own main (harness=false); the unit-test leaf
-          # alone compiles it under libtest and reports zero tests.
+          # exchange.rs has its own main (harness = false) and its own check;
+          # the unit-test leaf compiles it under libtest and reports zero tests.
           ipc-exchange = import ./nix/ipc-exchange-check.nix {
             inherit pkgs toolchain;
             ipc = crates.project.workspaceMembers."nuschl-ipc".build;
@@ -764,13 +761,6 @@
               inherit name path;
             }) self.checks.${system}.ipc-exchange.negativeControls
           );
-          # The signer-feature variant of nuschl-update-worker's tests;
-          # the generated nuschl-update-worker-unit leaf runs the default
-          # feature set.
-          update-crypto = crates.project.workspaceMembers."nuschl-update-worker".build.override {
-            features = [ "signer" ];
-            runTests = true;
-          };
           fmt = craneLib.cargoFmt { inherit src; };
           deny = craneLib.cargoDeny (
             common
