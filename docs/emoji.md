@@ -170,7 +170,7 @@ cannot be loaded, emoji stay text and the picker says so.
 
 ## Tests
 
-- `cargo test -p nuschl` (`emoji::tests`, crate2nix: `checks.<system>.desktop-unit`):
+- `cargo test -p nuschl` (`emoji::tests`, crate2nix: `checks.<system>.nuschl-unit`):
   the table and its tones, search (also by an emoji), the category tabs, short codes
   (where a code may start, closing colons, ranking, typed versus pasted colons),
   naming the emoji at an offset in a message, the presentation rule (`™` and `™️`, ©, ®, ❤, ☝,
