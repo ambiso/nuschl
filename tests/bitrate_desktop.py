@@ -688,7 +688,7 @@ class DesktopBitrate:
         self.find("dialog", "Settings")
         group = self.find("radio button", "128 kb/s")
         group.call("Component", "ScrollTo", "u", "0")
-        self.named("1 other server: 128 kb/s")
+        self.named("Other servers: 128 kb/s")
         self.named("Narrow: 48 of 128 kb/s · server limit")
         self.shot("2-settings-default")
         capture = self.capture_streams()
@@ -700,7 +700,7 @@ class DesktopBitrate:
                                        "voice-quality.json was not written")
         assert sidecar == {"version": 1, "voice_bitrate": 256_000}, sidecar
         assert set(settings) <= RELEASED_KEYS and "voice_bitrate" not in settings, settings
-        self.named("1 other server: 256 kb/s")
+        self.named("Other servers: 256 kb/s")
         self.named("Narrow: 48 of 256 kb/s · server limit")
         self.find("radio button", "256 kb/s").call("Component", "ScrollTo", "u", "0")
         self.shot("3-settings-256")

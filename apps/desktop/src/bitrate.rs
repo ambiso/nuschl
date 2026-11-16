@@ -76,7 +76,7 @@ pub fn settings_rows(this: &Desktop, cx: &mut Context<Desktop>) -> Vec<AnyElemen
 }
 
 /// Connected with Mumble voice, so it has a voice bitrate to show.
-fn has_voice(server: &ServerView) -> bool {
+pub fn has_voice(server: &ServerView) -> bool {
     server.status == Status::Connected && server.has_mumble_voice()
 }
 
@@ -84,48 +84,35 @@ fn has_voice(server: &ServerView) -> bool {
 /// [`LISTED`] servers below the request (with their index), then how many
 /// more, then one line for the servers at the request.
 fn settings_lines(servers: &[ServerView], requested: u32) -> Vec<(Option<usize>, String)> {
-    let mut lines = Vec::new();
-    let (mut below, mut met, mut first) = (0, 0, None);
-    for (index, server) in servers.iter().enumerate().filter(|(_, s)| has_voice(s)) {
-        let Some(bitrate) = for_server(servers, index, requested) else {
-            continue;
-        };
-        if bitrate.limit == BitrateLimit::Requested {
-            met += 1;
-            first = first.or(Some(&server.name));
+    let (met, below): (Vec<_>, Vec<_>) = servers
+        .iter()
+        .enumerate()
+        .filter(|(_, server)| has_voice(server))
+        .filter_map(|(index, server)| Some((index, server, for_server(servers, index, requested)?)))
+        .partition(|(_, _, bitrate)| bitrate.limit == BitrateLimit::Requested);
+    let mut lines: Vec<_> = below
+        .iter()
+        .take(LISTED)
+        .map(|(index, server, bitrate)| {
+            (
+                Some(*index),
+                format!("{}: {}", server.name, place_line(bitrate)),
+            )
+        })
+        .collect();
+    if below.len() > LISTED {
+        let more = format!("+{} more in Connection info", below.len() - LISTED);
+        lines.push((None, more));
+    }
+    if !met.is_empty() {
+        let who = if below.is_empty() {
+            "All servers"
         } else {
-            below += 1;
-            if below <= LISTED {
-                let text = format!("{}: {}", server.name, place_line(&bitrate));
-                lines.push((Some(index), text));
-            }
-        }
-    }
-    if below > LISTED {
-        lines.push((None, format!("+{} more in Connection info", below - LISTED)));
-    }
-    if let Some(name) = first {
-        let rate = kbps(requested);
-        lines.push((
-            None,
-            match (below, met) {
-                (0, 1) => format!("{name}: {rate}"),
-                (0, _) => format!("All {met} servers: {rate}"),
-                (_, 1) => format!("1 other server: {rate}"),
-                _ => format!("{met} other servers: {rate}"),
-            },
-        ));
+            "Other servers"
+        };
+        lines.push((None, format!("{who}: {}", kbps(requested))));
     }
     lines
-}
-
-/// The voice bitrate in `servers[index]`'s Connection info, worded as on the
-/// voice card. None unless it is connected with voice.
-pub fn connection_value(servers: &[ServerView], index: usize, requested: u32) -> Option<String> {
-    if !has_voice(servers.get(index)?) {
-        return None;
-    }
-    Some(place_line(&for_server(servers, index, requested)?))
 }
 
 /// One line for a voice place, short enough for the voice card: "128 kb/s",
@@ -143,7 +130,7 @@ pub fn place_line(bitrate: &VoiceBitrate) -> String {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's prelude has an attribute named `test` too.
-    use super::{LABELS, LISTED, connection_value, place_line, settings_lines};
+    use super::{LABELS, LISTED, place_line, settings_lines};
     use nuschl_client::server::{ServerState, Status};
     use nuschl_core::{
         bitrate::{VOICE_BITRATE_CHOICES, VoiceBitrate, kbps},
@@ -151,13 +138,12 @@ mod tests {
         model::ServerLimits,
     };
 
-    /// A connected server allowing `budget` per user; `speaking` sends it
-    /// the microphone.
-    fn server(name: &str, budget: u32, speaking: bool) -> ServerState {
+    /// A connected, muted server allowing `budget` per user.
+    fn server(name: &str, budget: u32) -> ServerState {
         let mut server =
             ServerState::new(ServerBookmark::new(name, "localhost", 64738, "me").unwrap());
         server.status = Status::Connected;
-        server.muted = !speaking;
+        server.muted = true;
         server.deafened = false;
         server.limits = Some(ServerLimits {
             max_bandwidth: Some(budget),
@@ -203,27 +189,26 @@ mod tests {
 
     #[test]
     fn settings_list_up_to_five_servers_below_the_request_then_the_rest() {
-        let narrow = |count: usize| (0..count).map(|n| server(&format!("S{n}"), 72_000, false));
-        let wide = |name| server(name, 558_000, false);
+        let narrow = |count: usize| (0..count).map(|n| server(&format!("S{n}"), 72_000));
+        let wide = |name| server(name, 558_000);
         let below = |n: usize| (Some(n), format!("S{n}: 48 of 128 kb/s · server limit"));
         let others = |text: &str| (None, text.to_owned());
         let cases = [
             (vec![], vec![]),
-            (vec![wide("Wide")], vec![others("Wide: 128 kb/s")]),
             (
-                vec![wide("A"), wide("B"), wide("C")],
-                vec![others("All 3 servers: 128 kb/s")],
+                vec![wide("A"), wide("B")],
+                vec![others("All servers: 128 kb/s")],
             ),
             (narrow(1).collect(), vec![below(0)]),
             (
                 narrow(2).chain([wide("Wide")]).collect(),
-                vec![below(0), below(1), others("1 other server: 128 kb/s")],
+                vec![below(0), below(1), others("Other servers: 128 kb/s")],
             ),
             (
                 narrow(LISTED).chain([wide("Wide"), wide("Big")]).collect(),
                 (0..LISTED)
                     .map(below)
-                    .chain([others("2 other servers: 128 kb/s")])
+                    .chain([others("Other servers: 128 kb/s")])
                     .collect(),
             ),
             (
@@ -232,7 +217,7 @@ mod tests {
                     .map(below)
                     .chain([
                         others("+4 more in Connection info"),
-                        others("1 other server: 128 kb/s"),
+                        others("Other servers: 128 kb/s"),
                     ])
                     .collect(),
             ),
@@ -244,27 +229,22 @@ mod tests {
 
     #[test]
     fn only_connected_servers_with_mumble_voice_have_a_rate() {
-        let mut offline = server("Offline", 72_000, false);
+        let mut offline = server("Offline", 72_000);
         offline.status = Status::Connecting;
-        let mut encrypted = server("E2EE", 72_000, false);
+        let mut encrypted = server("E2EE", 72_000);
         encrypted.capabilities.push("e2ee/1".into());
         let servers = [
-            server("Wide", 558_000, false),
+            server("Wide", 558_000),
             offline,
-            server("Tiny", 20_000, false),
+            server("Tiny", 20_000),
             encrypted,
         ];
         assert_eq!(
             settings_lines(&servers, 128_000),
             [
                 (Some(2), "Tiny: Not sending · server limit".into()),
-                (None, "1 other server: 128 kb/s".into()),
+                (None, "Other servers: 128 kb/s".into()),
             ]
         );
-        let values: Vec<_> = (0..5)
-            .map(|index| connection_value(&servers, index, 128_000))
-            .collect();
-        let tiny = Some("Not sending · server limit".into());
-        assert_eq!(values, [Some("128 kb/s".into()), None, tiny, None, None]);
     }
 }
