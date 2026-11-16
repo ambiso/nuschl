@@ -603,7 +603,7 @@ The 45 audio commits between them do not change memory measurably.
 ## Reproducing
 
 ```sh
-nix build --no-link --print-out-paths --cores 2 --max-jobs 2 --inputs-from . \
+nix build --no-link --print-out-paths --inputs-from . \
     nixpkgs#gnome-shell nixpkgs#at-spi2-core nixpkgs#pulseaudio nixpkgs#murmur \
     nixpkgs#heaptrack nixpkgs#vulkan-tools nixpkgs#imagemagick
 TMPDIR=<disk scratch> NUSCHL_WL_TMP=<short disk scratch> python3 tests/memory_audit.py run \

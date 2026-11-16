@@ -11,7 +11,7 @@ Everything comes from the Nix flake's development shell:
 ```sh
 direnv allow
 # Or enter the same pinned environment explicitly:
-nix develop --cores 2
+nix develop
 ```
 
 `cargo add` is built into the pinned Cargo. `Cargo.lock` and `flake.lock` are tracked.
@@ -36,9 +36,10 @@ the `stable` channel independently of `flake.lock`. Commits are made with `jj`.
 | `just rtc` | the WebRTC trial with the worker's Opus (below) |
 | `just readme-screenshot` | the picture at the top of the README (`tests/readme_screenshot.py`) |
 | `just crate2nix` | regenerate the per-crate Nix build after dependency changes |
+| `just emoji-assets` | link the emoji images and picker data for builds outside Nix ([emoji.md](emoji.md)) |
 | `just fmt` | format Rust, Nix and TOML |
 
-Other VM checks run with `nix build --cores 2 .#checks.x86_64-linux.<name>`:
+Other VM checks run with `nix build .#checks.x86_64-linux.<name>`:
 `vm-server` (the server module), `vm-home-manager`, `home-manager`. UI scenes for
 looking at changes run in a private headless GNOME Shell (`tests/screenshots.py`,
 tests/README.md).
@@ -65,7 +66,7 @@ move its build scratch.
 The worker exchange diagnostic has its own `main` (`harness = false`). Run:
 
 ```sh
-nix build --cores 2 --max-jobs 1 \
+nix build \
   .#checks.x86_64-linux.ipc-exchange \
   .#checks.x86_64-linux.ipc-exchange-negative-controls
 ```
@@ -76,6 +77,36 @@ ordinary IPC unit-test leaf compiles this fixture under libtest and reports zero
 tests for it. This check requires a working sandbox and rejects a substituted
 successful executable; it checks eventual cleanup, not atomic worker-tree exit
 or platform-wide confinement.
+
+## Continuous integration
+
+Pull requests to `main` and pushes to `main` run one command on the self-hosted
+runner, the `ci` check: `nix build -f ci.nix`, every flake check including the
+NixOS VM tests, except the release packaging proofs. Run the same command on the
+working copy before pushing with `scripts/pre-pr`; Nix
+reads only tracked files, so commit new files first. jj runs no git hooks: push
+bookmarks with `scripts/pr-push --bookmark NAME`. With plain git,
+`git config core.hooksPath .githooks` runs it before each push.
+
+Unit tests run as one `<crate>-unit` check per workspace member, generated
+from the member list in flake.nix. `unitExtras` there gives a leaf the inputs
+its tests need (bubblewrap, PostgreSQL, features); a member whose tests run
+elsewhere appears in `unitOptOut` with its reason.
+
+Changes reach `main` only through pull requests from this repository's branches
+whose required checks pass. The `ci` check fails pull requests from forks
+before checking them out; a maintainer pushes a reviewed fork branch here instead.
+Every workflow has a read-only token; CodeQL's `security-events: write`, to
+upload results, is the only exception.
+
+Reviews check that a change is:
+
+- minimal: no code, option or abstraction that the change does not need;
+- readable and correct, including its failure paths;
+- built on standard, widely used crates only;
+- tested through the real code paths, not only mocks;
+- checked by CI with a single command that also runs locally;
+- described plainly, without flattery or overstated results.
 
 ## Packages and cross builds
 
@@ -88,7 +119,7 @@ builds use crane (`.#default-crane` builds the package the same way).
 Windows and macOS packages are cross-built from Linux: `.#windows`, `.#macos-app`,
 `.#macos-universal` and `.#macos-aarch64` ([install.md](install.md#how-releases-are-made)).
 
-`nix flake check --cores 2` runs the native build, tests, Clippy, formatting,
+`nix flake check` runs the native build, tests, Clippy, formatting,
 dependency policy, and a vulnerability check using a pinned advisory database.
 `cargo deny check` also checks the current advisory database and registry yanks
 outside the Nix sandbox.
@@ -108,6 +139,15 @@ do not clean another agent's build or the shared artifact source. Confirm from t
 build log that the intended workspace packages were checked or compiled. Record
 the source revision, seed artifact, command and result with the evidence.
 
+## Emoji assets
+
+The desktop compiles in, and the web client serves, Twemoji images and the picker's
+data built from sources pinned together in `nix/emoji.nix` (`nix build .#emojiAssets`,
+[emoji.md](emoji.md)). Nix builds and the development shell set
+`NUSCHL_EMOJI_ASSETS`; without it, the desktop's build script reads `emoji-assets/`,
+which `just emoji-assets` links (with `web/app/public/emoji` for `npm run dev` and
+`npm test`). Both are ignored by version control.
+
 ## The icon
 
 The icon's source is `apps/desktop/assets/nuschl.svg`. The Linux package installs
@@ -118,7 +158,7 @@ regenerate the committed Windows `.ico` with the command at the top of
 ## The WebRTC trial
 
 The modern media transport is a str0m trial in `nuschl-rtc`. Run
-`nix run --cores 2 .#rtc-probe` for the headless audio/video loopback probe, or
+`nix run .#rtc-probe` for the headless audio/video loopback probe, or
 `just rtc` inside the development shell to include the worker's Opus encoding and
 decoding. Both send Opus and a generated VP8 test pattern between two loopback UDP
 peers; no microphone, camera, public STUN service or external server is used. The

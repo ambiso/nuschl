@@ -4,7 +4,7 @@ Priority: optional
 Maintainer: @MAINTAINER@
 Build-Depends: debhelper-compat (= 13), cargo (>= 1.95), rustc (>= 1.95), pkg-config, clang, libclang-dev, protobuf-compiler, libfontconfig-dev, libfreetype-dev, libasound2-dev, libpipewire-0.3-dev, libxkbcommon-dev, libxkbcommon-x11-dev, libwayland-dev, libxcb1-dev, libx11-dev, libsqlite3-dev
 Rules-Requires-Root: no
-Homepage: https://github.com/ambiso/nuschl
+Homepage: https://github.com/nuschl-eu/nuschl
 
 Package: nuschl
 Architecture: amd64

@@ -371,10 +371,6 @@ def main():
                 "build",
                 *nix_args(),
                 "helperScript",
-                "--cores",
-                "2",
-                "--max-jobs",
-                "2",
                 "--no-link",
                 "--print-out-paths",
             ]
