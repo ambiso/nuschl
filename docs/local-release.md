@@ -83,14 +83,14 @@ export TMPDIR="$HOME/.cache/nuschl-local-release/tmp"
 mkdir -p "$TMPDIR"
 stage="$HOME/.cache/nuschl-local-release/v0.1.0-review"
 python3 release/local-release.py prepare \
-  --source-repo "$PWD" --tag v0.1.0 --repository ambiso/nuschl \
+  --source-repo "$PWD" --tag v0.1.0 --repository nuschl-eu/nuschl \
   --output "$stage" --build
 ```
 
 The output directory must not already exist. Omit `--build` to use already-built
 local products and fail if any exact-tag product is absent. `--build` selects the
 actual tag's `windows`, `macos-app`, `default`, `server`, `web-relay` and `web-site`
-outputs sequentially with `--cores 2 --max-jobs 2`. The guard stops only its own
+outputs sequentially. The guard stops only its own
 build if `/tmp` free space or `MemAvailable` drops below 8 GiB. Client `TMPDIR`
 does not relocate daemon scratch; monitor/coordinate substantial builds.
 
@@ -108,8 +108,8 @@ commit's blob; the publisher checkout's file is never used. Tags without
 the single `git-cliff` package of the selected tag's flake development shell:
 preparation evaluates `devShells.x86_64-linux.default` at that exact revision, runs
 `<store path>/bin/git-cliff` and never consults `PATH`. That path must already
-exist (enter that shell), or `--build` builds only that derivation with
-`--cores 2 --max-jobs 2`. The recorded version is the binary's own `--version`
+exist (enter that shell), or `--build` builds only that derivation. The
+recorded version is the binary's own `--version`
 output.
 
 The range is exact and local: from the newest version tag that is an ancestor of
@@ -206,7 +206,7 @@ operator supplies the existing private path; do not paste its content into a
 command, log, issue, GitHub secret or chat.
 
 ```sh
-nix build --cores 2 --max-jobs 2 .#update-signer -o result-update-signer
+nix build .#update-signer -o result-update-signer
 python3 release/local-release.py sign "$stage" \
   --signer "$PWD/result-update-signer/bin/nuschl-update-sign" \
   --sign-key "$HOME/.local/share/nuschl-release-keys/update-v2.secret.json"

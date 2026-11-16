@@ -39,7 +39,7 @@ after prepared platform artifacts pass these gates.
 ## Compact payload and corresponding source
 
 The original inventory remains inspectable as
-`nix build .#release-license-inventory --cores 2 --max-jobs 2`. Each strict
+`nix build .#release-license-inventory`. Each strict
 platform bundle carries `THIRD-PARTY.txt`, `THIRD-PARTY.json`, Cargo.lock and a
 README. Native scopes also contain the patched HPKE source archive. This keeps
 notice delivery within the updater's existing 256-file installation bound.

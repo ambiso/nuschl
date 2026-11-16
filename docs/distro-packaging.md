@@ -176,10 +176,10 @@ role-specific data paths; no whole `/etc` or home grant is proposed.
 The flake exposes these local validation artifacts on `x86_64-linux`:
 
 ```sh
-nix build --cores 2 --max-jobs 2 .#deb
-nix build --cores 2 --max-jobs 2 .#arch-bin
-nix build --cores 2 --max-jobs 2 .#deb-source .#deb-source-check
-nix build --cores 2 --max-jobs 2 \
+nix build .#deb
+nix build .#arch-bin
+nix build .#deb-source .#deb-source-check
+nix build \
   .#checks.x86_64-linux.distro-metadata \
   .#checks.x86_64-linux.distro-source-assets
 ```

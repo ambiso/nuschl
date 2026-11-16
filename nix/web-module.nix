@@ -13,7 +13,7 @@ let
   toml = pkgs.formats.toml { };
   json = pkgs.formats.json { };
   system = pkgs.stdenv.hostPlatform.system;
-  defaultInstallUrl = "https://github.com/ambiso/nuschl/releases/latest";
+  defaultInstallUrl = "https://github.com/nuschl-eu/nuschl/releases/latest";
   https = cfg.forceSSL || cfg.enableACME;
   origin = "${if https then "https" else "http"}://${cfg.hostName}";
   socketDirectory = "/run/nuschl-web-relay";
