@@ -80,6 +80,8 @@ lack an AT-SPI Text counterpart. Pixel and geometry JSON is scoped to the actual
 tested Linux artifact; it does not prove physical platform, precise-touchpad or
 matched frame-time performance. No host clipboard or devices are used.
 
+- `screenshots.py --scenes dialog-overscroll --at-spi` (local-only: GNOME Shell on the real GPU): Settings and "Profile and connection" end at their content at 100% and 200% zoom.
+
 ## Suites in the VM run
 
 | Script | What it proves |
