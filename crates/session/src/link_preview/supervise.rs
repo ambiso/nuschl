@@ -200,9 +200,14 @@ async fn http(
         input: child_input,
         output: child_output,
         containment: _containment,
-    } = nuschl_sandbox::spawn_preview(executable, nuschl_sandbox::PreviewOperation::Fetch)
-        .await
-        .map_err(|_| Unavailable::Network)?;
+    } = nuschl_sandbox::spawn_receipted(
+        executable,
+        nuschl_sandbox::Role::Preview {
+            operation: nuschl_sandbox::PreviewOperation::Fetch,
+        },
+    )
+    .await
+    .map_err(|_| Unavailable::Network)?;
     let mut retirement = host::preview_lifecycle::Retirement::new(&mut child);
     let result = async {
         // Trusted bwrap status opens/retains the original namespace-init task

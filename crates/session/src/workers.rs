@@ -16,9 +16,12 @@ use tokio::{
     time::{Duration, timeout},
 };
 
+fn failed(error: nuschl_sandbox::Error) -> Error {
+    Error::Worker(error.to_string())
+}
+
 /// The sibling executable `name`, started confined as `role`.
 async fn start(name: &str, role: Role<'_>) -> Result<Worker, Error> {
-    let failed = |error: nuschl_sandbox::Error| Error::Worker(error.to_string());
     let command = nuschl_sandbox::command(&nuschl_sandbox::sibling(name)?, role).map_err(failed)?;
     nuschl_sandbox::spawn(command).await.map_err(failed)
 }
@@ -235,10 +238,10 @@ pub struct Media {
 const MEDIA_REQUESTS: usize = 256;
 const MEDIA_EVENTS: usize = 32;
 impl Media {
-    /// A worker reached in memory, with a real worker's queue sizes, instead
-    /// of a sandboxed process (a test double for the supervisor): the
-    /// requests it is sent, and where its events go. Nothing is started;
-    /// once stopped, it has exited when `exit` completes.
+    /// A test double for the supervisor: a worker reached in memory, with a
+    /// real worker's queue sizes. It returns the requests the worker is sent
+    /// and where its events go. Once stopped, it has exited when `exit`
+    /// completes.
     #[doc(hidden)]
     pub fn in_memory(
         exit: impl Future<Output = ()> + Send + 'static,
@@ -273,15 +276,17 @@ impl Media {
     }
 
     pub async fn start() -> Result<Self, Error> {
-        let failed = |error: nuschl_sandbox::Error| Error::Worker(error.to_string());
         let Worker {
             mut child,
             mut input,
             mut output,
             containment,
-        } = nuschl_sandbox::spawn_media(&nuschl_sandbox::sibling("nuschl-media-worker")?)
-            .await
-            .map_err(failed)?;
+        } = nuschl_sandbox::spawn_receipted(
+            &nuschl_sandbox::sibling("nuschl-media-worker")?,
+            Role::Media,
+        )
+        .await
+        .map_err(failed)?;
         // The receipt names the sandbox's original init before any input.
         #[cfg(target_os = "linux")]
         let retirement = {
@@ -329,7 +334,7 @@ impl Media {
                 let _ = reader.await;
             }
             let _ = child.start_kill();
-            // Exited means the whole sandbox, not only its wrapper.
+            // On Linux, wait for the wrapper and the sandbox's namespace init.
             #[cfg(target_os = "linux")]
             retirement.retire(&mut child).await;
             #[cfg(not(target_os = "linux"))]

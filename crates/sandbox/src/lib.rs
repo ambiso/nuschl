@@ -59,7 +59,8 @@ pub enum Role<'a> {
     Storage { directory: &'a Path },
     /// The crypto worker: only `directory`, writable.
     Crypto { directory: &'a Path },
-    /// Audio devices and the sound server.
+    /// Audio devices and the sound server, with a trusted Linux namespace-init
+    /// receipt on standard error.
     Media,
     /// magic-wormhole: the network and, when offering, `file` read-only.
     Transfer { file: Option<&'a Path> },
@@ -227,30 +228,16 @@ pub async fn spawn(command: Command) -> Result<Worker, Error> {
     spawn_with_stderr(command, Stdio::null()).await
 }
 
-/// Start a fixed preview role with its trusted namespace-init receipt piped on
-/// standard error. Its owner acquires the receipt before input and retains the
-/// process permit through observed namespace retirement.
-pub async fn spawn_preview(
-    executable: &Path,
-    operation: PreviewOperation,
-) -> Result<Worker, Error> {
-    spawn_with_stderr(
-        command(executable, Role::Preview { operation })?,
-        Stdio::piped(),
-    )
-    .await
-}
-
-/// Start the media role. On Linux its namespace-init receipt is piped on
-/// standard error, as for the preview roles, so its owner can wait for the
-/// whole sandbox to exit before starting another.
-pub async fn spawn_media(executable: &Path) -> Result<Worker, Error> {
+/// Start a fixed role with its trusted Linux namespace-init receipt piped on
+/// standard error (the preview and media roles). Its owner acquires the
+/// receipt before input and waits for the whole sandbox to exit.
+pub async fn spawn_receipted(executable: &Path, role: Role<'_>) -> Result<Worker, Error> {
     let stderr = if cfg!(target_os = "linux") {
         Stdio::piped()
     } else {
         Stdio::null()
     };
-    spawn_with_stderr(command(executable, Role::Media)?, stderr).await
+    spawn_with_stderr(command(executable, role)?, stderr).await
 }
 
 async fn spawn_with_stderr(mut command: Command, stderr: Stdio) -> Result<Worker, Error> {

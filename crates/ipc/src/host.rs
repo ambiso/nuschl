@@ -228,7 +228,13 @@ async fn bounded_content_request(
         mut output,
         containment: _containment,
     } = if is_preview {
-        nuschl_sandbox::spawn_preview(executable, PreviewOperation::Prepare).await?
+        nuschl_sandbox::spawn_receipted(
+            executable,
+            Role::Preview {
+                operation: PreviewOperation::Prepare,
+            },
+        )
+        .await?
     } else {
         spawn(executable, &[5]).await?
     };

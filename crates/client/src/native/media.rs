@@ -231,8 +231,8 @@ fn capture_route_changed(old: &Link, next: &Link) -> bool {
 }
 
 /// Slots of the worker's one request queue kept for control: voice and sound
-/// effects take a slot only while more than this many are free, so a burst
-/// of either never crowds out push-to-talk, a deafen or a setting. One queue
+/// effects take a slot only while more than this many are free, so
+/// push-to-talk, a deafen or a setting has room during a burst. One queue
 /// keeps the order: an `EndStream` still follows the voice queued before it.
 const CONTROL_RESERVE: usize = 64;
 
@@ -243,8 +243,8 @@ pub(super) fn admits_voice(media: &Media) -> bool {
 
 /// Queue a control request for the worker, if one runs. A worker that
 /// stopped reading for long enough to fill the reserve is replaced, which
-/// closes its microphone and discards its queue, its packets leave no more
-/// (a new epoch), and the next worker starts from the current state. One
+/// closes its microphone and discards its queue and packets (a new epoch);
+/// the next worker starts from the current state. One
 /// that exited is restarted when its events end.
 fn send_control(
     media: &mut Option<Media>,
@@ -264,8 +264,8 @@ fn send_control(
     }
 }
 
-/// Stop the worker; packets it sent leave no more, and the next one starts
-/// once it has exited.
+/// Stop the worker and drop the packets it sent; the next one starts once
+/// it has exited.
 fn replace(
     media: &mut Option<Media>,
     stopping: &mut Option<JoinHandle<()>>,
@@ -277,8 +277,8 @@ fn replace(
     *retry = Instant::now();
 }
 
-/// Stop the worker, keeping what confirms that it has exited and been
-/// reaped: until then no other worker starts (a kill is not yet an exit).
+/// Stop the worker, keeping the handle that completes once it has exited
+/// and been reaped; the next worker starts after that.
 fn retire(media: &mut Option<Media>, stopping: &mut Option<JoinHandle<()>>) {
     if let Some(worker) = media.take() {
         *stopping = Some(worker.stop());
@@ -291,10 +291,10 @@ const RELEASE_MARGIN: std::time::Duration = std::time::Duration::from_millis(100
 
 /// Whether push-to-talk lets the worker's voice through now: always outside
 /// push-to-talk, else while the key is held or within the release tail of
-/// its latest release. A worker that has not applied a release yet (its
-/// queue is behind) cannot transmit past it.
+/// its latest release. This also bounds a worker whose queue is behind and
+/// applies the release late.
 fn talk_allows(audio: &nuschl_core::audio::AudioSettings, keys: VoiceKeys, now: Instant) -> bool {
-    let tail = std::time::Duration::from_millis(audio.ptt_release_ms.min(2000).into());
+    let tail = std::time::Duration::from_millis(audio.ptt_release_ms.into());
     audio.transmit != TransmitMode::PushToTalk
         || keys.talk
         || keys
@@ -328,7 +328,8 @@ async fn run_with_start<Starting>(
     // changed, never leave.
     let mut epoch = 0_u64;
     let mut planned = plan(std::iter::empty());
-    let mut applied = settings.borrow().audio.clone();
+    // Sanitized: it bounds the push-to-talk release tail (see `talk_allows`).
+    let mut applied = settings.borrow().audio.clone().sanitized();
     let mut talk_key = voice_keys.borrow().talk;
     // Whether the voice that left has ended (see `talk_allows`).
     let mut off_air = true;
@@ -465,7 +466,7 @@ async fn run_with_start<Starting>(
             },
             changed = settings.changed() => {
                 if changed.is_err() { break; }
-                let audio = settings.borrow_and_update().audio.clone();
+                let audio = settings.borrow_and_update().audio.clone().sanitized();
                 if !audio.same_route(&applied) {
                     // New devices need new native streams: replace the worker.
                     replace(&mut media, &mut stopping, &mut epoch, &mut retry);
@@ -492,18 +493,15 @@ async fn run_with_start<Starting>(
                 // Until the devices are open, nobody hears you yet.
                 broadcast(&streams, &events, |server, generation| Event::AudioStatus { server, generation, message: "Starting audio…".into() }).await;
                 match start().await {
-                    // A worker that did not take its whole state is not kept.
-                    Ok(worker) if worker.commands.try_send(configure(&applied, (planned.bitrate, planned.loss_percent), pinned_host(&audio_host))).is_ok()
-                        && worker.commands.try_send(LiveMediaRequest::SetState { epoch, muted: !planned.capture, deafened: false }).is_ok()
-                        && worker.commands.try_send(LiveMediaRequest::PushToTalk { active: voice_keys.borrow().talk }).is_ok() => {
+                    Ok(worker) => {
+                        // A new worker's empty queue takes its whole state.
+                        let _ = worker.commands.try_send(configure(&applied, (planned.bitrate, planned.loss_percent), pinned_host(&audio_host)));
+                        let _ = worker.commands.try_send(LiveMediaRequest::SetState { epoch, muted: !planned.capture, deafened: false });
+                        let _ = worker.commands.try_send(LiveMediaRequest::PushToTalk { active: voice_keys.borrow().talk });
                         for (sound, requested) in pending.drain(..) {
                             if requested.elapsed() < MAX_SOUND_DELAY { play(&worker, &settings.borrow(), sound); }
                         }
                         media = Some(worker);
-                    },
-                    Ok(worker) => {
-                        stopping = Some(worker.stop());
-                        retry = Instant::now() + std::time::Duration::from_secs(2);
                     },
                     Err(error) => {
                         retry = Instant::now() + std::time::Duration::from_secs(3);
@@ -904,10 +902,9 @@ mod tests {
         let _ = task.await;
     }
 
-    /// The real supervisor in push-to-talk mode with a release tail of
-    /// `TAIL_MS`, whose workers are in-memory doubles handed to the test,
-    /// each with whether the one before had exited. A stopped double takes
-    /// a moment to exit.
+    /// The real supervisor, whose workers are in-memory doubles handed to
+    /// the test, each with whether the one before had exited. A stopped
+    /// double takes a moment to exit.
     struct Rig {
         control: mpsc::UnboundedSender<Control>,
         playback: mpsc::Sender<Playback>,
@@ -917,7 +914,7 @@ mod tests {
             mpsc::Sender<LiveMediaEvent>,
             bool,
         )>,
-        _events: mpsc::Receiver<Event>,
+        events: mpsc::Receiver<Event>,
         _settings: watch::Sender<ClientSettings>,
         task: tokio::task::JoinHandle<()>,
     }
@@ -925,13 +922,10 @@ mod tests {
     const WAIT: std::time::Duration = std::time::Duration::from_secs(2);
     const TAIL_MS: u32 = 300;
 
-    fn push_to_talk() -> Rig {
+    fn rig(current: ClientSettings) -> Rig {
         let (control, input) = mpsc::unbounded_channel();
         let (playback, playback_rx) = mpsc::channel(2048);
-        let (events, _events) = mpsc::channel(1024);
-        let mut current = ClientSettings::default();
-        current.audio.transmit = TransmitMode::PushToTalk;
-        current.audio.ptt_release_ms = TAIL_MS;
+        let (events, events_rx) = mpsc::channel(1024);
         let (_settings, settings) = watch::channel(current);
         let (keys, keys_rx) = watch::channel(VoiceKeys::default());
         let (started, workers) = mpsc::unbounded_channel();
@@ -957,10 +951,18 @@ mod tests {
             playback,
             keys,
             workers,
-            _events,
+            events: events_rx,
             _settings,
             task,
         }
+    }
+
+    /// Push-to-talk with a release tail of `TAIL_MS`.
+    fn push_to_talk() -> Rig {
+        let mut current = ClientSettings::default();
+        current.audio.transmit = TransmitMode::PushToTalk;
+        current.audio.ptt_release_ms = TAIL_MS;
+        rig(current)
     }
 
     /// The requests queued for a worker so far.
@@ -1088,8 +1090,8 @@ mod tests {
         flood(&rig).await;
         rig.keys.send_if_modified(|keys| keys.set_talk(false));
         let released = rig.keys.borrow().released.unwrap();
-        // The supervisor takes it while the worker still reads nothing: the
-        // release is queued behind that voice, not lost.
+        // The supervisor takes it while the worker still reads nothing and
+        // queues the release behind that voice.
         tokio::task::yield_now().await;
         until(&mut requests, |request| {
             matches!(request, LiveMediaRequest::PushToTalk { active: false })
@@ -1136,8 +1138,7 @@ mod tests {
             after_exit,
             "the replacement starts once that one has exited"
         );
-        // The replacement starts from the current state, never a replayed
-        // press: the key is up.
+        // The replacement starts from the current state: the key is up.
         let start = until(&mut next, |request| {
             matches!(request, LiveMediaRequest::PushToTalk { .. })
         })
@@ -1163,41 +1164,24 @@ mod tests {
     /// its device lost) is replaced by one with the microphone closed, and
     /// the connection is asked to mute. Its mute ends the hold; the Unmute
     /// after it opens the microphone again.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_failed_microphone_stays_closed_until_an_explicit_unmute() {
-        type Worker = (
-            mpsc::Receiver<LiveMediaRequest>,
-            mpsc::Sender<LiveMediaEvent>,
-        );
-        let (control, input) = mpsc::unbounded_channel();
-        let (_playback, playback) = mpsc::channel(4);
-        let (events, mut reports) = mpsc::channel(64);
-        let (_settings, settings) = watch::channel(ClientSettings::default());
-        let (_keys, keys) = watch::channel(VoiceKeys::default());
-        let (started, mut workers) = mpsc::unbounded_channel::<Worker>();
-        let task = tokio::spawn(run_with_start(
-            (input, playback),
-            events,
-            (settings, keys),
-            move || {
-                let (media, requests, replies) = Media::in_memory(std::future::ready(()));
-                let _ = started.send((requests, replies));
-                std::future::ready(Ok(media))
-            },
-        ));
-        let wait = std::time::Duration::from_secs(2);
+        let mut rig = rig(ClientSettings::default());
+        let (_outgoing, _requests, replies, _) = talk_server(&mut rig).await;
         // The next worker, and whether it starts with the microphone closed.
         let mut next = async || {
-            let (mut requests, replies) = tokio::time::timeout(wait, workers.recv())
+            let (mut requests, replies, _) = tokio::time::timeout(WAIT, rig.workers.recv())
                 .await
                 .unwrap()
                 .unwrap();
-            loop {
-                let request = tokio::time::timeout(wait, requests.recv()).await.unwrap();
-                if let Some(LiveMediaRequest::SetState { muted, .. }) = request {
-                    return ((requests, replies), muted);
-                }
-            }
+            let start = until(&mut requests, |request| {
+                matches!(request, LiveMediaRequest::SetState { .. })
+            })
+            .await;
+            let Some(LiveMediaRequest::SetState { muted, .. }) = start.last() else {
+                unreachable!()
+            };
+            ((requests, replies), *muted)
         };
         let update = |revision, muted| Control::Update {
             server: "one".into(),
@@ -1208,25 +1192,15 @@ mod tests {
             },
             cue: None,
         };
-        let (voice, _voice) = mpsc::channel(4);
-        control
-            .send(Control::Attach {
-                server: "one".into(),
-                generation: 1,
-                link: link(false, false, 40_000, 1),
-                voice,
-            })
-            .unwrap();
-        let (first, muted) = next().await;
-        assert!(!muted);
         let lost = LiveMediaEvent::Status {
             ready: false,
             message: "Microphone unplugged".into(),
         };
-        first.1.send(lost).await.unwrap();
-        let stopped = tokio::time::timeout(wait, async {
+        replies.send(lost).await.unwrap();
+        let stopped = tokio::time::timeout(WAIT, async {
             loop {
-                if let Some(Event::MicrophoneStopped { server, generation }) = reports.recv().await
+                if let Some(Event::MicrophoneStopped { server, generation }) =
+                    rig.events.recv().await
                 {
                     return (server, generation);
                 }
@@ -1238,16 +1212,16 @@ mod tests {
         let (_second, muted) = next().await;
         assert!(muted, "the replacement opened the microphone");
         // A new routing revision of the still unmuted connection keeps it closed.
-        control.send(update(1, false)).unwrap();
+        rig.control.send(update(1, false)).unwrap();
         let (reply, inspected) = tokio::sync::oneshot::channel();
-        control.send(Control::Inspect(reply)).unwrap();
+        rig.control.send(Control::Inspect(reply)).unwrap();
         assert!(!inspected.await.unwrap().1, "an update reopened it");
-        control.send(update(2, true)).unwrap();
-        control.send(update(3, false)).unwrap();
+        rig.control.send(update(2, true)).unwrap();
+        rig.control.send(update(3, false)).unwrap();
         let (_third, muted) = next().await;
         assert!(!muted);
-        task.abort();
-        let _ = task.await;
+        rig.task.abort();
+        let _ = rig.task.await;
     }
 
     #[test]
