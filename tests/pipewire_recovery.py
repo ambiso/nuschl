@@ -470,6 +470,12 @@ def check_rnnoise_chain(binary, pipewire):
     while not any("effect_output.rnnoise" in line and "'default.audio.source'" in line for line in defaults(pipewire)):
         assert time.monotonic() < deadline, f"the RNNoise source did not become the default: {defaults(pipewire)}"
         time.sleep(0.2)
+    # The worker inspects the graph once at start; on a busy host PipeWire may
+    # still be linking the canceller into the chain.
+    deadline = time.monotonic() + 30
+    while ("echo-cancel-source", "effect_input.rnnoise") not in links(pipewire):
+        assert time.monotonic() < deadline, f"the RNNoise chain was not linked: {sorted(links(pipewire))}"
+        time.sleep(0.2)
     before = defaults(pipewire)
     worker = Worker(binary, pipewire, muted=False)
     devices = worker.wait(lambda e: e["kind"] == "devices", "no device report")
