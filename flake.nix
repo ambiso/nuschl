@@ -770,6 +770,22 @@
               cargoDenyChecks = "bans licenses sources";
             }
           );
+          # Every file under tests/ runs in a check or is listed in tests/local-only.txt (#313).
+          tests-wired = pkgs.runCommand "nuschl-tests-wired" { } ''
+            cd ${./.}
+            missing=0
+            for path in tests/*; do
+              [ -f "$path" ] || continue
+              name=''${path#tests/} stem=''${path#tests/}
+              stem=''${stem%.*}
+              cut -f1 tests/local-only.txt | grep -qxF "$name" && continue
+              grep -rqsF --exclude="$name" -e "$name" -e "tests/$stem" -e "import $stem" -e "from $stem " \
+                nix flake.nix ci.nix justfile scripts tests .github && continue
+              echo "$path runs in no check: wire it in or list it in tests/local-only.txt" >&2
+              missing=1
+            done
+            [ "$missing" = 0 ] && touch $out
+          '';
           # nix/crate2nix/Cargo.nix must follow Cargo.lock and the manifests.
           crate2nix-current =
             let
