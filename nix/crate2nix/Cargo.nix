@@ -23201,6 +23201,12 @@ rec {
             features = [ "async-io" ];
           }
         ];
+        buildDependencies = [
+          {
+            name = "embed-resource";
+            packageId = "embed-resource";
+          }
+        ];
         features = {
           "frame-timing" = [ "dep:gpui-profiler" ];
         };
