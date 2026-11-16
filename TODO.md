@@ -25,7 +25,7 @@ Open work is tracked in [GitHub issues](https://github.com/nuschl-eu/nuschl/issu
 
 Record new work in an issue, agree on ownership before concurrent edits, and link any real prerequisites. Keep implementation and validation gaps open until their stated completion conditions are met. A staged branch or a passing unit suite does not establish platform or deployment readiness. Follow [AGENTS.md](AGENTS.md) for implementation boundaries and evidence.
 
-The owner has approved the original migrated TODO scopes and verified owner-authored requests. Check migrated scope against the [source-to-issue map](docs/todo-issue-map.tsv) and historical snapshot; later additions and copied import markers do not inherit approval. `source:user-request` records verified direct requests. Other agent proposals carry `status:needs-approval` until the owner applies `status:approved` or explicitly approves them. The shared account alone does not establish human authorship; 👍 reactions rank eligible work rather than approving it. Existing explicit holds remain in force.
+`status:approved` marks approved work: the migrated TODO scopes, the owner's direct requests and proposals the owner accepted. Other agent proposals carry `status:needs-approval` until the owner approves them. The shared account alone does not establish human authorship; 👍 reactions only rank work. Existing explicit holds remain in force.
 
 Use issues and PRs for owner-facing work updates. Assigned agents mark active work `status:in-progress`, then remove that label on handoff and explain any remaining integration or validation. Agent-authored bodies and comments end with the attribution trailer specified in [AGENTS.md](AGENTS.md), so the owner's own posts remain distinguishable.
 
@@ -35,7 +35,7 @@ Private security reports, credentials, recordings and profiles belong outside Gi
 
 ## Historical evidence
 
-The [2026-11-13 TODO snapshot](docs/history/2026-11-13-todo-snapshot.md) preserves the completed history and original scoped evidence. Its checkbox states are historical, not a current backlog. The [source-to-issue map](docs/todo-issue-map.tsv) accounts for all 206 original unchecked entries, including two already-resolved entries, plus the residual work found in prose. Deferred work retains its existing status.
+The [2026-11-13 TODO snapshot](docs/history/2026-11-13-todo-snapshot.md) preserves the completed history and original scoped evidence. Its checkbox states are historical, not a current backlog. The [source-to-issue map](docs/history/2026-11-13-todo-issue-map.tsv) accounts for all 206 original unchecked entries, including two already-resolved entries, plus the residual work found in prose. Deferred work retains its existing status.
 
 The [musicbot submission's deferred workspace checks](docs/history/2026-11-12-musicbot-deferred-checks.md)
 preserve the findings left unfixed at the user's request, with their original
