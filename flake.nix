@@ -779,6 +779,16 @@
               tests/web_output_quality.mjs tests/web_playout_clock.mjs
             touch $out
           '';
+          # Unit tests of the repository's Python tools; cases that need private
+          # release artifacts skip themselves.
+          python-unit = pkgs.runCommand "nuschl-python-unit" { nativeBuildInputs = [ pkgs.python3 pkgs.git ]; } ''
+            cd ${./.}
+            python3 tests/cross_distributions_test.py
+            python3 tests/ios_installer_test.py
+            python3 tests/ios_xip_test.py
+            python3 tests/windows_update_test.py
+            touch $out
+          '';
           # Every file under tests/ runs in a check or is listed in tests/local-only.txt (#313).
           tests-wired = pkgs.runCommand "nuschl-tests-wired" { } ''
             cd ${./.}
