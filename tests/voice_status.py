@@ -137,7 +137,7 @@ def run(args, root, shell, registry, bots, profile, second_port, second_pin, sho
     state("beta", "Microphone destination · server muted", "Root"); record("server-muted")
     admin.send(kind="moderate", session=own("beta")["session"], action="deafen")
     eventually(lambda: own("beta")["deafened"], "server deafen not observed")
-    # A server's deafen is not the user's choice: the row stays and says why.
+    # The server deafened the user: the row stays and says why.
     state("beta", "Deafened by server", "Root"); find("Go to " + names["beta"] + " #Root")
     record("server-deafened")
     admin.send(kind="moderate", session=own("beta")["session"], action="undeafen")

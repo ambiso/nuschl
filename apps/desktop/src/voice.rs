@@ -447,10 +447,6 @@ fn summary<'a>(places: impl IntoIterator<Item = &'a Place>) -> String {
         .join(" · ")
 }
 
-/// The voice card's rows and heading. A server you deafened yourself is left
-/// out: you chose to hear nothing there, and its rail badge and the footer's
-/// Undeafen still name it. A server that deafened you stays, explaining why
-/// nothing is heard. The heading describes only the rows shown.
 fn shown(places: &[Place]) -> Option<(Vec<&Place>, &'static str, bool)> {
     let rows = places
         .iter()
@@ -886,9 +882,9 @@ mod tests {
         ];
         let (rows, ..) = shown(&places).expect("servers you hear keep the card");
         let labels: Vec<_> = rows.iter().map(|place| place.label.as_str()).collect();
-        // A server's deafen is not your choice: Delta stays.
+        // Delta stays: the server deafened you.
         assert_eq!(labels, ["Alpha", "Delta #Root"]);
-        // The heading describes the rows shown: Beta is connected, Alpha is not yet.
+        // The heading describes the rows shown: Alpha, still connecting.
         let (_, heading, connected) = shown(&places[..2]).unwrap();
         assert_eq!((heading, connected), ("Connecting voice", false));
         // Deafened yourself everywhere: no card.
