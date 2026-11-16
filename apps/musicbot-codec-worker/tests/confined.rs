@@ -2,8 +2,10 @@
 //! The bot's supervisor (`nuschl_ipc::musicbot`) against this crate's real
 //! worker executable, confined by the production Linux launcher (bubblewrap
 //! and prlimit on PATH). Faults are real: throttled, endless or oversized
-//! input, and a worker stopped with SIGSTOP. The tests run one at a time, and
-//! each checks that no confined worker outlives its supervisor.
+//! input, and a worker stopped with SIGSTOP. The worker tests run one at a
+//! time, and each checks that no confined worker outlives its supervisor. A
+//! canary child (`src/bin/codec-worker-canary.rs`) reports what the launcher
+//! leaves within its reach.
 #![cfg(target_os = "linux")]
 use nuschl_ipc::musicbot::{self, DecodeLimits, Ducker, Media, RESPONSE_TIMEOUT};
 use std::{
@@ -12,41 +14,55 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
     time::{Duration, Instant},
 };
-use tokio::sync::{Mutex, Notify, mpsc};
+use tokio::{
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    sync::{Mutex, Notify, mpsc},
+};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_nuschl-musicbot-codec-worker");
+const CANARY: &str = env!("CARGO_BIN_EXE_codec-worker-canary");
 const MIB: usize = 1024 * 1024;
 static ONE_AT_A_TIME: Mutex<()> = Mutex::const_new(());
 
-/// Host PIDs of confined workers in `role`.
-fn workers(role: &str) -> Vec<u32> {
-    let expected = [
-        b"/worker".as_slice(),
-        b"--codec-worker",
-        role.as_bytes(),
-        b"",
-    ];
-    std::fs::read_dir("/proc")
-        .unwrap()
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            let pid = entry.file_name().to_str()?.parse().ok()?;
-            let command = std::fs::read(entry.path().join("cmdline")).ok()?;
-            command.split(|byte| *byte == 0).eq(expected).then_some(pid)
-        })
-        .collect()
+/// Host PIDs of confined codec workers; each test runs one role at a time.
+fn workers() -> Vec<u32> {
+    nuschl_testkit::running(Path::new(WORKER))
 }
 
-/// The supervisor reaps its launcher; the confined worker follows it.
-async fn none_left(role: &str) {
-    let started = Instant::now();
-    while !workers(role).is_empty() {
-        assert!(
-            started.elapsed() < Duration::from_secs(3),
-            "a confined {role} worker outlived its supervisor"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+async fn none_left() {
+    nuschl_testkit::none_running(Path::new(WORKER), Duration::from_secs(3)).await;
+}
+
+/// The bot's launcher confines a codec child to its pipes: files outside it
+/// are hidden, loopback connections fail and its environment holds only `PWD`.
+#[tokio::test]
+async fn a_codec_child_sees_only_its_pipes() {
+    nuschl_testkit::sandbox();
+    let directory = nuschl_testkit::temp_dir();
+    let canary = directory.path().join("credential");
+    std::fs::write(&canary, "canary").unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let mut child = musicbot::spawn(Path::new(CANARY), musicbot::Role::Decode)
+        .await
+        .unwrap();
+    let mut input = child.input.take().unwrap();
+    let request = format!("{} {port}", canary.display());
+    input.write_all(request.as_bytes()).await.unwrap();
+    drop(input);
+    let mut report = String::new();
+    let output = child.output.take().unwrap();
+    output.take(4096).read_to_string(&mut report).await.unwrap();
+    child.retire().await.unwrap();
+    assert_eq!(
+        report,
+        "file visible: false\nloopback connected: false\nenvironment: [\"PWD\"]\ndirectory: /tmp\n"
+    );
+    listener.set_nonblocking(true).unwrap();
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
 }
 
 fn limits() -> DecodeLimits {
@@ -166,7 +182,7 @@ async fn progress_keeps_a_slow_seek_alive_and_it_plays_the_unskipped_frames() {
             .all(|(a, b)| bits(a) == bits(b)),
         "the seek did not continue exactly where an unskipped decode is"
     );
-    none_left("decode").await;
+    none_left().await;
 }
 
 #[tokio::test]
@@ -190,7 +206,7 @@ async fn an_mp4_read_whole_reports_progress_until_the_workers_own_verdict() {
     );
     assert!(started.elapsed() > Duration::from_secs(1));
     assert!(frames.is_empty());
-    none_left("decode").await;
+    none_left().await;
 }
 
 #[tokio::test]
@@ -204,7 +220,7 @@ async fn input_over_the_limits_fails_explicitly_instead_of_being_cut() {
     let (result, frames) = decode(Cursor::new(vec![0; 3 * MIB]), "m4a", 0, limits).await;
     assert_eq!(result.unwrap_err(), "the file is larger than 2 MiB");
     assert!(frames.is_empty());
-    none_left("decode").await;
+    none_left().await;
     // A seek that would read 3.8 MB of song first.
     let (result, frames) = decode(Cursor::new(wav(1500)), "wav", 1000, limits).await;
     assert_eq!(
@@ -212,7 +228,7 @@ async fn input_over_the_limits_fails_explicitly_instead_of_being_cut() {
         "playback would read more than 1 MiB before it starts"
     );
     assert!(frames.is_empty());
-    none_left("decode").await;
+    none_left().await;
 }
 
 #[tokio::test]
@@ -237,7 +253,7 @@ async fn progress_never_extends_the_time_before_audio() {
     );
     assert!(elapsed >= Duration::from_secs(2) && elapsed < Duration::from_secs(5));
     assert!(frames.is_empty());
-    none_left("decode").await;
+    none_left().await;
 }
 
 #[tokio::test]
@@ -254,7 +270,7 @@ async fn a_stopped_worker_withholding_progress_fails_and_is_reaped() {
     let decoding = tokio::spawn(decode(endless, "m4a", 0, limits));
     let started = Instant::now();
     let pid = loop {
-        if let [pid] = workers("decode")[..] {
+        if let [pid] = workers()[..] {
             break pid;
         }
         assert!(
@@ -276,7 +292,7 @@ async fn a_stopped_worker_withholding_progress_fails_and_is_reaped() {
     );
     assert!(stopped_at.elapsed() < Duration::from_secs(4));
     assert!(frames.is_empty());
-    none_left("decode").await;
+    none_left().await;
 }
 
 #[tokio::test]
@@ -294,7 +310,7 @@ async fn a_seek_beyond_the_limit_starts_no_worker() {
         "playback cannot start more than 180 minutes into a song"
     );
     assert!(frames.is_empty());
-    assert!(workers("decode").is_empty());
+    assert!(workers().is_empty());
 }
 
 fn signal(name: &str, pid: u32) {
@@ -307,7 +323,7 @@ fn signal(name: &str, pid: u32) {
 
 /// The one confined duck worker that exists now.
 fn duck_worker() -> u32 {
-    let [pid] = workers("duck")[..] else {
+    let [pid] = workers()[..] else {
         panic!("expected exactly one duck worker");
     };
     pid
@@ -343,14 +359,14 @@ async fn detector_failures_cost_packets_never_the_connection() {
         "an exit is not a timeout"
     );
     assert!(!ducker.running() && !ducker.suspended());
-    none_left("duck").await;
+    none_left().await;
 
     // The poison sender is never retried: nothing starts.
     for _ in 0..5 {
         assert!(!ducker.hear(7, &silence, threshold).await.unwrap());
         assert!(!ducker.running());
     }
-    assert!(workers("duck").is_empty());
+    assert!(workers().is_empty());
 
     // Other talkers get a fresh worker.
     assert!(!ducker.hear(8, &silence, threshold).await.unwrap());
@@ -364,7 +380,7 @@ async fn detector_failures_cost_packets_never_the_connection() {
     let elapsed = started.elapsed();
     assert!(elapsed >= RESPONSE_TIMEOUT && elapsed < RESPONSE_TIMEOUT * 3);
     assert!(!ducker.running() && !ducker.suspended());
-    none_left("duck").await;
+    none_left().await;
 
     // The third recovered failure suspends ducking for this session.
     assert!(!ducker.hear(12, &silence, threshold).await.unwrap());
@@ -372,12 +388,12 @@ async fn detector_failures_cost_packets_never_the_connection() {
     assert!(!ducker.hear(10, &silence, threshold).await.unwrap());
     killing.await.unwrap();
     assert!(ducker.suspended() && ducker.notice().is_some());
-    none_left("duck").await;
+    none_left().await;
     for sender in [11, 12, 13] {
         assert!(!ducker.hear(sender, &silence, threshold).await.unwrap());
         ducker.forget(sender).await.unwrap();
     }
-    assert!(!ducker.running() && workers("duck").is_empty());
+    assert!(!ducker.running() && workers().is_empty());
 
     // Only a genuinely new session resets failures and the quarantine.
     ducker.new_session().await.unwrap();
@@ -385,7 +401,7 @@ async fn detector_failures_cost_packets_never_the_connection() {
     assert!(!ducker.hear(7, &silence, threshold).await.unwrap());
     assert!(ducker.running());
     ducker.disable().await.unwrap();
-    none_left("duck").await;
+    none_left().await;
 }
 
 #[tokio::test]
@@ -402,10 +418,10 @@ async fn disabling_retires_the_detector_once_and_later_packets_send_nothing() {
     duck_worker();
     ducker.disable().await.unwrap();
     assert!(!ducker.running());
-    none_left("duck").await;
+    none_left().await;
     // Ducking stays off: each later packet only asks to disable again.
     for _ in 0..50 {
         ducker.disable().await.unwrap();
     }
-    assert!(!ducker.running() && workers("duck").is_empty());
+    assert!(!ducker.running() && workers().is_empty());
 }

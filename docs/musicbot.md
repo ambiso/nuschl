@@ -357,25 +357,24 @@ existing credential-file handling. Never put secret values directly in Nix setti
 
 ## Tests
 
-The original codec-isolation checkpoint passed 90 Rust tests, 23 frontend tests and eleven
-real NixOS module-evaluation invariants, plus package/deny/audit/fmt/crate2nix
-checks. `tests/musicbot_workers.py` exercises actual confined decode/encode/duck
-roles (malformed media and framing, fresh-owner recovery, finite PCM, encoder
-reset and independent C libopus interoperability). Its companion
-`musicbot_sandbox.rs` links the production sandbox launcher; `musicbot_sandbox.py`
-uses only owned file/network/environment sentinels. `musicbot_module.nix` evaluates
-credential handling and retained parent restrictions without starting a service.
-`musicbot_service_isolation.py` runs only inside the owned NixOS VM and verifies
-actual service/child metadata and non-mutating access checks.
+`apps/musicbot-codec-worker/tests/confined.rs` runs the decode and duck roles
+confined by the production launcher, with real faults, and a canary child
+started by the same launcher: files outside it are hidden, loopback connections
+fail and its environment holds only `PWD`. The codec roles' framing, role
+checks and encoder reset have unit tests in the worker. `vm-musicbot` decodes
+the bot's Opus with the reference libopus, and its module evaluation checks
+that inline ACL tokens are refused. `musicbot_service_isolation.py` runs inside
+the owned NixOS VM and verifies actual service/child metadata and
+non-mutating access checks.
 
 The artwork/SSE follow-up passed 91 bot tests, 30 frontend tests, 20 IPC tests
 (one existing ignored test), and one content-worker unit plus four integration
-tests (one existing ignored test). `musicbot_artwork_boundary.py` drives the real
-supervisor against malformed replies, oversized advertised lengths, missing
-helpers, lingering children, malformed media and a compressed oversized PNG.
-Its 17 cases passed. `musicbot_artwork.py --cancel-probe …` verifies actual HTTP
-cancellation while both confined children are stalled, immediate overload, real
-PID exit and capacity reuse. Browser mode runs the packaged UI and CSP at
+tests (one existing ignored test). `apps/content-worker/tests/thumbnail.rs`
+drives the real thumbnail supervisor and sandbox against the content worker and
+a faulty worker: malformed, duplicate and oversized replies, crashes, missing
+sandbox programs, a worker that stays after its reply, a caller that stops
+waiting while the job keeps the worker to its deadline, unreadable input and
+an image wider than the decoder admits. `musicbot_artwork.py` runs the packaged UI and CSP at
 320/390/1280 pixels: exact generated red/blue pixels, library changes, held stale
 responses, malformed JSON, offscreen Canvas release and no image/media requests.
 Since covers became worker-made PNGs, browser mode checks loaded `<img>` pixels,

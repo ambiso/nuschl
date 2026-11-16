@@ -14,7 +14,31 @@ let
       cli
     ];
   };
+  # The module refuses inline ACL tokens, which would enter the Nix store.
+  execStart =
+    channel:
+    (pkgs.nixos {
+      imports = [ module ];
+      boot.isContainer = true;
+      system.stateVersion = "26.11";
+      services.nuschl-musicbot = {
+        enable = true;
+        package = musicbot;
+        settings.channel = [
+          (
+            {
+              name = "root";
+              host = "127.0.0.1";
+              username = "DJ";
+            }
+            // channel
+          )
+        ];
+      };
+    }).config.systemd.services.nuschl-musicbot.serviceConfig.ExecStart;
+  evaluates = channel: (builtins.tryEval (builtins.deepSeq (execStart channel) true)).success;
 in
+assert evaluates { tokens_file = "acl"; } && !evaluates { tokens = [ "fixture" ]; };
 pkgs.testers.runNixOSTest {
   name = "nuschl-musicbot";
   nodes.machine =

@@ -353,6 +353,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "nuschl-testkit" = rec {
+      packageId = "nuschl-testkit";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "nuschl-testkit";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "nuschl-transfer-worker" = rec {
       packageId = "nuschl-transfer-worker";
       build = internal.buildRustCrateWithFeatures {
@@ -23894,6 +23904,13 @@ rec {
         crateName = "nuschl-ipc";
         version = "0.2.0";
         edition = "2024";
+        crateBin = [
+          {
+            name = "faulty-content-worker";
+            path = "src/bin/faulty-content-worker.rs";
+            requiredFeatures = [ ];
+          }
+        ];
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/ipc; };
         libName = "nuschl_ipc";
         dependencies = [
@@ -23926,6 +23943,12 @@ rec {
             name = "tokio";
             packageId = "tokio";
             features = [ "io-util" "macros" "process" "time" "rt" "sync" ];
+          }
+        ];
+        devDependencies = [
+          {
+            name = "nuschl-testkit";
+            packageId = "nuschl-testkit";
           }
         ];
 
@@ -24345,6 +24368,11 @@ rec {
         edition = "2024";
         crateBin = [
           {
+            name = "codec-worker-canary";
+            path = "src/bin/codec-worker-canary.rs";
+            requiredFeatures = [ ];
+          }
+          {
             name = "nuschl-musicbot-codec-worker";
             path = "src/main.rs";
             requiredFeatures = [ ];
@@ -24390,9 +24418,13 @@ rec {
             packageId = "nuschl-protocol";
           }
           {
+            name = "nuschl-testkit";
+            packageId = "nuschl-testkit";
+          }
+          {
             name = "tokio";
             packageId = "tokio";
-            features = [ "macros" "rt" "sync" "time" ];
+            features = [ "io-util" "macros" "rt" "sync" "time" ];
           }
         ];
 
@@ -24759,6 +24791,25 @@ rec {
           {
             name = "tempfile";
             packageId = "tempfile";
+          }
+        ];
+
+      };
+      "nuschl-testkit" = rec {
+        crateName = "nuschl-testkit";
+        version = "0.2.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/testkit; };
+        libName = "nuschl_testkit";
+        dependencies = [
+          {
+            name = "tempfile";
+            packageId = "tempfile";
+          }
+          {
+            name = "tokio";
+            packageId = "tokio";
+            features = [ "time" ];
           }
         ];
 

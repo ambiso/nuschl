@@ -36,7 +36,7 @@ import zlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fake_subsonic import API_KEY, COVER, COVER_PNG, PASSWORD, Library  # noqa: E402
-from mumble_client import Client, ReferenceOpus, certificate_pin  # noqa: E402
+from mumble_client import Client, ReferenceOpus, certificate_pin, rms  # noqa: E402
 
 MUSIC, LOBBY = 6, 1  # local_murmur.py's channels
 
@@ -880,6 +880,9 @@ def main():
                 packets = [Counter(bytes(packet["opus"]) for packet in heard) for heard in (heard_alice, heard_bob)]
                 shared = sum((packets[0] & packets[1]).values())
                 assert shared >= 270, (shared, len(heard_alice), len(heard_bob))
+                # The bot's Opus decodes with the reference libopus.
+                music = ReferenceOpus(args.opus_library).decode(packet["opus"] for packet in heard_alice)
+                assert 0.01 < rms(music) < 1, rms(music)
                 shared_history = eventually(lambda: api(link, "history", player=0),
                     lambda page: page["revision"] == history_before_shared + 2,
                     "shared-channel songs each recorded once")
