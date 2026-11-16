@@ -66,9 +66,58 @@ malformed packets do not update the private cap. The independent CELT matrix in
 concealment, 10/20 ms frames grouped through 120 ms, mode/DTX/reset transitions
 and framing-state preservation. See `docs/opus-silk.md` for exact scope/evidence.
 
-The phase setting is unchanged. There are no new dependencies, unsafe code,
-encoder changes or backend replacements. Original provenance bytes above remain
+The phase setting is unchanged. There are no new dependencies, unsafe code or
+backend replacements; the only encoder change is the pitch prefilter clamp
+described below. Original provenance bytes above remain
 unchanged. Independent synthetic checks, evidence and known direct 8/12 kHz API
 resampling limitations are documented in `docs/opus-silk.md`; the strict broad
 audit remains failing until those separate limitations are corrected. These
 patches do not claim general bitstream or perceptual parity.
+
+# Encoder pitch prefilter period
+
+The music bot played a FLAC file with an audible glitch around 31–33 s that
+other players did not have. Symphonia decoded the file bit-exactly against
+`flac -d`, and rubato's 48 kHz output matched a soxr resample within −86 dB
+without clipping. The glitch came from the Opus encoder: 91 of 9713 packets of
+that song (96 kb/s constrained VBR, 20 ms, all CELT fullband) decoded with
+libopus 1.6.1 at about 0 dB waveform SNR, in bursts of 4–6 packets, where
+libopus's own encoder on the same input stayed above 11 dB there and had no
+such packet. Packet sizes were normal (at most 492 bytes). The bursts did not
+depend on the bitrate (64, 96 and 192 kb/s) and disappeared below complexity 5,
+and also with only the pitch prefilter disabled.
+
+`run_prefilter` clamped the pitch period to `COMBFILTER_MAXPERIOD - 2` (1022)
+before `remove_doubling`, which can return 1023. libopus clamps after it
+(`celt_encoder.c`, `run_prefilter`). With 1024 samples of history `comb_filter`
+cannot apply 1023 and clamps to 1022 on its own, while the bitstream signalled
+1023. The decoder's postfilter then undid a comb at another period than the
+one applied, at gains around 0.47, and the error was as loud as the music for
+as long as the pitch held. All 47 frames of the song with the prefilter on at
+period 1023 sat next to a bad packet and accounted for 87 of the 91. The clamp
+now follows `remove_doubling`; the song then had no bad packet and an
+unchanged median SNR. opus-pure's own decoder, which produced peaks of 1360×
+full scale on those packets, stays within 1.13 of full scale. Upstream
+opus-pure 0.2.3 and its main branch still clamp before `remove_doubling`.
+
+`prefilter_postfilter_inversion` now shares its round trip with
+`the_longest_pitch_period_is_applied_as_signalled`, which feeds noise
+repeating every 1021, 1022 and 1023 samples. Before the fix period 1023
+round-tripped at 20.4 dB with every engaged frame signalling 1023; now all
+three are transparent (above 90 dB) and signal at most 1022.
+
+Further differences from libopus 1.6.1's `run_prefilter` found on the way remain;
+none of them caused this glitch:
+
+- The prefilter is not switched off for a frame on strong transients without
+  pitch continuity (`tf_estimate > 0.98`), nor when the filter makes a channel
+  worse or neither better (`cancel_pitch`). Adding the latter changed nothing
+  on the song above.
+- The single-tone path (`toneishness`) is missing.
+- When the prefilter is disabled for a frame (below complexity 5, hybrid
+  mode, or 12 bytes per channel or less), `run_prefilter` is skipped, so the
+  previous comb is not faded out and its history goes stale. libopus always
+  runs it with `enabled = 0`.
+- After a frame without the prefilter the encoder keeps
+  `COMBFILTER_MINPERIOD` as the previous period, libopus the searched one. This
+  only affects later decisions, not what is applied.

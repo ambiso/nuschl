@@ -409,10 +409,6 @@
         unitOptOut = {
           # These run on another platform or target.
           nuschl-sandbox-windows = "Windows adapter; the tests run under Miri (`just miri`)";
-          # Fix the named blocker, then remove the entry. The cover cache's
-          # fix is the sibling change "musicbot: rank the cover cache by its
-          # persisted write time".
-          nuschl-musicbot = "pending the cover-cache restart flake";
         };
         unitChecks = lib.mapAttrs'
           (name: member:
