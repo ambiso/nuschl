@@ -491,6 +491,14 @@ pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
                     ));
                 }
             }
+            if crate::bitrate::has_voice(view)
+                && let Some(bitrate) = this
+                    .client
+                    .voice_bitrate(*server, this.settings.voice_bitrate)
+            {
+                let bitrate = crate::bitrate::place_line(&bitrate);
+                rows.push(row("Voice bitrate", bitrate, 12));
+            }
             (
                 "Connection".into(),
                 560.,
