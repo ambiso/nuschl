@@ -28,7 +28,6 @@
   {:else if !current}
     <p class="notice muted" role="status">Requests will update after the connection is restored.</p>
   {:else}
-    <p class="muted">Albums asked for recently, newest first.</p>
     {#if budget}<p class="budget">{budget}</p>{/if}
     {#if result.error}<div class="notice error" role="alert"><p>{result.error}</p><button onclick={() => result.reload()}>Try again</button></div>{/if}
     {#if result.loading && !data}<p class="notice" role="status">Loading requests…</p>{/if}

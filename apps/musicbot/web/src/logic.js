@@ -431,8 +431,8 @@ export function requestStatusText(request) {
     case "handed_over": {
       const failed = Math.min(count(request.tracks_failed), total);
       return failed === 0
-        ? "Added to the library. It can take a minute until it shows up; search for it in a minute or so."
-        : `Added ${total - failed} of ${total} tracks to the library. It can take a minute until they show up; search for them in a minute or so.`;
+        ? "Added. Shows up in the library within a few minutes."
+        : `Added ${total - failed} of ${total} tracks. They show up in the library within a few minutes.`;
     }
     case "failed":
       return "Could not be added.";

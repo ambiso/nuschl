@@ -30,7 +30,6 @@
   {#if !available}
     <p class="notice muted">Adding music is not available on this bot.</p>
   {:else}
-    <p class="muted">Find albums that are missing from the library and add them.</p>
     <form class="add-search" role="search" onsubmit={submit}>
       <label for="add-search-input" class="visually-hidden">Search for albums to add</label>
       <input id="add-search-input" type="search" placeholder="Artist or album" maxlength="200" bind:value={search} autocomplete="off" />

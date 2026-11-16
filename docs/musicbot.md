@@ -572,9 +572,8 @@ page with its tracks and **Add to library**. When the library already has an alb
 of the same title and artist, the page says so, links to it and the button reads
 **Add anyway**. **Requests** lists recent imports, newest first, with their
 progress, a **Yours** marker and how many more tracks the viewer can add today.
-Once the import service has handed an album over, the page tells people that it
-can take a minute until the album shows up in the library and to search for it in
-a minute or so: the library still imports and scans it.
+Once the import service has handed an album over, the page says it shows up in the
+library within a few minutes, while the library imports and scans it.
 
 ```toml
 [import]
@@ -583,7 +582,7 @@ key_file = "import-key"             # bearer key, a credential like the other *_
 library = "Navidrome"               # the [[subsonic]] library added albums arrive in
 ```
 
-Without the section nothing changes: `state.import` is `null` and the page hides
+The section is optional: without it `state.import` is `null` and the page hides
 the feature. `--check-config` checks the URL (no user name, query or fragment;
 https, or http only for loopback hosts) and that `library` names a configured
 library, without reading the key. On NixOS the key is one of the module's
