@@ -14,6 +14,7 @@ default = ["native"]
 native = ["dep:nuschl-ipc", "dep:nuschl-sandbox", "dep:nuschl-session", "dep:tokio", "nuschl-core/uuid"]
 
 [dependencies]
+hex = "0.4.3"
 nuschl-link-preview.workspace = true
 nuschl-core.workspace = true
 nuschl-ipc = { workspace = true, optional = true }

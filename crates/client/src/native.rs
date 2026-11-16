@@ -1681,7 +1681,7 @@ async fn connection_loop(
             Outcome::PrivacyReconnect => {
                 restore
                     .disconnected_at_ms
-                    .get_or_insert_with(connection::now_ms);
+                    .get_or_insert_with(nuschl_core::now_ms);
                 let _ = events
                     .send(Event::Reconnecting {
                         server: id.clone(),
@@ -1766,7 +1766,7 @@ async fn connection_loop(
         }
         restore
             .disconnected_at_ms
-            .get_or_insert_with(connection::now_ms);
+            .get_or_insert_with(nuschl_core::now_ms);
         attempt += 1;
         let delay = [1, 2, 4, 8, 15, 30][(attempt as usize - 1).min(5)];
         let _ = events
@@ -1880,7 +1880,7 @@ async fn connect_once(
     let relay_only = options.relay_only;
     let mut session = tokio::spawn(connection::run(options, receiver, session_events));
     let mut peer: Option<String> = None;
-    let nonce = format!("{}:{generation}:{}", id, connection::now_ms());
+    let nonce = format!("{}:{generation}:{}", id, nuschl_core::now_ms());
     let mut muted = true;
     let mut deafened = restore.deafened;
     let mut voice_revision = 0_u64;
@@ -2110,7 +2110,7 @@ async fn connect_once(
                 SessionEvent::Connected { session: connected_session, max_bandwidth } => {
                     restore.connected = true;
                     if let Some(from_ms) = restore.disconnected_at_ms.take() {
-                        let _ = events.send(Event::Gap { server: id.clone(), generation, from_ms, to_ms: connection::now_ms() }).await;
+                        let _ = events.send(Event::Gap { server: id.clone(), generation, from_ms, to_ms: nuschl_core::now_ms() }).await;
                     }
                     own_session = Some(connected_session);
                     let own_session = connected_session;
@@ -2218,7 +2218,7 @@ async fn connect_once(
                             }
                         }
                         MlsEvent::PlaintextRefused { conversation, .. } => {
-                            let _ = events.send(Event::Input(Input::Server { server: id.clone(), generation, event: ServerEvent::EncryptionGap { conversation: *conversation, reason: "The server supplied unencrypted content in an encrypted conversation; it was refused.".into(), at_ms: connection::now_ms() } })).await;
+                            let _ = events.send(Event::Input(Input::Server { server: id.clone(), generation, event: ServerEvent::EncryptionGap { conversation: *conversation, reason: "The server supplied unencrypted content in an encrypted conversation; it was refused.".into(), at_ms: nuschl_core::now_ms() } })).await;
                         }
                         MlsEvent::Sent { conversation, seq, key, text } => {
                             let target = conversation_keys.get(conversation).and_then(|key| key.parse().ok()).map(TextTarget::Channel).unwrap_or(TextTarget::DirectConversation(*conversation));
@@ -2231,9 +2231,9 @@ async fn connect_once(
                         MlsEvent::Received { conversation, received, author: _ } => {
                             let visible = match received {
                                 Received::Message { seq, text, sent_at, .. } => Some((*seq, text.clone(), (*sent_at).min(i64::MAX as u64) as i64, false)),
-                                Received::Own { seq, text, .. } => Some((*seq, text.clone(), connection::now_ms(), true)),
+                                Received::Own { seq, text, .. } => Some((*seq, text.clone(), nuschl_core::now_ms(), true)),
                                 Received::Undecryptable { reason, .. } | Received::Refused { reason, .. } => {
-                                    let _ = events.send(Event::Input(Input::Server { server: id.clone(), generation, event: ServerEvent::EncryptionGap { conversation: *conversation, reason: format!("Unable to decrypt a message: {reason}"), at_ms: connection::now_ms() } })).await;
+                                    let _ = events.send(Event::Input(Input::Server { server: id.clone(), generation, event: ServerEvent::EncryptionGap { conversation: *conversation, reason: format!("Unable to decrypt a message: {reason}"), at_ms: nuschl_core::now_ms() } })).await;
                                     None
                                 },
                                 _ => None,
@@ -3934,7 +3934,7 @@ fn server_event(event: SessionEvent) -> Result<ServerEvent, Option<Unmodelled>> 
         SessionEvent::UserNames(names) => ServerEvent::UserNames(names),
         SessionEvent::UnsupportedCodec { session } => ServerEvent::UnsupportedCodec {
             session,
-            at_ms: connection::now_ms(),
+            at_ms: nuschl_core::now_ms(),
         },
         SessionEvent::Outbox { sent, total } => ServerEvent::Outbox { sent, total },
         SessionEvent::PluginData(data) => {

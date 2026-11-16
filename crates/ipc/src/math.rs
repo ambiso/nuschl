@@ -84,14 +84,14 @@ mod supervisor {
     };
 
     use nuschl_sandbox::{Role, Worker};
-    use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt},
-        process::ChildStdout,
-        time::timeout,
-    };
+    use tokio::{io::AsyncWriteExt, time::timeout};
 
     use super::{MAX_TEX_BYTES, MathImage, MathRequest, MathResponse};
-    use crate::{Envelope, MAX_FRAME_BYTES, PROTOCOL_VERSION, host::Error, write_frame};
+    use crate::{
+        Envelope, MAX_FRAME_BYTES,
+        host::{Error, read_reply},
+        write_frame,
+    };
 
     /// How long one formula may take, start-up included.
     const DEADLINE: Duration = Duration::from_secs(3);
@@ -181,7 +181,7 @@ mod supervisor {
             let exchange = async {
                 process.worker.input.write_all(&frame).await?;
                 process.worker.input.flush().await?;
-                read_reply(&mut process.worker.output).await
+                read_reply::<MathResponse>(&mut process.worker.output, MAX_FRAME_BYTES).await
             };
             let reply = match timeout(DEADLINE, exchange).await {
                 Ok(Ok(reply)) if reply.request_id == id => reply,
@@ -220,20 +220,6 @@ mod supervisor {
                 process.worker.child.kill().await.ok();
             }
         }
-    }
-
-    async fn read_reply(output: &mut ChildStdout) -> Result<Envelope<MathResponse>, Error> {
-        let size = output.read_u32().await? as usize;
-        if size > MAX_FRAME_BYTES {
-            return Err(Error::Frame(crate::Error::TooLarge));
-        }
-        let mut bytes = vec![0; size];
-        output.read_exact(&mut bytes).await?;
-        let reply: Envelope<MathResponse> = serde_json::from_slice(&bytes)?;
-        if reply.version != PROTOCOL_VERSION {
-            return Err(Error::InvalidResponse);
-        }
-        Ok(reply)
     }
 }
 

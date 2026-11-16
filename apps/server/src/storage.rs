@@ -8,7 +8,7 @@
 use base64::Engine as _;
 use bytes::Bytes;
 use nuschl_ipc::{
-    Envelope, MAX_FRAME_BYTES, PROTOCOL_VERSION,
+    Envelope, MAX_FRAME_BYTES, read_frame_async,
     server::{
         HISTORY_LOAD_PAGE, MessageKind, Retention, SeqRows, ServerSnapshot,
         ServerStorageRequest as Request, ServerStorageResponse as Response, StoredAccess,
@@ -25,7 +25,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::AsyncWriteExt,
     process::{Child, ChildStdin, ChildStdout, Command},
     sync::{mpsc, oneshot},
     time::timeout,
@@ -433,18 +433,12 @@ impl Worker {
 
     async fn exchange(&mut self, id: u64, request: &Request) -> std::io::Result<Response> {
         let mut bytes = Vec::new();
-        write_frame(&mut bytes, &Envelope::new(id, request)).map_err(std::io::Error::other)?;
+        write_frame(&mut bytes, &Envelope::new(id, request))?;
         self.input.write_all(&bytes).await?;
         self.input.flush().await?;
-        let size = self.output.read_u32().await? as usize;
-        if size > MAX_FRAME_BYTES {
-            return Err(std::io::Error::other("oversized storage response"));
-        }
-        let mut body = vec![0; size];
-        self.output.read_exact(&mut body).await?;
         let envelope: Envelope<Response> =
-            serde_json::from_slice(&body).map_err(std::io::Error::other)?;
-        if envelope.version != PROTOCOL_VERSION || envelope.request_id != id {
+            read_frame_async(&mut self.output, MAX_FRAME_BYTES).await?;
+        if envelope.request_id != id {
             return Err(std::io::Error::other("storage protocol mismatch"));
         }
         Ok(envelope.payload)

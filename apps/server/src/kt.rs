@@ -164,12 +164,11 @@ fn load_key(configured: Option<&Path>, generated: PathBuf) -> io::Result<Zeroizi
     let mut key = Zeroizing::new([0u8; 32]);
     ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut key[..])
         .map_err(|_| io::Error::other("no system randomness"))?;
-    let text = Zeroizing::new(format!("{}\n", crate::tls::hex(&key[..])));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    std::io::Write::write_all(&mut options.open(&generated)?, text.as_bytes())?;
+    let text = Zeroizing::new(format!("{}\n", hex::encode(&key[..])));
+    let mut file = crate::files::with_mode(0o600)
+        .create_new(true)
+        .open(&generated)?;
+    std::io::Write::write_all(&mut file, text.as_bytes())?;
     tracing::info!(path = %generated.display(), "generated a key-transparency key");
     Ok(key)
 }
@@ -408,7 +407,7 @@ pub async fn open(
     let (tasks, receiver) = mpsc::channel(QUEUE);
     let log_id = descriptor.log_id();
     tracing::info!(
-        log = %crate::tls::hex(&log_id.0),
+        log = %hex::encode(log_id.0),
         epoch = latest.epoch,
         "key-transparency log"
     );
@@ -438,7 +437,7 @@ pub async fn open(
 }
 
 pub fn now_ms() -> u64 {
-    u64::try_from(crate::chat::now_ms()).unwrap_or(0)
+    u64::try_from(nuschl_core::now_ms()).unwrap_or(0)
 }
 
 fn sha256(bytes: &[u8]) -> [u8; 32] {
