@@ -406,6 +406,10 @@ and a plain/OpenSubsonic fixture. It checks synchronized mutations, shared and
 separate audio, speech-only ducking, seeking, public presence comments, completed,
 skipped and failed history, pagination, restart recovery with libraries reordered
 or removed, and sonic similarity endpoints on the OpenSubsonic library only.
+Rust tests cover the `[import]` validation, pseudonym derivation, error mapping,
+id checks, reply caps, refused redirects, the import poller and the `api/import`
+endpoints against a fixture service. The VM check confirms that the module's bot
+reaches its import service with the key from its credential.
 
 The backend reporting check also ran against a real Navidrome 0.64.2 instance
 with a six-second FLAC and stock Murmur. Navidrome's now-playing API identified
@@ -560,6 +564,69 @@ Seeking restarts decoding and discards audio before the requested position, whic
 works with all supported formats and server transcodes. On a slow connection or a
 long track, seeking can take time; the player shows buffering while preparing it.
 
+## Adding music
+
+With an import service configured, the web page offers **Add music**: people
+search the import service for albums missing from the libraries, open an album
+page with its tracks and **Add to library**. When the library already has an album
+of the same title and artist, the page says so, links to it and the button reads
+**Add anyway**. **Requests** lists recent imports, newest first, with their
+progress, a **Yours** marker and how many more tracks the viewer can add today.
+Once the import service has handed an album over, the page tells people that it
+can take a minute until the album shows up in the library and to search for it in
+a minute or so: the library still imports and scans it.
+
+```toml
+[import]
+url = "https://import.example.org/" # https, or http on 127.0.0.0/8, ::1 or localhost
+key_file = "import-key"             # bearer key, a credential like the other *_file entries
+library = "Navidrome"               # the [[subsonic]] library added albums arrive in
+```
+
+Without the section nothing changes: `state.import` is `null` and the page hides
+the feature. `--check-config` checks the URL (no user name, query or fragment;
+https, or http only for loopback hosts) and that `library` names a configured
+library, without reading the key. On NixOS the key is one of the module's
+`credentials`.
+
+**Requester pseudonyms.** The import service learns one stable pseudonym per
+person: `"r"` and the first 32 hexadecimal digits of HMAC-SHA256
+over the Mumble server, a zero byte and the person's certificate hash, keyed with
+a 32-byte secret the bot makes on first use in `import_requester.key` in its
+state directory. People without a certificate share one pseudonym per server. The
+bot watches the import list as `musicbot`.
+
+**Limits.** The import service enforces them: lookups per requester and in total
+per minute, and tracks added per requester and in total over a rolling day. Its
+answers become fixed texts on the page:
+
+| Cause | Status | Text |
+| --- | --- | --- |
+| `rate_limited` | 429 | Too many searches at once. Try again in a few seconds. |
+| `limit_reached` for the requester | 409 | You have added as much as you can for today. Try again later. |
+| `limit_reached` in total | 409 | The library has taken in as much as it can for today. Try again later. |
+| `too_many_tracks` | 422 | This album is too large to add. |
+| `not_available`, `not_found`, an invalid id | 404 | This album cannot be added. |
+| any other answer, a network error, a timeout or a malformed reply | 503 | Adding music is not available right now. |
+| the bot's four import calls are all in use | 503 | Too many requests at once. Try again in a moment. |
+
+**Security.** The key is a credential file, read once at startup and sent only as
+`Authorization: Bearer` to the configured URL; redirects are not followed, so the
+key never goes anywhere else. Every call has its own admission (four at once,
+none waiting), a 30-second deadline and a 1 MiB cap on its reply. Ids are exactly
+16 lowercase hexadecimal characters before they enter a URL path; replies are
+parsed into typed values and checked (bounded texts without control characters,
+sane numbers, at most 50 albums or imports and 200 tracks) before a viewer sees
+them, and no text of the import service is passed on. Covers are JPEG files the
+confined content worker re-encodes as PNGs like library covers, and cached in `covers/` under the key namespace `import`, which no library key (32
+hexadecimal digits) can take.
+
+A background task asks for the import list once at start, every 3 seconds while
+an import is queued or being added and every 30 seconds otherwise or after a
+failure. When an import's status or progress changes, `state.import.revision`
+advances and viewers receive the new state; the page then reloads its requests.
+A request through the bot advances the revision as well.
+
 ## Web API
 
 The page uses the endpoints below `api/` next to the public address and
@@ -679,3 +746,19 @@ adding. A path skips its first song when that song is already playing in the que
 Adding similar songs leaves out the song itself and every match with a similarity
 of 100%, which are other copies of the same recording, so the same song is not
 queued again and again.
+
+With an import service configured, State/SSE includes `import`:
+`{"library":N,"revision":N}`, the library added albums arrive in and a revision
+that advances when the import list changes; it is `null` otherwise, and the
+endpoints below answer 404. `GET api/import/search?q=…` returns `{"albums":[Album]}`
+(`q` trimmed and cut to 200 characters; empty gives no albums).
+`GET api/import/album?id=ID` returns `{"album":Album+{"tracks":[…]},
+"in_library":{"library":N,"id":"ID"}|null}`; `in_library` comes from one search
+for "artist title" in that library, comparing titles and artists without case or
+extra spaces, and is null when that search fails. `GET api/import/requests`
+returns `{"requests":[Import],"budget":{"mine":Budget,"total":Budget}}` and
+`POST api/import/requests` with `{"album_id":"ID"}` returns
+`{"request":Import,"existing":bool}`. Album, Import and Budget have the fields of
+the import service's protocol. The authenticated `import-art/<id>?size=…` route
+answers like `art/`, with `private, max-age=86400`. Errors use the texts of
+"Adding music".

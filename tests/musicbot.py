@@ -455,8 +455,45 @@ def service(args):
             watcher.wait(lambda state: state["players"][0]["current"] is None
                          and not state["players"][0]["queue"], after=resumed)
             print(json.dumps({"service": len(heard)}))
+            if args.import_key_file:
+                import_wiring(link, args.import_key_file.read_text().strip())
         finally:
             close_resources([watcher, listener])
+
+
+def import_wiring(link, key):
+    """The module's bot reaches its import service on 127.0.0.1:5000 with the
+    key from its credential and a pseudonymous requester. The endpoints
+    themselves are tested in cargo (apps/musicbot/src/web.rs, import.rs)."""
+    asked = []
+
+    class Service(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            asked.append((self.path, self.headers.get("Authorization")))
+            body = b'{"albums": []}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 5000), Service)
+    thread = threading.Thread(target=server.serve_forever, name="import-service")
+    thread.start()
+    try:
+        assert api(link)["import"] is not None
+        assert api(link, "import/search", q="wiring") == {"albums": []}
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    path, authorization = next(entry for entry in asked if "/search?" in entry[0])
+    assert authorization == f"Bearer {key}", authorization
+    assert re.match(r"/api/integration/v1/search\?requester=r[0-9a-f]{32}&q=wiring&", path), path
+    print(json.dumps({"import_wiring": len(asked)}))
 
 
 def write_config(config, root, library_url, web_port, port, pin, reverse=False, only_open=False):
@@ -698,6 +735,8 @@ def main():
     parser.add_argument("--espeak", type=Path, help="espeak-ng for the ducking test")
     parser.add_argument("--opus-library", type=Path, help="reference libopus for speech encoding")
     parser.add_argument("--web-assets", type=Path, help="built UI directory; forwarded only when supplied")
+    parser.add_argument("--import-key-file", type=Path,
+                        help="with --service: the import service key the module passes to the bot")
     args = parser.parse_args()
     if not args.service and not (args.espeak and args.opus_library):
         parser.error("--espeak and --opus-library are needed unless --service")

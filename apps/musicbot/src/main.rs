@@ -4,6 +4,7 @@
 mod config;
 mod covers;
 mod decode;
+mod import;
 mod library_keys;
 mod mumble;
 mod persist;
@@ -66,6 +67,8 @@ pub struct Bot {
     pub persistence: Mutex<()>,
     /// Decoded covers in `covers/` below the state directory.
     pub covers: covers::CoverCache,
+    /// Adding music through the import service, when configured.
+    pub adding: Option<Arc<import::Adding>>,
 }
 
 fn main() -> ExitCode {
@@ -139,6 +142,13 @@ async fn run(arguments: Arguments) -> Result<(), String> {
             Ok(Library::new(index, library, library.credentials()?, key))
         })
         .collect::<Result<Vec<_>, String>>()?;
+    let adding = config
+        .import
+        .as_ref()
+        .map(|import| {
+            import::Adding::open(import, &config.libraries, &state_directory).map(Arc::new)
+        })
+        .transpose()?;
     let tokens = Tokens::load(state_directory.join("tokens.json"))
         .map_err(|error| format!("tokens.json: {error}"))?;
     let changes = Changes::default();
@@ -191,6 +201,7 @@ async fn run(arguments: Arguments) -> Result<(), String> {
         rating_revision: AtomicU64::new(0),
         persistence: Mutex::new(()),
         covers,
+        adding,
         config,
     });
     // The queues of the last run come back before anything plays.
@@ -201,6 +212,10 @@ async fn run(arguments: Arguments) -> Result<(), String> {
     tracing::info!("web page on {}", bot.config.web.listen);
     // Capture restored-history cursors synchronously before audio tasks start.
     let reporter = scrobble::start(&bot);
+    let poller = bot
+        .adding
+        .clone()
+        .map(|adding| import::start(adding, bot.changes.clone()));
     tokio::spawn(persist::keep(bot.clone()));
     for index in 0..bot.libraries.len() {
         let libraries = bot.libraries.clone();
@@ -234,6 +249,9 @@ async fn run(arguments: Arguments) -> Result<(), String> {
         }
     };
     reporter.shutdown().await;
+    if let Some(poller) = poller {
+        poller.shutdown().await;
+    }
     result
 }
 

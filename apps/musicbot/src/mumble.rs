@@ -830,6 +830,7 @@ certificate_sha256 = "{pin}"
                 changes,
                 persistence: Mutex::new(()),
                 covers: crate::covers::CoverCache::disabled(),
+                adding: None,
                 rating_revision: std::sync::atomic::AtomicU64::new(0),
                 config,
             })

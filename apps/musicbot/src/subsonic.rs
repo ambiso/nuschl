@@ -726,7 +726,10 @@ impl Library {
     }
 }
 
-fn transport_agent(total_timeout: Option<Duration>, read_timeout: Duration) -> ureq::Agent {
+pub(crate) fn transport_agent(
+    total_timeout: Option<Duration>,
+    read_timeout: Duration,
+) -> ureq::Agent {
     ureq::Agent::config_builder()
         .http_status_as_error(false)
         // Authentication lives in query parameters, which redirects can copy

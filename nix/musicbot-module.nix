@@ -6,6 +6,8 @@
 #     virtualHost = "music.example.org";
 #     enableACME = true;
 #     credentials.navidrome = "/run/secrets/navidrome-api-key";
+#     # Optional: adding music through an import service (docs/musicbot.md).
+#     credentials.import-key = "/run/secrets/import-service-key";
 #     settings = {
 #       subsonic = [
 #         { name = "Navidrome"; url = "https://navidrome.example.org"; api_key_file = "navidrome"; }
@@ -13,6 +15,7 @@
 #       channel = [
 #         { name = "lounge"; host = "voice.example.org"; username = "Music"; channel = "Lounge"; }
 #       ];
+#       import = { url = "https://import.example.org/"; key_file = "import-key"; library = "Navidrome"; };
 #     };
 #   };
 #
@@ -81,9 +84,10 @@ in
         voice = "/run/secrets/mumble-password";
       };
       description = ''
-        Secret files (API keys and passwords) passed with LoadCredential. A
-        setting such as `api_key_file = "navidrome"` names one of them. Paths
-        must be outside the Nix store.
+        Secret files (API keys, passwords and the import service key) passed
+        with LoadCredential. A setting such as `api_key_file = "navidrome"` or
+        `import.key_file = "import-key"` names one of them. Paths must be
+        outside the Nix store.
       '';
     };
     settings = lib.mkOption {
@@ -109,10 +113,10 @@ in
       default = { };
       description = ''
         The configuration (see nuschl-musicbot.example.toml): `subsonic` and
-        `channel` lists, and optionally `audio`. The generated TOML is checked
-        by the configured package during the build, using its runtime schema
-        and validation rules. Credential files and servers are not accessed.
-        `web.listen` comes from listenAddress and port.
+        `channel` lists, and optionally `audio` and `import`. The generated
+        TOML is checked by the configured package during the build, using its
+        runtime schema and validation rules. Credential files and servers are
+        not accessed. `web.listen` comes from listenAddress and port.
       '';
     };
   };

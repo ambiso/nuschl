@@ -12,6 +12,9 @@
   import PlayerBar from "./components/PlayerBar.svelte";
   import BigScreen from "./components/BigScreen.svelte";
   import Icon from "./components/Icon.svelte";
+  import AddMusic from "./components/AddMusic.svelte";
+  import AddAlbum from "./components/AddAlbum.svelte";
+  import Requests from "./components/Requests.svelte";
 
   let menuOpen = $state(false);
   let menuButton = $state();
@@ -31,6 +34,7 @@
     { name: "Artists", icon: "artist", route: { view: "artists", library: store.library }, views: ["artists", "artist"] },
     { name: "Playlists", icon: "playlist", route: { view: "playlists", library: store.library }, views: ["playlists", "playlist"] },
     { name: "Channels", icon: "channel", route: { view: "channels" }, views: ["channels"] },
+    ...(store.snapshot?.import ? [{ name: "Add music", icon: "add", route: { view: "add", q: "" }, views: ["add", "addAlbum", "requests"] }] : []),
   ]);
 
   onMount(() => store.start());
@@ -170,6 +174,12 @@
           <HistoryPanel />
         {:else if route.view === "channels"}
           <Channels />
+        {:else if route.view === "add"}
+          {#key browseRouteKey}<AddMusic {route} />{/key}
+        {:else if route.view === "addAlbum"}
+          {#key browseRouteKey}<AddAlbum {route} />{/key}
+        {:else if route.view === "requests"}
+          {#key browseRouteKey}<Requests />{/key}
         {:else}
           {#key browseRouteKey}<Browse {route} />{/key}
         {/if}

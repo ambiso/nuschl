@@ -65,7 +65,7 @@ pub fn load(directory: &Path, libraries: &[LibraryIdentity]) -> io::Result<Vec<S
         .collect())
 }
 
-fn is_key(key: &str) -> bool {
+pub(crate) fn is_key(key: &str) -> bool {
     key.len() == 32
         && key
             .bytes()

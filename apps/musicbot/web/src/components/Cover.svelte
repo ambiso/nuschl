@@ -1,17 +1,19 @@
 <!-- SPDX-License-Identifier: EUPL-1.2 -->
 <script>
-  import { artUrl } from '../api.js';
+  import { artUrl, importArtUrl } from '../api.js';
   import Icon from './Icon.svelte';
   import { store } from '../store.svelte.js';
 
   /** The bot answers with PNGs the content worker made; 400 pixels at most. */
   const MAX_EDGE = 400;
 
-  let { library, art, size = 300, px = null, round = false } = $props();
+  /** `importId` names an import service album; its cover comes from `import-art/` instead of the library. */
+  let { library, art, importId = null, size = 300, px = null, round = false } = $props();
   const bound = $derived(Math.max(32, Math.min(MAX_EDGE, Math.trunc(size))));
   // Covers load only while this browser's link works.
   const allowed = $derived(store.connection === 'open' && !store.invalid);
-  const src = $derived(art && allowed ? artUrl(library, art, bound, store.snapshot?.library_keys?.[library]) : null);
+  const src = $derived(!allowed ? null : importId !== null ? importArtUrl(importId, bound)
+    : art ? artUrl(library, art, bound, store.snapshot?.library_keys?.[library]) : null);
   let loaded = $state(null);
   const ready = $derived(src !== null && loaded === src);
 </script>

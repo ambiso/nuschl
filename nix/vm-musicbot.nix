@@ -62,12 +62,14 @@ pkgs.testers.runNixOSTest {
       # Test secrets; real ones stay out of the Nix store.
       environment.etc."musicbot/password".text = "library-secret\n";
       environment.etc."musicbot/key".text = "open-key-123\n";
+      environment.etc."musicbot/import-key".text = "fixture-import-key-0123456789abcdef\n";
       services.nuschl-musicbot = {
         enable = true;
         package = musicbot;
         credentials = {
           plain = "/etc/musicbot/password";
           open = "/etc/musicbot/key";
+          import-key = "/etc/musicbot/import-key";
         };
         settings = {
           subsonic = [
@@ -91,6 +93,11 @@ pkgs.testers.runNixOSTest {
               certificate_sha256 = pin;
             }
           ];
+          import = {
+            url = "http://127.0.0.1:5000/";
+            key_file = "import-key";
+            library = "Open";
+          };
         };
       };
       systemd.services.nuschl-musicbot = {
@@ -126,8 +133,9 @@ pkgs.testers.runNixOSTest {
     headers = machine.succeed("curl -s -D - -o /dev/null http://127.0.0.1:8474/u/00000000-0000-0000-0000-000000000000/")
     assert " 404 " in headers.splitlines()[0], headers
     assert "referrer-policy: no-referrer" in headers.lower(), headers
-    # The module's bot: a link, two songs from both libraries, heard in the root channel.
-    machine.succeed("python3 ${../tests}/musicbot.py ${binaries}/bin 64738 --service")
+    # The module's bot: a link, two songs from both libraries, heard in the root
+    # channel, and the import service reached with the credential's key.
+    machine.succeed("python3 ${../tests}/musicbot.py ${binaries}/bin 64738 --service --import-key-file /etc/musicbot/import-key")
     # Inspect actual child capabilities under DynamicUser + the outer syscall
     # and namespace restrictions, after the service has encoded real music.
     machine.succeed("python3 ${../tests}/musicbot_service_isolation.py")

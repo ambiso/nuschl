@@ -19,6 +19,55 @@ pub struct Config {
     /// One Mumble connection per entry. Each channel starts with its own queue.
     #[serde(rename = "channel")]
     pub channels: Vec<Channel>,
+    /// The import service people add albums through; without it the web page
+    /// offers no "Add music".
+    #[serde(default)]
+    pub import: Option<Import>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Import {
+    /// The import service's base URL.
+    pub url: String,
+    /// Its bearer key, a credential file.
+    pub key_file: PathBuf,
+    /// The `[[subsonic]]` library added albums arrive in, by name.
+    pub library: String,
+}
+
+/// Longest import service key the bot reads.
+const MAX_IMPORT_KEY: u64 = 4096;
+
+impl Import {
+    /// The bearer key, read from its credential file at startup.
+    pub fn key(&self) -> Result<String, String> {
+        use std::io::Read;
+        let unreadable = || "import: could not read key_file".to_owned();
+        let file = std::fs::File::open(&self.key_file).map_err(|_| unreadable())?;
+        let mut bytes = Vec::new();
+        file.take(MAX_IMPORT_KEY + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| unreadable())?;
+        if bytes.len() as u64 > MAX_IMPORT_KEY {
+            return Err("import: key_file exceeds 4 KiB".into());
+        }
+        let key = String::from_utf8(bytes)
+            .map_err(|_| "import: key_file must be text".to_owned())?
+            .trim()
+            .to_owned();
+        if key.is_empty() || !key.bytes().all(|b| b.is_ascii_graphic()) {
+            return Err("import: key_file must hold one key of visible ASCII characters".into());
+        }
+        Ok(key)
+    }
+
+    /// The index of the configured library in `[[subsonic]]`.
+    pub fn library_index(&self, libraries: &[Library]) -> Option<usize> {
+        libraries
+            .iter()
+            .position(|library| library.name == self.library)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -196,6 +245,9 @@ impl Config {
             resolve(&mut channel.password_file);
             resolve(&mut channel.tokens_file);
         }
+        if let Some(import) = &mut config.import {
+            import.key_file = files.join(&import.key_file);
+        }
         Ok(config)
     }
 
@@ -282,6 +334,15 @@ impl Config {
                 ));
             }
         }
+        if let Some(import) = &self.import {
+            validate_import_url(&import.url)?;
+            if import.library_index(&self.libraries).is_none() {
+                return Err(format!(
+                    "import.library {:?} names no [[subsonic]] library",
+                    import.library
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -334,6 +395,32 @@ fn validate_url(value: &str, setting: &str) -> Result<(), String> {
         Err(format!(
             "{setting} must be an absolute http:// or https:// URL without a user name, query or fragment"
         ))
+    }
+}
+
+/// The import service's address: https, or http only on this machine, so the
+/// key never crosses a network in clear.
+fn validate_import_url(value: &str) -> Result<(), String> {
+    validate_url(value, "import.url")?;
+    let uri: ureq::http::Uri = value
+        .parse()
+        .map_err(|_| "import.url is not a valid URL".to_owned())?;
+    let host = uri.host().unwrap_or_default();
+    let host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+    if uri.scheme_str() == Some("https") || loopback {
+        Ok(())
+    } else {
+        Err(
+            "import.url must use https://, or http:// only for 127.0.0.0/8, ::1 or localhost"
+                .into(),
+        )
     }
 }
 
@@ -453,5 +540,99 @@ mod tests {
         let config = parse(include_str!("../nuschl-musicbot.example.toml")).unwrap();
         assert_eq!(config.libraries.len(), 2);
         assert_eq!(config.channels[1].path(), ["Games", "Background"]);
+        assert!(config.import.is_none());
+        // The commented import section, switched on, is valid as well.
+        let text = include_str!("../nuschl-musicbot.example.toml")
+            .lines()
+            .map(|line| match line.strip_prefix("# ") {
+                Some(setting)
+                    if ["[import]", "url = ", "key_file = ", "library = "]
+                        .iter()
+                        .any(|start| setting.starts_with(start)) =>
+                {
+                    setting
+                }
+                _ => line,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let config = parse(&text).unwrap();
+        let import = config.import.expect("the example's import section");
+        assert_eq!(import.library_index(&config.libraries), Some(0));
+    }
+
+    fn with_import(url: &str, library: &str) -> String {
+        format!(
+            "{MINIMAL}\n[import]\nurl = \"{url}\"\nkey_file = \"import-key\"\nlibrary = \"{library}\"\n"
+        )
+    }
+
+    #[test]
+    fn import_is_optional() {
+        assert!(parse(MINIMAL).unwrap().import.is_none());
+    }
+
+    #[test]
+    fn import_key_is_a_credential() {
+        let config = parse(&with_import("https://import.example.org/", "home")).unwrap();
+        let import = config.import.unwrap();
+        assert_eq!(
+            import.key_file,
+            Path::new("/run/credentials/musicbot/import-key")
+        );
+        assert_eq!(import.library_index(&config.libraries), Some(0));
+    }
+
+    #[test]
+    fn import_url_uses_https_or_loopback_http() {
+        for url in [
+            "https://import.example.org/",
+            "https://import.example.org/base/",
+            "http://127.0.0.1:5000/",
+            "http://127.8.9.10/",
+            "http://[::1]:5000/",
+            "http://localhost:5000",
+        ] {
+            assert!(parse(&with_import(url, "home")).is_ok(), "{url}");
+        }
+        for url in [
+            "http://import.example.org/",
+            "http://10.0.0.1/",
+            "http://128.0.0.1/",
+            "http://[::2]/",
+            "https://user:secret@import.example.org/",
+            "https://import.example.org/?q=1",
+            "https://import.example.org/#x",
+            "ftp://127.0.0.1/",
+            "127.0.0.1:5000",
+        ] {
+            assert!(parse(&with_import(url, "home")).is_err(), "{url}");
+        }
+    }
+
+    #[test]
+    fn import_library_must_exist() {
+        let error = parse(&with_import("https://import.example.org/", "Elsewhere")).unwrap_err();
+        assert!(error.contains("names no [[subsonic]] library"), "{error}");
+    }
+
+    #[test]
+    fn import_key_is_read_bounded_and_trimmed() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("import-key");
+        let import = Import {
+            url: "https://import.example.org/".into(),
+            key_file: file.clone(),
+            library: "home".into(),
+        };
+        assert!(import.key().is_err());
+        std::fs::write(&file, "secret-key\n").unwrap();
+        assert_eq!(import.key().unwrap(), "secret-key");
+        std::fs::write(&file, "\n").unwrap();
+        assert!(import.key().is_err());
+        std::fs::write(&file, "two words").unwrap();
+        assert!(import.key().is_err());
+        std::fs::write(&file, vec![b'k'; 4097]).unwrap();
+        assert!(import.key().is_err());
     }
 }

@@ -2,6 +2,7 @@
 // HTTP helpers. Every URL is relative to the token-free page root, which the
 // bot authenticates with its cookie, so the app also works when the bot sits
 // behind a proxy under a path.
+import { isImportId } from "./logic.js";
 
 export class HttpError extends Error {
   constructor(status, message) {
@@ -28,8 +29,7 @@ export async function getJSON(path, signal) {
   return response.json();
 }
 
-/** POSTs JSON to `path`; throws HttpError with the server's `error` text on failure. */
-export async function postJSON(path, body, signal) {
+async function post(path, body, signal) {
   const response = await fetch(path, {
     method: "POST",
     signal,
@@ -37,6 +37,18 @@ export async function postJSON(path, body, signal) {
     body: JSON.stringify(body),
   });
   if (!response.ok) throw await failure(response);
+  return response;
+}
+
+/** POSTs JSON to `path`; throws HttpError with the server's `error` text on failure. */
+export async function postJSON(path, body, signal) {
+  await post(path, body, signal);
+}
+
+/** POSTs JSON to `path` and returns the JSON reply; throws HttpError with the server's `error` text on failure. */
+export async function postForJSON(path, body, signal) {
+  const response = await post(path, body, signal);
+  return response.json();
 }
 
 /** Query string for library calls. */
@@ -52,4 +64,9 @@ export function query(path, params) {
 export function artUrl(library, coverArt, size, key) {
   const url = `art/${library}/${encodeURIComponent(coverArt)}?size=${size}`;
   return typeof key === "string" && key ? `${url}&v=${encodeURIComponent(key)}` : url;
+}
+
+/** URL of an import service cover `size` pixels wide, or null for an invalid id. */
+export function importArtUrl(id, size) {
+  return isImportId(id) ? `import-art/${id}?size=${size}` : null;
 }

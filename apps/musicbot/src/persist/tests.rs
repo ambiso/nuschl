@@ -87,6 +87,7 @@ username = "DJ2"
         tokens: Tokens::load(directory.join("tokens.json")).unwrap(),
         persistence: Mutex::new(()),
         covers: crate::covers::CoverCache::disabled(),
+        adding: None,
         rating_revision: std::sync::atomic::AtomicU64::new(0),
     }
 }
