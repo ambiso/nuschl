@@ -92,7 +92,8 @@ Three processes run outside `nuschl-sandbox`:
   PostgreSQL; its hardened systemd unit confines it, and the NixOS storage
   preflight inherits that unit.
 - `nuschld --read-murmur` confines itself with Landlock to reading one file,
-  without network; under the NixOS service its systemd unit applies too.
+  without network, and refuses to run where Landlock cannot fully enforce that
+  (Linux 6.12 or later); under the NixOS service its systemd unit applies too.
 - The TUI clipboard helpers are OS clipboard programs that need the display
   socket; they run under prlimit.
 

@@ -207,11 +207,19 @@ async fn read_murmur(
         write_frame(&mut output, &Envelope::new(sequence, frame)).map_err(|error| error.to_string())
     };
     // Before SQLite starts its thread, so that the thread is confined too.
-    // Where Landlock cannot be used (an old kernel, a seccomp filter), the
-    // reader carries on with its other limits and the report says so.
-    let confinement =
-        confine(path).unwrap_or_else(|error| format!("reader: not confined ({error})"));
-    let _ = emit(MurmurFrame::Notes(vec![confinement]));
+    // Without full confinement the file is not read.
+    if let Err(missing) = confine(path) {
+        let error = format!(
+            "reader: {missing}, so the file was not read. Run the import on Linux 6.12 or later \
+             with Landlock enabled (on another machine, for example), then copy the resulting \
+             database or state here"
+        );
+        let _ = emit(MurmurFrame::Failed(error.clone()));
+        return Err(error.into());
+    }
+    let _ = emit(MurmurFrame::Notes(vec![
+        "reader: confined by Landlock to reading the file".into(),
+    ]));
     if let Err(error) = nuschl_storage::murmur::read(path, server, &mut emit).await {
         let _ = emit(MurmurFrame::Failed(error.clone()));
         return Err(error.into());
@@ -234,13 +242,12 @@ fn serve_held() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Landlock: from here on this process (and the threads it starts) may only
 /// read the Murmur file: no other file, no TCP, no abstract Unix sockets, no
-/// signals to other processes. Best effort on kernels with an older Landlock;
-/// the result is reported.
+/// signals to other processes. An error says what is not confined.
 #[cfg(target_os = "linux")]
-fn confine(path: &std::path::Path) -> Result<String, String> {
+fn confine(path: &std::path::Path) -> Result<(), String> {
     use landlock::{
-        ABI, Access, AccessFs, AccessNet, Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus,
-        Scope, path_beneath_rules,
+        ABI, Access, AccessFs, AccessNet, Ruleset, RulesetAttr, RulesetCreatedAttr, Scope,
+        path_beneath_rules,
     };
     let abi = ABI::V6;
     let status = Ruleset::default()
@@ -250,19 +257,20 @@ fn confine(path: &std::path::Path) -> Result<String, String> {
         .and_then(|ruleset| ruleset.create())
         .and_then(|ruleset| ruleset.add_rules(path_beneath_rules([path], AccessFs::from_read(abi))))
         .and_then(|ruleset| ruleset.restrict_self())
-        .map_err(|error| error.to_string())?;
-    Ok(match status.ruleset {
-        RulesetStatus::FullyEnforced => "reader: confined by Landlock to reading the file".into(),
-        RulesetStatus::PartiallyEnforced => {
-            "reader: partly confined by Landlock (the kernel lacks newer Landlock features)".into()
-        }
-        RulesetStatus::NotEnforced => "reader: not confined (this kernel has no Landlock)".into(),
-    })
+        .map_err(|error| format!("not confined (Landlock failed: {error})"))?;
+    if status.ruleset == landlock::RulesetStatus::FullyEnforced {
+        Ok(())
+    } else {
+        Err(format!(
+            "not fully confined (Landlock {:?}); Linux 6.12 or later is required",
+            status.landlock
+        ))
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
-fn confine(_: &std::path::Path) -> Result<String, String> {
-    Ok("reader: not confined (Landlock is Linux only)".into())
+fn confine(_: &std::path::Path) -> Result<(), String> {
+    Err("not confined (Landlock is Linux only)".into())
 }
 
 async fn serve_server_state(arguments: Arguments) -> Result<(), Box<dyn std::error::Error>> {
