@@ -647,7 +647,7 @@ class AccessibilityTest:
         """A private PulseAudio with null speakers and a null microphone, where
         the media worker looks for it ($XDG_RUNTIME_DIR/pulse/native)."""
         pulse = Path(env["XDG_RUNTIME_DIR"]) / "pulse"
-        pulse.mkdir(mode=0o700)
+        pulse.mkdir(mode=0o700, exist_ok=True)
         script = self.root / "default.pa"
         script.write_text(f"load-module module-native-protocol-unix socket={pulse / 'native'} auth-anonymous=1\n"
                           "load-module module-null-sink sink_name=speakers\n"
