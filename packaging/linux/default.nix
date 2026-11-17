@@ -70,39 +70,15 @@ let
     packageRevision = versions.archPkgrel;
     sourceDateEpoch = versions.sourceDateEpoch;
   };
-  debSource = import ../debian/source.nix {
-    inherit
-      pkgs
-      craneLib
-      projectRoot
-      nativeNotices
-      desktopFiles
-      appstreamXML
-      maintainer
-      assetBinding
-      ;
-    version = versions.debianUpstream;
-    sourceRevision = versions.sourceRevision;
-    sourceNarHash = versions.sourceNarHash;
-    sourceDateEpoch = versions.sourceDateEpoch;
-    debianRevision = versions.packageRevision;
-  };
 in
 {
   inherit
     versions
     deb
     archBin
-    debSource
     assetBinding
     ;
   nativeStage = portable.stage;
-  debSourceCheck = import ../debian/check-source.nix {
-    inherit pkgs toolchain;
-    sourcePackage = debSource;
-    version = versions.debianUpstream;
-    debianRevision = versions.packageRevision;
-  };
   metadataTests = import ./metadata-tests.nix { inherit pkgs; };
 }
 // lib.optionalAttrs versions.officialVersion {
