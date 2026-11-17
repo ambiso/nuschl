@@ -462,7 +462,6 @@
 {#snippet navigation()}
   {#if pointerGhost && draggingId}<div class="server-order-ghost" aria-hidden="true" style:left={`${pointerGhost.x - 23}px`} style:top={`${pointerGhost.y - 23}px`}>{initials(servers.find(server=>server.id===draggingId)?.name || "")}</div>{/if}
   <nav class="servers" class:server-order-enabled={capabilities.includes("server_order")} aria-label="Servers">
-    <a class="brand" href="/" aria-label="Nuschl home"><img src="/nuschl.svg" alt="" width="38" height="38"></a>
     <div class="server-scroll" role="presentation" bind:this={serverScroll} use:observeScroll ondragover={event => moveOrder(event)} ondrop={event => dropOrder(event)} onpointermove={event=>moveOrder(event,true)} onpointerup={event=>dropOrder(event,true)} onpointercancel={cancelPointerOrder} onlostpointercapture={cancelPointerOrder}>
       {#each railServers as server (server.id)}
         <div class="server-order-slot" data-server-id={server.id} class:server-order-source={draggingId === server.id} animate:flip={{duration:reducedMotion ? 0 : 180}}>
