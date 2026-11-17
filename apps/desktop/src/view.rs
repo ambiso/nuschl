@@ -1792,6 +1792,9 @@ impl Desktop {
                 // The switcher, drawn over every dialog, keeps its own field
                 // focused (finder::overlay).
                 && !self.finder.is_open()
+                // A context menu, drawn over every dialog, keeps its own
+                // focus trap (menus::MenuSurface).
+                && self.menu.is_none()
             {
                 let scope = self.dialog_focus(front, cx);
                 if !scope.contains_focused(window, cx) {
