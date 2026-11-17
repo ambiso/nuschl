@@ -54,7 +54,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         else { "current" };
                     authentication = Some((status, checked.released, checked.expires));
                 } else {
-                    nuschl_update::manifest::parse(&bytes, now)?;
+                    // Clients install a newer release from expired metadata;
+                    // an operator verifying before publication needs it current.
+                    if nuschl_update::manifest::parse(&bytes, now)?.expires <= now {
+                        return Err("the signed update manifest has expired".into());
+                    }
                 }
                 key
             }

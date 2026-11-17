@@ -34,7 +34,6 @@ const RETIRED: &str = ".nuschl-old";
 /// A newer release for this platform.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Update {
-    pub expires: u64,
     pub version: semver::Version,
     pub notes: Option<String>,
     pub files: Vec<FileEntry>,
@@ -207,18 +206,18 @@ pub fn check_at(
         &format!("{base}{MANIFEST}.sig"),
         crate::auth_format::SIGNATURE_BYTES as u64,
     )?;
-    let manifest = verify_hybrid(&manifest, &signature, keys, workers, now()?)?;
+    let now = now()?;
+    let manifest = verify_hybrid(&manifest, &signature, keys, workers, now)?;
     let files = manifest
         .platforms
         .get(platform)
         .cloned()
         .ok_or_else(|| Error::Manifest(format!("no files for {platform}")))?;
     remember(state, &manifest)?;
-    if !is_newer(&manifest.version, current) {
+    if !newer(&manifest, current, now)? {
         return Ok(None);
     }
     Ok(Some(Update {
-        expires: manifest.expires,
         version: semver::Version::parse(&manifest.version)
             .map_err(|error| Error::Manifest(error.to_string()))?,
         notes: manifest.notes,
@@ -228,7 +227,6 @@ pub fn check_at(
 
 /// Downloaded and verified files, ready to swap in.
 pub struct Staged {
-    expires: u64,
     root: Dir,
     files: Vec<PathBuf>,
 }
@@ -240,7 +238,6 @@ pub fn download(
     root: &Path,
     mut progress: impl FnMut(u64, u64),
 ) -> Result<Staged, Error> {
-    require_current(update.expires)?;
     let dir = open_root(root)?;
     let _ = dir.remove_dir_all(STAGING);
     dir.create_dir_all(STAGING)
@@ -291,11 +288,7 @@ pub fn download(
         done += written;
         files.push(relative);
     }
-    Ok(Staged {
-        root: dir,
-        files,
-        expires: update.expires,
-    })
+    Ok(Staged { root: dir, files })
 }
 
 fn now() -> Result<u64, Error> {
@@ -304,11 +297,18 @@ fn now() -> Result<u64, Error> {
         .map(|time| time.as_secs())
         .map_err(|_| Error::Expired)
 }
-fn require_current(expires: u64) -> Result<(), Error> {
-    if expires <= now()? {
+/// Whether `manifest` offers a newer version. A newer signed release installs
+/// even after its metadata expired: anti-rollback already refuses older ones,
+/// and expiry only bounds how long a frozen manifest can hide newer releases.
+/// Without a newer version, expired metadata means the newest version could
+/// not be confirmed.
+fn newer(manifest: &Manifest, current: &str, now: u64) -> Result<bool, Error> {
+    if is_newer(&manifest.version, current) {
+        Ok(true)
+    } else if manifest.expires <= now {
         Err(Error::Expired)
     } else {
-        Ok(())
+        Ok(false)
     }
 }
 
@@ -316,7 +316,6 @@ fn require_current(expires: u64) -> Result<(), Error> {
 /// (a running executable can be renamed but not overwritten on Windows). Any
 /// failure puts every file back.
 pub fn apply(staged: Staged) -> Result<(), Error> {
-    require_current(staged.expires)?;
     let dir = &staged.root;
     let retired = Path::new(RETIRED).join(unique());
     let mut moved: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
@@ -478,7 +477,7 @@ mod tests {
         assert!(!is_newer(&renewed.version, &original.version));
         assert!(matches!(remember(&state, &original), Err(Error::Stale(_))));
         assert!(matches!(
-            crate::manifest::parse(&renewed_bytes, NOW + 86400),
+            newer(&renewed, "0.1.0", NOW + 86400),
             Err(Error::Expired)
         ));
         assert!(matches!(
@@ -489,25 +488,25 @@ mod tests {
     }
 
     #[test]
-    fn expiry_is_rechecked_before_network_and_before_installation() {
-        let (root, files) = installation();
-        let update = Update {
-            expires: 0,
-            version: semver::Version::new(9, 0, 0),
-            notes: None,
-            files,
+    fn a_newer_release_installs_after_its_metadata_expired() {
+        let manifest = |version: &str| {
+            let raw = serde_json::to_vec(&serde_json::json!({
+                "format": 2, "algorithm": crate::trust::ALGORITHM_NAME,
+                "version": version, "released": 100, "expires": 200,
+                "platforms": {"windows-x86_64": [{"path": "nuschl.exe",
+                    "url": "https://example.invalid/nuschl.exe",
+                    "sha256": "ab".repeat(32), "size": 11}]}
+            }))
+            .unwrap();
+            crate::manifest::parse(&raw, 150).unwrap()
         };
+        // After expiry: a newer version installs; the same one is unconfirmed.
+        assert!(newer(&manifest("9.0.0"), "0.1.0", 300).unwrap());
         assert!(matches!(
-            download(&update, root.path(), |_, _| panic!("expired download")),
+            newer(&manifest("0.1.0"), "0.1.0", 300),
             Err(Error::Expired)
         ));
-        let mut staged = stage(root.path(), &[("nuschl.exe", b"replacement")]);
-        staged.expires = 0;
-        assert!(matches!(apply(staged), Err(Error::Expired)));
-        assert_eq!(
-            fs::read(root.path().join("nuschl.exe")).unwrap(),
-            b"old program"
-        );
+        assert!(!newer(&manifest("0.1.0"), "0.1.0", 150).unwrap());
     }
 
     #[test]
@@ -546,7 +545,6 @@ mod tests {
             fs::write(target, body).unwrap();
         }
         Staged {
-            expires: u64::MAX,
             root: open_root(root).unwrap(),
             files: files.iter().map(|(path, _)| PathBuf::from(path)).collect(),
         }
@@ -566,7 +564,6 @@ mod tests {
             size: 1,
         }];
         let update = Update {
-            expires: u64::MAX,
             version: semver::Version::new(9, 0, 0),
             notes: None,
             files: std::mem::take(&mut files),

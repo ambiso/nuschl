@@ -126,8 +126,8 @@ fields, noncanonical signature envelopes, unsafe/case-colliding paths and
 credential-bearing URLs fail closed. Each platform has at most 256 files of at
 most 512 MiB; the raw manifest is at most 256 KiB. File URLs require HTTPS, except
 literal-loopback HTTP for private fixtures. Signed release time/version cannot
-move backwards in persisted update state. Expiry is rechecked before download
-and before installation.
+move backwards in persisted update state. A newer signed release installs even
+after its metadata expired.
 
 Validity is at most 30 days, with at most five minutes of future clock skew.
 Operators must refresh/re-sign the latest metadata before expiry even when
@@ -135,12 +135,11 @@ binaries have not changed, using a nondecreasing version and release time. The
 offline renewal helper and reviewed [manual procedure](../../docs/update-metadata-refresh.md)
 authenticate the previous raw document, preserve all non-time bytes, record
 original provenance, require the same pair and perform normal verification of
-the renewed document. Explicit expired recovery never grants client acceptance
-to expired data. The tag-create workflow does not perform renewal or implement an
-automatic signing cron. Expired metadata produces an actionable check-for-current-
-release error; a wrong clock can also reject an otherwise valid release. An
-unseen withheld newer release remains undetectable; expiry limits how long an
-old manifest can remain acceptable.
+the renewed document. The tag-create workflow does not perform renewal or
+implement an automatic signing cron. Expired metadata without a newer version
+produces a could-not-confirm error; a wrong clock can also make current metadata
+look expired. Expiry bounds how long a withheld newer release stays unnoticed:
+the client reports when it can no longer confirm the newest version.
 
 ## Confinement and actual proof
 

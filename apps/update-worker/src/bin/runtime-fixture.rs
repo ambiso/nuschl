@@ -118,15 +118,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &"00".repeat(32),
         now - 1,
     );
-    assert!(matches!(
+    // Both engines accept an expired manifest; whether it may install is the
+    // client's decision (a newer version only).
+    assert!(
         verify(
             &expired,
             &secret.sign(&expired)?,
             std::slice::from_ref(&key),
             &workers
-        ),
-        Err(Error::Expired)
-    ));
+        )?
+        .expires
+            < now
+    );
     let mut duplicate = raw.clone();
     duplicate.splice(1..1, br#""format":2,"#.iter().copied());
     assert!(matches!(
