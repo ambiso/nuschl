@@ -317,9 +317,10 @@ pub fn settings_rows(this: &Desktop, cx: &mut Context<Desktop>) -> Vec<AnyElemen
                     "kt-saved-recovery",
                     "I wrote it down",
                     Tone::Primary,
+                    // Hides the key; Show recovery key brings it back.
                     |this, _, cx| {
                         this.own_identity.recovery_key = None;
-                        this.driver.identity(CryptoRequest::RecoveryKeySaved);
+                        this.own_identity.copied = None;
                         cx.notify();
                     },
                     cx,

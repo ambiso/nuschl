@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Recovery key in Settings → Identity: shown on request with a secrecy
-warning, copied to the clipboard, and hidden again once Settings closes.
+warning, copied to the clipboard, hidden by I wrote it down and shown again,
+and hidden once Settings closes.
 
 Private headless GNOME Shell, AT-SPI and a loopback nuschld with key
 transparency. The desktop creates its identity on connect, with the default
@@ -124,13 +125,19 @@ def main():
             assert named(key, "label"), "the copied text is not the shown recovery key"
             shell.screenshot(args.output / "recovery-key.png")
             eventually(lambda: named("Copy", "push button"), "Copied did not return to Copy", timeout=10)
+            # I wrote it down hides the key; it can be shown again.
+            press("I wrote it down")
+            eventually(lambda: named(key, "label") is None, "I wrote it down left the key shown")
+            reveal("Show recovery key").press()
+            eventually(lambda: named(key, "label"), "the key could not be shown again")
             press("Done")
             eventually(lambda: named("Settings", "dialog") is None, "Settings did not close")
             press("Settings")
             reveal("Show recovery key")
             assert named(key, "label") is None, "the recovery key showed again after reopening Settings"
             assert named("Keep this key secret", prefix=True) is None, "the warning stayed without the key"
-            result = {"passed": True, "copied": True, "warned": True, "hidden_after_close": True}
+            result = {"passed": True, "copied": True, "warned": True, "shown_again": True,
+                      "hidden_after_close": True}
             (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
             print(json.dumps(result))
         finally:
