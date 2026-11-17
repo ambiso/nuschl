@@ -759,6 +759,13 @@ def actions(args, root, shell, application, bot, murmur):
     finally:
         admin.close()
     mark("channel_password_set_and_removed")
+    # A picked built-in group becomes the rule's target once applied.
+    activate("Add rule")
+    activate("Registered users")
+    activate("Apply target")
+    wait("Registered users · Sets no permissions", "push button")
+    activate("Remove rule")
+    mark("group_picked_as_rule_target")
     return {
         "fresh_offline_lookup": True,
         "unknown_account_refused": True,
@@ -775,6 +782,7 @@ def actions(args, root, shell, application, bot, murmur):
         "persistence_after_restart": True,
         "fresh_editor_after_reconnect": True,
         "channel_password_admits_token_holders": True,
+        "group_picked_as_rule_target": True,
         "registered_ids": IDS.copy(),
         "server": args.server,
         "diagnostic_rate_override": args.high_admin_limit,
