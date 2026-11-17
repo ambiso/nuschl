@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import tomllib
 import zipfile
@@ -174,11 +175,21 @@ def guarded_build(arguments, log):
                 'need at least8GiB MemAvailable AND/tmp free; no build started/continued')
     resources()
     with log.open('x') as output:
-        process = subprocess.Popen(arguments, stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
+        process = subprocess.Popen([*arguments, '-L'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                   start_new_session=True, text=True, errors='replace')
+
+        # Each line goes to the log and to the terminal, so a long build shows progress.
+        def copy():
+            for line in process.stdout:
+                output.write(line)
+                sys.stderr.write(line)
+        copier = threading.Thread(target=copy, daemon=True)
+        copier.start()
         try:
             while process.poll() is None:
                 resources()
                 time.sleep(5)
+            copier.join()
             require(process.returncode == 0, 'Nix build failed; retain log')
         finally:
             if process.poll() is None:
