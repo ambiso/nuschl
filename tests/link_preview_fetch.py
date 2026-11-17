@@ -158,10 +158,11 @@ class Http(socketserver.BaseRequestHandler):
             elif parsed.path == "/large-head":
                 stream.sendall(b"HTTP/1.1 200 OK\r\nX-Padding: " + b"x" * (33 * 1024) + b"\r\n\r\n")
             elif parsed.path == "/large-body":
-                # Past the 256 KiB document limit, with its metadata first.
-                reply(stream, b'<meta property="og:title" content="Synthetic preview"><body>' + b"x" * (256 * 1024))
+                # Past the 10 MiB document limit, with its metadata first.
+                reply(stream, b'<meta property="og:title" content="Synthetic preview"><body>' + b"x" * (10 * 1024 * 1024))
             elif parsed.path == "/raw-overhead":
-                stream.sendall(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: text/html\r\n\r\n" + b"1\r\nx\r\n" * 80000 + b"0\r\n\r\n")
+                # 12 MB of chunk framing around a 2 MB body, past the raw limit.
+                stream.sendall(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: text/html\r\n\r\n" + b"1\r\nx\r\n" * 2_000_000 + b"0\r\n\r\n")
             elif parsed.path == "/stall":
                 stream.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 200\r\nContent-Type: text/html\r\n\r\n")
                 self.server.state.event("stall_headers_sent", path=parsed.path)

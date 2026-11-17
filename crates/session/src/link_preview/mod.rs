@@ -25,7 +25,8 @@ use tokio::time::Instant;
 
 pub const LOGICAL_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CONNECTIONS: usize = 16;
-const MAX_RAW_BYTES: usize = 4 * 1024 * 1024;
+/// A document and an image at their raw limits, and redirects.
+const MAX_RAW_BYTES: usize = 14 * 1024 * 1024;
 
 /// One process-wide pipeline and no wait queue. Off does not acquire credit,
 /// create a task, resolve a name, open a socket or start a child.

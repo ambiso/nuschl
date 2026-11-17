@@ -8,12 +8,17 @@ use nuschl_core::preview::{
 use serde::{Deserialize, Serialize};
 
 pub const SCHEMA: u16 = 1;
-pub const MAX_DOCUMENT_BYTES: usize = 256 * 1024;
+pub const MAX_DOCUMENT_BYTES: usize = 10 * 1024 * 1024;
 pub const MAX_SOURCE_IMAGE_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_RGBA_BYTES: usize = MAX_IMAGE_WIDTH as usize * MAX_IMAGE_HEIGHT as usize * 4;
 const JSON_OVERHEAD_BYTES: usize = 4096;
-pub const MAX_REQUEST_FRAME_BYTES: usize =
-    MAX_SOURCE_IMAGE_BYTES.div_ceil(3) * 4 + MAX_ALT_BYTES * 6 + JSON_OVERHEAD_BYTES;
+/// The largest request, a document in base64, exceeds [`crate::MAX_FRAME_BYTES`]:
+/// preview requests are written and read within this limit.
+pub const MAX_REQUEST_FRAME_BYTES: usize = MAX_DOCUMENT_BYTES.div_ceil(3) * 4 + JSON_OVERHEAD_BYTES;
+const _: () = assert!(
+    MAX_SOURCE_IMAGE_BYTES.div_ceil(3) * 4 + MAX_ALT_BYTES * 6
+        <= MAX_DOCUMENT_BYTES.div_ceil(3) * 4
+);
 pub const MAX_RESPONSE_FRAME_BYTES: usize = MAX_RGBA_BYTES.div_ceil(3) * 4
     + MAX_IMAGE_BYTES.div_ceil(3) * 4
     + MAX_ALT_BYTES * 6
@@ -291,15 +296,17 @@ mod tests {
         }
         let request = Request::Document {
             schema: SCHEMA,
-            body: String::new(),
+            body: "A".repeat(MAX_DOCUMENT_BYTES.div_ceil(3) * 4),
             charset: Charset::Utf8,
             truncated: false,
         };
+        assert!(request.is_bounded());
         let bytes = serde_json::to_vec(&crate::Envelope::new(
             1,
             crate::ContentRequest::Preview(request),
         ))
         .unwrap();
+        assert!(bytes.len() <= MAX_REQUEST_FRAME_BYTES);
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["payload"]["operation"],
             "document"

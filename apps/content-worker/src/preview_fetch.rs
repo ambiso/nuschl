@@ -422,6 +422,51 @@ mod tests {
             Failure::TooLarge
         );
     }
+    /// The document's metadata from a chunked response read through `parse`.
+    fn metadata(html: &[u8]) -> nuschl_ipc::preview::Response {
+        let mut raw =
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nX-Fill: ".to_vec();
+        raw.extend(std::iter::repeat_n(b'a', 12 * 1024));
+        raw.extend_from_slice(b"\r\nTransfer-Encoding: chunked\r\n\r\n");
+        for part in html.chunks(8192) {
+            raw.extend_from_slice(format!("{:x}\r\n", part.len()).as_bytes());
+            raw.extend_from_slice(part);
+            raw.extend_from_slice(b"\r\n");
+        }
+        raw.extend_from_slice(b"0\r\n\r\n");
+        let response = parse(&raw, Purpose::Document, wire::MAX_CHUNK_BYTES).unwrap();
+        crate::preview::answer(nuschl_ipc::preview::Request::Document {
+            schema: nuschl_ipc::preview::SCHEMA,
+            body: response.body,
+            charset: response.charset,
+            truncated: false,
+        })
+    }
+    fn page(head: usize, body: usize) -> Vec<u8> {
+        [
+            b"<!DOCTYPE html><html><head><script>var c='".as_slice(),
+            &vec![b'x'; head],
+            b"';</script><meta property=\"og:title\" content=\"Synthetic video\"></head><body>",
+            &vec![b'y'; body],
+            b"</body></html>",
+        ]
+        .concat()
+    }
+    #[test]
+    fn metadata_after_a_long_head_script_or_before_a_long_body_is_found() {
+        use nuschl_ipc::preview::Response;
+        // Shaped like a YouTube watch page: about 1.4 MiB, metadata after 760 KiB.
+        // Then a page past the document limit with its metadata early.
+        for html in [
+            page(760 * 1024, 650 * 1024),
+            page(0, Purpose::Document.body_limit()),
+        ] {
+            let Response::Metadata { metadata, .. } = metadata(&html) else {
+                panic!("expected metadata");
+            };
+            assert_eq!(metadata.title, "Synthetic video");
+        }
+    }
     #[test]
     fn aggregate_head_body_informational_and_chunk_limits_do_not_reset() {
         assert!(

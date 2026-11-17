@@ -7,9 +7,12 @@ use serde::{Deserialize, Serialize};
 pub const SCHEMA: u16 = 1;
 pub const MAX_CHUNK_BYTES: usize = 16 * 1024;
 pub const MAX_REQUEST_BYTES: usize = 32 * 1024;
-pub const MAX_RESPONSE_BYTES: usize = 3 * 1024 * 1024;
+/// A whole document in base64 with the response fields.
+pub const MAX_RESPONSE_BYTES: usize =
+    crate::preview::MAX_DOCUMENT_BYTES.div_ceil(3) * 4 + 64 * 1024;
 pub const MAX_HEAD_BYTES: usize = 32 * 1024;
-pub const MAX_CHUNKS: usize = 512;
+/// Lets a 10 MiB document arrive in reads averaging 1.3 KiB.
+pub const MAX_CHUNKS: usize = 8192;
 pub const MAX_INFORMATIONAL: usize = 4;
 pub const RAW_OVERHEAD_BYTES: usize = 96 * 1024;
 
@@ -22,7 +25,7 @@ pub enum Purpose {
 impl Purpose {
     pub fn body_limit(self) -> usize {
         match self {
-            Self::Document => 256 * 1024,
+            Self::Document => crate::preview::MAX_DOCUMENT_BYTES,
             Self::Image => 2 * 1024 * 1024,
         }
     }

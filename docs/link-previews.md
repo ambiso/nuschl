@@ -99,7 +99,7 @@ Proposed initial limits:
 | Resource | Limit |
 |---|---|
 | Candidate URL | 2 KiB, HTTP(S), no userinfo/control characters |
-| Metadata document | First 256 KiB, HTML only, no content decompression initially |
+| Metadata document | First 10 MiB, HTML only, no content decompression initially |
 | Extraction | 4096 tags/comments/doctypes, 256 metadata tags, 4 KiB per attribute value |
 | Redirects | At most three across the preview fetch |
 | Source image | 2 MiB encoded; existing worker pixel/dimension/CPU limits |
@@ -112,9 +112,13 @@ Proposed initial limits:
 
 The legacy projection may shorten the displayed title and description to 200 and
 300 UTF-16 units. It preserves the entire original message text, obeys the server's
-text/image limits and never exceeds the 256 KiB content limit. Attribute-name work
-is bounded by the document cap and the worker's CPU/wall limits; it is not a claim
-that html5ever's handling of many distinct attributes is linear.
+text/image limits and never exceeds the 256 KiB content limit.
+
+Extraction is linear in the document, under a second for 10 MiB on a desktop CPU, except
+for html5ever's handling of many distinct attribute names in one tag, which is
+quadratic: such a tag of about 512 KiB reaches the worker's five-second CPU limit,
+and that page has no preview. YouTube watch pages place their metadata after
+about 770 KiB of inline script.
 
 The carried image budget must also fit the actual message/encryption envelope.
 Existing MLS bodies are bounded near 64 KiB: preview preparation must adapt the image
