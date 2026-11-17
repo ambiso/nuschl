@@ -15,6 +15,8 @@ Orca would and checks that:
 - where your voice goes is named: the rail button ("voice here, muted"), the
   voice card ("Accessible server #Development: Microphone destination · muted") and its place, a
   button that goes there;
+- with --gnome-shell: a pointer click beside a branch's chevron, at the row's
+  top and left edge, expands and collapses it at 100 % and 200 % zoom;
 - with --gnome-shell (which has a clipboard): a pasted image shows in the
   composer's tray as a named list item, and its "Remove" button works through
   the Action interface;
@@ -285,6 +287,8 @@ class AccessibilityTest:
             self.check_tree(nodes)
             print(f"Accessibility tree: {len(nodes)} nodes; window controls, voice controls, channel tree, "
                   "users, search and composer exposed with names.", flush=True)
+            if self.shell:
+                self.check_branch_toggle(nuschl)
 
             assert desktop["self_muted"], "the client should start muted"
             unmute = self.find(nodes, "push button", "Unmute")
@@ -333,6 +337,55 @@ class AccessibilityTest:
             if peer:
                 peer.close()
             murmur.stop()
+
+    def check_branch_toggle(self, nuschl):
+        """A pointer click beside a branch's chevron, in its toggle zone, expands
+        and collapses the branch at 100 % and 200 % zoom."""
+        def named(role, name):
+            return next((node for _, node, r, n in snapshot(nuschl) if r == role and n == name), None)
+
+        def listening():
+            return named("tree item", "Listening party") is not None
+        # Window coordinates start at the buffer, which includes the shadow inset.
+        origin = json.loads(self.shell.eval(
+            "JSON.stringify((() => { const b = global.get_window_actors().map(a => a.meta_window)"
+            ".find(w => (w.get_title() || '').startsWith('Nuschl')).get_buffer_rect();"
+            " return [b.x, b.y]; })())"))
+        assert not listening(), "Music started expanded"
+        for scale, zoom_steps in ((1, 0), (2, 5)):
+            for _ in range(zoom_steps):
+                self.shell.chord("Control_L", "equal")
+                time.sleep(0.1)
+            row = eventually(lambda: (node := named("tree item", "Music")) and node.extents()[3] == 32 * scale
+                             and node, f"the channel rows did not reach {scale * 100} % zoom", timeout=10)
+            # At 200 % the row sits below the drawer's visible part: wheel it into view.
+            tree = named("tree", "Channels").extents()
+
+            def visible():
+                if tree[1] <= row.extents()[1] and sum(row.extents()[1::2]) <= tree[1] + tree[3]:
+                    return True
+                self.shell.wheel(origin[0] + tree[0] + tree[2] // 2, origin[1] + tree[1] + tree[3] // 2, 2)
+                time.sleep(0.3)
+            eventually(visible, f"Music did not scroll into the channel list at {scale * 100} % zoom", timeout=10)
+            time.sleep(0.5)
+            rx, ry, rw, rh = row.extents()
+            zone = named("push button", "Toggle Music").extents()
+            assert (zone[0], zone[1], zone[3]) == (rx, ry, rh), f"toggle zone {zone} does not span row {row.extents()}"
+            # The chevron itself is the 18 px square centred in the row after the indent.
+            chevron = (zone[0] + 4 * scale, ry + (rh - 18 * scale) // 2, 18 * scale, 18 * scale)
+            # The zone's top-left corner, then the gap after the chevron, near the row's top.
+            for x, expanded in ((zone[0] + 2 * scale, True), (zone[0] + zone[2] - 2 * scale, False)):
+                y = ry + 2 * scale
+                assert not (chevron[0] <= x < chevron[0] + chevron[2] and chevron[1] <= y < chevron[1] + chevron[3])
+                self.shell.click(origin[0] + x, origin[1] + y)
+                eventually(lambda: listening() == expanded,
+                           f"a click at {(x, y)} in Toggle Music {zone} did not "
+                           f"{'expand' if expanded else 'collapse'} it at {scale * 100} % zoom", timeout=10)
+                self.shell.screenshot(self.args.output / f"branch-{scale * 100}-{'expanded' if expanded else 'collapsed'}.png")
+                time.sleep(0.5)
+        self.shell.chord("Control_L", "0")
+        eventually(lambda: named("tree item", "Music").extents()[3] == 32, "the zoom did not reset", timeout=10)
+        print("A click beside the chevron expanded and collapsed Music at 100 % and 200 % zoom.", flush=True)
 
     def check_attachments(self, nuschl):
         """Paste an image into the composer; remove it again through AT-SPI."""
@@ -647,7 +700,7 @@ class AccessibilityTest:
         """A private PulseAudio with null speakers and a null microphone, where
         the media worker looks for it ($XDG_RUNTIME_DIR/pulse/native)."""
         pulse = Path(env["XDG_RUNTIME_DIR"]) / "pulse"
-        pulse.mkdir(mode=0o700)
+        pulse.mkdir(mode=0o700, exist_ok=True)
         script = self.root / "default.pa"
         script.write_text(f"load-module module-native-protocol-unix socket={pulse / 'native'} auth-anonymous=1\n"
                           "load-module module-null-sink sink_name=speakers\n"
