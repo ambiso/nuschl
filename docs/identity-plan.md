@@ -287,20 +287,27 @@ identity's inviter is recorded, so the identities form one tree.
 
 ## Bounds
 
+Email limits (Owner 2026-11-17), defaults of options in the identity service's
+NixOS module `services.nuschl-id` (`nix/id-module.nix`):
+
+| Option | Default |
+| --- | --- |
+| `email.rateLimits.perRecipient` | 5 per hour per recipient address |
+| `email.rateLimits.perDomain` | 100 per hour per destination domain and mail server |
+| `email.rateLimits.perRequester` | 10 per hour per requesting account and IP address |
+
 Proposals: KT values at most 4096 bytes (e2ee.md §5.1); a backup blob at most 16
 KiB and 8 passkeys per account; one move per hour; one bound email address,
 8-digit codes valid 15 minutes with 5 attempts, one pending reset per account;
-email limited per recipient address (5 per hour), per destination domain and MX
-(100 per hour) and per requesting account and IP address (10 per hour); invite
-codes expire after 7 days; an attachment receipt within 10 s of the upload's end,
-and 30 s without progress counts as a stall. Clients validate every reply against
-these limits before allocating.
+invite codes expire after 7 days; an attachment receipt within 10 s of the
+upload's end, and 30 s without progress counts as a stall. Clients validate every
+reply against these limits before allocating.
 
 ## Slices
 
 1. Identity service: a `nuschl-id` role in `nuschld` with the directory, the
    `account:`, `id:` and `user:` labels, invites and the tree, witness submission
-   and a NixOS module.
+   and the NixOS module `services.nuschl-id`.
 2. Home server location, lookups, inboxes and the move flow.
 3. Direct conversations on both home servers, with root-derived server-side keys.
 4. Recovery-key login screen (#363), then passkey backup and recovery.
