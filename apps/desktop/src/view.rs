@@ -17,7 +17,7 @@ use crate::{
 use gpui_kit::{base::input::Textarea, prelude::*, *};
 use nuschl_client::{HistorySource, SessionSecurity, conversation::Entry};
 use nuschl_session::connection::{TextTarget, User};
-use std::{collections::HashMap, rc::Rc};
+use std::{cell::Cell, collections::HashMap, rc::Rc};
 
 // Match the existing rail, splitter, icon controls and composer padding.
 // Viewport fitting preserves the saved sidebar preference.
@@ -861,15 +861,16 @@ fn sidebar(
                     },
                     cx,
                 ))
-                .child(
+                .child({
+                    // The menu opens below the button, wherever it was clicked.
+                    let button = Rc::new(Cell::new(Bounds::default()));
+                    let painted = button.clone();
                     div()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                                this.open_menu(server_index, MenuTarget::Server, event.position);
-                                cx.stop_propagation();
-                                cx.notify();
-                            }),
+                        .relative()
+                        .child(
+                            canvas(move |bounds, _, _| painted.set(bounds), |_, _, _, _| {})
+                                .absolute()
+                                .size_full(),
                         )
                         .child(icon_button(
                             "server-menu",
@@ -877,10 +878,17 @@ fn sidebar(
                             "Server options",
                             TEXT_MUTED,
                             None,
-                            |_, _, _| {},
+                            move |this, _, cx| {
+                                this.open_menu(
+                                    server_index,
+                                    MenuTarget::Server,
+                                    button.get().bottom_left(),
+                                );
+                                cx.notify();
+                            },
                             cx,
-                        )),
-                ),
+                        ))
+                }),
         )
         .child(
             div()
