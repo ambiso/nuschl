@@ -836,10 +836,10 @@ pub fn reconnect_banner(view: &ServerView) -> Option<String> {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: that glob includes GPUI's `test` macro, which shadows `#[test]`.
-    use crate::acl_editor::cycle;
+    use crate::acl_editor::set_permission;
     use nuschl_session::model::{AclEntry, permission};
     #[test]
-    fn acl_bits_cycle_allow_deny_unset() {
+    fn acl_bits_allow_deny_unset() {
         let mut entry = AclEntry {
             apply_here: true,
             apply_subs: true,
@@ -849,11 +849,11 @@ mod tests {
             grant: 0,
             deny: 0,
         };
-        cycle(&mut entry, permission::SPEAK);
+        set_permission(&mut entry, permission::SPEAK, Some(true));
         assert_eq!((entry.grant, entry.deny), (permission::SPEAK, 0));
-        cycle(&mut entry, permission::SPEAK);
+        set_permission(&mut entry, permission::SPEAK, Some(false));
         assert_eq!((entry.grant, entry.deny), (0, permission::SPEAK));
-        cycle(&mut entry, permission::SPEAK);
+        set_permission(&mut entry, permission::SPEAK, None);
         assert_eq!((entry.grant, entry.deny), (0, 0));
     }
 }

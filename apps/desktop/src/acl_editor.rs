@@ -2,7 +2,7 @@
 //! Native ACL draft adapter. Lists instantiate visible rows; remote vectors
 //! remain snapshots. Every delayed callback also carries the per-open token.
 use crate::{
-    dialogs::{Tone, styled_button},
+    dialogs::{Tone, Tooltip, named_button, styled_button},
     layout,
     menus::{ActionOrigin, MenuTarget},
     panels::Panel,
@@ -502,7 +502,11 @@ pub fn render_stale(editor: &Editor, cx: &mut Context<Desktop>) -> AnyElement {
         ))
         .child(note(
             "acl-stale-inherit",
-            format!("Inherit parent permissions: {}", draft.inherit_acls()),
+            if draft.inherit_acls() {
+                "Inherits the parent channel's permissions"
+            } else {
+                "Ignores the parent channel's permissions"
+            },
         ))
         .child(note(
             "acl-stale-rules-title",
@@ -518,8 +522,10 @@ pub fn render_stale(editor: &Editor, cx: &mut Context<Desktop>) -> AnyElement {
         body = body.child(note(
             "acl-stale-rule-detail",
             format!(
-                "This channel: {}; subchannels: {}; inherited: {}; grant: {:#010x}; deny: {:#010x}",
-                entry.apply_here, entry.apply_subs, entry.inherited, entry.grant, entry.deny
+                "{}{} · {}",
+                if entry.inherited { "Inherited · " } else { "" },
+                scope(entry),
+                effect(entry)
             ),
         ));
     }
@@ -543,10 +549,28 @@ pub fn render_stale(editor: &Editor, cx: &mut Context<Desktop>) -> AnyElement {
     {
         body = body.child(note(
             "acl-stale-group-flags",
-            format!(
-                "@{} · inherited: {}; inherit parent members: {}; inheritable by subchannels: {}",
-                group.name, group.inherited, group.inherit, group.inheritable
-            ),
+            [
+                format!("@{}", group.name),
+                (if group.inherited {
+                    "from a parent channel"
+                } else {
+                    "defined here"
+                })
+                .into(),
+                (if group.inherit {
+                    "includes the parent's members"
+                } else {
+                    "ignores the parent's members"
+                })
+                .into(),
+                (if group.inheritable {
+                    "used by subchannels"
+                } else {
+                    "this channel only"
+                })
+                .into(),
+            ]
+            .join(" · "),
         ));
         for (kind, title, count) in [
             (0, "Local members", group.add.len()),
@@ -1326,23 +1350,147 @@ pub fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Desktop>) -> 
     body.into_any_element()
 }
 
-fn permission_state(entry: &AclEntry, bit: u32) -> &'static str {
-    match (entry.grant & bit != 0, entry.deny & bit != 0) {
-        (true, true) => "allow + deny",
-        (true, false) => "allow",
-        (false, true) => "deny",
-        _ => "unset",
+/// A rule's setting for one permission: allowed, denied (deny wins when a
+/// rule sets both) or neither.
+fn setting(entry: &AclEntry, bit: u32) -> Option<bool> {
+    if entry.deny & bit != 0 {
+        Some(false)
+    } else if entry.grant & bit != 0 {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn set_permission(entry: &mut AclEntry, bit: u32, setting: Option<bool>) {
+    entry.grant &= !bit;
+    entry.deny &= !bit;
+    match setting {
+        Some(true) => entry.grant |= bit,
+        Some(false) => entry.deny |= bit,
+        None => {}
+    }
+}
+
+const CHOICES: [(Option<bool>, &str); 3] = [
+    (Some(true), "Allow"),
+    (None, "Not set"),
+    (Some(false), "Deny"),
+];
+
+/// One row per permission: its name, explained on hover, and Allow, Not set
+/// and Deny, which an editable rule can choose. Server-wide permissions
+/// appear in the root channel only.
+fn permission_grid(
+    token: u64,
+    id: RowId,
+    entry: &AclEntry,
+    editable: bool,
+    root: bool,
+    cx: &mut Context<Desktop>,
+) -> AnyElement {
+    let mut grid = div().flex().flex_col().gap_1();
+    for &(bit, label) in permission::NAMED
+        .iter()
+        .filter(|(bit, _)| root || *bit < permission::KICK)
+    {
+        let current = setting(entry, bit);
+        let mut row = div().flex().flex_wrap().items_center().gap_2().child(
+            div()
+                .id(SharedString::from(format!("acl-help-{token}-{id}-{bit}")))
+                .w(px(150.))
+                .flex_shrink_0()
+                .tooltip(move |_, cx| {
+                    cx.new(|_| Tooltip(permission::description(bit).into()))
+                        .into()
+                })
+                .child(SharedString::from(label)),
+        );
+        if editable {
+            for (choice, text) in CHOICES {
+                let tone = match (current == choice, choice) {
+                    (true, Some(false)) => Tone::Danger,
+                    (true, _) => Tone::Primary,
+                    (false, _) => Tone::Ghost,
+                };
+                row = row.child(named_button(
+                    SharedString::from(format!("acl-bit-{token}-{id}-{bit}-{text}")),
+                    text,
+                    format!("{label}: {text}"),
+                    tone,
+                    move |this, _, cx| {
+                        change_rule(this, token, id, |editor| {
+                            if let Some(entry) = editor
+                                .state
+                                .draft_mut()
+                                .and_then(|draft| draft.entry_mut(id))
+                            {
+                                set_permission(entry, bit, choice);
+                            }
+                        });
+                        cx.notify();
+                    },
+                    cx,
+                ));
+            }
+        } else {
+            let text = CHOICES
+                .iter()
+                .find(|(choice, _)| *choice == current)
+                .map_or("", |(_, text)| text);
+            row = row.child(note(
+                SharedString::from(format!("acl-setting-{token}-{id}-{bit}")),
+                text,
+            ));
+        }
+        if entry.grant & entry.deny & bit != 0 {
+            row = row.child(note(
+                SharedString::from(format!("acl-both-{token}-{id}-{bit}")),
+                "Allowed and denied: deny wins",
+            ));
+        }
+        grid = grid.child(row);
+    }
+    grid.into_any_element()
+}
+
+/// What a rule allows and denies, in words.
+fn effect(entry: &AclEntry) -> String {
+    let names = |wanted: Option<bool>| {
+        permission::NAMED
+            .iter()
+            .filter(|(bit, _)| setting(entry, *bit) == wanted)
+            .map(|(_, label)| *label)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let (allowed, denied) = (names(Some(true)), names(Some(false)));
+    match (allowed.is_empty(), denied.is_empty()) {
+        (true, true) => "Sets no permissions".into(),
+        (false, true) => format!("Allows {allowed}"),
+        (true, false) => format!("Denies {denied}"),
+        (false, false) => format!("Allows {allowed}; denies {denied}"),
+    }
+}
+
+/// Where a rule applies, in words.
+fn scope(entry: &AclEntry) -> &'static str {
+    match (entry.apply_here, entry.apply_subs) {
+        (true, true) => "Applies here and in subchannels",
+        (true, false) => "Applies here only",
+        (false, true) => "Applies in subchannels only",
+        (false, false) => "Applies nowhere",
     }
 }
 fn unknown_permissions(entry: &AclEntry) -> Option<String> {
     let known = permission::NAMED
         .iter()
         .fold(0, |bits, (bit, _)| bits | bit);
-    ((entry.grant | entry.deny) & !known != 0).then(|| {
+    let unknown = (entry.grant | entry.deny) & !known;
+    (unknown != 0).then(|| {
         format!(
-            "Additional permission bits retained: grant {:#010x}, deny {:#010x}",
-            entry.grant & !known,
-            entry.deny & !known
+            "Keeps {} permission settings from a newer server unchanged.",
+            unknown.count_ones()
         )
     })
 }
@@ -1360,10 +1508,8 @@ fn rule_detail(
             .child(note("acl-inherited-rule",if editor.state.draft().is_some_and(|draft|draft.inherit_acls()) {
                 "This rule belongs to an ancestor channel and is read-only here."
             } else {"Parent ACL inheritance is disabled in this draft. This ancestor rule is inactive and read-only here."}))
-            .child(note("acl-inherited-scope",format!("Applies in its defining channel: {}; applies to its subchannels: {}",entry.apply_here,entry.apply_subs)))
-            .child(div().flex().flex_wrap().gap_2().children(permission::NAMED.iter().map(|&(bit,label)| {
-                note(SharedString::from(format!("acl-inherited-bit-{token}-{id}-{bit}")),format!("{label}: {}",permission_state(entry,bit)))
-            })));
+            .child(note("acl-inherited-scope", scope(entry)))
+            .child(permission_grid(token, id, entry, false, editor.state.draft().is_some_and(|draft| draft.channel() == 0), cx));
         if let Some(bits) = unknown_permissions(entry) {
             detail = detail.child(note("acl-inherited-unknown", bits));
         }
@@ -1575,44 +1721,13 @@ fn rule_detail(
             )
         }),
     );
-    detail = detail.child(scope).child(
-        div().flex().flex_wrap().gap_2().children(
-            permission::NAMED
-                .iter()
-                .filter(|(bit, _)| {
-                    editor
-                        .state
-                        .draft()
-                        .is_some_and(|draft| draft.channel() == 0)
-                        || *bit < permission::KICK
-                })
-                .map(|&(bit, label)| {
-                    let state = permission_state(entry, bit);
-                    styled_button(
-                        SharedString::from(format!("acl-bit-{token}-{id}-{bit}")),
-                        format!("{label}: {state}"),
-                        if state == "deny" {
-                            Tone::Danger
-                        } else {
-                            Tone::Secondary
-                        },
-                        move |this, _, cx| {
-                            change_rule(this, token, id, |editor| {
-                                if let Some(entry) = editor
-                                    .state
-                                    .draft_mut()
-                                    .and_then(|draft| draft.entry_mut(id))
-                                {
-                                    cycle(entry, bit);
-                                }
-                            });
-                            cx.notify();
-                        },
-                        cx,
-                    )
-                }),
-        ),
-    );
+    let root = editor
+        .state
+        .draft()
+        .is_some_and(|draft| draft.channel() == 0);
+    detail = detail
+        .child(scope)
+        .child(permission_grid(token, id, entry, true, root, cx));
     if let Some(bits) = unknown_permissions(entry) {
         detail = detail.child(note("acl-unknown-bits", bits));
     }
@@ -1673,16 +1788,6 @@ fn rule_detail(
                 )),
         )
         .into_any_element()
-}
-pub(crate) fn cycle(entry: &mut AclEntry, bit: u32) {
-    if entry.grant & bit != 0 {
-        entry.grant &= !bit;
-        entry.deny |= bit;
-    } else if entry.deny & bit != 0 {
-        entry.deny &= !bit;
-    } else {
-        entry.grant |= bit;
-    }
 }
 
 fn groups(view: &ServerView, editor: &Editor, cx: &mut Context<Desktop>) -> AnyElement {

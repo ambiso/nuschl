@@ -47,6 +47,30 @@ pub mod permission {
         (SELF_REGISTER, "Register self"),
         (RESET_USER_CONTENT, "Reset user content"),
     ];
+
+    /// What a permission allows, for help text in the ACL editors.
+    pub fn description(bit: u32) -> &'static str {
+        match bit {
+            WRITE => "Change this channel's permissions and groups.",
+            TRAVERSE => "Pass through this channel to reach its subchannels.",
+            ENTER => "Join this channel.",
+            SPEAK => "Talk in this channel.",
+            MUTE_DEAFEN => "Mute or deafen others in this channel.",
+            MOVE => "Move people out of and into this channel.",
+            MAKE_CHANNEL => "Create subchannels.",
+            LINK_CHANNEL => "Link this channel with others, so voice crosses between them.",
+            WHISPER => "Whisper to this channel from another one.",
+            TEXT_MESSAGE => "Write messages in this channel.",
+            MAKE_TEMP_CHANNEL => "Create subchannels that disappear when they are empty.",
+            LISTEN => "Listen to this channel without joining it.",
+            KICK => "Remove people from the server.",
+            BAN => "Ban people from the server.",
+            REGISTER => "Register other people's accounts.",
+            SELF_REGISTER => "Register one's own account.",
+            RESET_USER_CONTENT => "Clear other people's avatars and comments.",
+            _ => "",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
