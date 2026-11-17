@@ -112,17 +112,23 @@ def actions(args, root, shell, application, bot, murmur):
             eventually(lambda: menu() is None, "Escape did not dismiss menu")
 
     def target_row():
-        return eventually(
-            lambda: next(
+        def find():
+            row = next(
                 (
                     node
                     for node, role, name, _ in items(application)
                     if role == "tree item" and name.startswith(TARGET)
                 ),
                 None,
-            ),
-            "long-named user missing",
-        )
+            )
+            # A viewport too narrow for the sidebar shows the channel tree
+            # in a sheet, which any other dialog closes.
+            sheet = row is None and named("Channels", "push button")
+            if sheet:
+                sheet.press()
+            return row
+
+        return eventually(find, "long-named user missing")
 
     def open_user():
         row = target_row()
@@ -164,6 +170,24 @@ def actions(args, root, shell, application, bot, murmur):
     def viewport():
         g = geometry()
         return (0, 0, g["width"], g["height"])
+
+    def row_gap(row, current, zoom):
+        """A freshly opened menu's rows reach the right edge of its actions
+        region, which keeps a scrollbar gutter only while they overflow."""
+        region = named("Context menu actions", parent=current)
+        rows = [node for node, role, _, _ in nodes(current) if role == "menu item"]
+        overflows = not inside(rows[-1].extents(), region.extents())
+
+        def gap():
+            x, _, width, _ = region.extents()
+            row_x, _, row_width, _ = row.extents()
+            return x + width - (row_x + row_width)
+
+        if overflows:
+            eventually(lambda: gap() >= 12 * zoom // 100, "rows cover the scrollbar")
+        else:
+            eventually(lambda: gap() <= 1, "rows leave an empty scrollbar gutter")
+        return {"overflows": overflows, "gap": gap()}
 
     def assert_visible(node, current, label):
         region = named("Context menu actions", parent=current)
@@ -339,6 +363,7 @@ def actions(args, root, shell, application, bot, murmur):
                 "menu": current.extents(),
                 "viewport": viewport(),
                 "baseline_clipped": not inside(current.extents(), viewport()),
+                "row_gap": row_gap(first, current, zoom),
             }
             records.append(record)
             (args.output / "context-menu-cases.json").write_text(
@@ -477,7 +502,11 @@ def actions(args, root, shell, application, bot, murmur):
                 assert inside(current.extents(), viewport()), (
                     "message popup escaped right window edge"
                 )
-                assert named("Copy message", "menu item", current)
+                copy = named("Copy message", "menu item", current)
+                assert copy
+                record["message_row_gap"] = row_gap(copy, current, zoom)
+                shell.move(*point(copy))
+                shell.screenshot(args.output / "message-menu-hover.png")
                 record["right_edge_message_popup"] = current.extents()
                 close_menu()
         prompt_editing = check_prompt_editing()
