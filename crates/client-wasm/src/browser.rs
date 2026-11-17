@@ -834,7 +834,7 @@ impl WebClient {
 
     pub fn voice(&mut self) -> String {
         self.reconcile_voice();
-        serde_json::to_string(&self.shared.voice.borrow().view()).unwrap_or_else(|_| "null".into())
+        serde_json::to_string(&self.shared.voice.borrow().shown()).unwrap_or_else(|_| "null".into())
     }
 
     pub fn voice_packets(&mut self) -> String {

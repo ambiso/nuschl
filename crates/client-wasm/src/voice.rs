@@ -23,6 +23,17 @@ pub struct VoiceView {
     pub bitrate_limit: BitrateLimit,
 }
 
+/// The voice view for the page, with its bitrate in words.
+#[derive(Serialize)]
+pub struct Shown {
+    #[serde(flatten)]
+    view: VoiceView,
+    /// "Voice 48 of 128 kb/s · server limit", for the voice bar.
+    bitrate_line: String,
+    /// Why, in one sentence (`VoiceBitrate::explanation`).
+    bitrate_why: String,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Context {
@@ -77,6 +88,23 @@ impl Route {
         view.can_transmit =
             view.joined && !view.muted && !view.deafened && view.bitrate != 0 && self.capture_ready;
         Some(view)
+    }
+
+    /// The view as the page shows it.
+    pub fn shown(&self) -> Option<Shown> {
+        let view = self.view()?;
+        let target = VoiceBitrate {
+            requested: view.requested_bitrate,
+            budget: view.server_bandwidth,
+            effective: view.bitrate,
+            limit: view.bitrate_limit,
+        };
+        let reason = target.reason().map(|reason| format!(" · {reason}"));
+        Some(Shown {
+            bitrate_line: format!("Voice {}{}", target.summary(), reason.unwrap_or_default()),
+            bitrate_why: target.explanation(),
+            view,
+        })
     }
 
     /// The user's requested target, in the supported range.
@@ -439,6 +467,12 @@ mod tests {
             ),
             (256_000, 48_000, 72_000, BitrateLimit::ServerBudget)
         );
+        // The page gets the view and nuschl_core's words for it.
+        let shown = serde_json::to_value(route.shown()).unwrap();
+        assert_eq!(shown["bitrate"], 48_000);
+        assert_eq!(shown["bitrate_line"], "Voice 48 of 256 kb/s · server limit");
+        let words = VoiceBitrate::resolve(256_000, 72_000).explanation();
+        assert_eq!(shown["bitrate_why"], words);
         // A budget too small for voice: listen, never send.
         route.set_target(VoiceBitrate::resolve(256_000, 20_000));
         ready(&mut route);
