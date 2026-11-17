@@ -1883,6 +1883,11 @@ impl RenderOnce for MenuSurface {
         let width = (viewport.width - reserve).max(px(0.)).min(px(320.));
         let height = (viewport.height - reserve).max(px(0.));
         let content_height = (height - px(10.)).max(px(0.));
+        // The scrollbar gutter exists only while the actions overflow, so
+        // highlighted rows span the menu otherwise. The handle reports the
+        // previous layout; a changed overflow lays out once more.
+        let overflows = state.scroll.max_offset().y > px(0.);
+        let scroll = state.scroll.clone();
         deferred(
             anchored()
                 .position(self.position - point(gutter, gutter))
@@ -1912,6 +1917,19 @@ impl RenderOnce for MenuSurface {
                                 .track_focus(&state.focus)
                                 .tab_stop(false)
                                 .max_h(content_height)
+                                .when(!overflows, |actions| actions.pr(px(0.)))
+                                .child(
+                                    canvas(
+                                        move |_, window, _| {
+                                            if (scroll.max_offset().y > px(0.)) != overflows {
+                                                window.request_animation_frame();
+                                            }
+                                        },
+                                        |_, _, _, _| {},
+                                    )
+                                    .absolute()
+                                    .size(px(0.)),
+                                )
                                 .child(
                                     div()
                                         .w_full()
