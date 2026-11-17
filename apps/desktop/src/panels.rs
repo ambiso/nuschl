@@ -101,7 +101,7 @@ fn heading(title: String, acl_token: Option<u64>, cx: &mut Context<Desktop>) -> 
             Tone::Primary,
             move |this, _, cx| {
                 if acl_token.is_none() || matches!(this.panel.as_ref(),Some(Panel::Acl {editor,..}) if Some(editor.token)==acl_token) {
-                    this.panel = None;
+                    crate::acl_editor::close(this);
                     cx.notify();
                 }
             },
@@ -814,7 +814,7 @@ pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
         width,
         content,
         cx,
-        |this| this.panel = None,
+        crate::acl_editor::close,
     ))
 }
 

@@ -320,6 +320,47 @@ impl AclDraft {
         Ok(())
     }
 
+    /// The channel's own rules as a who-may-do-what table, password rules
+    /// aside; `None` when the table cannot express them.
+    pub fn table(&self) -> Option<crate::access::Table> {
+        let rules: Vec<_> = self
+            .entries
+            .iter()
+            .map(|row| &row.value)
+            .filter(|entry| !entry.inherited && !is_password(entry) && !is_password_lock(entry))
+            .cloned()
+            .collect();
+        crate::access::read(&rules)
+    }
+
+    /// Replaces the channel's own rules with `table`'s, keeping inherited rules
+    /// first and the password rules last.
+    pub fn set_table(&mut self, table: &crate::access::Table) -> Result<(), &'static str> {
+        let rules = crate::access::compile(table);
+        let password = |row: &Row<AclEntry>| {
+            !row.value.inherited && (is_password(&row.value) || is_password_lock(&row.value))
+        };
+        let kept = self
+            .entries
+            .iter()
+            .filter(|row| row.value.inherited || password(row))
+            .count();
+        if kept + rules.len() > 4096 {
+            return Err("The editor supports at most 4096 rules.");
+        }
+        let (inherited, own): (Vec<_>, Vec<_>) = std::mem::take(&mut self.entries)
+            .into_iter()
+            .partition(|row| row.value.inherited);
+        let password: Vec<_> = own.into_iter().filter(password).collect();
+        self.entries = inherited;
+        for value in rules {
+            let id = self.allocate();
+            self.entries.push(Row { id, value });
+        }
+        self.entries.extend(password);
+        Ok(())
+    }
+
     /// An inherited group cannot be deleted at its parent. Removing its local
     /// definition restores the inherited defaults, exactly as stock Mumble does.
     pub fn remove_group(&mut self, id: RowId) -> bool {
@@ -381,6 +422,55 @@ pub fn node(acl: &Acl, parent: Option<u32>) -> crate::acl::Node {
                         inheritable: group.inheritable,
                         add: group.add.iter().copied().collect(),
                         remove: group.remove.iter().copied().collect(),
+                    },
+                )
+            })
+            .collect(),
+    }
+}
+
+/// `acl`'s whole rule list as one node, to evaluate permissions in its
+/// channel: inherited rules apply here (while the channel inherits), and each
+/// group holds its effective members. `acls[i]` is `acl.entries[i]`.
+pub fn flat_node(acl: &Acl) -> crate::acl::Node {
+    crate::acl::Node {
+        parent: None,
+        inherit_acl: true,
+        acls: acl
+            .entries
+            .iter()
+            .map(|entry| {
+                let active = !entry.inherited || acl.inherit_acls;
+                crate::acl::AclEntry {
+                    apply_here: active && (entry.apply_here || entry.inherited),
+                    apply_subs: active && entry.apply_subs,
+                    user_id: entry.user_id,
+                    group: entry.group.clone().unwrap_or_default(),
+                    grant: entry.grant,
+                    deny: entry.deny,
+                }
+            })
+            .collect(),
+        groups: acl
+            .groups
+            .iter()
+            .map(|group| {
+                let mut members: std::collections::BTreeSet<u32> = if group.inherit {
+                    group.inherited_members.iter().copied().collect()
+                } else {
+                    Default::default()
+                };
+                members.extend(&group.add);
+                for removed in &group.remove {
+                    members.remove(removed);
+                }
+                (
+                    group.name.clone(),
+                    crate::acl::Group {
+                        inherit: false,
+                        inheritable: true,
+                        add: members,
+                        remove: Default::default(),
                     },
                 )
             })
@@ -656,6 +746,56 @@ mod tests {
         assert_eq!(node.groups.keys().collect::<Vec<_>>(), ["helpers"]);
         let helpers = &node.groups["helpers"];
         assert!(!helpers.inherit && helpers.add.contains(&5) && helpers.remove.contains(&6));
+    }
+
+    #[test]
+    fn a_table_replaces_the_own_rules_and_keeps_the_password() {
+        use crate::access::Who;
+        let mut draft = AclDraft::new(acl());
+        assert_eq!(draft.table(), None, "a subchannel-only rule is advanced");
+        draft.set_password("door").unwrap();
+        let mut table = crate::access::Table::default();
+        table
+            .row(Who::Group("admin".into()))
+            .set(4, crate::access::Cell::Allow);
+        draft.set_table(&table).unwrap();
+        assert_eq!(draft.table(), Some(table));
+        assert_eq!(draft.password(), Some("door"));
+        let entries: Vec<_> = draft.entries().iter().map(|row| &row.value).collect();
+        assert!(entries[0].inherited);
+        assert_eq!(entries[1].group.as_deref(), Some("admin"));
+        assert_eq!(entries[3].group.as_deref(), Some("#door"));
+    }
+
+    #[test]
+    fn a_flat_node_applies_inherited_rules_here() {
+        use crate::acl::{Subject, effective_permissions};
+        let acl = acl();
+        let mut tree = std::collections::HashMap::new();
+        tree.insert(7, flat_node(&acl));
+        let admin = |user_id| Subject {
+            user_id: Some(user_id),
+            channel: 7,
+            hash: None,
+            tokens: &[],
+            strong: false,
+        };
+        // The inherited @admin rule grants Write to the inherited member 42.
+        assert_ne!(
+            effective_permissions(&tree, &admin(42), 7) & permission::WRITE,
+            0
+        );
+        assert_eq!(
+            effective_permissions(&tree, &admin(43), 7) & permission::WRITE,
+            0
+        );
+        let mut detached = acl;
+        detached.inherit_acls = false;
+        tree.insert(7, flat_node(&detached));
+        assert_eq!(
+            effective_permissions(&tree, &admin(42), 7) & permission::WRITE,
+            0
+        );
     }
 
     #[test]

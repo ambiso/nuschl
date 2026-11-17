@@ -4,6 +4,7 @@
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
+pub mod access;
 pub mod acl;
 pub mod admin;
 pub mod audio;

@@ -183,7 +183,12 @@ def actions(args, root, shell, application, bot, _murmur):
         focus(channel)
         shell.click(*point(channel), button=3)
         wait("Edit permissions…", "menu item").press()
-        wait("Rules · 128", prefix=True)
+        eventually(lambda: named("Advanced rules · 128", prefix=True)
+            or named("Show advanced rules (128)", "push button"), "missing ACL rules")
+        expand = named("Show advanced rules (128)", "push button")
+        if expand is not None:
+            expand.press()
+        wait("Advanced rules · 128", prefix=True)
         dialog = wait("Details", "dialog")
         owner = wait("ACL rules", "list box")
         focus(owner, dialog)

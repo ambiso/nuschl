@@ -249,6 +249,20 @@ def actions(args, root, shell, application, bot, murmur):
             lambda: text_contains("Edit a local rule or group"),
             "ACL draft did not load",
         )
+        # The rule list is collapsed while the permission table shows the channel.
+        expand = next(
+            (
+                node
+                for node, role, name, _ in items(application)
+                if role == "push button" and name.startswith("Show advanced rules")
+            ),
+            None,
+        )
+        if expand is not None:
+            assert expand.call("Component", "GrabFocus")[0]
+            time.sleep(0.15)
+            shell.click(*point(expand))
+            eventually(lambda: text_contains("Advanced rules · "), "advanced rules stayed hidden")
 
     def matching(fragment):
         return eventually(
@@ -374,7 +388,7 @@ def actions(args, root, shell, application, bot, murmur):
         finally:
             admin.close()
         open_acl()
-        assert text_contains("Rules · 512") and text_contains("Groups · 512")
+        assert text_contains("Advanced rules · 512") and text_contains("Groups · 512")
         records = []
         for width, height, zoom in [(1280, 800, 100), (900, 600, 100), (900, 800, 200)]:
             shell.chord("Control_L", "0")
@@ -782,6 +796,40 @@ def actions(args, root, shell, application, bot, murmur):
         lambda: text_contains("Enter: Allowed · "), "Check access kept the discarded draft"
     )
     mark("check_access_explains_the_draft")
+    # The permission table writes its rules: denying Registered users Speak in Music
+    # saves one rule for @auth, applying here and below.
+    activate("Done")
+    open_acl("Music")
+    eventually(lambda: text_contains("Channel permissions"), "access table missing")
+    # Registered users inherit Make temporary from Root, so their row is there.
+    shell.screenshot(args.output / "native-access-table-inherited.png")
+    # Each cell shows the result; Speak is allowed by Mumble's default until
+    # it is set here.
+    activate("Registered users · Speak: Yes, not set here")
+    activate("Registered users · Speak: Yes, set here")
+    wait("Registered users · Speak: No, set here", "push button")
+    shell.screenshot(args.output / "native-access-table.png")
+    save()
+    admin = operator(root, pin)
+    try:
+        music = [
+            (rule.get(5), rule.get(6, [0])[0], rule.get(7, [0])[0], rule.get(2, [1])[0])
+            for rule in local_rules(query_channel(admin, 6))
+        ]
+    finally:
+        admin.close()
+    assert music == [([b"auth"], 0, 0x8 | 0x100, 1)], music
+    mark("access_table_saves_rules")
+    # Root's @admin rule grants Write, which brings the rest of Manage channel;
+    # removing the own row returns Speak to the default, and closing asks first.
+    wait("@admin · Manage channel: Yes, not set here", "push button")
+    activate("Remove Registered users")
+    wait("Registered users · Speak: Yes, not set here", "push button")
+    activate("Done")
+    eventually(lambda: text_contains("Save your changes?"), "closing did not ask")
+    activate("Discard")
+    eventually(lambda: not text_contains("Channel permissions"), "Discard kept the editor open")
+    mark("unsaved_changes_ask_before_closing")
     return {
         "fresh_offline_lookup": True,
         "unknown_account_refused": True,
@@ -800,6 +848,8 @@ def actions(args, root, shell, application, bot, murmur):
         "channel_password_admits_token_holders": True,
         "group_picked_as_rule_target": True,
         "check_access_explains_the_draft": True,
+        "access_table_saves_rules": True,
+        "unsaved_changes_ask_before_closing": True,
         "registered_ids": IDS.copy(),
         "server": args.server,
         "diagnostic_rate_override": args.high_admin_limit,

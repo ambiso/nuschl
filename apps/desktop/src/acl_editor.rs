@@ -22,7 +22,12 @@ use nuschl_core::{
 use nuschl_session::connection::Command;
 use std::{cell::Cell, ops::Range, rc::Rc};
 
+mod access_table;
 mod check_access;
+
+/// A registration number servers leave unused, standing for "a member of
+/// this group" when permissions are evaluated.
+const MEMBER: u32 = u32::MAX;
 
 // Shared buttons occupy 35 logical pixels; keep their full hit/focus box inside
 // every fixed-height virtual row, including the final row at fractional zoom.
@@ -57,6 +62,14 @@ pub struct Editor {
     /// The channel's name when the editor opened, kept for the read-only view.
     pub(crate) channel_name: String,
     check: Option<check_access::Check>,
+    /// Rows added to the access table that set nothing yet.
+    table_rows: Vec<nuschl_core::access::Who>,
+    /// Closing waits for Save, Discard or Keep editing.
+    leaving: bool,
+    /// The rule list is open although the table shows the channel.
+    show_rules: bool,
+    /// Close once the save is confirmed.
+    close_after_save: bool,
     member: Entity<InputState>,
     input_readonly: Cell<[bool; 4]>,
     rule_scroll: UniformListScrollHandle,
@@ -111,6 +124,10 @@ impl Editor {
             password: input("New channel password", window, cx),
             channel_name: String::new(),
             check: None,
+            table_rows: Vec::new(),
+            leaving: false,
+            show_rules: false,
+            close_after_save: false,
             rule_scroll: UniformListScrollHandle::new(),
             group_scroll: UniformListScrollHandle::new(),
             member_scroll: std::array::from_fn(|_| UniformListScrollHandle::new()),
@@ -522,7 +539,7 @@ pub fn render_stale(editor: &Editor, cx: &mut Context<Desktop>) -> AnyElement {
         ))
         .child(note(
             "acl-stale-rules-title",
-            format!("Rules · {}", draft.entries().len()),
+            format!("Advanced rules · {}", draft.entries().len()),
         ))
         .child(inspect_list(
             editor,
@@ -742,6 +759,74 @@ fn send(this: &mut Desktop, token: u64, command: Command) -> Result<(), String> 
         this.driver.command(&this.client.servers[index].id, command)
     })
 }
+/// Closes the editor, or first asks to save or discard unsaved changes.
+pub fn close(this: &mut Desktop) {
+    match this.panel.as_mut() {
+        Some(Panel::Acl { editor, .. }) if editor.dirty && !editor.stale => editor.leaving = true,
+        _ => this.panel = None,
+    }
+}
+
+fn leave_prompt(token: u64, cx: &mut Context<Desktop>) -> AnyElement {
+    let decide = move |this: &mut Desktop, save: Option<bool>, cx: &mut Context<Desktop>| {
+        if let Some(editor) = active_editor(this, token) {
+            editor.leaving = false;
+            match save {
+                Some(true) => {
+                    editor.close_after_save = true;
+                    query(this, token, DraftRequest::Check, cx);
+                }
+                Some(false) => this.panel = None,
+                None => {}
+            }
+        }
+        cx.notify();
+    };
+    div()
+        .px_6()
+        .pb_6()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .child(
+            div()
+                .text_base()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(text!("Save your changes?").with_id("acl-leave-title")),
+        )
+        .child(note(
+            "acl-leave-detail",
+            "These permissions have unsaved changes.",
+        ))
+        .child(
+            div()
+                .flex()
+                .gap_2()
+                .child(styled_button(
+                    SharedString::from(format!("acl-leave-save-{token}")),
+                    "Save",
+                    Tone::Primary,
+                    move |this, _, cx| decide(this, Some(true), cx),
+                    cx,
+                ))
+                .child(styled_button(
+                    SharedString::from(format!("acl-leave-discard-{token}")),
+                    "Discard",
+                    Tone::Danger,
+                    move |this, _, cx| decide(this, Some(false), cx),
+                    cx,
+                ))
+                .child(styled_button(
+                    SharedString::from(format!("acl-leave-keep-{token}")),
+                    "Keep editing",
+                    Tone::Ghost,
+                    move |this, _, cx| decide(this, None, cx),
+                    cx,
+                )),
+        )
+        .into_any_element()
+}
+
 fn query(this: &mut Desktop, token: u64, kind: DraftRequest, cx: &mut Context<Desktop>) {
     if kind == DraftRequest::Check && !require_applied_target(this, token, cx) {
         return;
@@ -875,9 +960,13 @@ pub fn sync(this: &mut Desktop, cx: &mut Context<Desktop>) {
             "apply correlated ACL draft response"
         );
         let write = editor.state.receive(&reply);
+        if editor.state.error {
+            editor.close_after_save = false;
+        }
         if write.is_none() && !editor.state.error {
             editor.selected_rule = None;
             editor.selected_group = None;
+            editor.table_rows.clear();
             editor.member_selected = [None; 3];
             editor.lookup = None;
             editor.resolved = None;
@@ -885,6 +974,11 @@ pub fn sync(this: &mut Desktop, cx: &mut Context<Desktop>) {
         }
         inputs_readonly(editor, write.is_some(), cx);
         editor.dirty = editor.state.draft().is_some_and(|draft| draft.dirty());
+        if write.is_none() && editor.close_after_save && !editor.dirty && !editor.state.error {
+            this.panel = None;
+            cx.notify();
+            return;
+        }
         write
     };
     if let Some(acl) = write {
@@ -960,6 +1054,26 @@ fn note(id: impl Into<ElementId>, message: impl Into<SharedString>) -> AnyElemen
         .text_color(color(TEXT_MUTED))
         .child(text!(message.into()).with_id(id))
         .into_any_element()
+}
+/// A titled part of the editor, set apart by space and a rule above it.
+fn section(id: &'static str, title: impl Into<SharedString>, hint: &'static str) -> Div {
+    div()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .mt_4()
+        .pt_4()
+        .border_t_1()
+        .border_color(color(BORDER))
+        .child(
+            div()
+                .text_base()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(color(TEXT))
+                .child(text!(title.into()).with_id(id)),
+        )
+        .child(note(SharedString::from(format!("{id}-hint")), hint))
 }
 fn name(view: &ServerView, id: u32) -> String {
     view.user_names
@@ -1152,6 +1266,9 @@ pub fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Desktop>) -> 
     // task or notification occurs when the already-bound mode is unchanged.
     inputs_readonly(editor, editor.state.pending().is_some(), cx);
     let token = editor.token;
+    if editor.leaving {
+        return leave_prompt(token, cx);
+    }
     let pending = editor.state.pending().is_some();
     let unapplied = target_pending(editor, cx);
     let header = div()
@@ -1232,24 +1349,28 @@ pub fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Desktop>) -> 
         ),
     ));
     let password = draft.password().map(str::to_owned);
-    body = body
-        .child(note(
-            "acl-password",
-            match &password {
-                Some(password) => format!("Channel password: {password}"),
-                None => "No channel password".into(),
-            },
-        ))
-        .child(field("New channel password", &editor.password))
-        .child(styled_button(
-            SharedString::from(format!("acl-set-password-{token}")),
-            "Set password",
-            Tone::Secondary,
-            move |this, _, cx| set_password(this, token, None, cx),
-            cx,
-        ));
+    let mut password_section = section(
+        "acl-password-title",
+        "Channel password",
+        "People who enter it may join, speak and write here.",
+    )
+    .child(note(
+        "acl-password",
+        match &password {
+            Some(password) => format!("Channel password: {password}"),
+            None => "No channel password".into(),
+        },
+    ))
+    .child(field("New channel password", &editor.password))
+    .child(styled_button(
+        SharedString::from(format!("acl-set-password-{token}")),
+        "Set password",
+        Tone::Secondary,
+        move |this, _, cx| set_password(this, token, None, cx),
+        cx,
+    ));
     if password.is_some() {
-        body = body.child(styled_button(
+        password_section = password_section.child(styled_button(
             SharedString::from(format!("acl-remove-password-{token}")),
             "Remove password",
             Tone::Danger,
@@ -1257,6 +1378,9 @@ pub fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Desktop>) -> 
             cx,
         ));
     }
+    body = body
+        .child(password_section)
+        .child(access_table::render(view, editor, cx));
     let count = draft.entries().len();
     let scroll = editor.rule_scroll.clone();
     let rules = uniform_list(
@@ -1336,12 +1460,12 @@ pub fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Desktop>) -> 
         },
         cx,
     );
-    body = body
-        .child(note(
-            "acl-rule-title",
-            format!("Rules · {count} (order matters)"),
-        ))
-        .child(layout::focusable_with_handle(
+    let mut rules_section = section(
+        "acl-rule-title",
+        format!("Advanced rules · {count}"),
+        "What the server applies, top to bottom; a later rule overrides an earlier one. The table above writes these rules.",
+    )
+    .child(layout::focusable_with_handle(
             SharedString::from(format!("acl-rule-focus-{token}")),
             editor.rule_focus.clone(),
             div()
@@ -1399,13 +1523,39 @@ pub fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Desktop>) -> 
             cx,
         ));
     if let Some((id, entry)) = editor.rule() {
-        body = body.child(rule_detail(view, editor, id, entry, cx));
+        rules_section = rules_section.child(rule_detail(view, editor, id, entry, cx));
     } else {
-        body = body.child(note(
+        rules_section = rules_section.child(note(
             "acl-select-rule",
             "Select a rule to edit its target, scope, and permissions.",
         ));
     }
+    let table_fits = draft.table().is_some();
+    let toggle = |label: String, show: bool, cx: &mut Context<Desktop>| {
+        styled_button(
+            SharedString::from(format!("acl-show-rules-{token}")),
+            label,
+            Tone::Ghost,
+            move |this, _, cx| {
+                if let Some(editor) = active_editor(this, token) {
+                    editor.show_rules = show;
+                }
+                cx.notify();
+            },
+            cx,
+        )
+    };
+    body = if !table_fits {
+        body.child(rules_section)
+    } else if editor.show_rules {
+        body.child(rules_section.child(toggle("Hide advanced rules".into(), false, cx)))
+    } else {
+        body.child(
+            div()
+                .mt_4()
+                .child(toggle(format!("Show advanced rules ({count})"), true, cx)),
+        )
+    };
     body = body
         .child(groups(view, editor, cx))
         .child(check_access::render(view, editor, cx));
@@ -2033,67 +2183,65 @@ fn groups(view: &ServerView, editor: &Editor, cx: &mut Context<Desktop>) -> AnyE
         },
         cx,
     );
-    let mut body = div()
-        .min_w_0()
-        .flex()
-        .flex_col()
-        .gap_2()
-        .child(note("acl-groups-title", format!("Groups · {count}")))
-        .child(layout::focusable_with_handle(
-            SharedString::from(format!("acl-group-focus-{token}")),
-            editor.group_focus.clone(),
-            div()
-                .id(SharedString::from(format!("acl-group-list-{token}")))
-                .role(Role::ListBox)
-                .aria_label("ACL groups")
-                .min_w_0()
-                .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
-                    let Some(editor) = active_editor(this, token) else {
-                        return;
-                    };
-                    let count = editor.state.draft().map_or(0, |draft| draft.groups().len());
-                    let current = editor.selected_group.map_or(0, |(index, _)| index);
-                    if let Some(next) = list_key(event, current, count) {
-                        window.focus(&editor.group_focus, cx);
-                        select_group(this, token, next);
-                        this.cancel_modal_scroll();
-                        cx.stop_propagation();
-                        cx.notify();
-                    }
-                }))
-                .child(list),
-        ))
-        .child(field("New group name", &editor.group_name))
-        .child(styled_button(
-            SharedString::from(format!("acl-add-group-{token}")),
-            "Create group",
-            Tone::Secondary,
-            move |this, _, cx| {
-                let value = match active_editor(this, token) {
-                    Some(editor) => editor.group_name.read(cx).value().to_string(),
-                    None => return,
+    let mut body = section(
+        "acl-groups-title",
+        format!("Groups · {count}"),
+        "Named sets of people that rules and the table can name.",
+    )
+    .child(layout::focusable_with_handle(
+        SharedString::from(format!("acl-group-focus-{token}")),
+        editor.group_focus.clone(),
+        div()
+            .id(SharedString::from(format!("acl-group-list-{token}")))
+            .role(Role::ListBox)
+            .aria_label("ACL groups")
+            .min_w_0()
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                let Some(editor) = active_editor(this, token) else {
+                    return;
                 };
-                change(this, token, |editor| {
-                    if let Some(draft) = editor.state.draft_mut() {
-                        match draft.add_group(&value) {
-                            Ok(id) => {
-                                editor.selected_group = Some((draft.groups().len() - 1, id));
-                                editor.group_scroll.scroll_to_item(
-                                    draft.groups().len() - 1,
-                                    ScrollStrategy::Nearest,
-                                );
-                            }
-                            Err(error) => {
-                                editor.state.error = true;
-                                editor.state.message = error.into();
-                            }
+                let count = editor.state.draft().map_or(0, |draft| draft.groups().len());
+                let current = editor.selected_group.map_or(0, |(index, _)| index);
+                if let Some(next) = list_key(event, current, count) {
+                    window.focus(&editor.group_focus, cx);
+                    select_group(this, token, next);
+                    this.cancel_modal_scroll();
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
+            .child(list),
+    ))
+    .child(field("New group name", &editor.group_name))
+    .child(styled_button(
+        SharedString::from(format!("acl-add-group-{token}")),
+        "Create group",
+        Tone::Secondary,
+        move |this, _, cx| {
+            let value = match active_editor(this, token) {
+                Some(editor) => editor.group_name.read(cx).value().to_string(),
+                None => return,
+            };
+            change(this, token, |editor| {
+                if let Some(draft) = editor.state.draft_mut() {
+                    match draft.add_group(&value) {
+                        Ok(id) => {
+                            editor.selected_group = Some((draft.groups().len() - 1, id));
+                            editor
+                                .group_scroll
+                                .scroll_to_item(draft.groups().len() - 1, ScrollStrategy::Nearest);
+                        }
+                        Err(error) => {
+                            editor.state.error = true;
+                            editor.state.message = error.into();
                         }
                     }
-                });
-                cx.notify();
-            },
-            cx,
-        ));
+                }
+            });
+            cx.notify();
+        },
+        cx,
+    ));
     let Some((index, id)) = editor.selected_group else {
         return body.into_any_element();
     };
