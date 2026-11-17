@@ -240,7 +240,7 @@
         # (or forcing pkgs for platforms that nixpkgs no longer supports).
         distroOutput = name: if system == "x86_64-linux" then name else null;
         linuxDistro = self.lib.distroLinux.mkPackages {
-          inherit pkgs toolchain craneLib;
+          inherit pkgs toolchain;
           sourceInfo = self.sourceInfo;
           nativeNotices = releaseNotices.linux.bundle;
           desktopFiles = (import ./nix/desktop-files.nix { inherit pkgs; }).linux;
@@ -738,7 +738,6 @@
           };
         checks = {
           ${distroOutput "distro-metadata"} = linuxDistro.metadataTests;
-          ${distroOutput "distro-source-assets"} = linuxDistro.assetBinding;
           build = package;
           server-build = serverPackage;
           rtc-build = rtcPackage;

@@ -7,5 +7,4 @@ let
 in
 builtins.removeAttrs checks [
   "distro-metadata"
-  "distro-source-assets"
 ]

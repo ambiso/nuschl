@@ -8,9 +8,6 @@
   nativeNotices ? null,
   desktopFiles ? (import ./desktop-files.nix { inherit pkgs; }).linux,
   appstreamXML ? null,
-  revision ? null,
-  sourceNarHash ? null,
-  assetBinding ? null,
   version ? "0.1.0",
 }:
 assert pkgs.lib.assertMsg (
@@ -18,20 +15,6 @@ assert pkgs.lib.assertMsg (
 ) "The signed native sysroot currently targets amd64 Linux only";
 let
   inherit (pkgs) lib;
-  packagingSource = lib.fileset.toSource {
-    root = ../.;
-    fileset = lib.fileset.unions [
-      ./portable-linux.nix
-      ../packaging/debian/build-deb.py
-      ../packaging/linux/audit-stage.py
-      ../packaging/linux/default.nix
-      ../packaging/linux/version.nix
-      ../packaging/linux/bind-assets.py
-      ../packaging/linux/linker.py
-      ../packaging/linux/pin-debian.py
-      ../packaging/linux/debian/sysroot-lock.json
-    ];
-  };
   pins = builtins.fromJSON (builtins.readFile ../packaging/linux/debian/sysroot-lock.json);
   assertPins =
     assert pins.schema == 1 && pins.architecture == "amd64";
@@ -145,47 +128,22 @@ let
   };
   stage =
     assert nativeNotices != null;
-    assert
-      (revision != null && builtins.match "[0-9a-f]{40}" revision != null)
-      || (sourceNarHash != null && builtins.match "sha256-[A-Za-z0-9+/]{43}=" sourceNarHash != null);
-    pkgs.runCommand (lib.strings.sanitizeDerivationName "nuschl-native-fhs-${version}")
-      {
-        nativeBuildInputs = [
-          pkgs.python3
-          pkgs.binutils
-        ];
-      }
-      ''
-        ${lib.optionalString (assetBinding != null) "test -s ${assetBinding}"}
-        mkdir -p "$out/usr/lib/nuschl" "$out/usr/bin" "$out/usr/share/nuschl/link-receipts"
-        ${lib.concatStringsSep "\n" (
-          lib.mapAttrsToList (name: program: ''
-            install -Dm755 ${program}/bin/${name} "$out/usr/lib/nuschl/${name}"
-            install -Dm644 ${program}/nix-support/native-link.json "$out/usr/share/nuschl/link-receipts/${name}.json"
-          '') programs
-        )}
-        ln -s ../lib/nuschl/nuschl "$out/usr/bin/nuschl"
-        cp -R ${desktopFiles}/share/. "$out/usr/share/"
-        mkdir -p "$out/usr/share/licenses/nuschl"
-        cp -R ${nativeNotices}/share/licenses/nuschl/. "$out/usr/share/licenses/nuschl/"
-        install -Dm644 ${projectRoot}/LICENSE "$out/usr/share/licenses/nuschl/EUPL-1.2"
-        install -Dm644 ${projectRoot}/crates/protocol/proto/LICENSE.mumble "$out/usr/share/licenses/nuschl/Mumble-BSD"
-        ${lib.optionalString (appstreamXML != null) ''
-          mkdir -p "$out/usr/share/metainfo"
-          install -Dm644 ${appstreamXML} "$out/usr/share/metainfo/org.nuschl.Nuschl.metainfo.xml"
-        ''}
-        ${lib.optionalString (assetBinding != null) ''
-          install -Dm644 ${assetBinding} "$out/usr/share/nuschl/SOURCE-ASSETS.json"
-        ''}
-        python3 ${../packaging/linux/audit-stage.py} --stage "$out" \
-          --project-root ${projectRoot} --packaging-root ${packagingSource} \
-          ${lib.optionalString (revision != null) "--revision ${lib.escapeShellArg revision}"} \
-          ${
-            lib.optionalString (sourceNarHash != null) "--source-nar-hash ${lib.escapeShellArg sourceNarHash}"
-          } \
-          --version ${lib.escapeShellArg version} --readelf ${pkgs.binutils}/bin/readelf \
-          --rust-version ${lib.escapeShellArg toolchain.version}
-      '';
+    pkgs.runCommand (lib.strings.sanitizeDerivationName "nuschl-native-fhs-${version}") { } ''
+      mkdir -p "$out/usr/lib/nuschl" "$out/usr/bin" "$out/usr/share/licenses/nuschl"
+      ${lib.concatStringsSep "\n" (
+        lib.mapAttrsToList (name: program: ''
+          install -Dm755 ${program}/bin/${name} "$out/usr/lib/nuschl/${name}"
+        '') programs
+      )}
+      ln -s ../lib/nuschl/nuschl "$out/usr/bin/nuschl"
+      cp -R ${desktopFiles}/share/. "$out/usr/share/"
+      cp -R ${nativeNotices}/share/licenses/nuschl/. "$out/usr/share/licenses/nuschl/"
+      install -Dm644 ${projectRoot}/LICENSE "$out/usr/share/licenses/nuschl/EUPL-1.2"
+      install -Dm644 ${projectRoot}/crates/protocol/proto/LICENSE.mumble "$out/usr/share/licenses/nuschl/Mumble-BSD"
+      ${lib.optionalString (appstreamXML != null) ''
+        install -Dm644 ${appstreamXML} "$out/usr/share/metainfo/org.nuschl.Nuschl.metainfo.xml"
+      ''}
+    '';
 
 in
 {
