@@ -10,3 +10,4 @@ vm-link-previews/scenario-time          #376   a desktop scenario takes over 300
 vm-smoke/echo-test-reduction            #376   the canceller removes less than 15 dB or sends over a quarter on a loaded host
 vm-smoke/double-talk-level              #376   double talk is ducked over 3 dB or gated on a loaded host
 vm-smoke/sound-loudness                 #376   dropped playback periods change the measured loudness on a loaded host
+stock-client/first-voice-time           #376   stock Mumble opens its microphone after over 180 s on a loaded host

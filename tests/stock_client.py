@@ -31,6 +31,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from local_murmur import eventually  # noqa: E402
 from mumble_client import Client, ReferenceOpus, certificate_pin, rms, tone  # noqa: E402
+import quarantine  # noqa: E402
 
 
 def drain(client):
@@ -183,9 +184,11 @@ def main():
                         if e["kind"] == "audio" and e["sender"] == stock["session"] and not e["end"]]
             # Mumble opens its microphone some time after joining: seconds on a
             # slow VM, more than 40 s under heavy host load. Play the tone a second
-            # at a time until the first packet arrives (up to three minutes), and
-            # only then count, so a late start does not eat the counting time.
+            # at a time until the first packet arrives, and only then count, so a
+            # late start does not eat the counting time. Six minutes guard against
+            # a hang; within three minutes is timing (quarantined, #376).
             drain(peer)
+            load = quarantine.cpu_counters()
             started = time.monotonic()
             packets, first = [], None
             while len(packets) <= 40:
@@ -195,11 +198,14 @@ def main():
                 if packets and first is None:
                     first = now
                     print(f"First voice packet from the stock client after {first - started:.1f} s.", flush=True)
-                if (first is None and now - started > 180) or (first is not None and now - first > 60):
+                if (first is None and now - started > 360) or (first is not None and now - first > 60):
                     break
             time.sleep(0.5)
             packets += stock_audio(drain(peer))
-            assert first is not None, "no voice packet from the stock client within 180 s"
+            assert first is not None, "no voice packet from the stock client within 360 s"
+            measured = f"{first - started:.1f} s; {quarantine.stolen(load)}"
+            with quarantine.step("stock-client/first-voice-time", measured=measured):
+                assert first - started <= 180, "no voice packet from the stock client within 180 s"
             assert len(packets) > 40, f"too few packets from the stock client: {len(packets)}"
             assert rms(reference.decode(packets)) > 0.01, "stock client's audio did not decode"
             print(f"Stock Mumble → Nuschl voice: {len(packets)} Opus packets decoded.", flush=True)
