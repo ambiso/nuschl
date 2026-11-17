@@ -155,8 +155,13 @@ pkgs.testers.runNixOSTest {
   testScript = ''
     import json
     import shlex
+    import sys
     import textwrap
+    import time
     from datetime import timedelta
+    from importlib import import_module
+    sys.path.insert(0, "${fixtureTests}")
+    quarantine = import_module("quarantine")
 
     start_all()
     machine.wait_for_unit("multi-user.target")
@@ -296,7 +301,10 @@ pkgs.testers.runNixOSTest {
                 "GSETTINGS_BACKEND=memory", "LIBGL_ALWAYS_SOFTWARE=1",
                 "MAGICK=${pkgs.imagemagick}/bin/magick",
             ] + args)
-            status, scenario_log = machine.execute(command, timeout=300)
+            # 600 s guards against a hang; within 300 s is timing (quarantined, #376).
+            started = time.monotonic()
+            status, scenario_log = machine.execute(command, timeout=timedelta(seconds=600))
+            seconds = time.monotonic() - started
             machine.succeed("install -d /tmp/preview-evidence/" + server)
             # Never export the retained profile, test TLS private keys or CA key.
             machine.execute("find " + shlex.quote(output) + " -maxdepth 1 -type f "
@@ -307,6 +315,9 @@ pkgs.testers.runNixOSTest {
             machine.copy_from_machine("/tmp/preview-evidence/" + server, server)
             if status != 0:
                 failures.append((server, status, scenario_log[-8000:]))
+            else:
+                with quarantine.step("vm-link-previews/scenario-time", measured=f"{server} {seconds:.0f} s"):
+                    assert seconds <= 300, f"{server} scenario took {seconds:.0f} s"
     finally:
         machine.execute("${python} -c 'import sys;sys.path.insert(0,\"${fixtureTests}\");from link_previews_desktop import control;control(\"stop\")'")
         machine.wait_until_fails("systemctl is-active --quiet nuschl-preview-peers.service")

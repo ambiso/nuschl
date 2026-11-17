@@ -181,6 +181,7 @@ def desktop(args):
     from accessibility import Node, items
     from local_murmur import eventually
     from local_nuschld import Nuschld
+    import quarantine
 
     assert Path("/run/nuschl-preview-dedicated-vm").is_file(), "use the owned VM fixture"
     args.output.mkdir(parents=True, exist_ok=False)
@@ -331,6 +332,14 @@ def desktop(args):
                 assert depth <= 12
                 pending.extend((child, depth + 1) for child in node.children())
             return None
+        def card_becomes_ready(message):
+            # The card needs a sandboxed fetch and image decode. 120 s guards
+            # against a hang; within 30 s is timing (quarantined, #376).
+            started = time.monotonic()
+            eventually(ready_card, message, timeout=120)
+            seconds = time.monotonic() - started
+            with quarantine.step("vm-link-previews/card-ready-time", measured=f"{seconds:.1f} s"):
+                assert seconds <= 30, f"{message} within 30 s"
         def labels():
             return [label for _, _, label, _ in items(application)]
         def activate(name, role="push button"):
@@ -679,7 +688,7 @@ def desktop(args):
             body = f"card-{uuid.uuid4().hex[:8]} http://93.184.215.14/redirect "
             type_message(body)
             observation["stage"] = "ready"
-            eventually(ready_card, "sender card never became ready")
+            card_becomes_ready("sender card never became ready")
             wait("Remove link preview", "push button")
             fetched = events()
             assert any(event.get("path") == "/page" for event in fetched)
@@ -733,7 +742,7 @@ def desktop(args):
             saved_pane = json.loads((root / "profile/config/settings.json").read_text()).get("sidebar_width", 248)
             compact_body = f"compact-{uuid.uuid4().hex[:8]} http://93.184.215.14/page " + "retained draft text " * 12
             type_message(compact_body)
-            eventually(ready_card, "compact draft card did not reach Ready")
+            card_becomes_ready("compact draft card did not reach Ready")
             assert copied_input(select_all=True) == compact_body
             shell.chord("Control_L", "Home")
             shell.press("Control_L", "Shift_L", "Right")
@@ -915,7 +924,7 @@ def desktop(args):
             # entire original text still goes in one ordinary message.
             removed = f"removed-{uuid.uuid4().hex[:8]} http://93.184.215.14/page "
             type_message(removed)
-            eventually(ready_card, "ready-card removal case never reached Ready")
+            card_becomes_ready("ready-card removal case never reached Ready")
             wait("Remove link preview", "push button")
             activate("Remove link preview")
             wait("Link preview removed")
