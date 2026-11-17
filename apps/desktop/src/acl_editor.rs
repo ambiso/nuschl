@@ -24,6 +24,7 @@ use std::{cell::Cell, ops::Range, rc::Rc};
 
 mod access_table;
 mod check_access;
+mod parents;
 
 /// A registration number servers leave unused, standing for "a member of
 /// this group" when permissions are evaluated.
@@ -61,8 +62,19 @@ pub struct Editor {
     password: Entity<InputState>,
     /// The channel's name when the editor opened, kept for the read-only view.
     pub(crate) channel_name: String,
-    check: Option<check_access::Check>,
+    /// Whom Check access shows.
+    check: Option<nuschl_core::access::Who>,
+    /// Bring Check access's results into view once, after a pick.
+    check_reveal: Cell<bool>,
     check_picker: crate::picker::Picker,
+    /// Adds a row to the permission table.
+    table_picker: crate::picker::Picker,
+    parents: parents::Parents,
+    /// Where to go once the Save/Discard question is answered.
+    then: Option<Jump>,
+    /// A table cell highlighted after arriving from another channel's table.
+    flash: Option<Flash>,
+    _flash_frames: Option<Task<()>>,
     /// Rows added to the access table that set nothing yet.
     table_rows: Vec<nuschl_core::access::Who>,
     /// Closing waits for Save, Discard or Keep editing.
@@ -125,7 +137,13 @@ impl Editor {
             password: input("New channel password", window, cx),
             channel_name: String::new(),
             check: None,
+            check_reveal: Cell::new(false),
+            parents: Default::default(),
+            then: None,
+            flash: None,
+            _flash_frames: None,
             check_picker: check_access::picker(token, window, cx),
+            table_picker: access_table::picker(token, window, cx),
             table_rows: Vec::new(),
             leaving: false,
             show_rules: false,
@@ -761,6 +779,94 @@ fn send(this: &mut Desktop, token: u64, command: Command) -> Result<(), String> 
         this.driver.command(&this.client.servers[index].id, command)
     })
 }
+/// A table cell in another channel's permissions: where an inherited value
+/// comes from.
+#[derive(Clone)]
+pub struct Jump {
+    pub server: usize,
+    pub channel: u32,
+    pub who: nuschl_core::access::Who,
+    pub column: usize,
+}
+
+/// The highlight on the cell a jump arrived at; it fades out once shown.
+pub struct Flash {
+    who: nuschl_core::access::Who,
+    column: usize,
+    /// Set when the cell first shows; the fade starts then.
+    shown: Cell<Option<std::time::Instant>>,
+}
+
+const FLASH: std::time::Duration = std::time::Duration::from_millis(1600);
+
+/// Opens `jump`'s channel permissions after the Save/Discard question, if the
+/// current editor holds unsaved changes.
+fn go(this: &mut Desktop, token: u64, jump: Jump) {
+    if let Some(editor) = active_editor(this, token) {
+        if editor.dirty {
+            editor.leaving = true;
+            editor.then = Some(jump);
+        } else {
+            this.panel = None;
+            this.acl_jump = Some(jump);
+        }
+    }
+}
+
+/// The cell menu's "Show in …": goes to `jump` from the open editor.
+pub fn show_source(this: &mut Desktop, jump: Jump) {
+    if let Some(Panel::Acl { editor, .. }) = this.panel.as_ref() {
+        let token = editor.token;
+        go(this, token, jump);
+    }
+}
+
+/// Opens a pending jump: that channel's permissions, its cell highlighted.
+/// Runs in the window's render, which editors need to open.
+pub fn follow_jump(this: &mut Desktop, window: &mut Window, cx: &mut Context<Desktop>) {
+    let Some(jump) = this.acl_jump.take() else {
+        return;
+    };
+    open(this, jump.server, jump.channel, window, cx);
+    let Some(Panel::Acl { editor, .. }) = this.panel.as_mut() else {
+        return;
+    };
+    editor.flash = Some(Flash {
+        who: jump.who,
+        column: jump.column,
+        shown: Cell::new(None),
+    });
+    let token = editor.token;
+    // Frames for the fade; the editor's draft may still be loading.
+    editor._flash_frames = Some(cx.spawn(async move |this, cx| {
+        loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(16))
+                .await;
+            let Ok(going) = this.update(cx, |this, cx| {
+                let Some(editor) = active_editor(this, token) else {
+                    return false;
+                };
+                let done = editor
+                    .flash
+                    .as_ref()
+                    .and_then(|flash| flash.shown.get())
+                    .is_some_and(|shown| shown.elapsed() >= FLASH);
+                if done {
+                    editor.flash = None;
+                }
+                cx.notify();
+                !done
+            }) else {
+                return;
+            };
+            if !going {
+                return;
+            }
+        }
+    }));
+}
+
 /// Closes the editor, or first asks to save or discard unsaved changes.
 pub fn close(this: &mut Desktop) {
     match this.panel.as_mut() {
@@ -778,8 +884,12 @@ fn leave_prompt(token: u64, cx: &mut Context<Desktop>) -> AnyElement {
                     editor.close_after_save = true;
                     query(this, token, DraftRequest::Check, cx);
                 }
-                Some(false) => this.panel = None,
-                None => {}
+                Some(false) => {
+                    let then = editor.then.take();
+                    this.panel = None;
+                    this.acl_jump = then;
+                }
+                None => editor.then = None,
             }
         }
         cx.notify();
@@ -945,7 +1055,9 @@ pub fn sync(this: &mut Desktop, cx: &mut Context<Desktop>) {
         _ => return,
     };
     sync_lookup(this, token, index, cx);
-    check_access::sync(this, token, index);
+    parents::sync(this, token, index);
+    // Outside the opening action's scope, which covers this channel only.
+    parents::next(this, token);
     let Some(pending) = pending else {
         return;
     };
@@ -984,7 +1096,9 @@ pub fn sync(this: &mut Desktop, cx: &mut Context<Desktop>) {
         inputs_readonly(editor, write.is_some(), cx);
         editor.dirty = editor.state.draft().is_some_and(|draft| draft.dirty());
         if write.is_none() && editor.close_after_save && !editor.dirty && !editor.state.error {
+            let then = editor.then.take();
             this.panel = None;
+            this.acl_jump = then;
             cx.notify();
             return;
         }

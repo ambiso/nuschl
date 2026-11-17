@@ -836,11 +836,35 @@ def actions(args, root, shell, application, bot, murmur):
     wait("@admin · Manage channel: Yes, not set here", "push button")
     activate("Remove Registered users")
     wait("Registered users · Speak: Yes, not set here", "push button")
+    # Rows are added by searching, as Check access picks.
+    type_field("Add a row", "native")
+    shell.key("Return")
+    matching("@native-team · Speak: ")
     activate("Done")
     eventually(lambda: text_contains("Save your changes?"), "closing did not ask")
     activate("Discard")
     eventually(lambda: not text_contains("Channel permissions"), "Discard kept the editor open")
     mark("unsaved_changes_ask_before_closing")
+    # An inherited value shows where it is set: the cell's menu opens Root's
+    # permissions there, the cell highlighted. The menu appears once the
+    # parents' rules are read.
+    open_acl("Music")
+
+    def show_in_root():
+        cell = wait("@admin · Manage channel: Yes, not set here", "push button")
+        shell.click(*point(cell), button=3)
+        try:
+            return eventually(lambda: named("Show in Root", "menu item"), "", timeout=1)
+        except AssertionError:
+            return None
+
+    eventually(show_in_root, "the inherited cell offered no Show in Root").press()
+    eventually(lambda: text_contains("Permissions · Root"), "Show in Root did not open Root")
+    wait("@admin · Manage channel: Yes, set here", "push button")
+    time.sleep(0.3)
+    shell.screenshot(args.output / "native-access-jump.png")
+    activate("Done")
+    mark("inherited_value_shows_its_channel")
     return {
         "fresh_offline_lookup": True,
         "unknown_account_refused": True,
@@ -861,6 +885,7 @@ def actions(args, root, shell, application, bot, murmur):
         "check_access_explains_the_draft": True,
         "access_table_saves_rules": True,
         "unsaved_changes_ask_before_closing": True,
+        "inherited_value_shows_its_channel": True,
         "registered_ids": IDS.copy(),
         "server": args.server,
         "diagnostic_rate_override": args.high_admin_limit,

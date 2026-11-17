@@ -92,6 +92,7 @@ impl Render for Desktop {
         self.window_corners = crate::chrome::corner_radii(window);
         crate::images::collect(window);
         self.ease_voice_toggles(window, cx);
+        crate::acl_editor::follow_jump(self, window, cx);
         // Which dialog the last frame showed (see dialogs::modal).
         self.modal_seen.set(self.modal_shown.take());
         let line = self

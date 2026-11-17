@@ -42,7 +42,12 @@ in this channel are solid; the others are dimmed, and hovering names what
 decided them: Mumble's default, another row, a rule in a parent channel or
 Write ACL. Hovering a Partly cell lists which permissions are allowed. So a
 click on one row shows at once which other rows it changes. **Remove** clears
-everything a row sets here.
+everything a row sets here; rows are added with the search field below the
+table. Once the parent channels' rules are read, a dimmed cell set in a parent
+names that channel on hover, and its context menu (or Alt-click) offers
+**Show in <channel>**: that channel's permissions open, scrolled to the cell,
+which lights up and fades out (ease-out; at once with reduced motion). Unsaved
+changes ask Save or Discard first.
 
 Closing the editor with unsaved changes asks first: **Save** (closes once the
 save is confirmed), **Discard** or **Keep editing**.

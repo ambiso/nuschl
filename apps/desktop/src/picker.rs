@@ -2,8 +2,8 @@
 //! A searchable single choice: a field that shows the chosen option and,
 //! while it has focus, lists the options matching what is typed. Typed text
 //! matches as in the quick switcher (`nuschl_client::finder::fuzzy`), best
-//! first; otherwise the callers' order holds. Up to eight options show at
-//! once. Arrow keys move the highlight, Enter or a click picks.
+//! first; otherwise the callers' order holds. The list scrolls, eight rows
+//! tall; arrow keys move the highlight, Enter or a click picks.
 use crate::{
     state::{Desktop, accessible},
     theme::*,
@@ -13,10 +13,14 @@ use gpui_kit::{
     prelude::*,
     *,
 };
-use nuschl_client::finder::{fold, fuzzy};
+use nuschl_client::{
+    finder::{fold, fuzzy},
+    platform::request_id,
+};
 use std::{cell::RefCell, ops::Range, rc::Rc};
 
-const SHOWN: usize = 8;
+const ROW: f32 = 30.;
+const VISIBLE_ROWS: usize = 8;
 
 pub struct Choice {
     pub key: String,
@@ -25,12 +29,23 @@ pub struct Choice {
     pub kind: &'static str,
 }
 
+/// A match as last drawn: the choice and the letters the query matched.
+#[derive(Clone)]
+struct Shown {
+    key: String,
+    label: String,
+    kind: &'static str,
+    highlights: Vec<Range<usize>>,
+}
+
 /// Finds the picker in the application state; its subscription ends with it.
 pub type Locate = fn(&mut Desktop) -> Option<&mut Picker>;
 type Pick = Rc<dyn Fn(&mut Desktop, &str, &mut Window, &mut Context<Desktop>)>;
 
 pub struct Picker {
     label: &'static str,
+    /// Tells this picker's list apart from earlier ones in callbacks.
+    version: u64,
     input: Entity<InputState>,
     locate: Locate,
     on_pick: Pick,
@@ -38,8 +53,8 @@ pub struct Picker {
     /// The field holds typed text, which filters the list.
     typed: bool,
     highlighted: usize,
-    /// The matches last drawn, as (key, label), for the keyboard.
-    shown: RefCell<Vec<(String, String)>>,
+    shown: RefCell<Vec<Shown>>,
+    scroll: UniformListScrollHandle,
     _changes: Subscription,
 }
 
@@ -68,19 +83,19 @@ impl Picker {
                 InputEvent::Focus => {
                     picker.open = true;
                     picker.typed = false;
-                    picker.highlighted = 0;
+                    picker.highlight(0);
                     input.update(cx, |input, cx| input.select_all(window, cx));
                 }
                 InputEvent::Blur => picker.open = false,
                 InputEvent::Change => {
                     picker.open = true;
                     picker.typed = true;
-                    picker.highlighted = 0;
+                    picker.highlight(0);
                 }
                 InputEvent::PressEnter { .. } => {
                     let choice = picker.shown.borrow().get(picker.highlighted).cloned();
-                    if let Some((key, label)) = choice {
-                        choose(this, locate, &key, &label, window, cx);
+                    if let Some(choice) = choice {
+                        choose(this, locate, &choice.key, &choice.label, window, cx);
                     }
                 }
             }
@@ -88,6 +103,7 @@ impl Picker {
         });
         Self {
             label,
+            version: request_id(),
             input,
             locate,
             on_pick: Rc::new(on_pick),
@@ -95,8 +111,20 @@ impl Picker {
             typed: false,
             highlighted: 0,
             shown: RefCell::default(),
+            scroll: UniformListScrollHandle::new(),
             _changes: changes,
         }
+    }
+
+    /// Empties the field, for pickers that add rather than choose.
+    pub fn clear(&self, window: &mut Window, cx: &mut Context<Desktop>) {
+        self.input
+            .update(cx, |input, cx| input.set_value(String::new(), window, cx));
+    }
+
+    fn highlight(&mut self, index: usize) {
+        self.highlighted = index;
+        self.scroll.scroll_to_item(index, ScrollStrategy::Nearest);
     }
 
     pub fn render(&self, id: &str, choices: &[Choice], cx: &mut Context<Desktop>) -> AnyElement {
@@ -108,31 +136,37 @@ impl Picker {
             .chars()
             .map(fold)
             .collect();
-        let mut matches: Vec<(i32, Vec<Range<usize>>, &Choice)> = choices
+        let mut matches: Vec<(i32, Shown)> = choices
             .iter()
             .filter_map(|choice| {
-                if !self.typed || query.is_empty() {
-                    return Some((0, Vec::new(), choice));
-                }
-                let (score, highlights) = fuzzy(&query, &choice.label)?;
-                Some((score, highlights, choice))
+                let (score, highlights) = if !self.typed || query.is_empty() {
+                    (0, Vec::new())
+                } else {
+                    fuzzy(&query, &choice.label)?
+                };
+                Some((
+                    score,
+                    Shown {
+                        key: choice.key.clone(),
+                        label: choice.label.clone(),
+                        kind: choice.kind,
+                        highlights,
+                    },
+                ))
             })
             .collect();
-        matches.sort_by_key(|(score, _, _)| std::cmp::Reverse(*score));
-        *self.shown.borrow_mut() = matches
-            .iter()
-            .take(SHOWN)
-            .map(|(_, _, choice)| (choice.key.clone(), choice.label.clone()))
-            .collect();
+        matches.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+        let count = matches.len();
+        *self.shown.borrow_mut() = matches.into_iter().map(|(_, shown)| shown).collect();
         let locate = self.locate;
-        let mut field = div()
+        let field = div()
             .flex()
             .flex_col()
             .gap_1()
             // Ahead of the field, which would move its cursor.
             .capture_action(cx.listener(move |this, _: &MoveUp, _, cx| {
                 if let Some(picker) = locate(this).filter(|picker| picker.open) {
-                    picker.highlighted = picker.highlighted.saturating_sub(1);
+                    picker.highlight(picker.highlighted.saturating_sub(1));
                     cx.stop_propagation();
                     cx.notify();
                 }
@@ -140,12 +174,13 @@ impl Picker {
             .capture_action(cx.listener(move |this, _: &MoveDown, _, cx| {
                 if let Some(picker) = locate(this) {
                     let last = picker.shown.borrow().len().saturating_sub(1);
-                    picker.highlighted = if picker.open {
+                    let next = if picker.open {
                         (picker.highlighted + 1).min(last)
                     } else {
                         0
                     };
                     picker.open = true;
+                    picker.highlight(next);
                     cx.stop_propagation();
                     cx.notify();
                 }
@@ -164,72 +199,108 @@ impl Picker {
         if !self.open {
             return field.into_any_element();
         }
-        let mut list = div()
-            .id(SharedString::from(format!("{id}-list")))
-            .role(Role::ListBox)
-            .aria_label(self.label)
-            .flex()
-            .flex_col()
+        let frame = div()
             .p_1()
             .rounded(px(6.))
             .border_1()
             .border_color(color(BORDER))
             .bg(color(ELEVATED));
-        let count = matches.len().min(SHOWN);
-        for (index, (_, highlights, choice)) in matches.iter().take(SHOWN).enumerate() {
-            let (key, label) = (choice.key.clone(), choice.label.clone());
-            let highlighted = index == self.highlighted;
-            list = list.child(
-                div()
-                    .id(SharedString::from(format!("{id}-option-{index}")))
-                    .role(Role::ListBoxOption)
-                    .aria_label(choice.label.clone())
-                    .aria_selected(highlighted)
-                    .aria_position_in_set(index + 1)
-                    .aria_size_of_set(count)
-                    .px_2()
-                    .py_1()
-                    .rounded(px(4.))
-                    .flex()
-                    .gap_2()
-                    .cursor_pointer()
-                    .when(highlighted, |row| row.bg(color(SELECTED)))
-                    .hover(|style| style.bg(color(HOVER)))
-                    // On press: the field loses focus, and the list, before a click ends.
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| {
-                            choose(this, locate, &key, &label, window, cx);
-                            cx.stop_propagation();
-                            cx.notify();
-                        }),
-                    )
-                    .child(crate::finder::matched(choice.label.clone(), highlights))
-                    .child(
-                        div()
-                            .text_color(color(TEXT_MUTED))
-                            .child(Text::new_inaccessible(choice.kind.into())),
-                    ),
-            );
+        if count == 0 {
+            return field
+                .child(frame.text_sm().text_color(color(TEXT_MUTED)).child(
+                    text!("Nothing matches.").with_id(SharedString::from(format!("{id}-empty"))),
+                ))
+                .into_any_element();
         }
-        let hint = match matches.len() {
-            0 => Some("Nothing matches.".to_owned()),
-            total if total > SHOWN => Some(format!("{} more; type to narrow.", total - SHOWN)),
-            _ => None,
-        };
-        if let Some(hint) = hint {
-            list = list.child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .text_sm()
-                    .text_color(color(TEXT_MUTED))
-                    .child(text!(hint).with_id(SharedString::from(format!("{id}-hint")))),
-            );
-        }
-        field = field.child(list);
-        field.into_any_element()
+        let list = uniform_list(
+            SharedString::from(format!("{id}-options")),
+            count,
+            cx.processor(move |this, range: Range<usize>, _, cx| {
+                let Some(picker) = locate(this) else {
+                    return Vec::new();
+                };
+                let highlighted = picker.highlighted;
+                let shown = picker.shown.borrow().clone();
+                range
+                    .filter_map(|index| {
+                        let choice = shown.get(index)?;
+                        Some(option(
+                            index,
+                            count,
+                            index == highlighted,
+                            choice,
+                            locate,
+                            cx,
+                        ))
+                    })
+                    .collect()
+            }),
+        )
+        .track_scroll(&self.scroll)
+        .h(px(ROW * count.min(VISIBLE_ROWS) as f32))
+        .w_full();
+        let version = self.version;
+        let list = crate::dialogs::nested_virtual_list(
+            "picker-options",
+            version,
+            &self.scroll,
+            list,
+            // The list's handlers exist only while it is drawn.
+            |_: &Desktop| true,
+            cx,
+        )
+        .role(Role::ListBox)
+        .aria_label(self.label);
+        field.child(frame.child(list)).into_any_element()
     }
+}
+
+fn option(
+    index: usize,
+    count: usize,
+    highlighted: bool,
+    choice: &Shown,
+    locate: Locate,
+    cx: &mut Context<Desktop>,
+) -> AnyElement {
+    let (key, label) = (choice.key.clone(), choice.label.clone());
+    div()
+        .id(("picker-option", index))
+        .role(Role::ListBoxOption)
+        .aria_label(choice.label.clone())
+        .aria_selected(highlighted)
+        .aria_position_in_set(index + 1)
+        .aria_size_of_set(count)
+        .h(px(ROW))
+        .px_2()
+        .rounded(px(4.))
+        .flex()
+        .items_center()
+        .gap_2()
+        .cursor_pointer()
+        .when(highlighted, |row| row.bg(color(SELECTED)))
+        .hover(|style| style.bg(color(HOVER)))
+        // On press: the field loses focus, and the list, before a click ends.
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, window, cx| {
+                choose(this, locate, &key, &label, window, cx);
+                cx.stop_propagation();
+                cx.notify();
+            }),
+        )
+        .child(div().min_w_0().truncate().child(crate::finder::matched(
+            choice.label.clone(),
+            &choice.highlights,
+        )))
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_sm()
+                .text_color(color(TEXT_MUTED))
+                .child(Text::new_inaccessible(choice.kind.into())),
+        )
+        .into_any_element()
 }
 
 /// Shows `label` in the field, closes the list and reports `key`.
