@@ -14,7 +14,7 @@ import time
 import uuid
 
 import acl_editor as fixture
-from accessibility import items, snapshot
+from accessibility import ROLES, Node, items, snapshot
 from admin_bootstrap import encode
 from hash_document_wire import fields
 from layout_regression import inside
@@ -81,6 +81,29 @@ def actions(args, root, shell, application, bot, _murmur):
 
     def wait(name, role=None, prefix=False):
         return eventually(lambda: named(name, role, prefix), f"missing {name}")
+
+    def find_rule(name):
+        # A row of the rules list reads "@group · effect"; the permission
+        # table above it names its cells with the same prefix. One cache read
+        # keeps a wheel step after this lookup in the same wheel run.
+        data = application.bus("call", application.destination, "/org/a11y/atspi/cache",
+                               "org.a11y.atspi.Cache", "GetItems")[0]
+        parents = {tuple(row[0]): tuple(row[2]) for row in data}
+        lists = {tuple(row[0]) for row in data
+                 if row[6] == "ACL rules" and ROLES.get(row[7]) == "list box"}
+        for row in data:
+            if ROLES.get(row[7]) == "push button" and row[6].startswith(f"{name} · "):
+                current = tuple(row[0])
+                for _ in range(64):
+                    current = parents.get(current)
+                    if current in lists:
+                        return Node(application.bus, *row[0])
+                    if current is None:
+                        break
+        return None
+
+    def rule(name):
+        return eventually(lambda: find_rule(name), f"missing rule {name}")
 
     def origin():
         return json.loads(shell.eval("JSON.stringify((()=>{const w=global.get_window_actors()"
@@ -193,13 +216,13 @@ def actions(args, root, shell, application, bot, _murmur):
         owner = wait("ACL rules", "list box")
         focus(owner, dialog)
         shell.key("Home")
-        initial = wait(first_rule, "push button")
+        initial = rule(first_rule)
         record = {"zoom": zoom, "window": [width, height], "rules": bar(owner, zoom, "rules-top")}
         before = owner.extents()
         # One long wheel run and then another step at the edge must not move
         # the containing dialog or an adjacent list under the parked pointer.
         shell.wheel(*point(owner), 180)
-        wait(last_rule, "push button")
+        rule(last_rule)
         shell.wheel(*point(owner), 3)
         time.sleep(.25)
         assert owner.extents() == before, "nested wheel escaped into the dialog"
@@ -212,11 +235,11 @@ def actions(args, root, shell, application, bot, _murmur):
         grab = (end[0] + end[1]) / 2 / owner.extents()[3]
         shell.drag(point(owner, right=record["rules_end"]["thumb_x_from_right"], fraction=grab),
                    point(owner, right=record["rules_end"]["thumb_x_from_right"], fraction=0.01))
-        wait(first_rule, "push button")
+        rule(first_rule)
         time.sleep(.3)
-        assert named(first_rule, "push button"), "wheel easing resumed after a thumb grab"
+        assert find_rule(first_rule), "wheel easing resumed after a thumb grab"
         # The capture canvas must not block ordinary row actions.
-        target = wait("@scroll-rule-005", "push button")
+        target = rule("@scroll-rule-005")
         shell.click(*point(target))
         target_field = eventually(lambda: next((node for node, role, name, _ in items(application)
             if name == "ACL rule target" and role == "entry"), None), "rule input absent")
@@ -226,7 +249,7 @@ def actions(args, root, shell, application, bot, _murmur):
         wait("Remove rule", "push button")
         focus(owner, dialog)
         shell.key("End")
-        final = wait(last_rule, "push button")
+        final = rule(last_rule)
         assert inside(final.extents(), dialog.extents())
         groups_owner = wait("ACL groups", "list box")
         focus(groups_owner, dialog)
