@@ -2,7 +2,6 @@
 {
   pkgs,
   toolchain,
-  craneLib,
   sourceInfo,
   versionMetadata ? null,
   nativeNotices,
@@ -19,30 +18,6 @@ let
     inherit baseVersion sourceInfo;
     metadata = versionMetadata;
   };
-  expectedNotices =
-    (import (projectRoot + "/nix/release-notices.nix") {
-      inherit
-        pkgs
-        toolchain
-        craneLib
-        projectRoot
-        ;
-      webRuntimeNotices = null;
-    }).linux.bundle;
-  expectedDesktop = (import (projectRoot + "/nix/desktop-files.nix") { inherit pkgs; }).linux;
-  assetBinding =
-    pkgs.runCommand "nuschl-native-source-assets" { nativeBuildInputs = [ pkgs.python3 ]; }
-      ''
-        python3 ${./bind-assets.py} --source ${projectRoot} --notices ${nativeNotices} \
-          --expected-notices ${expectedNotices} --desktop ${desktopFiles} --expected-desktop ${expectedDesktop} \
-          --source-nar-hash ${lib.escapeShellArg versions.sourceNarHash} \
-          ${
-            lib.optionalString (
-              versions.sourceRevision != null
-            ) "--revision ${lib.escapeShellArg versions.sourceRevision}"
-          } \
-          ${lib.optionalString (appstreamXML != null) "--appstream ${appstreamXML}"} --output "$out"
-      '';
   portable = import ../../nix/portable-linux.nix {
     inherit
       pkgs
@@ -51,10 +26,7 @@ let
       nativeNotices
       desktopFiles
       appstreamXML
-      assetBinding
       ;
-    revision = versions.sourceRevision;
-    sourceNarHash = versions.sourceNarHash;
     version = versions.debianUpstream;
   };
   deb = import ../debian/package.nix {
@@ -76,7 +48,6 @@ in
     versions
     deb
     archBin
-    assetBinding
     ;
   nativeStage = portable.stage;
   metadataTests = import ./metadata-tests.nix { inherit pkgs; };
