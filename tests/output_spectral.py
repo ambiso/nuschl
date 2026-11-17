@@ -283,7 +283,7 @@ def main():
         "binary_inputs": {key: {"path": str(getattr(args, key)), "sha256": sha(getattr(args, key))}
             for key in ("mixer_probe", "converter_test", "opus_library", "speex_library")},
         "cached_converter_source": str(args.converter_source), "matched_production_sources": matched,
-        "current_source_hashes": {name: sha(repo/name) for name in ("apps/media-worker/src/mixer.rs", "apps/media-worker/src/jitter.rs", "crates/audio-jitter/src/lib.rs", "vendor/opus-pure/src/decoder.rs", "vendor/speexdsp-resampler/src/speex.rs")},
+        "current_source_hashes": {name: sha(repo/name) for name in ("apps/media-worker/src/mixer.rs", "apps/media-worker/src/jitter.rs", "crates/audio-jitter/src/lib.rs", "Cargo.lock", "vendor/speexdsp-resampler/src/speex.rs")},
         "cases": rows, "artifacts": artifacts,
         "all_component_gates_passed": all(r["component_gate_passed"] for row in rows for r in row["rates"]),
         "all_stock_order_gates_passed": all(r["stock_order_gate_passed"] for row in rows for r in row["rates"]),

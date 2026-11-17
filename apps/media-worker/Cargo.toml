@@ -13,7 +13,7 @@ cpal = { version = "0.18.2", default-features = false }
 nnnoiseless = { version = "0.5.2", default-features = false }
 nuschl-core.workspace = true
 nuschl-ipc.workspace = true
-opus-pure = "0.2.3"
+opus-rs.workspace = true
 rtrb = "0.4"
 serde_json = "1.0.154"
 sonora = { version = "0.3.0", default-features = false }

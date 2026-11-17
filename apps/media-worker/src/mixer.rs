@@ -8,11 +8,12 @@
 //! the sum of what each has ready, at the volume its latest packet carried
 //! (the sender's, the local per-user and the server's volume in one).
 use crate::{
+    MAX_PACKET_SAMPLES,
     dsp::FRAME,
     jitter::{JitterBuffer, Pull},
 };
 use nuschl_audio_jitter::UnderrunFade;
-use opus_pure::{MAX_PACKET_SAMPLES, OpusDecoder};
+use opus_rs::{OpusDecoder, packet};
 use std::{
     collections::{BTreeMap, VecDeque},
     time::{Duration, Instant},
@@ -55,7 +56,7 @@ struct Speaker {
 }
 
 impl Speaker {
-    fn new(now: Instant) -> Result<Self, opus_pure::Error> {
+    fn new(now: Instant) -> Result<Self, &'static str> {
         let mut decoder = OpusDecoder::new(48_000, 2)?;
         // Match Mumble: retain intensity-stereo energy when folded to mono.
         decoder.set_phase_inversion_disabled(true);
@@ -86,7 +87,7 @@ impl Speaker {
                         }
                     }
                     if end {
-                        let _ = self.decoder.reset_state();
+                        self.decoder.reset();
                     }
                 }
                 Pull::Lost { fec, frames } => {
@@ -159,7 +160,7 @@ impl Default for Mixer {
 impl Mixer {
     /// Queue a packet for its speaker. Malformed packets, and new speakers
     /// beyond the limits, are dropped.
-    pub fn push(&mut self, voice: Voice, now: Instant) -> Result<(), opus_pure::Error> {
+    pub fn push(&mut self, voice: Voice, now: Instant) -> Result<(), &'static str> {
         let Voice {
             stream,
             sender,
@@ -168,11 +169,12 @@ impl Mixer {
             end,
             volume,
         } = voice;
-        let duration = opus_pure::packet::samples_48k(&opus).ok();
+        let duration = packet::parse(&opus)
+            .and_then(|_| packet::nb_samples(&opus, 48_000))
+            .ok();
         if opus.is_empty()
             || opus.len() > MAX_OPUS_BYTES
             || !volume.is_finite()
-            || opus_pure::packet::validate(&opus).is_err()
             || duration.is_none_or(|frames| {
                 frames == 0 || frames > MAX_PACKET_SAMPLES || frames % FRAME != 0
             })
@@ -194,7 +196,7 @@ impl Mixer {
             && !speaker.jitter.is_playing()
         {
             speaker.jitter = JitterBuffer::default();
-            let _ = speaker.decoder.reset_state();
+            speaker.decoder.reset();
             speaker.fade = UnderrunFade::default();
         }
         speaker.last_packet = now;
@@ -292,7 +294,8 @@ pub fn finish(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opus_pure::{Application, MAX_PACKET_BYTES, OpusEncoder};
+    use crate::MAX_PACKET_BYTES;
+    use opus_rs::{Application, OpusEncoder};
 
     #[test]
     fn malformed_framing_is_rejected_before_speaker_or_timing_mutation() {
@@ -441,7 +444,7 @@ mod tests {
     fn voice_receivers_explicitly_match_mumbles_phase_setting() {
         let mut speaker = Speaker::new(Instant::now()).unwrap();
         assert!(speaker.decoder.phase_inversion_disabled());
-        speaker.decoder.reset_state().unwrap();
+        speaker.decoder.reset();
         assert!(speaker.decoder.phase_inversion_disabled());
     }
 

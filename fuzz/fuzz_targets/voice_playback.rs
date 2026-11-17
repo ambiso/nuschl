@@ -2,7 +2,7 @@
 //! Voice from a hostile server as the media worker plays it: packets with any
 //! sequence numbers through a speaker's jitter buffer (the media worker's own
 //! `jitter.rs`, included as a module: the worker is a binary) and the Opus
-//! decoder (opus-pure), with in-band FEC, concealment and resets as
+//! decoder (opus-rs), with in-band FEC, concealment and resets as
 //! `Speaker::fill` asks for them. Nothing may panic (debug assertions are on,
 //! so neither may the arithmetic overflow), and no decode may produce more
 //! samples than it was given room for.
@@ -19,11 +19,13 @@ mod jitter;
 
 use jitter::{JitterBuffer, Pull};
 use libfuzzer_sys::fuzz_target;
-use opus_pure::{MAX_PACKET_SAMPLES, OpusDecoder};
+use opus_rs::OpusDecoder;
 use std::time::{Duration, Instant};
 
 /// 10 ms at 48 kHz (the media worker's `dsp::FRAME`).
 const FRAME: usize = 480;
+/// The longest Opus packet, 120 ms, in samples per channel.
+const MAX_PACKET_SAMPLES: usize = 5760;
 
 struct Speaker {
     decoder: OpusDecoder,
@@ -44,7 +46,7 @@ impl Speaker {
                     self.jitter.observe_frames((count / FRAME) as u64);
                 }
                 if end {
-                    let _ = self.decoder.reset_state();
+                    self.decoder.reset();
                 }
                 true
             }

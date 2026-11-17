@@ -1,5 +1,9 @@
 # Opus short-frame and FEC corrections
 
+Nuschl now uses [opus-rs](https://github.com/ambiso/opus-rs), a Rust port of
+libopus. The measurements below were taken with opus-pure 0.2.3 and its
+vendored Nuschl patches, before that switch.
+
 The independent 24-packet ordered receive failure was caused by valid one-byte
 coded DTX frames, not established LBRR corruption. Packets 2 and 22 contain
 `4b 41 38`, one coded `00` byte and 56 padding bytes. The original safe Rust
@@ -44,16 +48,16 @@ encoder explicitly sets bitrate, channels, bandwidth, FEC, loss percentage and
 mode; the 24-packet original uses its frozen original controls without force-mode.
 No server, host audio, microphone, user profile or device is accessed.
 
-Run using the cached Rust compiler and reference library (all artifacts on disk,
-no Cargo/Nix graph rebuild):
+Build the probe against the pinned opus-rs that Cargo builds for the media
+worker, then run it with the reference library:
 
 ```sh
 mkdir -p "$HOME/.cache/nuschl-output-quality/silk-build"
-CARGO_PKG_VERSION=0.2.3 rustc --edition=2024 -O --crate-type rlib \
-  --crate-name opus_pure vendor/opus-pure/src/lib.rs \
-  -o "$HOME/.cache/nuschl-output-quality/silk-build/libopus_pure.rlib"
-rustc --edition=2024 -O tests/opus_silk_probe.rs \
-  --extern "opus_pure=$HOME/.cache/nuschl-output-quality/silk-build/libopus_pure.rlib" \
+cargo build --release -p nuschl-media-worker
+DEPS=target/release/deps
+OPUS_RLIB=$(ls "$DEPS"/libopus_rs-*.rlib)
+rustc --edition=2024 -O tests/opus_silk_probe.rs -L "dependency=$DEPS" \
+  --extern "opus_rs=$OPUS_RLIB" \
   -o "$HOME/.cache/nuschl-output-quality/silk-build/probe"
 python3 tests/opus_silk_fec.py \
   --opus-library /nix/store/ah26jmgs60s1dzphf0vi4f9pqmlpl9y6-libopus-1.6.1/lib/libopus.so \
@@ -140,11 +144,11 @@ closing integration; source codec tests do not establish physical-device or
 complete Mumble output parity. The existing direct 8/12 kHz API resampling and
 public duration-metadata differences remain queued.
 
-To repeat the strict CELT matrix after compiling the vendor rlib as above:
+To repeat the strict CELT matrix with `DEPS` and `OPUS_RLIB` as above:
 
 ```sh
-rustc --edition=2024 -O tests/opus_celt_plc_probe.rs \
-  --extern "opus_pure=$HOME/.cache/nuschl-output-quality/silk-build/libopus_pure.rlib" \
+rustc --edition=2024 -O tests/opus_celt_plc_probe.rs -L "dependency=$DEPS" \
+  --extern "opus_rs=$OPUS_RLIB" \
   -o "$HOME/.cache/nuschl-output-quality/silk-build/celt-plc-probe"
 python3 tests/opus_celt_plc.py \
   --opus-library /nix/store/ah26jmgs60s1dzphf0vi4f9pqmlpl9y6-libopus-1.6.1/lib/libopus.so \

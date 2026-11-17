@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: EUPL-1.2
 //! Sample-clock-driven receiver; all codec work stays in the isolated worker.
-use super::{MAX_DECODED_SAMPLES, OUTPUT_CHANNELS, VoiceDecoder};
+use super::{
+    MAX_DECODED_SAMPLES, MAX_PACKET_SAMPLES, OUTPUT_CHANNELS, VoiceDecoder, packet_samples,
+};
 use nuschl_audio_jitter::{JitterBuffer, MAX_SEQUENCE, Pull, UnderrunFade};
-use opus_pure::{MAX_PACKET_SAMPLES, OpusDecoder, packet};
+use opus_rs::OpusDecoder;
 use std::time::Duration;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use wasm_bindgen::prelude::*;
@@ -98,8 +100,7 @@ impl VoicePlayout {
         if opus.is_empty() || opus.len() > 1024 {
             return Err("invalid bounded voice packet".into());
         }
-        packet::validate(opus).map_err(|error| error.to_string())?;
-        let frames = packet::samples_48k(opus).map_err(|error| error.to_string())?;
+        let frames = packet_samples(opus)?;
         if frames == 0 || frames > MAX_PACKET_SAMPLES || frames % PLAYOUT_FRAMES != 0 {
             return Err("invalid Mumble packet duration".into());
         }
@@ -123,9 +124,7 @@ impl VoicePlayout {
                     self.gain = queued.gain;
                     self.last_kind = 1;
                     if end {
-                        self.decoder
-                            .reset_state()
-                            .map_err(|error| error.to_string())?;
+                        self.decoder.reset();
                         if !plays {
                             self.last_kind = 0;
                             return Ok(Vec::new());
@@ -202,9 +201,7 @@ impl VoicePlayout {
 
     /// Playback-only rebuffer after a clock stall. No capture/permission state.
     pub fn reset(&mut self) -> Result<(), String> {
-        self.decoder
-            .reset_state()
-            .map_err(|error| error.to_string())?;
+        self.decoder.reset();
         self.jitter = JitterBuffer::default();
         self.pcm.fill(0.);
         self.cursor = 0;
@@ -220,7 +217,8 @@ impl VoicePlayout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opus_pure::{Application, MAX_PACKET_BYTES, OpusEncoder};
+    use opus_rs::{Application, OpusEncoder};
+    const MAX_PACKET_BYTES: usize = 1275;
     fn packets() -> Vec<Vec<u8>> {
         let mut encoder =
             OpusEncoder::new(crate::SAMPLE_RATE as i32, 1, Application::Voip).unwrap();

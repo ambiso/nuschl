@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 //! Encoder-only synthetic fixture; no device/network/session interfaces.
 #![forbid(unsafe_code)]
-use opus_pure::{Application, OpusEncoder, RateControl};
+use opus_rs::{Application, OpusEncoder};
 use std::{fs, io::Write, time::Instant};
 
 fn main() {
@@ -42,7 +42,7 @@ fn main() {
         encoder.packet_loss_perc = 5;
     }
     if profile == "mumble" {
-        encoder.rate_control = RateControl::Cbr;
+        encoder.use_cbr = true;
     }
     let raw = fs::read(&args[3]).unwrap();
     assert!(raw.len() <= 48_000 * 4 * 30 && raw.len().is_multiple_of(960 * 4));
@@ -83,7 +83,7 @@ fn main() {
     costs.sort_unstable();
     println!(
         "{{\"application\":\"{:?}\",\"lookahead_samples\":{},\"complexity\":{},\"frames\":{},\"encode_p50_ns\":{},\"encode_p95_ns\":{},\"encode_max_ns\":{}}}",
-        encoder.application(),
+        application,
         encoder.lookahead(),
         encoder.complexity,
         costs.len(),

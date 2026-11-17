@@ -9,7 +9,7 @@ use nuschl_core::{
     audio::{MIN_VOICE_BITRATE, VOICE_OVERHEAD_BITRATE},
     bitrate::{MAX_VOICE_BITRATE, VoiceBitrate, max_voice_frame_bytes, voice_frame_fits},
 };
-use opus_pure::{OpusDecoder, OpusEncoder, packet};
+use opus_rs::{OpusDecoder, OpusEncoder, packet};
 
 const FRAME: usize = 960;
 const RATE: f32 = 48_000.;
@@ -159,7 +159,7 @@ fn encode(
     for (index, frame) in pcm.as_chunks::<FRAME>().0.iter().enumerate() {
         let size = encoder.encode(frame, FRAME, &mut output).unwrap();
         let opus = &output[..size];
-        packet::validate(opus).unwrap();
+        packet::parse(opus).unwrap();
         check(opus);
         run.bytes += size;
         run.largest = run.largest.max(size);
@@ -230,7 +230,7 @@ fn constrained_vbr_packets_fit_admission_and_server_accounting_at_every_cap() {
                         "{signal:?}: {} bytes at {target}",
                         opus.len()
                     );
-                    assert_eq!(packet::samples_48k(opus).unwrap(), FRAME);
+                    assert_eq!(packet::nb_samples(opus, 48_000).unwrap(), FRAME);
                     assert_eq!(decoder.decode(opus, FRAME, &mut decoded).unwrap(), FRAME);
                     assert!(decoded.iter().all(|value| value.is_finite()));
                 },

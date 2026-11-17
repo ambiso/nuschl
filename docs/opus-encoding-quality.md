@@ -7,6 +7,10 @@ No host microphone, personal Mumble configuration or public server is sampled.
 
 ## Exact source identity
 
+Nuschl now uses [opus-rs](https://github.com/ambiso/opus-rs), a Rust port of
+libopus. The measurements below were taken with opus-pure 0.2.3 and its
+vendored Nuschl patches, before that switch.
+
 - Nuschl audited source: `caff0785`, with published `opus-pure` 0.2.3 plus the
   documented receive-only patches in `vendor/opus-pure/NUSCHL-PATCH.md`. The
   published archive SHA256 is

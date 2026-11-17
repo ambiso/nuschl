@@ -38,7 +38,7 @@ module Worker. TLS, certificate identity and session state stay in the SDK
 Worker; they are not passed to the codec Worker. A browser Worker is a separate
 JavaScript/WASM realm, not a guarantee of a separate operating-system process.
 
-`nuschl-audio-wasm` uses the memory-safe `opus-pure` implementation and forbids
+`nuschl-audio-wasm` uses the memory-safe `opus-rs` implementation and forbids
 first-party unsafe Rust. Its WASM imports contain no network, storage or clock
 capability. The fixed same-origin JavaScript loader fetches the codec module;
 the media protocol provides no caller-selected URL. AudioWorklet modules are

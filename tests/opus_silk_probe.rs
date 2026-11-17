@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 //! Device-free Opus reference probe. Input: `decode|fec frames hex|-` per line.
 #![forbid(unsafe_code)]
-use opus_pure::{Error, OpusDecoder};
+use opus_rs::{OpusDecoder, error};
 use std::{fs, io::Write};
 
 fn main() {
@@ -19,7 +19,7 @@ fn main() {
         let fields: Vec<_> = line.split_whitespace().collect();
         assert_eq!(fields.len(), 3);
         if fields[0] == "reset" {
-            decoder.reset_state().unwrap();
+            decoder.reset();
             assert!(decoder.phase_inversion_disabled());
             records.push(format!(
                 "{{\"result\":0,\"range\":{}}}",
@@ -54,9 +54,7 @@ fn main() {
                 }
                 count as i32
             }
-            Err(Error::InvalidPacket(_)) => -4,
-            Err(Error::InvalidArgument(_)) => -1,
-            Err(_) => -99,
+            Err(message) => error::code(message).unwrap_or(-99),
         };
         records.push(format!(
             "{{\"result\":{count},\"range\":{}}}",

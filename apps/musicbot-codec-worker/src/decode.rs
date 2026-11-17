@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 //! Credential-free song decoder, called only inside the isolated codec role.
 //! The parent provides opaque media bytes; no URL, path or library reaches it.
-//! Symphonia demuxes and decodes (Opus goes to opus-pure), rubato resamples.
+//! Symphonia demuxes and decodes (Opus goes to opus-rs), rubato resamples.
 use audioadapter_buffers::direct::InterleavedSlice;
-use opus_pure::OpusDecoder;
+use opus_rs::OpusDecoder;
 use rubato::{Fft, FixedSync, Indexing, Resampler};
 #[cfg(test)]
 use std::sync::Arc;

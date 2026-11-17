@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Compare the pure-Rust Opus codec (opus-pure, in the media worker) with
+"""Compare the pure-Rust Opus codec (opus-rs, in the media worker) with
 reference libopus, and check that the worker survives hostile packets.
 
 1. Decoder conformance: the same packets (from either encoder) decoded by
-   libopus and by opus-pure must match closely.
+   libopus and by opus-rs must match closely.
 2. Encoder and interoperability: a synthetic talker is coded at 64 kb/s along
-   four paths (libopus→libopus, opus-pure→libopus, libopus→opus-pure,
-   opus-pure→opus-pure). Each output is aligned to the input (best lag and gain)
+   four paths (libopus→libopus, opus-rs→libopus, libopus→opus-rs,
+   opus-rs→opus-rs). Each output is aligned to the input (best lag and gain)
    and its waveform SNR reported with the coding modes used. Waveform SNR is not
    a perceptual measure (libopus trades it for perceptual tools), so it only
-   guards against a broken encoder: opus-pure must not fall 3 dB below libopus.
+   guards against a broken encoder: opus-rs must not fall 3 dB below libopus.
 3. Robustness: thousands of mutated, truncated and random packets go to the
    worker's decoder; every request must be answered with finite audio or a
    rejection, matching libopus's accept/reject decision and length, and the
@@ -139,16 +139,16 @@ def check_quality(binary, reference):
     worker.close()
     paths = {}
     paths["libopus → libopus"] = reference.decode(ref_packets)
-    paths["opus-pure → libopus"] = reference.decode(pure_packets)
+    paths["opus-rs → libopus"] = reference.decode(pure_packets)
     worker = Worker(binary)
-    paths["libopus → opus-pure"] = worker.decode(ref_packets)
+    paths["libopus → opus-rs"] = worker.decode(ref_packets)
     worker.close()
     worker = Worker(binary)
-    paths["opus-pure → opus-pure"] = worker.decode(pure_packets)
+    paths["opus-rs → opus-rs"] = worker.decode(pure_packets)
     worker.close()
     sizes = {name: sum(map(len, packets)) * 8 / 6.0 / 1000 for name, packets in
-             (("libopus", ref_packets), ("opus-pure", pure_packets))}
-    print(f"Bitrate at a 64 kb/s target: libopus {sizes['libopus']:.1f} kb/s, opus-pure {sizes['opus-pure']:.1f} kb/s")
+             (("libopus", ref_packets), ("opus-rs", pure_packets))}
+    print(f"Bitrate at a 64 kb/s target: libopus {sizes['libopus']:.1f} kb/s, opus-rs {sizes['opus-rs']:.1f} kb/s")
     results = {}
     for name, decoded in paths.items():
         assert all(math.isfinite(value) for value in decoded), name
@@ -157,9 +157,9 @@ def check_quality(binary, reference):
     baseline = results["libopus → libopus"]
     for name, value in results.items():
         assert value > baseline - 3, f"{name} is more than 3 dB worse than libopus ({value:.1f} vs {baseline:.1f})"
-    print(f"  coding modes: libopus {modes(ref_packets)}, opus-pure {modes(pure_packets)}")
-    for source in ("libopus", "opus-pure"):
-        a, b = paths[f"{source} → libopus"], paths[f"{source} → opus-pure"]
+    print(f"  coding modes: libopus {modes(ref_packets)}, opus-rs {modes(pure_packets)}")
+    for source in ("libopus", "opus-rs"):
+        a, b = paths[f"{source} → libopus"], paths[f"{source} → opus-rs"]
         assert len(a) == len(b), (source, len(a), len(b))
         error = sum((x - y) ** 2 for x, y in zip(a, b))
         energy = sum(x * x for x in a)
@@ -167,7 +167,7 @@ def check_quality(binary, reference):
         peak = max(abs(x - y) for x, y in zip(a, b))
         print(f"Decoders agree on {source} packets: {agreement:.1f} dB (largest sample difference {peak:.2e})",
               flush=True)
-        assert agreement > 40, f"opus-pure decodes {source} packets differently from libopus"
+        assert agreement > 40, f"opus-rs decodes {source} packets differently from libopus"
 
 
 def check_decoder_modes(binary, reference):
@@ -183,9 +183,9 @@ def check_decoder_modes(binary, reference):
         error = sum((x - y) ** 2 for x, y in zip(expected, decoded))
         energy = sum(x * x for x in expected)
         agreement = 10 * math.log10(energy / error) if error else math.inf
-        print(f"libopus at {bitrate // 1000} kb/s {modes(packets)}: opus-pure decoder agrees to {agreement:.1f} dB",
+        print(f"libopus at {bitrate // 1000} kb/s {modes(packets)}: opus-rs decoder agrees to {agreement:.1f} dB",
               flush=True)
-        assert agreement > 40, f"opus-pure decodes {bitrate} b/s packets differently from libopus"
+        assert agreement > 40, f"opus-rs decodes {bitrate} b/s packets differently from libopus"
 
 
 def modes(packets):
@@ -240,7 +240,7 @@ def check_hostile_packets(binary, reference, count):
           f"({outcomes['samples']} produced audio, {outcomes['rejected']} rejected); "
           f"accept/reject and length agree with libopus for {agree * 100 / count:.1f}%; "
           f"loudest output {loudest:.1f}", flush=True)
-    assert agree >= count * 0.95, "opus-pure diverges from libopus on malformed packets"
+    assert agree >= count * 0.95, "opus-rs diverges from libopus on malformed packets"
 
 
 def main():

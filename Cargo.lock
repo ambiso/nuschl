@@ -7072,7 +7072,7 @@ name = "nuschl-audio-wasm"
 version = "0.2.0"
 dependencies = [
  "nuschl-audio-jitter",
- "opus-pure",
+ "opus-rs",
  "wasm-bindgen",
 ]
 
@@ -7350,7 +7350,7 @@ dependencies = [
  "nuschl-core",
  "nuschl-ipc",
  "nuschl-sandbox-windows",
- "opus-pure",
+ "opus-rs",
  "pipewire",
  "rtrb",
  "serde_json",
@@ -7399,7 +7399,7 @@ dependencies = [
  "nuschl-ipc",
  "nuschl-protocol",
  "nuschl-testkit",
- "opus-pure",
+ "opus-rs",
  "rubato",
  "symphonia",
  "tokio",
@@ -8320,8 +8320,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
-name = "opus-pure"
-version = "0.2.3"
+name = "opus-rs"
+version = "0.1.42"
+source = "git+https://github.com/ambiso/opus-rs?rev=fddb8b45f972f4fb4be6b186750afa28611a28aa#fddb8b45f972f4fb4be6b186750afa28611a28aa"
+dependencies = [
+ "fearless_simd 1.2.0",
+]
 
 [[package]]
 name = "ordered-float"

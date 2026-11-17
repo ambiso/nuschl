@@ -17,7 +17,12 @@ mod timing;
 use std::io;
 
 use nuschl_ipc::{Envelope, MediaRequest, MediaResponse, read_frame, write_frame};
-use opus_pure::{MAX_PACKET_BYTES, MAX_PACKET_SAMPLES, OpusDecoder, OpusEncoder};
+use opus_rs::{OpusDecoder, OpusEncoder};
+
+/// The longest Opus packet, 120 ms at 48 kHz, in samples per channel.
+const MAX_PACKET_SAMPLES: usize = 5760;
+/// The largest Opus packet: six frames of 1275 bytes with their framing.
+const MAX_PACKET_BYTES: usize = 6 * 1275 + 2 + 5 * 2;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // On Windows, the launch stage starts this worker again in its AppContainer.
@@ -46,7 +51,7 @@ fn handle(
     request: MediaRequest,
     encoder: &mut OpusEncoder,
     decoder: &mut OpusDecoder,
-) -> Result<MediaResponse, opus_pure::Error> {
+) -> Result<MediaResponse, &'static str> {
     match request {
         MediaRequest::DecodeOpus { packet } => {
             if packet.is_empty() || packet.len() > MAX_PACKET_BYTES {

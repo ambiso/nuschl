@@ -10,7 +10,7 @@ use nuschl_ipc::{
         SKIP_PROGRESS_FRAMES, Stage,
     },
 };
-use opus_pure::{Application, OpusEncoder, RateControl};
+use opus_rs::{Application, OpusEncoder};
 use std::{
     cell::RefCell,
     io::{self, Read, Write},
@@ -128,7 +128,7 @@ fn decode(mut input: impl Read + Send + 'static, output: &mut impl Write) -> Res
 fn new_encoder() -> Result<OpusEncoder, String> {
     let mut encoder = OpusEncoder::new(RATE as i32, CHANNELS, Application::Audio)
         .map_err(|_| "could not create the audio encoder".to_owned())?;
-    encoder.rate_control = RateControl::ConstrainedVbr;
+    encoder.set_vbr_constraint(true);
     Ok(encoder)
 }
 
@@ -250,7 +250,7 @@ mod tests {
                 panic!("encoder did not return a packet");
             };
             assert!(!opus.is_empty() && opus.len() <= codec::MAX_OPUS_BYTES);
-            let mut decoder = opus_pure::OpusDecoder::new(RATE as i32, CHANNELS).unwrap();
+            let mut decoder = opus_rs::OpusDecoder::new(RATE as i32, CHANNELS).unwrap();
             assert_eq!(decoder.decode(opus, FRAME, &mut decoded).unwrap(), FRAME);
             assert!(decoded.iter().all(|sample| sample.is_finite()));
             assert!(decoded.iter().any(|sample| sample.abs() > 0.01));
@@ -504,8 +504,8 @@ mod tests {
         use nuschl_protocol::voice::{PROTOBUF_VERSION, VoicePacket, encode_voice};
         let mut encoder = OpusEncoder::new(RATE as i32, CHANNELS, Application::Audio).unwrap();
         encoder.bitrate_bps = 320_000;
-        encoder.rate_control = RateControl::ConstrainedVbr;
-        let mut decoder = opus_pure::OpusDecoder::new(RATE as i32, CHANNELS).unwrap();
+        encoder.set_vbr_constraint(true);
+        let mut decoder = opus_rs::OpusDecoder::new(RATE as i32, CHANNELS).unwrap();
         let mut input = [0f32; FRAME * CHANNELS];
         let mut output = [0u8; codec::MAX_OPUS_BYTES];
         let mut decoded = [0f32; FRAME * CHANNELS];
