@@ -328,7 +328,7 @@ def actions(args, root, shell, application, bot, _murmur):
     shell.key("Escape")
     eventually(lambda: not named("Quick switcher", "dialog"), "finder did not close")
     shell.chord("Control_L", "period")
-    picker = wait("Emoji", "dialog")
+    picker = wait("Emoji, stickers and GIFs", "dialog")
     records.append({"emoji": bar(picker, 100, "emoji")})
     shell.type("thumbs up")
     time.sleep(.3)
