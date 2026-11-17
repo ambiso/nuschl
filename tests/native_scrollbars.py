@@ -233,8 +233,13 @@ def actions(args, root, shell, application, bot, _murmur):
         before = owner.extents()
         # One long wheel run and then another step at the edge must not move
         # the containing dialog or an adjacent list under the parked pointer.
+        # The list keeps a run while its steps come within scrolling::RUN
+        # (500 ms) of each other; a later spin at its end moves the dialog.
         shell.wheel(*point(owner), 180)
-        rule(last_rule)
+        deadline = time.monotonic() + 30
+        while not find_rule(last_rule):
+            assert time.monotonic() < deadline, f"missing rule {last_rule}"
+            shell.wheel(*point(owner), 1)
         shell.wheel(*point(owner), 3)
         time.sleep(.25)
         assert owner.extents() == before, "nested wheel escaped into the dialog"
