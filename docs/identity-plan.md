@@ -24,8 +24,8 @@ The plan holds the required features and the choices that are hard to change lat
 - **Safeguards.** The identity service keeps public data and sealed blobs only; if it
   disappears, existing identities, contacts and conversations keep working.
 - **One identity service.** id.nuschl.eu is the only identity service, with one
-  username namespace, to avoid ecosystem fragmentation. Self-hosting covers home
-  servers.
+  username namespace, to avoid ecosystem fragmentation; "the code and design should
+  also be simpler with just one id service." Self-hosting covers home servers.
 - **Light federation.** Home servers carry the SFU, voice, direct messages,
   attachments and stickers. The identity service tells where a user's home server
   is and sends all email. A user whom a home server blocks moves to another one.
@@ -39,8 +39,8 @@ The plan holds the required features and the choices that are hard to change lat
 - **Lookups** go straight to the identity service.
 - **Recovery** works with a synced passkey, with the recovery key on a later login
   screen, or by email. An email reset makes a new identity that the identity service
-  vouches for: public, delayed, open to objection, and unverified for contacts.
-  The delay is 24 hours, or 7 days as the user's opt-in. Email at registration is
+  vouches for: public in KT and unverified for contacts. It takes effect at once;
+  users can opt in to a 7-day delay open to objection. Email at registration is
   offered and optional. Linux desktops recover with a passkey through a page on
   id.nuschl.eu.
 - **Invite tree.** "an invite tree like lobste.rs so spam or sockpuppet accounts can
@@ -72,7 +72,9 @@ witness.md, covers them with the labels `id:<fingerprint>` (reserved in e2ee.md
 are the `RecoveryBlob` under the recovery key and one blob per passkey under a key
 derived from its PRF output; each holds the root seed. The email address stays with
 the service to send codes; the record carries its salted hash, signed by the
-device-signing key. The invite tree stays outside the log.
+device-signing key. The invite tree stays outside the log. Clients pin the log's
+key as they pin a server's (e2ee.md §5.1); a new key is announced in the log,
+signed by the old one.
 
 **Home server.** The account is bound by an `AccountStatement` (e2ee.md §3.8). The
 server stores ciphertext and delivery metadata only: who talks to whom on it, sizes,
@@ -166,24 +168,21 @@ and the identity service vouches for it.
 
 1. A code goes to the bound address; the new device submits a new root with it.
 2. The service publishes `reset:<old fingerprint>`: "replaced by <new fingerprint>,
-   vouched by id.nuschl.eu (email)", effective after 24 hours, or 7 days if the user
-   opted in, and mails the address at start and end.
-3. During the delay, the old identity's devices see the entry through self-monitoring
-   and raise the blocking alarm of e2ee.md §4. A `ResetObjection` signed by the old
-   device-signing key, or by the root opened with the recovery key, cancels the reset
-   in the log.
-4. After the delay, the username, home statement and email binding move to the new
-   identity. Contacts see a key change labelled "reset, vouched by id.nuschl.eu";
-   verified contacts drop to unverified.
+   vouched by id.nuschl.eu (email)", and mails the address. The username, home
+   statement and email binding move to the new identity. Contacts see a key change
+   labelled "reset, vouched by id.nuschl.eu"; verified contacts drop to unverified.
+   The old identity's devices see the entry through self-monitoring and raise the
+   blocking alarm of e2ee.md §4.
+3. With the opt-in, step 2 takes effect after 7 days. Until then a `ResetObjection`
+   signed by the old device-signing key, or by the root opened with the recovery key,
+   cancels the reset in the log.
 
-Signal binds an identity to a phone number and re-registers a new install with an
-SMS code: at once without Registration Lock; with Registration Lock the user's PIN,
-or with a forgotten PIN a wait of 7 days after the account's last activity. A new
-identity key shows contacts "safety number changed", and contacts rely on Signal's
-server for the binding until they compare safety numbers. Here the KT entry and the delay make the identity
-service's vouching visible and contestable. Self-monitoring runs at least hourly
-while a device is online, so the 24-hour delay reaches every device online that day;
-users whose devices stay offline for days opt in to 7 days.
+Without the opt-in, control of the email address is enough to take over the
+username, and the reset is visible afterwards. Signal binds an identity to a phone
+number: without Registration Lock the SMS code re-registers at once; with it, the
+user's PIN is needed, or with a forgotten PIN a wait of 7 days after the account's
+last activity. A new identity key shows contacts "safety number changed", and
+contacts rely on Signal's server for the binding until they compare safety numbers.
 
 The new identity starts with an empty history. Sticker pack versions are signed by
 the author's identity and `pack_id` derives from its fingerprint (#273), so only the
@@ -217,7 +216,7 @@ identity's inviter is recorded, so the identities form one tree.
 
 | Party | If it disappears | If it is malicious, it can | Limited by |
 | --- | --- | --- | --- |
-| Identity service | Existing identities, contacts and conversations keep working from cached records and home servers; new registrations, recoveries, lookups and moves wait for its return or a successor | Deny service; delay updates; see registrations, emails and lookups; vouch for an email reset; serve a hostile browser ceremony page | Signatures on every record; witnesses bound split views and freezes to 24 h; backups need the PRF output or recovery key; resets are logged, delayed and objectable |
+| Identity service | Existing identities, contacts and conversations keep working from cached records and home servers; new registrations, recoveries, lookups and moves wait for its return | Deny service; delay updates; see registrations, emails and lookups; vouch for an email reset; serve a hostile browser ceremony page | Signatures on every record; witnesses bound split views and freezes to 24 h; backups need the PRF output or recovery key; resets are logged, and opted-in identities can object for 7 days |
 | Home server | The other participant's home server keeps each direct conversation; the user moves | Deny service; drop invites; see metadata | End-to-end encryption; moves need the user's signature |
 | Channel server | Its channels are gone | As in e2ee.md §2 | As in e2ee.md §2 and §5 |
 | Stolen unlocked device | — | Add devices, move the home server, object to a reset | Self-monitoring alarms on the other devices; revocation and a move back |
@@ -225,9 +224,8 @@ identity's inviter is recorded, so the identities form one tree.
 ## Lock-in guards
 
 - Every new record and statement uses the KT value framing of e2ee.md §5.1
-  (`uint16 format`), so later formats add without breaking proofs.
-- Records, statements and references name their identity service, so a successor
-  service or an emergency migration can take over.
+  (`uint16 format`), so later formats, including a successor service or a migration,
+  arrive as new format versions without breaking proofs.
 - Moderation decisions are signed records kept apart from the tree, so other
   moderators can publish their own later.
 - Lookup requests are self-contained and leave the asker anonymous, so a home server
@@ -241,10 +239,9 @@ identity's inviter is recorded, so the identities form one tree.
 Proposals: KT values at most 4096 bytes (e2ee.md §5.1); a backup blob at most
 16 KiB and 8 passkeys per identity; one move per hour; one bound email address,
 8-digit codes valid 15 minutes with 5 attempts, one pending reset per identity;
-self-monitoring at least hourly while online; invite codes expire after 7 days; an
+invite codes expire after 7 days; an
 attachment receipt within 10 s of the upload's end, and 30 s without progress counts
-as a stall. Clients validate every reply
-against these limits before allocating.
+as a stall. Clients validate every reply against these limits before allocating.
 
 ## Slices
 
@@ -263,10 +260,9 @@ an identity service.
 
 - Lookup privacy through a home-server proxy or batched queries.
 - Public registration (email maybe; no proof of work; no probation for now).
-- Social recovery: k of n chosen contacts confirm a reset, with the email reset's
+- Social recovery: k of n chosen contacts confirm a reset, with the opt-in
   delay and objection.
 - Moderation communities: users and servers subscribe to moderators they trust.
-- Migration to a successor identity service with a signed `MovedTo` statement.
 - Reducing channel servers' `acct:` roster commitment once `id:` records exist.
 
 ## Open question (recommended default first)
