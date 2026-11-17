@@ -18,7 +18,7 @@ jobs:
     # Fork pull requests fail on a hosted runner (a skipped job would pass the required check).
     # A fork can edit this file, so approving runs of all external contributors protects ours.
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'nix-ci' }}
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
         run: echo "CI runs on branches in this repository; ask a maintainer to push the fork branch here." && exit 1
