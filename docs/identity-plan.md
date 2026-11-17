@@ -51,7 +51,7 @@ The plan holds the required features and the choices that are hard to change lat
   registration: email maybe, no proof of work, no probation for now.
 - **Attachment deduplication** (review of #366): clients reuse attachment
   references, and servers count them, accepting that a server learns which
-  messages share an attachment.
+  messages share an attachment. No convergent encryption (Owner 2026-11-17).
 
 ## Roles and data
 
@@ -172,14 +172,16 @@ Recommended for keeping the copies in step (open question 1):
 This fits MLS: each attachment's key and hash travel inside MLS messages, and the
 blobs are opaque ciphertext, so where a blob is stored is independent of the group.
 
-**Deduplication.** Clients store blobs by content hash. Forwarding or sending an
-attachment again reuses its reference and key while a server still holds the
-blob, so the server stores one copy. Each message names the blobs it references
+**Deduplication.** Each upload encrypts with a fresh random key, and servers and
+attachment references address a blob by the hash of its ciphertext. A blob is
+shared only when an existing reference (ciphertext hash and key) is reused, as
+when forwarding or sending an attachment again while a server still holds it.
+No convergent encryption (Owner 2026-11-17), so equal files from different
+uploads stay unlinkable. The client's local store may key decrypted files by
+their reference, on the device only. Each message names the blobs it references
 in the MLS message's authenticated data, so servers count references and delete a
 blob once no stored message names it. A server thereby learns which messages
-share an attachment (accepted in the review of #366). Convergent encryption would
-also share blobs between users who upload the same file, and it would show them
-that their plaintexts are equal, so the plan reuses references only.
+share an attachment (accepted in the review of #366).
 
 ### Move home server
 
