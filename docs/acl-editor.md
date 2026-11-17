@@ -13,6 +13,11 @@ or remove local members, exclude inherited members, or reset a local override.
 Names resolve freshly to registered account IDs; `#id` explicitly selects a
 numeric account. Missing labels never discard membership.
 
+**Channel password** sets, changes or removes a password the way Mumble's channel
+dialog does: two local rules that apply in the channel only, `@all` denied and
+`#<password>` granted Enter, Speak, Whisper, Text message, Link channel and
+Traverse. People with the password as an access token may enter.
+
 Each open editor has its own lifetime token, in addition to stable row IDs and
 original server/connection/channel authority. Dirty drafts survive disconnect as
 read-only inspectors; obsolete callbacks cannot edit a replacement panel. Inputs
@@ -119,7 +124,8 @@ Murmur and nuschld at their default 1/s, burst-5 rate with no reconnect settling
 or raised-limit override. It checks native offline-member editing, inherited
 local overrides, ordered user/group rules, subchannel permission denial with an
 unrelated control, dirty conflict retention, root-admin recovery of a child that
-denies Write, stale callbacks, reconnect and restart persistence.
+denies Write, stale callbacks, reconnect and restart persistence, and a channel
+password that admits only a client holding it as an access token.
 
 The same fixture's `--geometry` mode loads 512 rules and 512 groups, checking
 pointer/keyboard endpoints, bounded instantiated rows, focus reveal and text

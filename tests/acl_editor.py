@@ -721,6 +721,45 @@ def actions(args, root, shell, application, bot, murmur):
     open_acl()
     save()
     mark("fresh_editor_after_reconnect")
+    # A channel password is stored as Mumble's channel dialog stores it: @all is
+    # denied Enter, Speak, Whisper, Text message, Link channel and Traverse here,
+    # and the #token group is granted them.
+    activate("Done")
+    open_acl("Lobby")
+    type_field("New channel password", "door-code")
+    activate("Set password")
+    eventually(lambda: text_contains("Channel password: door-code"), "password not shown")
+    save()
+    locked = 0x4 | 0x8 | 0x100 | 0x200 | 0x80 | 0x2
+    admin = operator(root, pin)
+    try:
+        password_rules = [
+            (rule.get(5), rule.get(6, [0])[0], rule.get(7, [0])[0], rule.get(2, [1])[0])
+            for rule in local_rules(query_channel(admin, 1))[-2:]
+        ]
+    finally:
+        admin.close()
+    assert password_rules == [([b"all"], 0, locked, 0), ([b"#door-code"], locked, 0, 0)], password_rules
+    visitor = Client(args.binaries, "127.0.0.1", SERVER.port, pin, "Visitor", root / "visitor")
+    try:
+        def may_enter():
+            visitor.send(kind="permissions", channel=1)
+            event = visitor.wait(lambda event: event["kind"] == "permissions" and event["channel"] == 1)
+            return event["permissions"] & 0x4 != 0
+        assert not may_enter(), "a visitor without the token may enter"
+        visitor.send(kind="tokens", tokens=["door-code"])
+        eventually(may_enter, "the token holder may not enter")
+    finally:
+        visitor.close()
+    activate("Remove password")
+    eventually(lambda: text_contains("No channel password"), "password not removed")
+    save()
+    admin = operator(root, pin)
+    try:
+        assert local_rules(query_channel(admin, 1)) == rules, "removing the password left rules behind"
+    finally:
+        admin.close()
+    mark("channel_password_set_and_removed")
     return {
         "fresh_offline_lookup": True,
         "unknown_account_refused": True,
@@ -736,6 +775,7 @@ def actions(args, root, shell, application, bot, murmur):
         "stale_reconnect_save_refused": True,
         "persistence_after_restart": True,
         "fresh_editor_after_reconnect": True,
+        "channel_password_admits_token_holders": True,
         "registered_ids": IDS.copy(),
         "server": args.server,
         "diagnostic_rate_override": args.high_admin_limit,

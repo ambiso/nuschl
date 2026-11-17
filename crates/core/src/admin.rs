@@ -4,7 +4,38 @@
 //! Row keys belong to one draft lifetime and are never reused, including after
 //! explicit reload. Account IDs refer to the registered-user database, not to
 //! online sessions. Wire correlation and connection authority belong to adapters.
-use crate::model::{Acl, AclEntry, AclGroup};
+use crate::model::{Acl, AclEntry, AclGroup, permission};
+
+/// What Mumble's channel password admits: `#<password>` is granted these and
+/// `@all` denied them, in two local rules that apply in the channel only.
+const PASSWORD: u32 = permission::ENTER
+    | permission::SPEAK
+    | permission::WHISPER
+    | permission::TEXT_MESSAGE
+    | permission::LINK_CHANNEL
+    | permission::TRAVERSE;
+
+/// The local rule that holds the password (`ChanACL::isPassword`). Before
+/// Mumble 1.4 the rules left out Traverse.
+fn is_password(entry: &AclEntry) -> bool {
+    entry
+        .group
+        .as_deref()
+        .is_some_and(|group| group.starts_with('#'))
+        && entry.apply_here
+        && !entry.inherited
+        && entry.deny == 0
+        && (entry.grant == PASSWORD || entry.grant == PASSWORD & !permission::TRAVERSE)
+}
+
+/// The `@all` rule that keeps everyone else out of a password channel.
+fn is_password_lock(entry: &AclEntry) -> bool {
+    entry.group.as_deref() == Some("all")
+        && entry.apply_here
+        && !entry.inherited
+        && entry.grant == 0
+        && (entry.deny == PASSWORD || entry.deny == PASSWORD & !permission::TRAVERSE)
+}
 
 pub type RowId = u64;
 
@@ -230,6 +261,63 @@ impl AclDraft {
             },
         });
         Ok(id)
+    }
+
+    /// The channel password, as Mumble's channel dialog shows it.
+    pub fn password(&self) -> Option<&str> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|row| is_password(&row.value))
+            .and_then(|row| row.value.group.as_deref()?.strip_prefix('#'))
+    }
+
+    /// Sets, changes or (with an empty `password`) removes the channel
+    /// password the way Mumble's channel dialog does (`updatePasswordACL`).
+    pub fn set_password(&mut self, password: &str) -> Result<(), &'static str> {
+        let current = self.entries.iter().rposition(|row| is_password(&row.value));
+        if password.is_empty() {
+            if let Some(index) = current {
+                self.entries.remove(index);
+                if let Some(lock) = self
+                    .entries
+                    .iter()
+                    .rposition(|row| is_password_lock(&row.value))
+                {
+                    self.entries.remove(lock);
+                }
+            }
+            return Ok(());
+        }
+        if password.len() > 255 || password.chars().any(char::is_control) {
+            return Err("Use a password of at most 255 bytes without control characters.");
+        }
+        if let Some(index) = current {
+            self.entries[index].value.group = Some(format!("#{password}"));
+            return Ok(());
+        }
+        if self.entries.len() + 2 > 4096 {
+            return Err("The editor supports at most 4096 rules.");
+        }
+        for (group, grant, deny) in [
+            ("all".to_owned(), 0, PASSWORD),
+            (format!("#{password}"), PASSWORD, 0),
+        ] {
+            let id = self.allocate();
+            self.entries.push(Row {
+                id,
+                value: AclEntry {
+                    apply_here: true,
+                    apply_subs: false,
+                    inherited: false,
+                    user_id: None,
+                    group: Some(group),
+                    grant,
+                    deny,
+                },
+            });
+        }
+        Ok(())
     }
 
     /// An inherited group cannot be deleted at its parent. Removing its local
@@ -507,6 +595,52 @@ mod tests {
                 inherited_members: vec![42],
             }],
         }
+    }
+
+    #[test]
+    fn a_password_is_stored_as_mumble_stores_it() {
+        let mut draft = AclDraft::new(acl());
+        assert_eq!(draft.password(), None);
+        draft.set_password("hunter2").unwrap();
+        let rules: Vec<_> = draft.entries()[2..]
+            .iter()
+            .map(|row| row.value.clone())
+            .collect();
+        let rule = |group: &str, grant, deny| AclEntry {
+            apply_here: true,
+            apply_subs: false,
+            inherited: false,
+            user_id: None,
+            group: Some(group.into()),
+            grant,
+            deny,
+        };
+        assert_eq!(
+            rules,
+            [rule("all", 0, PASSWORD), rule("#hunter2", PASSWORD, 0)]
+        );
+        assert_eq!(draft.password(), Some("hunter2"));
+        draft.set_password("changed").unwrap();
+        assert_eq!(
+            (draft.password(), draft.entries().len()),
+            (Some("changed"), 4)
+        );
+        draft.set_password("").unwrap();
+        assert_eq!((draft.password(), draft.entries().len()), (None, 2));
+        // Mumble before 1.4 left out Traverse; an inherited rule is no password here.
+        let mut old = acl();
+        old.entries
+            .push(rule("all", 0, PASSWORD & !permission::TRAVERSE));
+        old.entries
+            .push(rule("#old", PASSWORD & !permission::TRAVERSE, 0));
+        old.entries.push(AclEntry {
+            inherited: true,
+            ..rule("#parent", PASSWORD, 0)
+        });
+        let mut draft = AclDraft::new(old);
+        assert_eq!(draft.password(), Some("old"));
+        draft.set_password("").unwrap();
+        assert_eq!(draft.entries().len(), 3);
     }
 
     #[test]

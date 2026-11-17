@@ -51,8 +51,9 @@ pub struct Editor {
     target_user: bool,
     target: Entity<InputState>,
     group_name: Entity<InputState>,
+    password: Entity<InputState>,
     member: Entity<InputState>,
-    input_readonly: Cell<[bool; 3]>,
+    input_readonly: Cell<[bool; 4]>,
     rule_scroll: UniformListScrollHandle,
     group_scroll: UniformListScrollHandle,
     member_scroll: [UniformListScrollHandle; 3],
@@ -100,8 +101,9 @@ impl Editor {
             target_user: false,
             target,
             member,
-            input_readonly: Cell::new([false; 3]),
+            input_readonly: Cell::new([false; 4]),
             group_name: input("New group name", window, cx),
+            password: input("New channel password", window, cx),
             rule_scroll: UniformListScrollHandle::new(),
             group_scroll: UniformListScrollHandle::new(),
             member_scroll: std::array::from_fn(|_| UniformListScrollHandle::new()),
@@ -251,11 +253,16 @@ fn inputs_readonly(editor: &Editor, busy: bool, cx: &mut Context<Desktop>) {
                     .filter(|row| row.id == id)
             })
             .is_none();
-    let wanted = [target, busy, member];
+    let wanted = [target, busy, member, busy];
     let previous = editor.input_readonly.replace(wanted);
-    for (index, input) in [&editor.target, &editor.group_name, &editor.member]
-        .into_iter()
-        .enumerate()
+    for (index, input) in [
+        &editor.target,
+        &editor.group_name,
+        &editor.member,
+        &editor.password,
+    ]
+    .into_iter()
+    .enumerate()
     {
         if previous[index] != wanted[index] {
             input.update(cx, |input, cx| input.set_readonly(wanted[index], cx));
@@ -867,6 +874,26 @@ pub fn sync(this: &mut Desktop, cx: &mut Context<Desktop>) {
     }
 }
 
+/// Sets the typed password (or `value`) on the draft, as Mumble's channel dialog does.
+fn set_password(this: &mut Desktop, token: u64, value: Option<&str>, cx: &mut Context<Desktop>) {
+    let value = match (value, active_editor(this, token)) {
+        (Some(value), Some(_)) => value.to_owned(),
+        (None, Some(editor)) => editor.password.read(cx).value().to_string(),
+        (_, None) => return,
+    };
+    change(this, token, |editor| {
+        if let Some(Err(error)) = editor
+            .state
+            .draft_mut()
+            .map(|draft| draft.set_password(&value))
+        {
+            editor.state.error = true;
+            editor.state.message = error.into();
+        }
+    });
+    cx.notify();
+}
+
 fn field(label: &'static str, input: &Entity<InputState>) -> AnyElement {
     div()
         .min_w_0()
@@ -1168,6 +1195,32 @@ pub fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Desktop>) -> 
         },
         cx,
     ));
+    let password = draft.password().map(str::to_owned);
+    body = body
+        .child(note(
+            "acl-password",
+            match &password {
+                Some(password) => format!("Channel password: {password}"),
+                None => "No channel password".into(),
+            },
+        ))
+        .child(field("New channel password", &editor.password))
+        .child(styled_button(
+            SharedString::from(format!("acl-set-password-{token}")),
+            "Set password",
+            Tone::Secondary,
+            move |this, _, cx| set_password(this, token, None, cx),
+            cx,
+        ));
+    if password.is_some() {
+        body = body.child(styled_button(
+            SharedString::from(format!("acl-remove-password-{token}")),
+            "Remove password",
+            Tone::Danger,
+            move |this, _, cx| set_password(this, token, Some(""), cx),
+            cx,
+        ));
+    }
     let count = draft.entries().len();
     let scroll = editor.rule_scroll.clone();
     let rules = uniform_list(
