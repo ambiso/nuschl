@@ -396,8 +396,8 @@ and alt text. Click sends and closes; Shift+click sends and stays open. A
 received sticker opens its pack with "Install" and "Report".
 
 Identity comes first (Owner 2026-11-17). The identity plan's slices are I1 (the
-identity service with its directory, KT log and witnesses), I2 (home statements,
-lookups and moves) and I3 (direct conversations on both home servers);
+identity service with its directory, KT log and witnesses), I2 (the account
+record with home server, lookups and moves) and I3 (direct conversations on both home servers);
 device-signing keys exist (e2ee.md §3).
 
 | # | Slice | Needs |
