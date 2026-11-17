@@ -60,7 +60,17 @@ macro_rules! by_format {
 
 enum Event {
     Request(LiveMediaRequest),
-    DeviceError(String),
+    /// A stream failed; `microphone` is the number of the microphone it
+    /// belongs to (see [`Microphone`]), `None` for the output.
+    DeviceError {
+        message: String,
+        microphone: Option<u64>,
+    },
+    /// A microphone opened on its own thread (or why not), with the source
+    /// it borrowed.
+    Opened(Box<(Result<Microphone, String>, MicrophoneSource)>),
+    /// A microphone closed on its own thread, for the mute of this epoch.
+    MicrophoneClosed(u64),
     Closed,
     /// Windows: time to service the open devices (see [`Ticker`]).
     #[cfg(windows)]
@@ -68,19 +78,51 @@ enum Event {
 }
 
 struct Devices {
-    _input: Option<cpal::Stream>,
     _output: cpal::Stream,
-    /// The recording of the output device used as the canceller's reference.
-    _reference: Option<cpal::Stream>,
-    capture: Option<Consumer<f32>>,
-    capture_timeline: Timeline,
     playback: Producer<[f64; 2]>,
     /// Actual negotiated device layout, fixed for this output stream.
     output_channels: usize,
     /// Output callbacks that found the ring empty; written by the device thread.
     underruns: Arc<AtomicU32>,
-    /// What the speakers play, for the canceller (while it is in use).
-    reference: Option<Reference>,
+    /// What the output callback hands to the device: the canceller's
+    /// reference where the output cannot be recorded.
+    played: Reference,
+    /// The microphone, open while the supervisor says so (see `SetState`).
+    microphone: Option<Microphone>,
+    /// What opens the microphone again; `None` while a thread opens it.
+    source: Option<MicrophoneSource>,
+    route: Route,
+}
+
+/// The open microphone. Muting closes it in this process; playback goes on.
+struct Microphone {
+    /// Its errors carry this number, so a closing microphone's are ignored.
+    number: u64,
+    _input: cpal::Stream,
+    samples: Consumer<f32>,
+    timeline: Timeline,
+    /// The recording of the output device for the canceller, while the
+    /// microphone is open.
+    recording: Option<(cpal::Stream, Reference)>,
+    /// The canceller's reference is `Devices::played` (no recording).
+    played: bool,
+    /// What `recording` records, for the route report.
+    reference_name: Option<String>,
+}
+
+/// What a microphone opens from, kept with the devices.
+struct MicrophoneSource {
+    host: cpal::Host,
+    all: Vec<cpal::Device>,
+    input: Option<cpal::Device>,
+    output: cpal::Device,
+    output_id: Option<String>,
+    /// Nuschl cancels the echo: the output is recorded as its reference.
+    echo: bool,
+    clock: Clock,
+    labels: &'static Labels,
+    timing: Timing,
+    tx: SyncSender<Event>,
 }
 
 /// The canceller's reference stream and how far it has been fed.
@@ -89,6 +131,18 @@ struct Reference {
     timeline: Timeline,
     channels: usize,
     index: u64,
+}
+
+impl Reference {
+    /// Discard what is queued: it played before the microphone opened.
+    fn skip(&mut self) {
+        let frames = self.samples.slots() / self.channels;
+        if let Ok(chunk) = self.samples.read_chunk(frames * self.channels) {
+            chunk.commit_all();
+        }
+        self.index += frames as u64;
+        let _ = self.timeline.time_of(self.index);
+    }
 }
 
 struct Transmit {
@@ -121,20 +175,26 @@ impl Transmit {
 /// diagnostic for users: it opens the microphone briefly and sends nothing.
 pub fn probe_route() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, _rx) = mpsc::sync_channel(64);
-    let (_devices, route) = open_devices(
+    let devices = open_devices(
         tx,
         true,
         &AudioSettings::default(),
         None,
         &CALL,
         &Timing::new(),
+        0,
     )?;
+    let route = &devices.route;
+    let reference = devices
+        .microphone
+        .as_ref()
+        .and_then(|microphone| microphone.reference_name.as_ref());
     let report = serde_json::json!({
         "input": route.input,
         "output": route.output,
         "echo_cancellation": route.echo,
         "noise_suppression_upstream": route.noise,
-        "echo_reference": route.reference,
+        "echo_reference": reference,
         "inputs": route.inputs,
         "outputs": route.outputs,
     });
@@ -176,6 +236,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut mixer = Mixer::default();
     let mut devices: Option<Devices> = None;
     let mut pipeline: Option<CapturePipeline> = None;
+    // The reference channels `pipeline` was built for.
+    let mut chain_channels = 0;
+    let mut microphones = 0_u64;
     let mut retry_at = Instant::now();
     let mut last_cleanup = Instant::now();
     let mut frames_seen = 0_u32;
@@ -194,7 +257,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut loopback = false;
     let mut looped = VecDeque::<f32>::with_capacity(RING);
     let mut probe: Option<EchoProbe> = None;
-    // Microphone frames processed since the devices opened, and a buffer for
+    // Microphone frames processed since the microphone opened, and a buffer for
     // one reference frame (up to two channels).
     let mut mic_index = 0_u64;
     let mut reference_frame = [0_f32; 2 * FRAME];
@@ -205,6 +268,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         if devices.is_none() && state_known && !deafened && Instant::now() >= retry_at {
             let labels = if preview { &CHECK } else { &CALL };
+            microphones += 1;
             match open_devices(
                 tx.clone(),
                 !muted,
@@ -212,63 +276,33 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 only_host.as_deref(),
                 labels,
                 &timing,
+                microphones,
             ) {
-                Ok((opened, route)) => {
-                    // Without a microphone the canceller has nothing to do.
-                    let echo = opened.capture.is_some() && matches!(route.echo, EchoSource::Nuschl);
-                    upstream_noise = route.noise.is_some();
-                    let channels = opened
-                        .reference
-                        .as_ref()
-                        .map_or(1, |reference| reference.channels);
-                    let mut chain = CapturePipeline::with_reference(
-                        &chain_settings(&settings, upstream_noise),
-                        echo,
-                        channels,
-                    );
-                    chain.set_delay_hint(ECHO_DELAY_HINT_MS);
-                    pipeline = Some(chain);
+                Ok(mut opened) => {
+                    upstream_noise = opened.route.noise.is_some();
+                    // New devices: the canceller starts over.
+                    pipeline = None;
                     timing.mark("pipeline_ready");
                     timing.report_capture();
-                    let message = if muted {
-                        "Audio ready · microphone muted".to_string()
-                    } else if opened.capture.is_some() {
-                        match (&route.echo, &route.noise) {
-                            (EchoSource::Upstream(name), _) => {
-                                format!("Audio ready · system echo cancellation ({name})")
-                            }
-                            (_, Some(name)) => {
-                                format!("Audio ready · system noise suppression ({name})")
-                            }
-                            (EchoSource::Nuschl, None) => {
-                                "Audio ready · echo cancellation on".into()
-                            }
-                            (EchoSource::None, None) => "Audio ready".into(),
+                    let microphone = opened.microphone.take();
+                    let open = devices.insert(opened);
+                    match microphone {
+                        Some(microphone) => {
+                            mic_index = 0;
+                            install(
+                                open,
+                                microphone,
+                                (&mut pipeline, &mut chain_channels),
+                                &settings,
+                                upstream_noise,
+                                &mut output,
+                            )?;
                         }
-                    } else {
-                        "Playback ready; microphone unavailable".into()
-                    };
-                    emit(
-                        &mut output,
-                        LiveMediaEvent::Devices {
-                            inputs: route.inputs,
-                            outputs: route.outputs,
-                            input: route.input,
-                            output: route.output,
-                            echo: route.echo,
-                            noise: route.noise,
-                            reference: route.reference,
-                        },
-                    )?;
-                    emit(
-                        &mut output,
-                        LiveMediaEvent::Status {
-                            ready: true,
-                            message,
-                        },
-                    )?;
-                    devices = Some(opened);
-                    mic_index = 0;
+                        None => {
+                            announce(open, &mut output)?;
+                            report(open, muted, &mut output)?;
+                        }
+                    }
                     last_window = Instant::now();
                     skip_window = true;
                 }
@@ -304,7 +338,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         };
         match event {
             Some(Event::Closed | Event::Request(LiveMediaRequest::Shutdown)) => break,
-            Some(Event::DeviceError(message)) => {
+            // A closing microphone's streams may report their own ending.
+            Some(Event::DeviceError {
+                microphone: Some(number),
+                ..
+            }) if devices
+                .as_ref()
+                .and_then(|open| open.microphone.as_ref())
+                .is_none_or(|mic| mic.number != number) => {}
+            Some(Event::DeviceError { message, .. }) => {
                 transmit.queue.reset();
                 if transmit.active {
                     finish(&mut output, &mut transmit, epoch)?;
@@ -333,8 +375,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if new_epoch != epoch || mute || deaf {
                     transmit.queue.reset();
                 }
-                let capture_changed =
-                    state_known && ((mute || deaf) != muted || (new_epoch != epoch && !muted));
+                let moved = new_epoch != epoch;
                 muted = mute || deaf;
                 epoch = new_epoch;
                 deafened = deaf;
@@ -348,18 +389,86 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     transmit.queue.reset();
                     finish(&mut output, &mut transmit, epoch)?;
                 }
-                if capture_changed && devices.is_some() {
-                    // The supervisor replaces this process for capture changes; never
-                    // risk a blocking stream teardown while the microphone may be open.
-                    emit(
-                        &mut output,
-                        LiveMediaEvent::Status {
-                            ready: false,
-                            message: "Restarting audio…".into(),
-                        },
-                    )?;
-                    std::process::exit(0);
+                match devices.as_mut() {
+                    // Nothing captured from here on is processed. The streams
+                    // close on their own thread: one that blocks in its backend
+                    // holds up neither playback nor this loop, and the
+                    // supervisor replaces this process if it is not confirmed
+                    // closed soon.
+                    Some(open) if muted => {
+                        if let Some(microphone) = open.microphone.take() {
+                            close(microphone, tx.clone(), epoch);
+                            open.route.reference = None;
+                            report(open, muted, &mut output)?;
+                        } else if open.source.is_some() {
+                            emit(&mut output, LiveMediaEvent::MicrophoneClosed { epoch })?;
+                        }
+                        // A microphone being opened is closed once it is.
+                    }
+                    Some(open) => match open.microphone.as_mut() {
+                        // A new destination gets none of the audio captured
+                        // before it (the epoch changes with the destinations).
+                        Some(microphone) if moved => {
+                            let queued = microphone.samples.slots();
+                            if let Ok(chunk) = microphone.samples.read_chunk(queued) {
+                                chunk.commit_all();
+                            }
+                            mic_index += queued as u64;
+                        }
+                        Some(_) => {}
+                        None => {
+                            if let Some(mut source) = open.source.take() {
+                                microphones += 1;
+                                let number = microphones;
+                                let tx = tx.clone();
+                                std::thread::spawn(move || {
+                                    let opened = open_microphone(&mut source, number);
+                                    let _ = tx.send(Event::Opened(Box::new((opened, source))));
+                                });
+                            }
+                        }
+                    },
+                    None if muted => emit(&mut output, LiveMediaEvent::MicrophoneClosed { epoch })?,
+                    None => {}
                 }
+            }
+            Some(Event::Opened(lent)) => match (*lent, devices.as_mut()) {
+                // These devices lent the source: they take it back.
+                ((opened, source), Some(open)) if open.source.is_none() => {
+                    open.source = Some(source);
+                    match opened {
+                        Ok(microphone) if !muted => {
+                            mic_index = 0;
+                            install(
+                                open,
+                                microphone,
+                                (&mut pipeline, &mut chain_channels),
+                                &settings,
+                                upstream_noise,
+                                &mut output,
+                            )?;
+                        }
+                        Ok(microphone) => close(microphone, tx.clone(), epoch),
+                        Err(error) => {
+                            eprintln!("microphone unavailable: {error}");
+                            if muted {
+                                emit(&mut output, LiveMediaEvent::MicrophoneClosed { epoch })?;
+                            }
+                            report(open, muted, &mut output)?;
+                        }
+                    }
+                }
+                ((opened, _), _) => {
+                    if let Ok(microphone) = opened {
+                        close(microphone, tx.clone(), epoch);
+                    }
+                }
+            },
+            Some(Event::MicrophoneClosed(closed)) => {
+                emit(
+                    &mut output,
+                    LiveMediaEvent::MicrophoneClosed { epoch: closed },
+                )?;
             }
             Some(Event::Request(LiveMediaRequest::Configure {
                 bitrate,
@@ -426,7 +535,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             Some(Event::Request(LiveMediaRequest::EchoTest)) => {
-                if devices.as_ref().is_some_and(|open| open.capture.is_some()) {
+                if devices
+                    .as_ref()
+                    .is_some_and(|open| open.microphone.is_some())
+                {
                     probe = Some(EchoProbe::new());
                 }
             }
@@ -502,7 +614,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             // With a reference recording, far-end activity is judged from it
             // (all applications) when it reaches the canceller, below.
-            if open.reference.is_none() {
+            if !open
+                .microphone
+                .as_ref()
+                .is_some_and(|mic| mic.recording.is_some() || mic.played)
+            {
                 // Activity detection must not cancel antiphase LR; this is not
                 // the AEC reference, which keeps the actual two channels below.
                 for (mono, frame) in far_mono.iter_mut().zip(&mix) {
@@ -543,15 +659,24 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         // Capture: process every complete 10 ms frame, each after the
         // reference frames that sounded up to it (see reference.rs).
-        let Some(capture) = open.capture.as_mut() else {
+        let Devices {
+            microphone, played, ..
+        } = open;
+        let Some(microphone) = microphone.as_mut() else {
             continue;
         };
+        let capture = &mut microphone.samples;
         while capture.slots() >= FRAME {
             let Some(chain) = pipeline.as_mut() else {
                 break;
             };
-            let mic_time = open.capture_timeline.time_of(mic_index);
-            if let (Some(reference), Some(mic_time)) = (open.reference.as_mut(), mic_time) {
+            let mic_time = microphone.timeline.time_of(mic_index);
+            let reference = match &mut microphone.recording {
+                Some((_, recorded)) => Some(recorded),
+                None if microphone.played => Some(&mut *played),
+                None => None,
+            };
+            if let (Some(reference), Some(mic_time)) = (reference, mic_time) {
                 let width = FRAME * reference.channels;
                 let mut hold = false;
                 loop {
@@ -761,6 +886,7 @@ fn emit(
     Ok(())
 }
 
+#[derive(Clone)]
 struct Route {
     inputs: Vec<AudioDevice>,
     outputs: Vec<AudioDevice>,
@@ -802,9 +928,10 @@ fn open_devices(
     capture: bool,
     settings: &AudioSettings,
     only_host: Option<&str>,
-    labels: &Labels,
+    labels: &'static Labels,
     timing: &Timing,
-) -> Result<(Devices, Route), String> {
+    microphone: u64,
+) -> Result<Devices, String> {
     let mut hosts = vec![];
     #[cfg(target_os = "linux")]
     {
@@ -828,9 +955,17 @@ fn open_devices(
     let mut errors = Vec::new();
     for id in hosts {
         timing.mark("host_connect_begin");
-        match connect(id).and_then(|mut host| {
+        match connect(id).and_then(|host| {
             timing.mark("host_connected");
-            open_host(&mut host, tx.clone(), capture, settings, labels, timing)
+            open_host(
+                host,
+                tx.clone(),
+                capture,
+                settings,
+                labels,
+                timing,
+                microphone,
+            )
         }) {
             Ok(opened) => return Ok(opened),
             Err(error) => {
@@ -934,13 +1069,14 @@ pub fn paired_reference<'a>(source_id: &str, sinks: &'a [AudioDevice]) -> Option
 }
 
 fn open_host(
-    host: &mut cpal::Host,
+    mut host: cpal::Host,
     tx: SyncSender<Event>,
     capture: bool,
     settings: &AudioSettings,
-    labels: &Labels,
+    labels: &'static Labels,
     timing: &Timing,
-) -> Result<(Devices, Route), String> {
+    number: u64,
+) -> Result<Devices, String> {
     let all: Vec<cpal::Device> = host
         .devices()
         .map(|devices| devices.collect())
@@ -1014,42 +1150,28 @@ fn open_host(
     // once someone records from the chain.
     // Every callback stamps its samples on this clock (see reference.rs).
     let clock = Clock::new();
-    let (capture_stamper, capture_timeline) = reference::stamped();
-    let mut capture_consumer = None;
-    label(host, labels.microphone);
-    let input = capture
-        .then(|| input_device.clone())
-        .flatten()
-        .and_then(|input| {
-            timing.mark("capture_create_begin");
-            let config = input.default_input_config().ok()?;
-            let (producer, consumer) = RingBuffer::<f32>::new(RING);
-            let stamp = (capture_stamper, clock);
-            let stream = by_format!(
-                config.sample_format(),
-                input_stream(
-                    &input,
-                    stream_config(host, config),
-                    tx.clone(),
-                    producer,
-                    stamp,
-                    timing.clone()
-                )
+    let mut microphone = capture
+        .then(|| {
+            let tx = tx.clone();
+            open_input(
+                &mut host,
+                input_device.as_ref(),
+                labels,
+                tx,
+                clock,
+                timing,
+                number,
             )
-            .ok()?;
-            timing.mark("capture_created");
-            stream.play().ok()?;
-            timing.mark("capture_play_ready");
-            capture_consumer = Some(consumer);
-            Some(stream)
-        });
+            .ok()
+        })
+        .flatten();
     // Processing that already happens before Nuschl: follow PipeWire's graph
     // upstream (mic → echo-cancel → RNNoise → default source), falling back to
     // recognising an echo-cancel source by name (PulseAudio, other systems).
     #[cfg(target_os = "linux")]
     let (found, resolved_input) = input_id
         .as_ref()
-        .map(|id| upstream_processing(backend_name(id), input.is_some(), pipewire))
+        .map(|id| upstream_processing(backend_name(id), microphone.is_some(), pipewire))
         .unwrap_or_default();
     // The virtual CPAL default follows native PipeWire metadata. Resolve it
     // while inspecting the existing graph, without a second startup query or
@@ -1122,12 +1244,12 @@ fn open_host(
         clock,
     );
     timing.mark("playback_create_begin");
-    label(host, labels.playback);
+    label(&mut host, labels.playback);
     let stream = by_format!(
         config.sample_format(),
         output_stream(
             &output_device,
-            stream_config(host, config),
+            stream_config(&host, config),
             tx.clone(),
             (playback_consumer, underruns.clone()),
             played
@@ -1136,64 +1258,254 @@ fn open_host(
     timing.mark("playback_created");
     stream.play().map_err(|error| error.to_string())?;
     timing.mark("playback_play_ready");
-    // Nuschl's canceller needs to know everything the speakers play: record
-    // the output device (all applications) where the system allows it, and
-    // only while the microphone is open.
-    let mut recording = None;
-    let mut reference_name = None;
-    let reference = if input.is_some() && matches!(echo, EchoSource::Nuschl) {
-        timing.mark("reference_create_begin");
-        match record_output(
-            host,
-            &all,
-            &output_device,
-            output_id.as_deref(),
-            tx.clone(),
-            clock,
-        ) {
-            Ok((stream, reference, name)) => {
-                timing.mark("reference_play_ready");
-                recording = Some(stream);
-                reference_name = Some(name);
-                Some(reference)
-            }
-            Err(error) => {
-                eprintln!(
-                    "output recording unavailable, using Nuschl's playback as the echo reference: {error}"
-                );
-                Some(Reference {
-                    samples: played_consumer,
-                    timeline: played_timeline,
-                    channels: 2,
-                    index: 0,
-                })
-            }
-        }
-    } else {
-        None
+    let mut source = MicrophoneSource {
+        host,
+        all,
+        input: input_device,
+        output: output_device,
+        output_id: output_id.clone(),
+        echo: matches!(echo, EchoSource::Nuschl),
+        clock,
+        labels,
+        timing: timing.clone(),
+        tx,
     };
-    Ok((
-        Devices {
-            _input: input,
-            _output: stream,
-            _reference: recording,
-            capture: capture_consumer,
-            capture_timeline,
-            playback,
-            output_channels,
-            underruns,
-            reference,
+    if let Some(microphone) = microphone.as_mut() {
+        record_reference(&mut source, microphone);
+    }
+    Ok(Devices {
+        _output: stream,
+        playback,
+        output_channels,
+        underruns,
+        played: Reference {
+            samples: played_consumer,
+            timeline: played_timeline,
+            channels: 2,
+            index: 0,
         },
-        Route {
+        microphone,
+        source: Some(source),
+        route: Route {
             inputs,
             outputs,
             input: input_id,
             output: output_id,
             echo,
             noise: found.noise,
-            reference: reference_name,
+            reference: None,
         },
-    ))
+    })
+}
+
+/// Open the microphone from `source` (the input stream, then the canceller's
+/// recording of the output).
+fn open_microphone(source: &mut MicrophoneSource, number: u64) -> Result<Microphone, String> {
+    // PulseAudio: a connection of its own, so opening and closing the
+    // microphone leaves the playback stream's connection alone, and closing
+    // ends the record stream with its connection.
+    #[cfg(target_os = "linux")]
+    let mut own = match (source.host.id(), &source.input) {
+        (cpal::HostId::PulseAudio, Some(input)) => {
+            let own = connect(cpal::HostId::PulseAudio)?;
+            let id = device_id(input);
+            let found = own
+                .devices()
+                .map_err(|error| error.to_string())?
+                .find(|device| device.supports_input() && device_id(device) == id)
+                .ok_or("the microphone is gone")?;
+            Some((own, found))
+        }
+        _ => None,
+    };
+    #[cfg(not(target_os = "linux"))]
+    let mut own: Option<(cpal::Host, cpal::Device)> = None;
+    let (host, input) = match own.as_mut() {
+        Some((own, found)) => (own, Some(&*found)),
+        None => (&mut source.host, source.input.as_ref()),
+    };
+    let mut microphone = open_input(
+        host,
+        input,
+        source.labels,
+        source.tx.clone(),
+        source.clock,
+        &source.timing,
+        number,
+    )?;
+    record_reference(source, &mut microphone);
+    Ok(microphone)
+}
+
+/// The input stream of `input`, stamped on `clock` (see reference.rs).
+fn open_input(
+    host: &mut cpal::Host,
+    input: Option<&cpal::Device>,
+    labels: &Labels,
+    tx: SyncSender<Event>,
+    clock: Clock,
+    timing: &Timing,
+    number: u64,
+) -> Result<Microphone, String> {
+    let input = input.ok_or("no microphone")?;
+    label(host, labels.microphone);
+    timing.mark("capture_create_begin");
+    let config = input
+        .default_input_config()
+        .map_err(|error| error.to_string())?;
+    let (producer, samples) = RingBuffer::<f32>::new(RING);
+    let (stamper, timeline) = reference::stamped();
+    let stream = by_format!(
+        config.sample_format(),
+        input_stream(
+            input,
+            stream_config(host, config),
+            (tx, number),
+            producer,
+            (stamper, clock),
+            timing.clone()
+        )
+    )?;
+    timing.mark("capture_created");
+    stream.play().map_err(|error| error.to_string())?;
+    timing.mark("capture_play_ready");
+    Ok(Microphone {
+        number,
+        _input: stream,
+        samples,
+        timeline,
+        recording: None,
+        played: false,
+        reference_name: None,
+    })
+}
+
+/// Nuschl's canceller needs to know everything the speakers play: record
+/// the output device (all applications) where the system allows it, else
+/// Nuschl's own playback. Only while the microphone is open.
+fn record_reference(source: &mut MicrophoneSource, microphone: &mut Microphone) {
+    if !source.echo {
+        return;
+    }
+    source.timing.mark("reference_create_begin");
+    match record_output(
+        &mut source.host,
+        &source.all,
+        &source.output,
+        source.output_id.as_deref(),
+        (source.tx.clone(), microphone.number),
+        source.clock,
+    ) {
+        Ok((stream, reference, name)) => {
+            source.timing.mark("reference_play_ready");
+            microphone.recording = Some((stream, reference));
+            microphone.reference_name = Some(name);
+        }
+        Err(error) => {
+            eprintln!(
+                "output recording unavailable, using Nuschl's playback as the echo reference: {error}"
+            );
+            microphone.played = true;
+        }
+    }
+}
+
+/// Close `microphone` on its own thread, then report the mute of `epoch` done.
+fn close(microphone: Microphone, tx: SyncSender<Event>, epoch: u64) {
+    std::thread::spawn(move || {
+        drop(microphone);
+        let _ = tx.send(Event::MicrophoneClosed(epoch));
+    });
+}
+
+/// Start processing `microphone` and report the route. The capture chain
+/// that ran before is kept when it fits: its canceller keeps what it
+/// learned about the room across a mute.
+fn install(
+    open: &mut Devices,
+    mut microphone: Microphone,
+    (chain, chain_channels): (&mut Option<CapturePipeline>, &mut usize),
+    settings: &AudioSettings,
+    upstream_noise: bool,
+    output: &mut impl io::Write,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let echo = matches!(open.route.echo, EchoSource::Nuschl);
+    let channels = match &microphone.recording {
+        Some((_, reference)) => reference.channels,
+        None if microphone.played => {
+            open.played.skip();
+            open.played.channels
+        }
+        None => 1,
+    };
+    match chain.as_mut() {
+        Some(kept) if kept.echo_cancellation() == echo && *chain_channels == channels => {
+            kept.configure(&chain_settings(settings, upstream_noise));
+        }
+        _ => {
+            let mut fresh = CapturePipeline::with_reference(
+                &chain_settings(settings, upstream_noise),
+                echo,
+                channels,
+            );
+            fresh.set_delay_hint(ECHO_DELAY_HINT_MS);
+            *chain = Some(fresh);
+            *chain_channels = channels;
+        }
+    }
+    open.route.reference = microphone.reference_name.take();
+    open.microphone = Some(microphone);
+    announce(open, output)?;
+    report(open, false, output)
+}
+
+/// Report the devices and the route.
+fn announce(open: &Devices, output: &mut impl io::Write) -> Result<(), Box<dyn std::error::Error>> {
+    let route = open.route.clone();
+    emit(
+        output,
+        LiveMediaEvent::Devices {
+            inputs: route.inputs,
+            outputs: route.outputs,
+            input: route.input,
+            output: route.output,
+            echo: route.echo,
+            noise: route.noise,
+            reference: route.reference,
+        },
+    )
+}
+
+/// Report that the devices are ready, and what the microphone does.
+fn report(
+    open: &Devices,
+    muted: bool,
+    output: &mut impl io::Write,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let message = if muted {
+        "Audio ready · microphone muted".to_string()
+    } else if open.microphone.is_some() {
+        match (&open.route.echo, &open.route.noise) {
+            (EchoSource::Upstream(name), _) => {
+                format!("Audio ready · system echo cancellation ({name})")
+            }
+            (_, Some(name)) => format!("Audio ready · system noise suppression ({name})"),
+            (EchoSource::Nuschl, None) => "Audio ready · echo cancellation on".into(),
+            (EchoSource::None, None) => "Audio ready".into(),
+        }
+    } else if open.source.is_none() {
+        // The microphone is still opening.
+        return Ok(());
+    } else {
+        "Playback ready; microphone unavailable".into()
+    };
+    emit(
+        output,
+        LiveMediaEvent::Status {
+            ready: true,
+            message,
+        },
+    )
 }
 
 /// Walk PipeWire's graph upstream from `source`. While our own capture has
@@ -1306,7 +1618,11 @@ fn convertible(config: &cpal::StreamConfig) -> Result<(usize, u32), String> {
 /// Report errors that end a stream. A stream that follows the system default
 /// (`DeviceChanged`: the audio server moved it to the new default device, as
 /// when Bluetooth headphones connect) keeps running and needs no reopening.
-fn error_callback(tx: SyncSender<Event>) -> impl FnMut(cpal::Error) + Send + 'static {
+/// `microphone` numbers a microphone's errors.
+fn error_callback(
+    tx: SyncSender<Event>,
+    microphone: Option<u64>,
+) -> impl FnMut(cpal::Error) + Send + 'static {
     move |error| {
         if !matches!(
             error.kind(),
@@ -1314,7 +1630,10 @@ fn error_callback(tx: SyncSender<Event>) -> impl FnMut(cpal::Error) + Send + 'st
                 | cpal::ErrorKind::RealtimeDenied
                 | cpal::ErrorKind::DeviceChanged
         ) {
-            let _ = tx.try_send(Event::DeviceError(error.to_string()));
+            let _ = tx.try_send(Event::DeviceError {
+                message: error.to_string(),
+                microphone,
+            });
         }
     }
 }
@@ -1324,7 +1643,7 @@ fn error_callback(tx: SyncSender<Event>) -> impl FnMut(cpal::Error) + Send + 'st
 fn input_stream<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
-    tx: SyncSender<Event>,
+    (tx, microphone): (SyncSender<Event>, u64),
     mut ring: Producer<f32>,
     (mut stamper, clock): (Stamper, Clock),
     timing: Timing,
@@ -1349,7 +1668,7 @@ where
                 stamper.anchor(converter.capture_time(clock.now_shifted(latency, Duration::ZERO)));
                 stamper.advance(converter.push(data, &mut ring));
             },
-            error_callback(tx),
+            error_callback(tx, Some(microphone)),
             None,
         )
         .map_err(|error| error.to_string())
@@ -1363,7 +1682,7 @@ fn record_output(
     all: &[cpal::Device],
     output: &cpal::Device,
     output_id: Option<&str>,
-    tx: SyncSender<Event>,
+    tx: (SyncSender<Event>, u64),
     clock: Clock,
 ) -> Result<(cpal::Stream, Reference, String), String> {
     #[cfg(target_os = "linux")]
@@ -1483,7 +1802,7 @@ fn record_output(
 fn build_recording<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
-    tx: SyncSender<Event>,
+    (tx, microphone): (SyncSender<Event>, u64),
     mut callback: impl FnMut(&mut dyn Iterator<Item = f32>, &cpal::InputCallbackInfo) + Send + 'static,
 ) -> Result<cpal::Stream, String>
 where
@@ -1496,7 +1815,7 @@ where
             move |data: &[T], info: &cpal::InputCallbackInfo| {
                 callback(&mut data.iter().map(|value| f32::from_sample(*value)), info);
             },
-            error_callback(tx),
+            error_callback(tx, Some(microphone)),
             None,
         )
         .map_err(|error| error.to_string())
@@ -1534,7 +1853,7 @@ where
                     underruns.fetch_add(1, Ordering::Relaxed);
                 }
             },
-            error_callback(tx),
+            error_callback(tx, None),
             None,
         )
         .map_err(|error| error.to_string())
@@ -1685,11 +2004,14 @@ mod tests {
     #[test]
     fn a_stream_moved_to_the_new_default_device_keeps_its_devices() {
         let (tx, rx) = super::mpsc::sync_channel(4);
-        let mut report = super::error_callback(tx);
+        let mut report = super::error_callback(tx, None);
         report(cpal::ErrorKind::DeviceChanged.into());
         assert!(rx.try_recv().is_err());
         report(cpal::ErrorKind::DeviceNotAvailable.into());
-        assert!(matches!(rx.try_recv(), Ok(super::Event::DeviceError(_))));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(super::Event::DeviceError { .. })
+        ));
     }
 
     #[cfg(target_os = "linux")]

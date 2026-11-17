@@ -241,7 +241,19 @@ def measure(binary, pulse, root, reference, current, peer=None):
                             "deafened": False,
                         }
                     )
-                    worker.wait(lambda worker=worker: worker.process.poll() is not None)
+                    # The microphone closes in place (#73); the worker stays.
+                    worker.wait(
+                        lambda worker=worker: any(
+                            e["kind"] == "microphone_closed" and e["epoch"] == 2
+                            for _, e in worker.events
+                        )
+                    )
+                    deadline = time.monotonic() + 0.1
+                    while any(
+                        s.get("properties", {}).get("application.name") == "Nuschl"
+                        for s in pulse.ctl("list", "source-outputs", json_output=True)
+                    ):
+                        assert time.monotonic() < deadline, "microphone retained after mute"
                     endings = [
                         e
                         for _, e in worker.events

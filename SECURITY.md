@@ -142,8 +142,9 @@ Exported PKCS#12 identities are written atomically and owner-only (0600).
 - Capture epochs and per-connection routing revisions invalidate queued PCM and
   Opus across mute and deafen changes, new speaking destinations and media-worker
   restarts.
-- The desktop replaces the media process when capture or its destinations change,
-  because native stream teardown can block.
+- A mute closes the microphone's streams inside the media process; its audio stops
+  being processed at once. Native stream teardown can block: the client replaces a
+  media process that has not confirmed the streams closed within 100 ms.
 - A deafened server receives and plays no voice, even while another unmuted server
   keeps capture running.
 - An `e2ee/1` server gets no ordinary Mumble voice until encrypted voice (SFrame)
