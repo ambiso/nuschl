@@ -26,7 +26,13 @@ appeared. Checks:
    the microphone at -37 dB): it records what the speakers play, so both its
    own playback and another application's sound are removed from the
    microphone, every run.
-7. The restarts of 2 and 3 with every worker in the sandbox a call gives it
+7. Switching the default output while the microphone is open (#298):
+   headphones connect and become the default sink, then switch profile (the
+   headphones' sink goes away; a headset sink and microphone appear and
+   become the defaults). The worker's streams follow the defaults: it keeps
+   running without reopening its devices, and its playback reaches each new
+   sink.
+8. The restarts of 2 and 3 with every worker in the sandbox a call gives it
    (`nuschl media-sandbox`, the desktop's own bwrap command), replaced as
    the desktop replaces it. PipeWire's socket is bound as a file, so after a
    restart only a replacement worker reaches the new one; PulseAudio's
@@ -204,9 +210,9 @@ class PipeWire:
         for name in ("pipewire-pulse", "wireplumber", "pipewire"):
             self.stop(name)
 
-    def record(self, seconds, path):
-        """Record what reaches the speakers (their monitor) as 16-bit mono WAV."""
-        recorder = subprocess.Popen([str(self.pipewire / "bin/pw-record"), "--target", "speakers",
+    def record(self, seconds, path, target="speakers"):
+        """Record what reaches a sink (its monitor) as 16-bit mono WAV."""
+        recorder = subprocess.Popen([str(self.pipewire / "bin/pw-record"), "--target", target,
                                      "-P", "{ stream.capture.sink = true }", "--format", "s16", "--rate", "48000",
                                      "--channels", "1", str(path)], env=self.env, stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL, start_new_session=True)
@@ -277,8 +283,8 @@ class Worker:
             self.process.wait(timeout=5)
 
 
-def play_and_measure(worker, pipewire, packets, path):
-    recorder = pipewire.record(4, path)
+def play_and_measure(worker, pipewire, packets, path, target="speakers"):
+    recorder = pipewire.record(4, path, target)
     time.sleep(0.6)
     start = time.monotonic()
     for index, opus in enumerate(packets):
@@ -420,6 +426,52 @@ def defaults(pipewire):
     result = subprocess.run([str(pipewire.pipewire / "bin/pw-metadata"), "-n", "default"], env=pipewire.env,
                             capture_output=True, text=True, timeout=10)
     return sorted(line.split("key:", 1)[1] for line in result.stdout.splitlines() if "key:'default.audio." in line)
+
+
+def connect_device(pipewire, name, media_class, position):
+    """A virtual device that appears as hardware does (Bluetooth headphones) and,
+    with the highest priority, becomes the session's default."""
+    subprocess.run([str(pipewire.pipewire / "bin/pw-cli"), "create-node", "adapter",
+                    f"{{ factory.name = support.null-audio-sink node.name = {name} node.description = {name} "
+                    f"media.class = {media_class} audio.position = [ {position} ] priority.session = 3000 "
+                    "object.linger = true }"],
+                   env=pipewire.env, check=True, capture_output=True, timeout=10)
+    key = "'default.audio.sink'" if media_class == "Audio/Sink" else "'default.audio.source'"
+    wait_default(pipewire, lambda line: key in line and f'"{name}"' in line, f"{name} did not become the default")
+
+
+def wait_default(pipewire, condition, message):
+    deadline = time.monotonic() + 10
+    while not any(condition(line) for line in defaults(pipewire)):
+        assert time.monotonic() < deadline, f"{message}: {defaults(pipewire)}, nodes {sorted(pipewire.nodes())}"
+        time.sleep(0.2)
+
+
+def check_output_switch(binary, pipewire, packets, output):
+    worker = Worker(binary, pipewire, muted=False)
+    worker.ready()
+    mark = len(worker.events)
+    connect_device(pipewire, "headphones", "Audio/Sink", "FL FR")
+    time.sleep(1)
+    level = play_and_measure(worker, pipewire, packets, output / "switch-headphones.wav", target="headphones")
+    assert level > 0.02, f"playback did not follow the new default sink (RMS {level:.4f})"
+    # A profile switch: the headphones' sink goes; a headset sink and microphone come.
+    node = pipewire.nodes()["headphones"]["object.id"]
+    subprocess.run([str(pipewire.pipewire / "bin/pw-cli"), "destroy", str(node)], env=pipewire.env, check=True,
+                   capture_output=True, timeout=10)
+    wait_default(pipewire, lambda line: "'default.audio.sink'" in line and '"speakers"' in line,
+                 "the session kept the removed sink")
+    connect_device(pipewire, "headset", "Audio/Sink", "FL FR")
+    connect_device(pipewire, "headset-mic", "Audio/Source/Virtual", "MONO")
+    time.sleep(1)
+    level = play_and_measure(worker, pipewire, packets, output / "switch-headset.wav", target="headset")
+    assert level > 0.02, f"playback did not follow the headset profile (RMS {level:.4f})"
+    assert ("headset-mic", "Nuschl") in links(pipewire), f"the microphone did not follow: {sorted(links(pipewire))}"
+    reopened = [e for e in worker.events[mark:] if e["kind"] in ("status", "devices")]
+    worker.stop()
+    assert not reopened, f"switching the output device reopened the microphone's devices: {reopened}"
+    print(f"Output device switch: the open microphone and playback followed the defaults without a restart "
+          f"(RMS {level:.3f}).", flush=True)
 
 
 def check_echo_cancel(binary, pipewire):
@@ -582,6 +634,13 @@ def main():
             try:
                 pipewire.up()
                 check_restarts(binary, pipewire, packets, args.output)
+            finally:
+                pipewire.close()
+        if only in (None, "switch"):
+            pipewire = PipeWire(args.pipewire, args.wireplumber, args.dbus_daemon, Path(temporary) / "switch")
+            try:
+                pipewire.up()
+                check_output_switch(binary, pipewire, packets, args.output)
             finally:
                 pipewire.close()
         if only in (None, "sandbox"):
