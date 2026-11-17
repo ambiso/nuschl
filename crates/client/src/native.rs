@@ -1857,7 +1857,6 @@ async fn connect_once(
             crypto: Some(nuschl_session::identity::IdentitySetup {
                 crypto: crypto.clone(),
                 device_name: device_name(),
-                recovery: settings.borrow().recovery_key,
                 witnessing: settings.borrow().key_transparency.clone(),
             }),
         },

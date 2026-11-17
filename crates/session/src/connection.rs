@@ -1654,7 +1654,6 @@ impl KtLink {
             server: self.server.clone(),
             descriptor: self.descriptor.clone(),
             device_name: self.setup.device_name.clone(),
-            recovery: self.setup.recovery,
             frames: frames_tx,
             replies: replies_rx,
             commands: commands_rx,

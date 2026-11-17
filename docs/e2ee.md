@@ -381,21 +381,23 @@ safe against a future quantum computer. The spike's bundle with a full chain is 
 
 ### 3.5 Where the keys live
 
-- **Root private key**: encrypted under a **recovery key** (256 bits, shown once as
+- **Root private key**: encrypted under a **recovery key** (256 bits, shown as
   56 Crockford base32 characters in 14 groups of 4, with a 24-bit checksum that
   catches typos, or as a printable sheet; 24 words would need a 2048-word list and are
   left to the UI), stored on each linked device and, optionally, as an
   opaque backup blob on the user's servers. Decrypted only to rotate the device-signing
-  key or recover. Without a recovery key the root exists only during setup and is then
-  deleted; losing every device holding the device-signing key then means a new identity.
+  key or recover.
 - **Device-signing private key**: on linked devices the user marked "can link devices"
   (default: every desktop; open question 2), in the crypto worker's store.
 - **Device keys**: in the crypto worker's store, never exported.
-- **As implemented** (open question 1 undecided, so a setting: `offer` by default,
-  `require`, `never`): at creation the root is sealed under a fresh recovery key, and
-  the key itself waits, sealed under the store key, until the user writes it down
-  ("saved": the key is forgotten) or skips it (the recovery blob, and with it the
-  root, is deleted). `require` refuses to skip; `never` deletes the root at once.
+- **As implemented** (answer 1): every identity is created with a recovery key. The
+  root is sealed under it (the recovery blob in the keystore), and the device keeps
+  the key itself, sealed under the store key beside the other sealed files, so
+  Settings can show and copy it whenever the user asks; nothing deletes it. Anyone
+  who copies the worker's folder with `store.key` gets the key with it, as they get
+  the device keys. Creating the identity stays its own request (`CreateIdentity`), so
+  a login screen can later offer recovery with a written-down key
+  (`RecoveryBlob::open`) before an identity is made.
 - **Recovery** when all devices are lost: with the recovery key, a new device restores
   the root, rotates the device-signing key, revokes the old devices; the identity and
   every contact's verification survive. Without it: a new identity, shown to contacts
@@ -1234,7 +1236,10 @@ on flash become unreadable once the old key is gone from the OS credential store
 
 ### Answers (user, 2026-11-11)
 
-1. **Recovery key:** skippable; offered by default (as implemented).
+1. **Recovery key:** always made with the identity and kept on the device, never
+   deleted; Settings shows it whenever asked. Recovery with the key belongs to a
+   later login screen (user, 2026-11-17, replacing "skippable; offered by default"
+   of 2026-11-11).
 2. **Device-signing key:** on every linked device, phones included ("you need to be
    able to add new devices from any device"). A stolen unlocked device can then add
    devices until revoked; that stays visible (KT, self-monitoring, contacts see a new
@@ -1285,7 +1290,7 @@ on flash become unreadable once the old key is gone from the OS credential store
 
 1. **Recovery key**: required at identity creation (as Matrix pushes it), or offered and
    skippable? Without one, losing all devices that hold the device-signing key means a
-   new identity. *(Implemented as a setting, offered and skippable by default.)*
+   new identity. *(Answered: always made, and kept on the device.)*
 2. **Device-signing key placement**: on every linked desktop (default here), or only on
    devices the user marks? Phones later?
 3. **Key transparency backend**: `akd` now (recommended), or wait for KEYTRANS and
@@ -1331,7 +1336,7 @@ settled, beyond the refinements marked "as implemented" above:
 - **The worker's store** (§8.3, for phase 3): the sealed `DeviceKeystore`, a JSON state
   sealed under the store key (purpose 5: pinned logs, `KnownHeads`, our bindings and
   monitoring checkpoint, contacts' `ContactTrust`, verified identities), and the
-  pending recovery key; each file written atomically (synced temporary file,
+  recovery key; each file written atomically (synced temporary file,
   rename). The log-structured store for MLS state comes with phase 4.
 - **Signing.** The worker signs account statements (one per server and account,
   reused while valid) and renews this device's certificate 30 days before it expires

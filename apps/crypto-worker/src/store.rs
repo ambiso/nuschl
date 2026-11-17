@@ -6,7 +6,7 @@
 //! | `store.key` | the store key, 32 bytes, 0600 (for now; see below) |
 //! | `keystore` | the device keystore (`DeviceKeystore`), sealed under the store key |
 //! | `state` | contacts, pins and key-transparency state (JSON), sealed (purpose 5) |
-//! | `recovery` | the recovery key made at creation until it is saved or skipped, sealed |
+//! | `recovery` | the recovery key made with the identity, kept, sealed |
 //!
 //! Every write goes to a temporary file that is synced and renamed over the old one,
 //! so a crash leaves the old or the new version. Files are created 0600.

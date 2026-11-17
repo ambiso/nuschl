@@ -164,7 +164,7 @@ impl OwnIdentity {
         use nuschl_ipc::crypto::CryptoResponse;
         match result {
             Ok(CryptoResponse::Identity(view)) => {
-                if !view.recovery_pending {
+                if !view.recovery_key_kept {
                     self.recovery_key = None;
                 }
                 self.view = Some(view);
@@ -177,9 +177,9 @@ impl OwnIdentity {
     }
 }
 
-/// Settings → Identity: the Nuschl identity, its recovery key, the policy.
+/// Settings → Identity: the Nuschl identity and its recovery key.
 pub fn settings_rows(this: &Desktop, cx: &mut Context<Desktop>) -> Vec<AnyElement> {
-    use nuschl_ipc::crypto::{CryptoRequest, RecoveryPolicy};
+    use nuschl_ipc::crypto::CryptoRequest;
     let own = &this.own_identity;
     let fingerprint = own.view.as_ref().and_then(|view| view.fingerprint.clone());
     let mut rows = vec![
@@ -212,9 +212,10 @@ pub fn settings_rows(this: &Desktop, cx: &mut Context<Desktop>) -> Vec<AnyElemen
     if let Some(view) = &own.view
         && view.fingerprint.is_some()
     {
-        let status = if view.recovery_pending {
-            "A recovery key was made with your identity. Write it down, or skip it: \
-             without it, losing this device means a new identity."
+        // Identities made before every one got a kept recovery key may have
+        // none, or one the user wrote down and this device let go.
+        let status = if view.recovery_key_kept {
+            "Your recovery key restores this identity on a new device. Write it down."
         } else if view.recoverable {
             "Recoverable with your recovery key."
         } else {
@@ -224,11 +225,7 @@ pub fn settings_rows(this: &Desktop, cx: &mut Context<Desktop>) -> Vec<AnyElemen
         rows.push(
             div()
                 .text_xs()
-                .text_color(color(if view.recovery_pending {
-                    WARNING
-                } else {
-                    TEXT_FAINT
-                }))
+                .text_color(color(TEXT_FAINT))
                 .child(text!(status).with_id("kt-recovery-status"))
                 .into_any_element(),
         );
@@ -242,7 +239,7 @@ pub fn settings_rows(this: &Desktop, cx: &mut Context<Desktop>) -> Vec<AnyElemen
             );
         }
         // Read before the key is shown.
-        if view.recovery_pending || own.recovery_key.is_some() {
+        if view.recovery_key_kept || own.recovery_key.is_some() {
             rows.push(
                 div()
                     .text_xs()
@@ -302,7 +299,7 @@ pub fn settings_rows(this: &Desktop, cx: &mut Context<Desktop>) -> Vec<AnyElemen
                     .into_any_element(),
             );
         }
-        if view.recovery_pending {
+        if view.recovery_key_kept {
             let mut buttons = div().flex().gap_2();
             if own.recovery_key.is_none() {
                 buttons = buttons.child(styled_button(
@@ -329,56 +326,22 @@ pub fn settings_rows(this: &Desktop, cx: &mut Context<Desktop>) -> Vec<AnyElemen
                     cx,
                 ));
             }
-            if this.settings.recovery_key != RecoveryPolicy::Require {
-                buttons = buttons.child(styled_button(
-                    "kt-skip-recovery",
-                    "Skip",
-                    Tone::Ghost,
-                    |this, _, cx| {
-                        this.own_identity.recovery_key = None;
-                        this.driver.identity(CryptoRequest::SkipRecoveryKey);
-                        cx.notify();
-                    },
-                    cx,
-                ));
-            }
             rows.push(buttons.into_any_element());
         }
     } else {
-        let set = |policy: RecoveryPolicy| -> crate::settings::Action {
-            std::rc::Rc::new(
-                move |this: &mut Desktop, _: &mut Window, _: &mut Context<Desktop>| {
-                    this.update_settings(|settings| settings.recovery_key = policy)
-                },
-            )
-        };
-        let policy = this.settings.recovery_key;
-        rows.push(crate::settings::managed(
-            this,
-            "recovery_key",
-            crate::settings::segmented(
-                "kt-recovery-policy",
-                "Recovery key when the identity is created",
-                vec![
-                    (
-                        "Offer",
-                        policy == RecoveryPolicy::Offer,
-                        set(RecoveryPolicy::Offer),
-                    ),
-                    (
-                        "Require",
-                        policy == RecoveryPolicy::Require,
-                        set(RecoveryPolicy::Require),
-                    ),
-                    (
-                        "None",
-                        policy == RecoveryPolicy::Never,
-                        set(RecoveryPolicy::Never),
-                    ),
-                ],
-                cx,
-            ),
-        ));
+        rows.push(
+            div()
+                .text_xs()
+                .text_color(color(TEXT_FAINT))
+                .child(
+                    text!(
+                        "Your identity and its recovery key are created when you first \
+                         connect to a Nuschl server."
+                    )
+                    .with_id("kt-recovery-status"),
+                )
+                .into_any_element(),
+        );
     }
     if let Some(error) = &own.error {
         rows.push(

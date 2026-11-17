@@ -190,8 +190,8 @@ Left, in the order they should move:
   comments and avatars, listening, whisper targets, context actions): the desktop
   still sends `nuschl_session::connection::Command`s to the driver itself; each
   becomes a `Request`.
-- **Settings**: `ClientSettings` stays in `nuschl-session::config` (its recovery
-  policy is an `nuschl-ipc` type); the client sees `names::Preferences`.
+- **Settings**: `ClientSettings` stays in `nuschl-session::config`; the client
+  sees `names::Preferences`.
 - **Transfers** (wormhole offers, `transfer.rs`) and **attachments**: a platform
   service and SDK state each.
 - **Search**: requests, scopes, results and jumps go through the client; the

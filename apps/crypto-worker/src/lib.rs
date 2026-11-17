@@ -3,10 +3,9 @@
 //! owns every identity secret and every key-transparency decision.
 //!
 //! - **Identity.** Created on first need: the identity root, the device-signing key of
-//!   generation 1 and this device's keys (`nuschl-identity`). Under the recovery
-//!   policy `offer` (the default; `require`, `never`), the root is sealed under a fresh
-//!   recovery key, which waits (sealed under the store key) until the user saves or
-//!   skips it; skipping deletes the root for good.
+//!   generation 1 and this device's keys (`nuschl-identity`). The root is sealed
+//!   under a fresh recovery key, which the worker keeps (sealed under the store key)
+//!   so the user can see it whenever they ask.
 //! - **Keystore.** The encrypted device keystore and the worker's own state in its
 //!   directory ([`store`]); the store key in a 0600 file there for now, with the OS
 //!   credential store as the follow-up.

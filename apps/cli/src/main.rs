@@ -586,7 +586,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 directory,
             ),
             device_name: format!("{} (nuschl-cli)", args.username),
-            recovery: nuschl_ipc::crypto::RecoveryPolicy::Never,
             witnessing: nuschl_ipc::crypto::KeyTransparencySettings {
                 witnesses: args
                     .kt_witnesses

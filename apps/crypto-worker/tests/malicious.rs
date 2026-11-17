@@ -8,7 +8,7 @@ mod common;
 
 use common::*;
 use nuschl_ipc::crypto::{
-    ContactState, CryptoRequest, CryptoResponse, HeadOutcome, MonitorOutcome, RecoveryPolicy,
+    ContactState, CryptoRequest, CryptoResponse, HeadOutcome, MonitorOutcome,
 };
 use nuschl_kt::{AccountId, Directory, Ed25519HeadSigner, HeadSigner, Label, SignedHead};
 
@@ -238,7 +238,6 @@ async fn a_binding_that_came_and_went_is_shown_and_self_monitoring_catches_it() 
     let CryptoResponse::Bundle(bundle) = alice.ask(CryptoRequest::PublishBundle {
         server: SERVER.into(),
         device_name: "laptop".into(),
-        recovery: RecoveryPolicy::Never,
     }) else {
         panic!()
     };

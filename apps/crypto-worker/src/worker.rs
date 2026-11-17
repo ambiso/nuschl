@@ -15,7 +15,7 @@ use nuschl_identity::{
 };
 use nuschl_ipc::crypto::{
     ContactState, ContactView, CryptoRequest, CryptoResponse, CryptoServer, Due, HeadOutcome,
-    IdentityView, KtRecordBytes, MonitorOutcome, OwnKeyAlarm, PublishBundle, RecoveryPolicy,
+    IdentityView, KtRecordBytes, MonitorOutcome, OwnKeyAlarm, PublishBundle,
 };
 use nuschl_kt::{
     AccountBinding, AccountId, Assessment, AuditResponse, ContactTrust, DirectoryValue, ErrorClass,
@@ -69,7 +69,7 @@ pub struct Worker {
     pub(crate) store: Store,
     pub(crate) keystore: Option<DeviceKeystore>,
     pub(crate) state: State,
-    /// The recovery key made at creation, until it is saved or skipped.
+    /// The recovery key made with the identity, which the worker keeps.
     recovery: Option<Zeroizing<String>>,
     clock: Box<dyn Fn() -> u64 + Send>,
     /// MLS groups and conversations (crate::mls).
@@ -154,38 +154,14 @@ impl Worker {
     fn dispatch(&mut self, request: CryptoRequest) -> Result<CryptoResponse, String> {
         Ok(match request {
             CryptoRequest::Identity => CryptoResponse::Identity(self.identity_view(false)),
-            CryptoRequest::CreateIdentity {
-                device_name,
-                recovery,
-            } => {
-                let created = self.ensure_identity(&device_name, recovery)?;
+            CryptoRequest::CreateIdentity { device_name } => {
+                let created = self.ensure_identity(&device_name)?;
                 CryptoResponse::Identity(self.identity_view(created))
             }
             CryptoRequest::ShowRecoveryKey => match &self.recovery {
                 Some(key) => CryptoResponse::RecoveryKey(key.to_string()),
-                None => return Err("no recovery key is waiting".into()),
+                None => return Err("this device keeps no recovery key".into()),
             },
-            CryptoRequest::RecoveryKeySaved => {
-                self.store
-                    .remove(RECOVERY_FILE)
-                    .map_err(|error| error.to_string())?;
-                self.recovery = None;
-                CryptoResponse::Identity(self.identity_view(false))
-            }
-            CryptoRequest::SkipRecoveryKey => {
-                if self.state.recovery == RecoveryPolicy::Require {
-                    return Err("a recovery key is required".into());
-                }
-                if let Some(keystore) = self.keystore.take() {
-                    self.keystore = Some(keystore.without_recovery_blob());
-                    self.save_keystore()?;
-                }
-                self.store
-                    .remove(RECOVERY_FILE)
-                    .map_err(|error| error.to_string())?;
-                self.recovery = None;
-                CryptoResponse::Identity(self.identity_view(false))
-            }
             CryptoRequest::Connect {
                 server,
                 descriptor,
@@ -215,8 +191,7 @@ impl Worker {
             CryptoRequest::PublishBundle {
                 server,
                 device_name,
-                recovery,
-            } => CryptoResponse::Bundle(self.publish_bundle(&server, &device_name, recovery)?),
+            } => CryptoResponse::Bundle(self.publish_bundle(&server, &device_name)?),
             CryptoRequest::Published {
                 server,
                 value,
@@ -384,7 +359,7 @@ impl Worker {
                     .as_str()
                     .to_owned(),
                 created,
-                recovery_pending: self.recovery.is_some(),
+                recovery_key_kept: self.recovery.is_some(),
                 recoverable: keystore.recovery_blob().is_some(),
                 can_link: keystore.device_signing().is_some(),
                 alarms: Vec::new(),
@@ -417,11 +392,7 @@ impl Worker {
     }
 
     /// Creates the identity unless there is one; `true` if it was created.
-    fn ensure_identity(
-        &mut self,
-        device_name: &str,
-        policy: RecoveryPolicy,
-    ) -> Result<bool, String> {
+    fn ensure_identity(&mut self, device_name: &str) -> Result<bool, String> {
         if self.keystore.is_some() {
             return Ok(false);
         }
@@ -436,30 +407,25 @@ impl Worker {
             .map_err(|error| error.to_string())?;
         let identity =
             NewIdentity::create(&name, validity, now_s).map_err(|error| error.to_string())?;
-        let mut keystore = identity.keystore().map_err(|error| error.to_string())?;
-        let mut recovery = None;
-        if policy != RecoveryPolicy::Never {
-            // The root survives creation only under a recovery key, which waits here
-            // (sealed) until the user saves or skips it (docs/e2ee.md §3.5).
-            let key = RecoveryKey::generate().map_err(|error| error.to_string())?;
-            let blob =
-                RecoveryBlob::seal(&identity.root, &key).map_err(|error| error.to_string())?;
-            keystore = keystore.with_recovery_blob(blob);
-            recovery = Some(key.display());
-        }
+        // The root survives creation sealed under a recovery key, which this
+        // device keeps (sealed) so the user can see it again (docs/e2ee.md §3.5).
+        let key = RecoveryKey::generate().map_err(|error| error.to_string())?;
+        let blob = RecoveryBlob::seal(&identity.root, &key).map_err(|error| error.to_string())?;
+        let keystore = identity
+            .keystore()
+            .map_err(|error| error.to_string())?
+            .with_recovery_blob(blob);
+        let recovery = key.display();
         drop(identity);
         self.store
             .save_keystore(&keystore)
             .map_err(|error| format!("cannot save the keystore: {error}"))?;
-        if let Some(key) = &recovery {
-            self.store
-                .save(RECOVERY_FILE, key.as_bytes())
-                .map_err(|error| format!("cannot keep the recovery key: {error}"))?;
-        }
+        self.store
+            .save(RECOVERY_FILE, recovery.as_bytes())
+            .map_err(|error| format!("cannot keep the recovery key: {error}"))?;
         self.keystore = Some(keystore);
-        self.recovery = recovery;
+        self.recovery = Some(recovery);
         self.state.device_name = name.as_str().to_owned();
-        self.state.recovery = policy;
         self.save()?;
         Ok(true)
     }
@@ -688,13 +654,8 @@ impl Worker {
 
     // ---- our own binding ----
 
-    fn publish_bundle(
-        &mut self,
-        key: &str,
-        device_name: &str,
-        policy: RecoveryPolicy,
-    ) -> Result<PublishBundle, String> {
-        let created = self.ensure_identity(device_name, policy)?;
+    fn publish_bundle(&mut self, key: &str, device_name: &str) -> Result<PublishBundle, String> {
+        let created = self.ensure_identity(device_name)?;
         let entry = self.server(key)?;
         let account =
             account_id(&entry.account).map_err(|_| "a guest has no account to bind".to_owned())?;
