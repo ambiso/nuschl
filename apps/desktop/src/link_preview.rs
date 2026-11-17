@@ -193,6 +193,12 @@ pub fn composer(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement>
             false,
             true,
         ),
+        Status::TextOnly(nuschl_client::preview::Ineligible::Attachments) => (
+            "No link preview with attachments".to_owned(),
+            "The link is sent as text.".to_owned(),
+            false,
+            false,
+        ),
         Status::TextOnly(_) => (
             "Text only in this conversation".to_owned(),
             "Link previews are unavailable for this message type.".to_owned(),
