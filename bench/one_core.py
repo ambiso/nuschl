@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: EUPL-1.2
 """The one-core suite's NixOS test driver part: each test `runs` times beside
-a busy loop on the guest's only core. Per test: the pass rate, the workers' CPU
+a busy loop on the guest's only core. Per test: the pass rate, the failed
+quarantined steps (tests/quarantine.py; a run passes with them), the workers' CPU
 seconds per second alive (bench/worker_cpu.py) and, from the media worker's
 `audio-stats` lines (apps/media-worker/src/stats.rs), capture gaps and playback
 underruns, late packets and capture-to-send latency percentiles (nearest rank
@@ -53,6 +54,7 @@ def summarize(attempts):
     result = {
         "passed": sum(attempt[0] for attempt in attempts),
         "runs": len(attempts),
+        "quarantined_failures": sum(attempt[4].count("QUARANTINED FAIL") for attempt in attempts),
         "cpu_per_second": {name: round(t["cpu_s"] / t["alive_s"], 4) for name, t in cpu.items() if t["alive_s"]},
     }
     if any(attempt[2] for attempt in attempts):

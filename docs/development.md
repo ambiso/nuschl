@@ -125,8 +125,9 @@ Reviews check that a change is:
 - `one-core`, `one-core-musicbot`: existing VM tests (media_live's jitter, echo,
   double-talk and sounds checks, rtc_probe, desktop_recovery, the music bot's
   playback) on a guest with one core, each `--arg runs N` times (default 5). A busy
-  loop runs in the tested processes' slice. For each test: the pass rate and the
-  workers' CPU seconds per second alive. Where the test starts the media worker
+  loop runs in the tested processes' slice. For each test: the pass rate, the
+  failed quarantined steps (`tests/quarantine.txt`) and the workers' CPU seconds
+  per second alive. Where the test starts the media worker
   itself (media_live), `NUSCHL_AUDIO_TIMING=1` makes it print `audio-stats` lines:
   capture gaps (late or missing capture callback intervals) and playback underruns
   per minute, packets sent a period or more after their deadline, and
