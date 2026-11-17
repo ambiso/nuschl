@@ -29,14 +29,17 @@ the device keeps; PR #273 signs sticker pack versions with the author's identity
 - **Light federation.** Home servers carry what costs per user and is easy to run:
   the SFU for streams and calls, voice, direct messages, attachments and stickers.
   The identity service finds a user's home server and sends all email, so it carries
-  the mail setup for every home server. A user whom a home server blocks moves to another
-  one and is reachable again.
+  the mail setup for every home server. A user whom a home server blocks moves to
+  another one and is reachable again.
 - **Moving home servers** is a statement signed with the user's identity ("I now live
   at server Y"), recorded in the identity service's directory and KT log.
 - **Recovery** works with a synced passkey, with the recovery key on a later login
   screen, or by email. An email reset makes a new identity that the identity service
   vouches for; it is public, delayed, open to objection, and contacts see it as
   unverified.
+- **Invite tree.** "Also maybe we can have an invite tree like lobste.rs so spam or
+  sockpuppet accounts can be identified more easily (and a later public registration
+  phase which can be more heavily moderated)"
 
 ## Roles
 
@@ -70,6 +73,8 @@ talk only to the identity service.
 - *Passkey credentials*: credential ids and public keys for rpId `id.nuschl.eu`.
 - *Email*: the address behind each email binding, kept by the service to send codes.
   The record carries a salted hash of the address, signed by the device-signing key.
+- *Invite tree*: for each identity, the identity that invited it and the signed
+  registration invite, outside the KT log (see "Invite tree").
 
 **Home server**
 
@@ -91,6 +96,8 @@ cached identity record, home statement and the id service's head they were check
 ### Register
 
 1. On first connect the device creates the identity and its recovery key (#363).
+   Publishing it at the identity service takes a registration invite (see "Invite
+   tree").
 2. The server the user registers with becomes the home server; the device binds the
    account with an `AccountStatement`.
 3. The device publishes the identity record and `Home { origin, log id, seq = 1 }`,
@@ -187,6 +194,42 @@ Chosen contacts confirm a reset jointly, as an alternative to email. The shape
 matches the email reset (public entry, delay, objection) with k of n contact
 signatures in place of the code. Open question 6.
 
+## Invite tree
+
+Registration at the identity service starts by invitation, as on lobste.rs. Each
+identity records who invited it, so the identities form a tree with the service's
+first identity at the root; a moderator sees each account's inviter and can act on a
+whole branch.
+
+- **Invites.** A registration invite is a single-use code from an identity's devices,
+  signed by its device-signing key over the code's hash and an expiry. The new
+  identity's first publication signs the code too, so the edge "A invited B" carries
+  both signatures and the service holds no edge without them.
+- **Who sees it.** A public tree, like lobste.rs's, makes spam tracing open to anyone
+  and shows everyone's social connections, which a messenger keeps private. The
+  recommendation is the moderators' view: the edges stay in the directory, outside
+  the KT log; moderators of the identity service see the tree, and each user sees
+  their own inviter and invitees. Contacts see neither.
+- **Against spam and sockpuppets.** Invites are limited per account and per period,
+  and a new account invites only after a waiting time. A moderator who finds spam or
+  sockpuppets looks at the inviter and the siblings: many reported accounts under one
+  inviter point to the inviter. Action on a branch is a moderator's decision after
+  reviewing its accounts, starting with the inviter's invite rights; whole-branch
+  bans stay rare, since honest invitees sit in the same branches.
+- **What a ban does.** The service withdraws the account's handle and invite rights
+  and stops publishing its new records. Signed revocations stay accepted, so the
+  user keeps control of their keys, and existing contacts and conversations go on.
+- **With the rest of the plan.** An email reset keeps the old identity's place in the
+  tree, since the service vouches for the reset; passkey and recovery-key recovery
+  keep the identity itself. Moving home servers leaves the tree unchanged. A
+  self-hosted identity service runs its own tree with its own first identity.
+
+**Later: public registration.** A separate phase opens registration without an
+invite, with heavier moderation: rate limits per address and network, proof of work
+or a confirmed email, and a probation period with lower limits (fewer conversations
+with strangers per day, no invites). Accounts registered this way hang under a
+"public" node of the tree, so moderators can treat them as one branch.
+
 ## Sticker packs after a reset
 
 Pack versions are signed by the author's identity and the `pack_id` derives from its
@@ -214,6 +257,8 @@ All numbers are proposals.
 - Home statements: `seq` strictly increasing; one move per hour per identity.
 - Email: one bound address; codes of 8 digits valid for 15 minutes with 5 attempts;
   one pending reset per identity; reset delay 7 days.
+- Invites: 5 per account per 30 days, available after 14 days; codes expire after
+  7 days.
 - Lookups: at most 64 labels per batch; the home server rate-limits per account and
   the identity service per home server.
 - Inbox: invites up to the delivery service's frame limit; per-sender and
@@ -238,6 +283,8 @@ All numbers are proposals.
    client's reset UI.
 8. **Stickers**: the "replaces pack X" note (#273).
 9. **Social recovery**, if the Owner chooses it.
+10. **Invite tree**: invite codes, edges, quotas and the moderators' view, with the
+    identity service (slice 2); public registration later.
 
 Each slice has unit tests and loopback integration tests through `nuschl-testkit`;
 the move and reset flows also get a NixOS VM test with two home servers and an
@@ -268,3 +315,11 @@ identity service.
    until a desktop passkey API exists for that rpId.
 10. **Backup contents:** the root seed plus pins and verified contacts. Alternative:
     the root seed only.
+11. **Invite tree visibility:** moderators of the identity service, plus each user's
+    own inviter and invitees. Alternative: public, as on lobste.rs.
+12. **Invite quotas:** 5 per account per 30 days, after 14 days of membership.
+    Moderators raise or lower them per account.
+13. **Branch actions:** reviewed per account, starting with the inviter's invite
+    rights. Alternative: automatic suspension of a branch above a report threshold.
+14. **Public registration:** later, after the invite phase, with rate limits, proof
+    of work or email, and 30 days of probation.
