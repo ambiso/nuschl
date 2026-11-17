@@ -38,10 +38,6 @@
       ...
     }:
     {
-      lib.distroLinux = {
-        mkVersion = import ./packaging/linux/version.nix;
-        mkPackages = import ./packaging/linux/default.nix;
-      };
       nixosModules.default = import ./nix/module.nix { inherit self; };
       # The web host: web client, share links and the tunnel relay (docs/web.md).
       nixosModules.web = import ./nix/web-module.nix { inherit self; };
@@ -239,7 +235,7 @@
         # Omit unsupported artifact names without evaluating a Linux builder
         # (or forcing pkgs for platforms that nixpkgs no longer supports).
         distroOutput = name: if system == "x86_64-linux" then name else null;
-        linuxDistro = self.lib.distroLinux.mkPackages {
+        linuxDistro = import ./packaging/linux/default.nix {
           inherit pkgs toolchain;
           sourceInfo = self.sourceInfo;
           nativeNotices = releaseNotices.linux.bundle;
@@ -872,7 +868,6 @@
             meta.description = "Nuschl in a terminal";
           };
         checks = {
-          ${distroOutput "distro-metadata"} = linuxDistro.metadataTests;
           build = package;
           server-build = serverPackage;
           rtc-build = rtcPackage;
