@@ -785,7 +785,18 @@ def actions(args, root, shell, application, bot, murmur):
     # a reload lets them in again.
     type_field("New channel password", "door-code")
     activate("Set password")
-    activate("Everyone")
+    # Whom to check is searched: offline accounts are listed too, and Enter
+    # picks the highlighted match.
+    type_field("Check access for", "offline")
+    eventually(
+        lambda: any(
+            role == "list item" and name.startswith("Offline member")
+            for _, role, name, _ in items(application)
+        ),
+        "offline accounts missing from Check access",
+    )
+    type_field("Check access for", "every")
+    shell.key("Return")
     eventually(
         lambda: text_contains("Enter: Not allowed · Cannot pass Lobby"),
         "Check access did not explain the draft",

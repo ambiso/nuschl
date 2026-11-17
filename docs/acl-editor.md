@@ -47,14 +47,17 @@ everything a row sets here.
 Closing the editor with unsaved changes asks first: **Save** (closes once the
 save is confirmed), **Discard** or **Keep editing**.
 
-**Check access** lists what Everyone, a member of one of the channel's groups,
-or someone online may do in the channel, and what decided each permission: a
-rule and its channel, Mumble's defaults, Write ACL, SuperUser, or a parent
-channel they cannot pass. It reads each parent's rules once per pick and
-evaluates them with the channel's draft through `nuschl_core::acl`, the
-evaluation nuschld runs, so unsaved changes show before saving. A person is
-checked as they are now (account, certificate and current channel); access
-tokens other people hold stay unknown to the client.
+**Check access** lists what Everyone, Registered users, a member of one of
+the channel's groups, or a registered account may do in the channel, and what
+decided each permission: a rule and its channel, Mumble's defaults, Write ACL,
+SuperUser, or a parent channel they cannot pass. Whom to check is picked in a
+search field (`picker.rs`, a reusable searchable choice): Everyone and the
+groups first, then every account the client knows, including offline ones
+when the user may register accounts. It reads the parents' rules once per
+editor and evaluates them with the channel's draft through `nuschl_core::acl`,
+the evaluation nuschld runs, so unsaved changes show before saving. A person
+is checked with their account, groups and certificate, in the edited channel;
+access tokens other people hold stay unknown to the client.
 
 Each open editor has its own lifetime token, in addition to stable row IDs and
 original server/connection/channel authority. Dirty drafts survive disconnect as

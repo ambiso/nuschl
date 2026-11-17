@@ -222,6 +222,25 @@ fn kind(target: &Target) -> &'static str {
     target.kind()
 }
 
+/// `name` with the letters a search matched in bold, underlined.
+pub fn matched(name: String, highlights: &[Range<usize>]) -> StyledText {
+    StyledText::new(name).with_highlights(highlights.iter().map(|range| {
+        (
+            range.clone(),
+            HighlightStyle {
+                color: Some(color(TEXT).into()),
+                font_weight: Some(FontWeight::BOLD),
+                underline: Some(UnderlineStyle {
+                    thickness: px(1.),
+                    color: Some(color(ACCENT).into()),
+                    wavy: false,
+                }),
+                ..Default::default()
+            },
+        )
+    }))
+}
+
 fn row(
     this: &Desktop,
     index: usize,
@@ -261,22 +280,7 @@ fn row(
             crate::view::avatar(&item.name, 24., talking, ("finder-avatar", index), image)
         }
     };
-    let name =
-        StyledText::new(item.name.clone()).with_highlights(item.highlights.iter().map(|range| {
-            (
-                range.clone(),
-                HighlightStyle {
-                    color: Some(color(TEXT).into()),
-                    font_weight: Some(FontWeight::BOLD),
-                    underline: Some(UnderlineStyle {
-                        thickness: px(1.),
-                        color: Some(color(ACCENT).into()),
-                        wavy: false,
-                    }),
-                    ..Default::default()
-                },
-            )
-        }));
+    let name = matched(item.name.clone(), &item.highlights);
     let channel = matches!(item.target, Target::Channel(_));
     let server_badge = div()
         .flex_shrink_0()
