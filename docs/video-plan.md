@@ -1,0 +1,351 @@
+# Video calls and screen sharing plan
+
+Status: plan, 2026-11-17. Implemented so far: the K1 key exchange in #267 (in
+review). Effort figures are rough. It covers #35, #135 and #139–#147, extends the
+frozen #139 signalling design (`83a5b5a7:docs/legacy-signalling-plan.md`) and
+replaces the screen-share plan of #217. **Owner** marks the owner's decisions
+(§10); the rest are recommendations.
+
+## 0. Summary
+
+- **One call per channel.** A camera and a shared screen are two sources a
+  participant publishes into the same call. Sharing a screen in a channel
+  without a call starts one. Camera and microphone open only on the user's own
+  Start camera or Unmute.
+- **Voice stays on Mumble.** Calls carry video and screen audio; talking uses
+  the existing voice path, so stock Mumble users hear the call. Video playout
+  follows the voice playout delay for lip sync (§6).
+- **Topology:** a forward-only companion SFU at stream.nuschl.eu relays every
+  source. Direct paths come later, natively, between verified Nuschl identities
+  (§5.4). TURN at turn.nuschl.eu relays only to the SFU.
+- **Keys on stock servers:** a call link secret S admits participants; every
+  publisher hands its SFrame keys to every subscriber over a fresh X-Wing
+  HPKE-PSK exchange (§4). A server that reads the link must join, and so appear
+  in the roster, to decrypt.
+- **Phases:** browser pages launched from Nuschl first (camera, screen and
+  watching), then native Linux capture, encoding and viewing; end-to-end-mode
+  servers last (§3).
+- **Codec (Owner):** AV1 only, hardware first, software AV1 as the fallback,
+  rav1d for software decoding. The SFU forwards encoded frames as they are.
+
+## 1. What exists
+
+- `nuschl-rtc`: a str0m 0.25 trial with Opus and VP8, one offer/answer, host
+  candidates only, and bounds too small for 4K. str0m packetizes AV1 and finds
+  AV1 key frames; Dependency Descriptor (DD) parsing, layer selection and
+  sequence rewriting are Nuschl code.
+- `crates/stream` and `crates/sframe` (#267, in review): link parsing, the key
+  schedule, the HPKE-PSK exchange, rekeying and RFC 9605 SFrame.
+- Still to build: capture, encoders, decoders and video worker roles. The media
+  worker holds the microphone and audio socket, so video gets its own roles.
+- The browser client does voice only; RTCPeerConnection, camera capture and
+  getDisplayMedia are still to build.
+- `privacy/1` relay-only and `PeerPolicy` exist; `rtc/1` is still to build
+  (#141).
+- Voice playout knows its per-talker delay, which video playout can follow.
+- Screen audio has its own plan, `docs/screen-share-audio.md` (#146).
+
+## 2. The call
+
+- **Room:** one SFU room per call, named by `stream_id` from S. A channel has at
+  most one call; Nuschl clients show it as a card with the participants and
+  their sources (plugin data, #93), and stock Mumble users get the watch link.
+- **Sources:** each participant publishes at most one camera and one screen.
+  Link viewers watch only.
+- **Size (project instance):** 16 participants per call, all of whom may
+  publish a camera, and one screen at a time per call. Self-hosted operators
+  set their own caps.
+- **Views:** a grid of camera tiles; a shared screen or a pinned camera takes
+  the large view. The active speaker comes from the Mumble talking state.
+- **Start and end:** **Start call** or **Share screen** creates the call and
+  posts its card. The call ends when the last publisher leaves, after 4 h, or
+  on **End call** by its creator; **Rotate link** issues a new S and room.
+
+## 3. Phases
+
+**Phase 1, the first release** (Owner: browser-launched capture first):
+- Nuschl desktop opens `https://stream.nuschl.eu/call#v=1&k=S&p=P` in the
+  system browser and posts the card. The page captures the camera
+  (getUserMedia) and the screen (getDisplayMedia), encodes AV1, and shows the
+  grid. P, the publisher secret, stays with the creator.
+- The web app embeds the same call view, so web users join in place.
+- Browser viewers open `https://stream.nuschl.eu/watch#v=1&k=S`.
+- Servers: stock Murmur 1.x and compatible-mode nuschld. End-to-end-mode nuschld
+  shows "not available yet".
+- Realistic quality: cameras up to 720p30, screens up to 1080p30 with software
+  AV1; more where the browser encodes AV1 in hardware.
+
+**Phase 2, in parallel:** native Linux capture through the portal (camera and
+screen both arrive as PipeWire streams), an isolated video worker with VA-API
+AV1 and a software fallback, str0m in the SDK driver, the native call view in
+GPUI (#145) with the isolated decoder (#35), identity-bound keys (#139 B), then
+direct paths.
+
+**Later:** Windows and macOS capture, scalable layers everywhere (#140),
+nuschld's own SFU and `rtc/1` (#141, #142), end-to-end servers over MLS (#135),
+long-call validation (#147).
+
+## 4. Keys on stock servers
+
+**Schedule.** S is 32 bytes from the OS RNG. PRK = HKDF-Extract("nuschl/stream/
+v2", S) yields `stream_id` (16 B), `admit_key`, `mac_key`, `psk` and
+`signal_key`.
+
+**Pairwise exchange (K1).** A subscriber makes a fresh X-Wing key pair per join
+and sends `KeyRequest{version, suite, stream_id, viewer_id, nonce_v, not_after,
+pk_v, [binding]}`, MACed under `mac_key`. The publisher answers `KeyGrant{nonce_s,
+enc, ciphertext, confirm_s}`, an HPKE PSK-mode seal of {epoch, K_epoch, kid,
+not_after} with the transcript hash as `info`; the subscriber confirms with
+`KeyAck`. The HPKE context exports a pairwise channel key that carries rekeys
+and quality reports. Replays, reflections, other suites, expired requests and
+bad confirmations fail closed; the suite is fixed to X-Wing.
+
+**Calls use sender keys.** Each publisher has its own K_epoch per source (one
+KID per encoding) and runs the pairwise exchange with every subscriber. A
+newcomer runs one exchange per publisher; once it publishes, every participant
+runs one with it. For 16 participants that is at most 15 + 15 exchanges of
+about 5 KB each.
+
+**Rekeying.** A publisher rekeys on every join (before the newcomer's first
+frame, batched within 2 s), within 2 s of a leave or kick, and every 15
+minutes. Receivers keep the previous epoch for 2 s.
+
+**Passive holders.** Someone with S and every recording still lacks the keys:
+every sk_v and K_epoch is fresh randomness, independent of S.
+
+**Credentials.** A binding names the identity root key and the
+`DeviceSigningCertificate` by SHA-256; a receiver without them in its bounded
+cache answers `NeedCredentials` and receives them inline (Owner). They travel
+inside `signal_key` encryption, so identities stay hidden from the SFU. Key messages
+are at most 16 KiB (Owner).
+
+**SFrame.** RFC 9605 `AES_128_GCM_SHA256_128`, implemented in `crates/sframe`
+on the locked RustCrypto crates and checked against the RFC's vectors; those
+crates have a far larger user base than the `sframe` crate, which would be a
+new dependency. AV1 frames get a one-byte envelope (`0x08` on key frames) that browsers'
+packetizers accept; it relies on libwebrtc behaviour and has a regression test
+per supported browser. A failing sender transform stops sending.
+
+**SFU admission.** The SFU holds `stream_id`, `admit_key` and a verifier of P;
+it sees HPKE and SFrame ciphertext only. Participants prove `admit_key` with an
+HMAC over an SFU nonce. Creating the room needs P.
+
+**Who can do what.** An active stock server can join as an extra participant,
+which the roster shows. With the stream host's help it can intercept browser
+participants unseen. Identity-bound Nuschl participants detect a substituted
+pk_v ("Identity check failed"); browser participants show as "unverified".
+
+**Where keys live.** Natively the crypto worker runs the exchange and hands
+K_epoch and channel keys to the SDK driver, which does SFrame. In the browser a
+dedicated stream worker, which is also the encoded-transform worker, holds all
+keys, using libcrux's portable wasm32 build under a narrow SECURITY.md row
+(Owner: libcrux with hpke-rs on both targets).
+
+**Label.** "Link-encrypted", with the card text "Encrypted against passive
+servers. Anyone with the link can join; everyone in the call is listed here."
+The green lock belongs to end-to-end calls (`docs/e2ee.md` §7.4).
+
+## 5. Quality, bandwidth and paths
+
+Owner target: up to 4K60 for screens where devices and the network sustain it;
+each receiver gets min(request, decode capacity, network capacity, policy).
+Quality and path changes leave keys, labels and relay-only untouched.
+
+### 5.1 Tiers
+
+Realtime AV1 estimates from published guidance (±50 %), to be measured by S0f:
+
+| Source | Tier | Bitrate | Key frame |
+| --- | --- | --- | --- |
+| Screen | 4K60 | 6–15 Mbit/s (motion 20–40) | 0.4–2.5 MB |
+| Screen | 1440p60 | 3–8 (motion 10–20) | 0.2–1 MB |
+| Screen | 1080p30 | 1.5–3 (motion 3–6) | 0.1–0.6 MB |
+| Screen | 720p15 (floor) | 0.4–0.8 | 40–250 KB |
+| Camera | 1080p30 (top) | 2–4 | 100–300 KB |
+| Camera | 720p30 (speaker) | 1–2 | 50–150 KB |
+| Camera | 360p30 (tile) | 0.3–0.6 | 15–50 KB |
+| Camera | 180p15 (floor) | 0.1–0.2 | 5–20 KB |
+
+Grid tiles request 360p, the large view 720p or more. Cameras need several
+resolutions at once, so cameras publish three spatial layers (SVC) or three
+simulcast encodings, chosen by S0f; screens use temporal layers and, where the
+encoder offers them, spatial layers.
+
+### 5.2 Bounds
+
+- Encoder caps: screen key frames ≤1 MiB from 1440p up, ≤512 KiB below; camera
+  key frames ≤256 KiB; deltas ≤ half the key-frame cap. An oversized frame is
+  dropped and a key frame requested.
+- SFU queues hold about 300 ms at the leg's estimate, clamped to 32 KiB–2 MiB;
+  RTX caches about 1 s.
+- Key-frame requests: one per receiver and source per 2 s, coalesced per
+  source; native senders repair loss with intra refresh.
+- Per room: ≤150 Mbit/s egress, ≤25 Mbit/s per receiver, ≤70 % of the host's
+  upload. A full budget is shared max-min by dropping layers; a join fails only
+  when the base layers do not fit.
+
+### 5.3 Adaptation
+
+- Receivers send a fixed-size `QualityRequest` per source, at most once a
+  second; "Auto" asks for the tile's size. They report decode capacity under the
+  channel key and step down after 3 s below 90 % of the target frame rate.
+- The SFU picks layers per receiver from the DD, so a slow receiver lowers only
+  its own quality; it tells each publisher the largest demand per source.
+- Congestion control is GCC/TWCC on every leg. A publisher's target is
+  min(upload estimate × 0.85, largest demand), split across its sources with
+  the screen first.
+- Step-down order: bitrate, then frame rate, then resolution (at most once per
+  10 s). Step-up needs 1.3× the next tier's floor for 10 s (frame rate) or 30 s
+  (resolution).
+
+### 5.4 Direct or relayed
+
+- Relayed is the default for every source. Direct paths are for verified Nuschl
+  identities (`CallBinding` checked) that both allow them, starting with
+  two-person calls; relay-only users and link viewers stay relayed, since a
+  direct path reveals IP addresses.
+- Candidates travel to the verified peer only, sealed under its channel key.
+- A native publisher goes direct when 80 % of its probed upload covers the
+  direct receivers, and moves receivers back to the SFU when its legs back off.
+  "When my upload is too slow: relay automatically (default) / lower the
+  quality" (Owner). Path switches keep the keys and run both paths for at most
+  2 s.
+
+## 6. Capture, codecs and rendering
+
+- **Capture.** Linux: the xdg-desktop-portal ScreenCast and Camera interfaces
+  each hand over a PipeWire FD, so one capture path serves both sources. Every
+  capture needs a fresh portal grant.
+- **Encoding.** One `nuschl-video-worker --encode` role per source: PipeWire
+  DMA-BUF into VA-API AV1 without a CPU copy, a software AV1 encoder chosen by
+  S0f otherwise (rav1e preferred), live rate control and at most 2 queued
+  frames. VA-API runs as a scoped FFI row of that worker; encoders have had
+  exploited bugs ([CVE-2023-5217](https://nvd.nist.gov/vuln/detail/CVE-2023-5217)),
+  so encoding runs isolated too.
+- **Decoding.** A `--decode` role per call with rav1d (Owner), with pixel,
+  memory and CPU caps; decoded frames reach the desktop through shared memory
+  and stay on the device.
+- **Rendering.** GPUI surfaces for the grid and the large view (#145).
+- **Lip sync.** Video frames carry RTP timestamps; the receiver holds each
+  camera's frames for its talker's voice playout delay, aiming for audio
+  ahead by at most 45 ms and behind by at most 125 ms (ITU-R BT.1359).
+- **Browser.** WebRTC encodes and decodes; the page goes by `getStats`. Engines
+  without AV1 in WebRTC (WebKit today) get rav1d in WASM for watching, capped at
+  1080p30, or a clear refusal (Owner: "we'll skip safari for now" if too slow).
+
+## 7. Consent, privacy and bounds
+
+- **Camera:** only the user's explicit **Start camera** opens the camera, as
+  with the microphone. Joining, reconnecting, restarting and server events leave
+  it off. The camera stops on **Stop camera**, leaving the call, disconnect,
+  channel change and app exit, and Nuschl shows its own indicator.
+- **Screen:** every share needs a fresh picker and shows a banner; window
+  sharing is preselected, a monitor share shows a warning and, natively, a
+  privacy curtain over conversations. Sharing stops on Stop, disconnect,
+  channel change, a portal or track end and app exit.
+- **Phase 1 lease.** Nuschl keeps P's credential and a control connection to
+  the SFU and renews the page's publisher lease (about 10 s); any stop event
+  revokes it, and a crash lets it expire.
+- **Relay-only** keeps the `privacy/1` and `PeerPolicy` meaning: configured
+  servers and relays only. Native clients connect to the SFU or TURN; browsers
+  use `iceTransportPolicy: 'relay'` through turn.nuschl.eu (Owner). Relay-only
+  users stay relayed whatever their bandwidth.
+- **Authenticity:** `CallBinding` signs the transcript including pk_v, enc and
+  the DTLS fingerprints (#139 §5.5); results bind to {connection generation,
+  stream id, epoch, request}.
+- **Isolation:** codecs run in `nuschl-video-worker` roles, encoding and
+  decoding in separate roles; decoding happens in the decode role and the
+  browser; keys stay in the crypto worker, the SDK driver and the browser stream
+  worker. Worker credit is held until the process is reaped.
+- **Bounds:** §5.2; key messages ≤16 KiB, ≤32 pending key requests, ≥1 s
+  between epochs, bounded replay windows, fixed-size quality messages.
+
+## 8. Infrastructure
+
+- `stream.nuschl.eu`: static `/call` and `/watch` pages, the `/sfu` WebSocket
+  on the same origin, SFU media on one UDP port; access logs off.
+- `turn.nuschl.eu` on its own IP: coturn with `use-auth-secret` from
+  `LoadCredential`, peers limited to the SFU's addresses, 10-minute credentials
+  issued by the SFU after admission, per-allocation `max-bps` at the tier cap
+  plus 20 %.
+- Headers (CSP, COOP/COEP, Permissions-Policy denying WebAuthn) live in
+  `nix/stream-module.nix` (#227). The passkey rpId is auth.nuschl.eu (Owner).
+- Project caps: §2 and §5.2, 4 h room lifetime, limited room creations per IP
+  (IPv6 per /64). Operators self-host with the same NixOS module.
+- The stream host learns IP addresses, timing, room ids, participant counts and
+  bitrates; S, keys, media, the Mumble server and names stay with clients, as
+  long as the page code is honest. Native clients run their own code only.
+
+## 9. Slices
+
+Phase 1: S0f, K1 → K2 → W1 → B1 → T1, with E1 (the long pole), Q1, D1 and I1
+alongside.
+
+| ID | Goal | Depends on | Size |
+| --- | --- | --- | --- |
+| S0 | Spikes: HPKE on wasm32, browser AV1 and transform matrix, str0m forwarding | — | done |
+| S0f | Measure tiers, key frames, VA-API AV1, camera SVC or simulcast, 4K decoding | — | M |
+| K1 | `crates/stream` and `crates/sframe` (#267) | S0 | in review |
+| K2 | `crates/stream-wasm` for the browser stream worker | K1 | S |
+| Q1 | `crates/stream-quality`: requests, reports, tier ladders, layer choice, budgets | S0 | M |
+| E1 | Companion SFU: rooms with many publishers, admission, per-receiver layers, key relay, TURN credentials, NixOS unit | S0 | L |
+| W1 | Call and watch pages: subscribe, decrypt, grid and large view, roster | K2, E1 | M |
+| B1 | Publishing from the page: camera and screen, grants and rekeys, Stop | W1 | M |
+| D1 | Desktop: Start call and Share screen, S and P, the card, the lease, Rotate link | K1, #93 | S–M |
+| I1 | Hosts, DNS and modules (§8) | owner hosts | S–M |
+| T1 | End-to-end tests and documentation | Phase 1 | M |
+| V1 | `nuschl-video-worker --encode`: portal PipeWire, VA-API AV1, software fallback | S0f | M–L |
+| R1 | SDK driver RTC: UDP in the network process, `PeerPolicy`, SFrame, bitrate | K1, E1, V1 | L |
+| U1 | Native call controls: camera and screen pickers, indicators, curtain | V1, R1 | M |
+| N1 | Native call view: `--decode` role, GPUI grid, lip sync, `CallBinding` | R1, #93 | L |
+| X1 | Direct paths (§5.4), two-person calls first | R1, N1, Q1 | L |
+| M1 | End-to-end servers: S in an MLS `Signal` envelope, then exporter keys (#135) | N1 | M–L |
+
+Tests belong in the slice issues; each slice ships with its unit, testkit or
+VM tests (#313). T1 covers headless Chromium and Firefox in a VM against owned
+Murmur 1.4 and 1.5 with a stock Mumble client, and relay-only by packet capture.
+
+## 10. Decisions
+
+**Made by the owner (2026-11-13 and 2026-11-17):**
+- Video calls and screen sharing are one feature, planned and built together.
+- AV1 only: hardware first on every platform, software AV1 as the fallback;
+  rav1d for software decoding; browsers without AV1 get rav1d in WASM or a
+  refusal.
+- Phase 1 captures in the browser, launched from Nuschl; native Linux follows.
+- Up to 4K60 screens; each receiver gets min(request, capacity, network,
+  policy); relaying is the publisher's opt-in when its upload falls short.
+- Relay-only users are always relayed, in a browser through TURN.
+- libcrux with hpke-rs for the X-Wing HPKE-PSK exchange on both targets.
+- Key messages ≤16 KiB, credentials by fingerprint and cached.
+- Domains: stream.nuschl.eu, turn.nuschl.eu, auth.nuschl.eu as the passkey rpId.
+
+**Open, with the recommended default:**
+1. **Call model:** one call per channel with camera and screen as sources (§2).
+2. **Call keys:** per-publisher sender keys over the K1 exchange (§4); a
+   call-wide group key needs MLS and comes with end-to-end servers (M1).
+3. **Camera consent:** the microphone rule applies to the camera (§7).
+4. **Call size and camera tiers:** 16 participants; 360p tiles, 720p speaker,
+   1080p30 top (§5.1).
+5. **Phase 1 cameras:** cameras in the browser pages from the start, alongside
+   screens.
+6. **Audio:** talking stays on Mumble voice; video follows its playout delay.
+7. **Labels:** "Link-encrypted", separate from the green end-to-end lock.
+8. **SFrame:** our RFC 9605 layer on the locked RustCrypto crates (K1).
+9. **Direct paths:** "Allow direct connections with verified people" on by
+   default, two-person calls first.
+10. **Sharers without layers (Firefox today):** one stream for the slowest
+    receiver, with a hint to use Chromium or the app for 4K.
+11. **Hosting:** coturn limited to SFU peers now, a Rust TURN server later
+    (#143); SFU and pages on one host.
+
+S0f, K2, Q1, W1, B1, V1, U1, X1 and I1 need issues; #140–#147 hold the
+migrated scope.
+
+## 11. Open questions
+
+libwebrtc's future handling of the AV1 envelope; spatial layers and simulcast
+with the envelope; hardware AV1 encoding per browser and per GPU vendor; the
+§5.1 figures on real content; camera SVC in hardware encoders; native 4K60
+decoding; WASM rav1d on Apple devices; the publisher-lease stop deadline; all
+effort estimates.
