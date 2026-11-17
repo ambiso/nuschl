@@ -37,6 +37,7 @@ import zlib
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fake_subsonic import API_KEY, COVER, COVER_PNG, PASSWORD, Library  # noqa: E402
 from mumble_client import Client, ReferenceOpus, certificate_pin, rms  # noqa: E402
+import quarantine  # noqa: E402
 
 MUSIC, LOBBY = 6, 1  # local_murmur.py's channels
 
@@ -388,6 +389,24 @@ def audio_from(client, sender, seconds):
     return packets
 
 
+def songs_from(client, sender, seconds, packets=280):
+    """Two queued songs from `sender`: its voice packets until `packets` of them
+    arrived and a transmission ended, within `seconds`. The songs play as one
+    transmission; a song change that takes longer than the bot's 200 ms
+    underrun ends it, which a loaded host causes (quarantined, #376)."""
+    deadline = time.monotonic() + seconds
+    transmissions = []
+    while sum(map(len, transmissions)) < packets and time.monotonic() < deadline:
+        heard = audio_from(client, sender, deadline - time.monotonic())
+        # A lone terminator first ends the transmission from before this queue.
+        if heard and (transmissions or len(heard) > 1 or not heard[0]["end"]):
+            transmissions.append(heard)
+    lengths = [len(heard) for heard in transmissions]
+    with quarantine.step("vm-musicbot/songs-one-transmission", measured=lengths):
+        assert len(lengths) == 1, lengths
+    return [packet for heard in transmissions for packet in heard]
+
+
 def drain(client):
     while not client.queue.empty():
         client.queue.get_nowait()
@@ -446,7 +465,7 @@ def service(args):
             drain(listener)
             resumed = watcher.mark()
             command(link, "resume")
-            heard = audio_from(listener, dj, 20)
+            heard = songs_from(listener, dj, 20)
             if len(heard) < 280:
                 print(json.dumps({"service_errors": [
                     {"name": player["name"], "error": player["error"]}
@@ -908,12 +927,8 @@ def main():
                 drain(alice), drain(bob)
                 history_before_shared = api(link, "history", player=0)["revision"]
                 command(link, "add", kind="album", library=1, id="a1", index=None)
-                heard_alice = audio_from(alice, dj, 20)
-                heard_bob = audio_from(bob, dj2, 5)
-                # The lobby may first end the transmission it had before it
-                # switched to this queue: a lone terminator, then the song.
-                if len(heard_bob) == 1 and heard_bob[0]["end"]:
-                    heard_bob = audio_from(bob, dj2, 5)
+                heard_alice = songs_from(alice, dj, 20)
+                heard_bob = songs_from(bob, dj2, 5)
                 assert len(heard_alice) >= 280 and len(heard_bob) >= 280, (len(heard_alice), len(heard_bob))
                 assert heard_alice[-1]["end"] and heard_bob[-1]["end"]
                 packets = [Counter(bytes(packet["opus"]) for packet in heard) for heard in (heard_alice, heard_bob)]
@@ -942,7 +957,7 @@ def main():
                 assert boundary["opus"] == SILENT_OPUS
                 drain(alice), drain(bob)
                 command(link, "add", player=1, kind="playlist", library=0, id="p1", index=0)
-                heard = audio_from(bob, dj2, 20)
+                heard = songs_from(bob, dj2, 20)
                 assert len(heard) >= 280 and heard[-1]["end"], len(heard)
                 assert not audio_from(alice, dj, 1), "Music played the Lobby queue"
                 eventually(lambda: api(link), lambda state: all(player["current"] is None
