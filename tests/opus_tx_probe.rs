@@ -71,7 +71,7 @@ fn main() {
         };
         let start = Instant::now();
         let count = if precision == 16 {
-            encoder.encode_s16(&short, 960, &mut packet)
+            encoder.encode_i16(&short, 960, &mut packet)
         } else {
             encoder.encode(frame, 960, &mut packet)
         }
