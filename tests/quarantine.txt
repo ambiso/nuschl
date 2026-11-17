@@ -7,3 +7,6 @@ vm-smoke/pipewire-other-app-gate        #275   the gate opens for another applic
 vm-musicbot/songs-one-transmission      #376   a song change slower than the 200 ms underrun ends the transmission on a loaded host
 vm-link-previews/card-ready-time        #376   a sandboxed preview fetch and image decode take over 30 s on a loaded host
 vm-link-previews/scenario-time          #376   a desktop scenario takes over 300 s on a loaded host
+vm-smoke/echo-test-reduction            #376   the canceller removes less than 15 dB or sends over a quarter on a loaded host
+vm-smoke/double-talk-level              #376   double talk is ducked over 3 dB or gated on a loaded host
+vm-smoke/sound-loudness                 #376   dropped playback periods change the measured loudness on a loaded host
