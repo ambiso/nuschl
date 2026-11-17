@@ -22,7 +22,7 @@ use nuschl_core::{
     admin,
     model::{Acl, permission},
 };
-use std::{collections::HashMap, time::Instant};
+use std::{collections::HashMap, ops::Range, rc::Rc, time::Instant};
 
 fn label(view: &ServerView, who: &Who) -> String {
     match who {
@@ -241,6 +241,231 @@ fn others(grant: u32, deny: u32) -> Option<String> {
     }
 }
 
+/// Rows the table shows at most; the list scrolls beyond them.
+const VISIBLE_ROWS: usize = 8;
+const TABLE_ROW: f32 = 40.;
+
+/// What the table's visible rows are built from, once per frame.
+struct Rows {
+    snapshot: Acl,
+    base: acl::Node,
+    own: Vec<(Who, Bits)>,
+    targets: Vec<Who>,
+}
+
+fn bits_of(rows: &[(Who, Bits)], who: &Who) -> Bits {
+    rows.iter()
+        .find(|(row, _)| row == who)
+        .map_or_else(Bits::default, |(_, bits)| *bits)
+}
+
+fn line() -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap_1()
+        .px_3()
+        .py_1()
+        .border_t_1()
+        .border_color(color(BORDER))
+}
+
+/// One row of the table: who, the five cells and Remove.
+fn row(
+    view: &ServerView,
+    editor: &Editor,
+    rows: &Rows,
+    number: usize,
+    cx: &mut Context<Desktop>,
+) -> AnyElement {
+    let token = editor.token;
+    let Some(who) = rows.targets.get(number) else {
+        return div().into_any_element();
+    };
+    let own = bits_of(&rows.own, who);
+    let row_label = label(view, who);
+    let mut row = line().h(px(TABLE_ROW)).child(
+        div()
+            .id(SharedString::from(format!("acl-row-{token}-{number}")))
+            .w(px(130.))
+            .flex_shrink_0()
+            .truncate()
+            .tooltip({
+                let help = row_help(who);
+                move |_, cx| cx.new(|_| Tooltip(help.clone().into())).into()
+            })
+            .child(SharedString::from(row_label.clone())),
+    );
+    let (granted, reasons, tree, flat) = evaluate(&editor.parents, &rows.snapshot, &rows.base, who);
+    for (column, (heading, bits, _)) in COLUMNS.iter().enumerate() {
+        let allowed = granted & bits;
+        let (label, state) = match allowed {
+            0 => ("No", "Not allowed"),
+            _ if allowed == *bits => ("Yes", "Allowed"),
+            _ => ("Partly", "Partly allowed"),
+        };
+        let detail = partly(*bits, allowed);
+        let cell = own.cell(column);
+        // Where an inherited value was set: (channel, row, menu label).
+        let mut jumps: Vec<(u32, Who, String)> = Vec::new();
+        let (tone, set_here, help) = if cell == Cell::NotSet {
+            let mut sources: Vec<String> = Vec::new();
+            for bit in (0..32).filter(|bit| bits & (1 << bit) != 0) {
+                let (text, from) = source(reasons[bit], &tree, flat, &rows.snapshot, who, view);
+                if !sources.contains(&text) {
+                    sources.push(text);
+                }
+                if let Some((channel, row)) = from
+                    && !jumps.iter().any(|(seen, _, _)| *seen == channel)
+                {
+                    jumps.push((
+                        channel,
+                        row,
+                        format!("Show in {}", channel_name(view, channel)),
+                    ));
+                }
+            }
+            let menu = if jumps.is_empty() {
+                ""
+            } else {
+                " Right-click to show where it is set."
+            };
+            (
+                Tone::Ghost,
+                false,
+                format!(
+                    "{state} by {}.{detail} Click to set it here.{menu}",
+                    sources.join(" and ")
+                ),
+            )
+        } else {
+            let tone = match cell {
+                Cell::Allow => Tone::Primary,
+                Cell::Deny => Tone::Danger,
+                Cell::Custom | Cell::NotSet => Tone::Secondary,
+            };
+            (
+                tone,
+                true,
+                format!("{state}, set here.{detail} Click to change it."),
+            )
+        };
+        let to_jump = move |server: usize, (channel, who, label): &(u32, Who, String)| {
+            (
+                Jump {
+                    server,
+                    channel: *channel,
+                    who: who.clone(),
+                    column,
+                },
+                label.clone(),
+            )
+        };
+        let target = who.clone();
+        let first = jumps.first().cloned();
+        let click = move |this: &mut Desktop, window: &mut Window, cx: &mut Context<Desktop>| {
+            // Alt-click goes where an inherited value is set.
+            if window.modifiers().alt {
+                if let (Some(server), Some(first)) = (server_index(this), first.as_ref()) {
+                    show_source(this, to_jump(server, first).0);
+                }
+            } else {
+                cycle(this, token, target.clone(), column);
+            }
+            cx.notify();
+        };
+        let button = named_button(
+            SharedString::from(format!("acl-cell-{token}-{number}-{column}")),
+            label,
+            format!(
+                "{row_label} · {heading}: {label}, {}",
+                if set_here { "set here" } else { "not set here" }
+            ),
+            tone,
+            click,
+            cx,
+        );
+        let flash = editor
+            .flash
+            .as_ref()
+            .filter(|flash| flash.who == *who && flash.column == column)
+            .map(|flash| {
+                let first = flash.shown.get().is_none();
+                let shown = *flash.shown.get().get_or_insert_with(Instant::now);
+                flash.shown.set(Some(shown));
+                let t = (shown.elapsed().as_secs_f32() / FLASH.as_secs_f32()).min(1.);
+                // Ease out: strong at first, settling gently.
+                let strength = if cx.reduce_motion() {
+                    f32::from(u8::from(t < 1.))
+                } else {
+                    (1. - t).powi(3)
+                };
+                (first, strength)
+            });
+        row = row.child(
+            div()
+                .id(SharedString::from(format!(
+                    "acl-cell-help-{token}-{number}-{column}"
+                )))
+                .relative()
+                .flex_1()
+                .min_w_0()
+                .rounded(px(6.))
+                .when_some(flash, |cell, (first, strength)| {
+                    cell.bg(color(ACCENT).opacity(0.55 * strength))
+                        .when(first, |cell| {
+                            // Bring the arrived-at cell into view once.
+                            cell.child(
+                                canvas(
+                                    |bounds, window, _| window.request_autoscroll(bounds),
+                                    |_, _, _, _| {},
+                                )
+                                .absolute()
+                                .size_full(),
+                            )
+                        })
+                })
+                .tooltip(move |_, cx| cx.new(|_| Tooltip(help.clone().into())).into())
+                .when(!jumps.is_empty(), |cell| {
+                    cell.on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            let Some(server) = server_index(this) else {
+                                return;
+                            };
+                            this.menu_acl =
+                                jumps.iter().map(|jump| to_jump(server, jump)).collect();
+                            this.open_menu(server, MenuTarget::AclSource, event.position);
+                            cx.stop_propagation();
+                            cx.notify();
+                        }),
+                    )
+                })
+                .child(
+                    div()
+                        .when(!set_here, |cell| cell.opacity(0.6))
+                        .child(button),
+                ),
+        );
+    }
+    let mut end = div().w(px(84.)).flex_shrink_0();
+    if own != Bits::default() || editor.table_rows.contains(who) {
+        let target = who.clone();
+        end = end.child(named_button(
+            SharedString::from(format!("acl-remove-row-{token}-{number}")),
+            "Remove",
+            format!("Remove {row_label}"),
+            Tone::Ghost,
+            move |this, _, cx| {
+                remove(this, token, target.clone());
+                cx.notify();
+            },
+            cx,
+        ));
+    }
+    row.child(end).into_any_element()
+}
+
 pub(super) fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Desktop>) -> AnyElement {
     let token = editor.token;
     let section = section(
@@ -269,11 +494,6 @@ pub(super) fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Deskto
     } else {
         Vec::new()
     };
-    let bits_of = |rows: &[(Who, Bits)], who: &Who| {
-        rows.iter()
-            .find(|(row, _)| row == who)
-            .map_or_else(Bits::default, |(_, bits)| *bits)
-    };
     let mut targets: Vec<Who> = table
         .rows
         .iter()
@@ -282,21 +502,13 @@ pub(super) fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Deskto
         .collect();
     targets.sort();
     targets.dedup();
-    let line = || {
-        div()
-            .flex()
-            .items_center()
-            .gap_1()
-            .px_3()
-            .py_1()
-            .border_t_1()
-            .border_color(color(BORDER))
-    };
     let mut header = div()
         .flex()
         .items_center()
         .gap_1()
         .px_3()
+        // Over the rows' scrollbar gutter, so the columns line up.
+        .pr(px(12. + crate::layout::SCROLLBAR_GUTTER))
         .py_2()
         .bg(color(ELEVATED))
         .text_sm()
@@ -327,198 +539,69 @@ pub(super) fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Deskto
             "acl-table-empty",
             "Nothing set here or above. Add someone below.",
         )));
+    } else {
+        let count = targets.len();
+        if let Some(index) = editor
+            .flash
+            .as_ref()
+            .filter(|flash| flash.shown.get().is_none())
+            .and_then(|flash| targets.iter().position(|who| *who == flash.who))
+        {
+            // The arrived-at row draws, and its cell then comes into view.
+            editor
+                .table_scroll
+                .scroll_to_item(index, ScrollStrategy::Center);
+        }
+        let rows = Rc::new(Rows {
+            snapshot,
+            base,
+            own: table.rows.clone(),
+            targets: targets.clone(),
+        });
+        let list = uniform_list(
+            SharedString::from(format!("acl-table-rows-{token}")),
+            count,
+            cx.processor(move |this, range: Range<usize>, _, cx| {
+                let Some(Panel::Acl { origin, editor, .. }) = this.panel.as_ref() else {
+                    return Vec::new();
+                };
+                let view = origin
+                    .live_index(this)
+                    .and_then(|index| this.client.servers.get(index));
+                match view {
+                    Some(view) if editor.token == token => range
+                        .map(|number| row(view, editor, &rows, number, cx))
+                        .collect(),
+                    _ => Vec::new(),
+                }
+            }),
+        )
+        .track_scroll(&editor.table_scroll)
+        .h(px(TABLE_ROW * count.min(VISIBLE_ROWS) as f32))
+        .w_full();
+        grid = grid.child(crate::dialogs::nested_virtual_list(
+            "acl-table",
+            token,
+            &editor.table_scroll,
+            list,
+            move |this| {
+                matches!(this.panel.as_ref(), Some(Panel::Acl { editor, .. })
+                    if editor.token == token && !editor.stale)
+            },
+            cx,
+        ));
     }
+    let mut section = section.child(grid);
+    // Permissions outside the columns, under the table: its rows are of one height.
     for (number, who) in targets.iter().enumerate() {
         let own = bits_of(&table.rows, who);
-        let row_label = label(view, who);
-        let mut row = line().child(
-            div()
-                .id(SharedString::from(format!("acl-row-{token}-{number}")))
-                .w(px(130.))
-                .flex_shrink_0()
-                .tooltip({
-                    let help = row_help(who);
-                    move |_, cx| cx.new(|_| Tooltip(help.clone().into())).into()
-                })
-                .child(SharedString::from(row_label.clone())),
-        );
-        let (granted, reasons, tree, flat) = evaluate(&editor.parents, &snapshot, &base, who);
-        for (column, (heading, bits, _)) in COLUMNS.iter().enumerate() {
-            let allowed = granted & bits;
-            let (label, state) = match allowed {
-                0 => ("No", "Not allowed"),
-                _ if allowed == *bits => ("Yes", "Allowed"),
-                _ => ("Partly", "Partly allowed"),
-            };
-            let detail = partly(*bits, allowed);
-            let cell = own.cell(column);
-            // Where an inherited value was set: (channel, row, menu label).
-            let mut jumps: Vec<(u32, Who, String)> = Vec::new();
-            let (tone, set_here, help) = if cell == Cell::NotSet {
-                let mut sources: Vec<String> = Vec::new();
-                for bit in (0..32).filter(|bit| bits & (1 << bit) != 0) {
-                    let (text, from) = source(reasons[bit], &tree, flat, &snapshot, who, view);
-                    if !sources.contains(&text) {
-                        sources.push(text);
-                    }
-                    if let Some((channel, row)) = from
-                        && !jumps.iter().any(|(seen, _, _)| *seen == channel)
-                    {
-                        jumps.push((
-                            channel,
-                            row,
-                            format!("Show in {}", channel_name(view, channel)),
-                        ));
-                    }
-                }
-                let menu = if jumps.is_empty() {
-                    ""
-                } else {
-                    " Right-click to show where it is set."
-                };
-                (
-                    Tone::Ghost,
-                    false,
-                    format!(
-                        "{state} by {}.{detail} Click to set it here.{menu}",
-                        sources.join(" and ")
-                    ),
-                )
-            } else {
-                let tone = match cell {
-                    Cell::Allow => Tone::Primary,
-                    Cell::Deny => Tone::Danger,
-                    Cell::Custom | Cell::NotSet => Tone::Secondary,
-                };
-                (
-                    tone,
-                    true,
-                    format!("{state}, set here.{detail} Click to change it."),
-                )
-            };
-            let to_jump = move |server: usize, (channel, who, label): &(u32, Who, String)| {
-                (
-                    Jump {
-                        server,
-                        channel: *channel,
-                        who: who.clone(),
-                        column,
-                    },
-                    label.clone(),
-                )
-            };
-            let target = who.clone();
-            let first = jumps.first().cloned();
-            let click =
-                move |this: &mut Desktop, window: &mut Window, cx: &mut Context<Desktop>| {
-                    // Alt-click goes where an inherited value is set.
-                    if window.modifiers().alt {
-                        if let (Some(server), Some(first)) = (server_index(this), first.as_ref()) {
-                            show_source(this, to_jump(server, first).0);
-                        }
-                    } else {
-                        cycle(this, token, target.clone(), column);
-                    }
-                    cx.notify();
-                };
-            let button = named_button(
-                SharedString::from(format!("acl-cell-{token}-{number}-{column}")),
-                label,
-                format!(
-                    "{row_label} · {heading}: {label}, {}",
-                    if set_here { "set here" } else { "not set here" }
-                ),
-                tone,
-                click,
-                cx,
-            );
-            let flash = editor
-                .flash
-                .as_ref()
-                .filter(|flash| flash.who == *who && flash.column == column)
-                .map(|flash| {
-                    let first = flash.shown.get().is_none();
-                    let shown = *flash.shown.get().get_or_insert_with(Instant::now);
-                    flash.shown.set(Some(shown));
-                    let t = (shown.elapsed().as_secs_f32() / FLASH.as_secs_f32()).min(1.);
-                    // Ease out: strong at first, settling gently.
-                    let strength = if cx.reduce_motion() {
-                        f32::from(u8::from(t < 1.))
-                    } else {
-                        (1. - t).powi(3)
-                    };
-                    (first, strength)
-                });
-            row = row.child(
-                div()
-                    .id(SharedString::from(format!(
-                        "acl-cell-help-{token}-{number}-{column}"
-                    )))
-                    .relative()
-                    .flex_1()
-                    .min_w_0()
-                    .rounded(px(6.))
-                    .when_some(flash, |cell, (first, strength)| {
-                        cell.bg(color(ACCENT).opacity(0.55 * strength))
-                            .when(first, |cell| {
-                                // Bring the arrived-at cell into view once.
-                                cell.child(
-                                    canvas(
-                                        |bounds, window, _| window.request_autoscroll(bounds),
-                                        |_, _, _, _| {},
-                                    )
-                                    .absolute()
-                                    .size_full(),
-                                )
-                            })
-                    })
-                    .tooltip(move |_, cx| cx.new(|_| Tooltip(help.clone().into())).into())
-                    .when(!jumps.is_empty(), |cell| {
-                        cell.on_mouse_down(
-                            MouseButton::Right,
-                            cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                                let Some(server) = server_index(this) else {
-                                    return;
-                                };
-                                this.menu_acl =
-                                    jumps.iter().map(|jump| to_jump(server, jump)).collect();
-                                this.open_menu(server, MenuTarget::AclSource, event.position);
-                                cx.stop_propagation();
-                                cx.notify();
-                            }),
-                        )
-                    })
-                    .child(
-                        div()
-                            .when(!set_here, |cell| cell.opacity(0.6))
-                            .child(button),
-                    ),
-            );
-        }
-        let mut end = div().w(px(84.)).flex_shrink_0();
-        if own != Bits::default() || editor.table_rows.contains(who) {
-            let target = who.clone();
-            end = end.child(named_button(
-                SharedString::from(format!("acl-remove-row-{token}-{number}")),
-                "Remove",
-                format!("Remove {row_label}"),
-                Tone::Ghost,
-                move |this, _, cx| {
-                    remove(this, token, target.clone());
-                    cx.notify();
-                },
-                cx,
+        if let Some(others) = others(own.grant, own.deny) {
+            section = section.child(note(
+                SharedString::from(format!("acl-table-others-{token}-{number}")),
+                format!("{}: {others}", label(view, who)),
             ));
         }
-        grid = grid.child(row.child(end));
-        if let Some(others) = others(own.grant, own.deny) {
-            grid = grid.child(div().px_3().pb_1().child(note(
-                SharedString::from(format!("acl-table-others-{token}-{number}")),
-                others,
-            )));
-        }
     }
-    let section = section.child(grid);
     let picker = editor.table_picker.render(
         &format!("acl-table-add-{token}"),
         &check_access::choices(view, draft, &targets),

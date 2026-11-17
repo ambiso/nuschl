@@ -77,6 +77,7 @@ pub struct Editor {
     _flash_frames: Option<Task<()>>,
     /// Rows added to the access table that set nothing yet.
     table_rows: Vec<nuschl_core::access::Who>,
+    table_scroll: UniformListScrollHandle,
     /// Closing waits for Save, Discard or Keep editing.
     leaving: bool,
     /// The rule list is open although the table shows the channel.
@@ -149,6 +150,7 @@ impl Editor {
             show_rules: false,
             close_after_save: false,
             rule_scroll: UniformListScrollHandle::new(),
+            table_scroll: UniformListScrollHandle::new(),
             group_scroll: UniformListScrollHandle::new(),
             member_scroll: std::array::from_fn(|_| UniformListScrollHandle::new()),
             timeout: None,

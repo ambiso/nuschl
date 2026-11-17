@@ -43,6 +43,8 @@ decided them: Mumble's default, another row, a rule in a parent channel or
 Write ACL. Hovering a Partly cell lists which permissions are allowed. So a
 click on one row shows at once which other rows it changes. **Remove** clears
 everything a row sets here; rows are added with the search field below the
+table. The table shows eight rows at a time and scrolls; it draws only the rows
+in view. Permissions a row sets outside the five columns are listed under the
 table. Once the parent channels' rules are read, a dimmed cell set in a parent
 names that channel on hover, and its context menu (or Alt-click) offers
 **Show in <channel>**: that channel's permissions open, scrolled to the cell,
