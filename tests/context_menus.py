@@ -112,17 +112,23 @@ def actions(args, root, shell, application, bot, murmur):
             eventually(lambda: menu() is None, "Escape did not dismiss menu")
 
     def target_row():
-        return eventually(
-            lambda: next(
+        def find():
+            row = next(
                 (
                     node
                     for node, role, name, _ in items(application)
                     if role == "tree item" and name.startswith(TARGET)
                 ),
                 None,
-            ),
-            "long-named user missing",
-        )
+            )
+            # A viewport too narrow for the sidebar shows the channel tree
+            # in a sheet, which any other dialog closes.
+            sheet = row is None and named("Channels", "push button")
+            if sheet:
+                sheet.press()
+            return row
+
+        return eventually(find, "long-named user missing")
 
     def open_user():
         row = target_row()
