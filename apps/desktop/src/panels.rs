@@ -712,7 +712,7 @@ pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
                 )
             } else {
                 (
-                    format!("Retained permissions · channel {channel}"),
+                    format!("Retained permissions · {}", editor.channel_name),
                     760.,
                     crate::acl_editor::render_stale(editor, cx),
                 )
@@ -818,7 +818,7 @@ pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
     ))
 }
 
-fn channel_name(view: &ServerView, channel: u32) -> String {
+pub(crate) fn channel_name(view: &ServerView, channel: u32) -> String {
     view.channels
         .iter()
         .find(|entry| entry.id == channel && !entry.storage_key.starts_with("direct:"))

@@ -52,6 +52,8 @@ pub struct Editor {
     target: Entity<InputState>,
     group_name: Entity<InputState>,
     password: Entity<InputState>,
+    /// The channel's name when the editor opened, kept for the read-only view.
+    pub(crate) channel_name: String,
     member: Entity<InputState>,
     input_readonly: Cell<[bool; 4]>,
     rule_scroll: UniformListScrollHandle,
@@ -104,6 +106,7 @@ impl Editor {
             input_readonly: Cell::new([false; 4]),
             group_name: input("New group name", window, cx),
             password: input("New channel password", window, cx),
+            channel_name: String::new(),
             rule_scroll: UniformListScrollHandle::new(),
             group_scroll: UniformListScrollHandle::new(),
             member_scroll: std::array::from_fn(|_| UniformListScrollHandle::new()),
@@ -812,7 +815,9 @@ pub fn open(
     if origin.live_index(this).is_none() {
         return;
     }
-    let editor = Box::new(Editor::new(channel, window, cx));
+    let name = crate::panels::channel_name(view, channel);
+    let mut editor = Box::new(Editor::new(channel, window, cx));
+    editor.channel_name = name;
     let token = editor.token;
     this.panel = Some(Panel::Acl {
         origin,
@@ -1200,22 +1205,26 @@ pub fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Desktop>) -> 
         return body.into_any_element();
     };
     let inherit = draft.inherit_acls();
-    body = body.child(styled_button(
-        SharedString::from(format!("acl-inherit-{token}")),
-        format!(
-            "{} Inherit parent permissions",
-            if inherit { "✓" } else { "○" }
+    body = body.child(with_help(
+        format!("acl-inherit-help-{token}"),
+        "Rules of the parent channel apply here too. Without it, only this channel's rules count.",
+        styled_button(
+            SharedString::from(format!("acl-inherit-{token}")),
+            format!(
+                "{} Inherit parent permissions",
+                if inherit { "✓" } else { "○" }
+            ),
+            Tone::Secondary,
+            move |this, _, cx| {
+                change(this, token, |editor| {
+                    if let Some(draft) = editor.state.draft_mut() {
+                        draft.set_inherit_acls(!inherit);
+                    }
+                });
+                cx.notify();
+            },
+            cx,
         ),
-        Tone::Secondary,
-        move |this, _, cx| {
-            change(this, token, |editor| {
-                if let Some(draft) = editor.state.draft_mut() {
-                    draft.set_inherit_acls(!inherit);
-                }
-            });
-            cx.notify();
-        },
-        cx,
     ));
     let password = draft.password().map(str::to_owned);
     body = body
@@ -1542,6 +1551,15 @@ fn effect(entry: &AclEntry, short: bool) -> String {
     }
 }
 
+/// `control` with `help` shown on hover.
+fn with_help(id: impl Into<SharedString>, help: &'static str, control: AnyElement) -> AnyElement {
+    div()
+        .id(id.into())
+        .tooltip(move |_, cx| cx.new(|_| Tooltip(help.into())).into())
+        .child(control)
+        .into_any_element()
+}
+
 /// Where a rule applies, in words.
 fn scope(entry: &AclEntry) -> &'static str {
     match (entry.apply_here, entry.apply_subs) {
@@ -1760,33 +1778,42 @@ fn rule_detail(
         ]
         .into_iter()
         .map(|(here, on, label)| {
-            styled_button(
-                SharedString::from(format!("acl-scope-{token}-{id}-{here}")),
-                format!("{} {label}", if on { "✓" } else { "○" }),
-                Tone::Secondary,
-                move |this, _, cx| {
-                    change_rule(this, token, id, |editor| {
-                        if let Some(entry) = editor
-                            .state
-                            .draft_mut()
-                            .and_then(|draft| draft.entry_mut(id))
-                        {
-                            if here {
-                                entry.apply_here = !entry.apply_here;
-                                if !entry.apply_here {
-                                    entry.apply_subs = true;
-                                }
-                            } else {
-                                entry.apply_subs = !entry.apply_subs;
-                                if !entry.apply_subs {
-                                    entry.apply_here = true;
+            let help = if here {
+                "The rule counts in this channel."
+            } else {
+                "The rule counts in every channel below this one."
+            };
+            with_help(
+                format!("acl-scope-help-{token}-{id}-{here}"),
+                help,
+                styled_button(
+                    SharedString::from(format!("acl-scope-{token}-{id}-{here}")),
+                    format!("{} {label}", if on { "✓" } else { "○" }),
+                    Tone::Secondary,
+                    move |this, _, cx| {
+                        change_rule(this, token, id, |editor| {
+                            if let Some(entry) = editor
+                                .state
+                                .draft_mut()
+                                .and_then(|draft| draft.entry_mut(id))
+                            {
+                                if here {
+                                    entry.apply_here = !entry.apply_here;
+                                    if !entry.apply_here {
+                                        entry.apply_subs = true;
+                                    }
+                                } else {
+                                    entry.apply_subs = !entry.apply_subs;
+                                    if !entry.apply_subs {
+                                        entry.apply_here = true;
+                                    }
                                 }
                             }
-                        }
-                    });
-                    cx.notify();
-                },
-                cx,
+                        });
+                        cx.notify();
+                    },
+                    cx,
+                ),
             )
         }),
     );
@@ -2026,27 +2053,36 @@ fn groups(view: &ServerView, editor: &Editor, cx: &mut Context<Desktop>) -> AnyE
                 ]
                 .into_iter()
                 .map(|(inherit, on, label)| {
-                    styled_button(
-                        SharedString::from(format!("acl-group-flag-{token}-{id}-{inherit}")),
-                        format!("{} {label}", if on { "✓" } else { "○" }),
-                        Tone::Secondary,
-                        move |this, _, cx| {
-                            change_group(this, token, id, |editor| {
-                                if let Some(group) = editor
-                                    .state
-                                    .draft_mut()
-                                    .and_then(|draft| draft.group_mut(id))
-                                {
-                                    if inherit {
-                                        group.inherit = !group.inherit;
-                                    } else {
-                                        group.inheritable = !group.inheritable;
+                    let help = if inherit {
+                        "Members of the parent channel's group of this name are members here too."
+                    } else {
+                        "Subchannels can use this group and its members."
+                    };
+                    with_help(
+                        format!("acl-group-flag-help-{token}-{id}-{inherit}"),
+                        help,
+                        styled_button(
+                            SharedString::from(format!("acl-group-flag-{token}-{id}-{inherit}")),
+                            format!("{} {label}", if on { "✓" } else { "○" }),
+                            Tone::Secondary,
+                            move |this, _, cx| {
+                                change_group(this, token, id, |editor| {
+                                    if let Some(group) = editor
+                                        .state
+                                        .draft_mut()
+                                        .and_then(|draft| draft.group_mut(id))
+                                    {
+                                        if inherit {
+                                            group.inherit = !group.inherit;
+                                        } else {
+                                            group.inheritable = !group.inheritable;
+                                        }
                                     }
-                                }
-                            });
-                            cx.notify();
-                        },
-                        cx,
+                                });
+                                cx.notify();
+                            },
+                            cx,
+                        ),
                     )
                 }),
             ),
