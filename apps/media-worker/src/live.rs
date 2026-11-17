@@ -1303,11 +1303,16 @@ fn convertible(config: &cpal::StreamConfig) -> Result<(usize, u32), String> {
     Ok((channels, rate))
 }
 
+/// Report errors that end a stream. A stream that follows the system default
+/// (`DeviceChanged`: the audio server moved it to the new default device, as
+/// when Bluetooth headphones connect) keeps running and needs no reopening.
 fn error_callback(tx: SyncSender<Event>) -> impl FnMut(cpal::Error) + Send + 'static {
     move |error| {
         if !matches!(
             error.kind(),
-            cpal::ErrorKind::Xrun | cpal::ErrorKind::RealtimeDenied
+            cpal::ErrorKind::Xrun
+                | cpal::ErrorKind::RealtimeDenied
+                | cpal::ErrorKind::DeviceChanged
         ) {
             let _ = tx.try_send(Event::DeviceError(error.to_string()));
         }
@@ -1677,6 +1682,16 @@ mod capture_fixture;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_stream_moved_to_the_new_default_device_keeps_its_devices() {
+        let (tx, rx) = super::mpsc::sync_channel(4);
+        let mut report = super::error_callback(tx);
+        report(cpal::ErrorKind::DeviceChanged.into());
+        assert!(rx.try_recv().is_err());
+        report(cpal::ErrorKind::DeviceNotAvailable.into());
+        assert!(matches!(rx.try_recv(), Ok(super::Event::DeviceError(_))));
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     #[ignore = "explicit metadata-only PipeWire fixture; no capture or playback"]
