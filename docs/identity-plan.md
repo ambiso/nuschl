@@ -23,8 +23,9 @@ The plan holds the required features and the choices that are hard to change lat
   a directory and a key-transparency log with witnesses.
 - **Safeguards.** The identity service keeps public data and sealed blobs only; if it
   disappears, existing identities, contacts and conversations keep working.
-  Self-hosters configure their own service (`id.example.org`, same protocol);
-  id.nuschl.eu is the default.
+- **One identity service.** id.nuschl.eu is the only identity service, with one
+  username namespace, to avoid ecosystem fragmentation. Self-hosting covers home
+  servers.
 - **Light federation.** Home servers carry the SFU, voice, direct messages,
   attachments and stickers. The identity service tells where a user's home server
   is and sends all email. A user whom a home server blocks moves to another one.
@@ -39,17 +40,21 @@ The plan holds the required features and the choices that are hard to change lat
 - **Recovery** works with a synced passkey, with the recovery key on a later login
   screen, or by email. An email reset makes a new identity that the identity service
   vouches for: public, delayed, open to objection, and unverified for contacts.
+  The delay is 24 hours, or 7 days as the user's opt-in. Email at registration is
+  offered and optional. Linux desktops recover with a passkey through a page on
+  id.nuschl.eu.
 - **Invite tree.** "an invite tree like lobste.rs so spam or sockpuppet accounts can
   be identified more easily (and a later public registration phase which can be more
-  heavily moderated)". Invites are available at once, so abuse is handled by cutting
-  the tree at the abusing account. Later public registration: email maybe, no proof
-  of work, no probation for now.
+  heavily moderated)". id.nuschl.eu keeps one tree. Invites are available at once,
+  and operator identities get unlimited invites. id.nuschl.eu moderates obvious spam
+  and abuse only, by cutting the tree at the abusing account. Later public
+  registration: email maybe, no proof of work, no probation for now.
 
 ## Roles and data
 
 | Role | Holds |
 | --- | --- |
-| Identity service (id.nuschl.eu or `id.example.org`) | Directory and KT log, backups, passkey credentials, email addresses, invite tree |
+| Identity service (id.nuschl.eu) | Directory and KT log, backups, passkey credentials, email addresses, invite tree |
 | Home server (a `nuschld` the user chooses) | The user's account, an inbox for conversation invites, direct conversations and calls, attachments, stickers, the user's sealed server-side keys |
 | Channel server (any `nuschld`) | Channels, ACLs and accounts, as in e2ee.md |
 | Witness (`nuschl-witness`) | Cosignatures over the identity service's and every server's log |
@@ -111,7 +116,20 @@ Both participants' home servers keep the conversation. Requirements:
 - If one server disappears, the other keeps serving, and the participants continue
   there or on a new home server.
 
-How the two copies stay in step is open question 2.
+Recommended for keeping the copies in step (open question 1):
+
+- MLS messages are small and always go to both home servers. The initiator's server
+  orders commits, and both servers deduplicate application messages by epoch, sender
+  and generation, so either one holds the full history.
+- An attachment is uploaded once, to the recipient's home server, which returns a
+  signed receipt. Without a receipt within a short timeout, or when the upload
+  stalls, the client also uploads to the sender's home server.
+- The other home server fetches the encrypted blob by its content hash from the first,
+  in the background. The hash verifies the blob, so this narrow server-to-server
+  fetch needs no trust between servers.
+
+This fits MLS: each attachment's key and hash travel inside MLS messages, and the
+blobs are opaque ciphertext, so where a blob is stored is independent of the group.
 
 ### Move home server
 
@@ -136,9 +154,10 @@ and history survive.
 
 Native apps run the ceremony through the platform's passkey API where the app may
 claim `id.nuschl.eu` (Apple associated domains, Android Digital Asset Links, the
-Windows WebAuthn API), so the root seed stays in the crypto worker. Elsewhere a page
-on id.nuschl.eu unwraps the root, certifies the new device over the linking protocol
-of e2ee.md §3.4 and discards the root; that page's code is trusted while it runs.
+Windows WebAuthn API), so the root seed stays in the crypto worker. On Linux
+desktops and elsewhere, a page on id.nuschl.eu unwraps the root, certifies the new
+device over the linking protocol of e2ee.md §3.4 and discards the root; that page's
+code is trusted while it runs.
 
 ### Recover by email
 
@@ -147,8 +166,8 @@ and the identity service vouches for it.
 
 1. A code goes to the bound address; the new device submits a new root with it.
 2. The service publishes `reset:<old fingerprint>`: "replaced by <new fingerprint>,
-   vouched by id.nuschl.eu (email)", effective after the delay, and mails the
-   address at start and end.
+   vouched by id.nuschl.eu (email)", effective after 24 hours, or 7 days if the user
+   opted in, and mails the address at start and end.
 3. During the delay, the old identity's devices see the entry through self-monitoring
    and raise the blocking alarm of e2ee.md §4. A `ResetObjection` signed by the old
    device-signing key, or by the root opened with the recovery key, cancels the reset
@@ -157,11 +176,14 @@ and the identity service vouches for it.
    identity. Contacts see a key change labelled "reset, vouched by id.nuschl.eu";
    verified contacts drop to unverified.
 
-Signal binds an identity to a phone number. A new install re-registers with an SMS
-code, Registration Lock requires the user's PIN for that, and a new identity key
-shows contacts "safety number changed"; contacts rely on Signal's server for the
-binding until they compare safety numbers. The KT entry and the delay make the
-identity service's vouching visible and contestable.
+Signal binds an identity to a phone number and re-registers a new install with an
+SMS code: at once without Registration Lock; with Registration Lock the user's PIN,
+or with a forgotten PIN a wait of 7 days after the account's last activity. A new
+identity key shows contacts "safety number changed", and contacts rely on Signal's
+server for the binding until they compare safety numbers. Here the KT entry and the delay make the identity
+service's vouching visible and contestable. Self-monitoring runs at least hourly
+while a device is online, so the 24-hour delay reaches every device online that day;
+users whose devices stay offline for days opt in to 7 days.
 
 The new identity starts with an empty history. Sticker pack versions are signed by
 the author's identity and `pack_id` derives from its fingerprint (#273), so only the
@@ -174,29 +196,28 @@ installing it to the user.
 Registration at the identity service starts with an invite, as on lobste.rs. An
 invite is a single-use code signed by the inviter's device-signing key over the
 code's hash and an expiry; the invitee's first publication signs it too. Each
-identity's inviter is recorded, so the identities form one tree per identity service.
+identity's inviter is recorded, so the identities form one tree.
 
 - **Visibility.** The service's moderators see the tree; each user sees their own
   inviter and invitees.
-- **Moderation.** Invites are available at once and unlimited by default. When a
-  branch spams or holds sockpuppets, a moderator cuts the tree at the abusing account:
+- **Moderation.** Invites are available at once and unlimited by default.
+  id.nuschl.eu acts on obvious spam and abuse only: a moderator cuts the tree at the
+  abusing account:
   that account and its subtree lose their usernames and invite rights, and the
   service stops publishing their new records. Signed revocations stay accepted, so
   users keep control of their keys. Moderators can limit one account's invites and
   re-admit individual accounts of a cut subtree.
-- **Operators** (proposed, open question 1). An operator gets an operator identity
-  whose invites are unlimited, admits whoever they want, and their community is one
-  subtree that can be cut at the operator. Each home server decides which registered
-  identities it hosts.
+- **Operators.** An operator identity has unlimited invites and admits whoever the
+  operator wants; the community is one subtree, cut at the operator if needed. Each
+  home server decides which registered identities it hosts.
 - **Interplay.** An email reset keeps the old place in the tree, since the service
-  vouches for it. Moving home servers leaves the tree unchanged. A self-hosted
-  identity service runs its own tree.
+  vouches for it. Moving home servers leaves the tree unchanged.
 
 ## When a party is malicious or gone
 
 | Party | If it disappears | If it is malicious, it can | Limited by |
 | --- | --- | --- | --- |
-| Identity service | Existing identities, contacts and conversations keep working; new registrations, recoveries, lookups and moves wait | Deny service; delay updates; see registrations, emails and lookups; vouch for an email reset; serve a hostile browser ceremony page | Signatures on every record; witnesses bound split views and freezes to 24 h; backups need the PRF output or recovery key; resets are logged, delayed and objectable |
+| Identity service | Existing identities, contacts and conversations keep working from cached records and home servers; new registrations, recoveries, lookups and moves wait for its return or a successor | Deny service; delay updates; see registrations, emails and lookups; vouch for an email reset; serve a hostile browser ceremony page | Signatures on every record; witnesses bound split views and freezes to 24 h; backups need the PRF output or recovery key; resets are logged, delayed and objectable |
 | Home server | The other participant's home server keeps each direct conversation; the user moves | Deny service; drop invites; see metadata | End-to-end encryption; moves need the user's signature |
 | Channel server | Its channels are gone | As in e2ee.md §2 | As in e2ee.md §2 and §5 |
 | Stolen unlocked device | — | Add devices, move the home server, object to a reset | Self-monitoring alarms on the other devices; revocation and a move back |
@@ -205,8 +226,10 @@ identity's inviter is recorded, so the identities form one tree per identity ser
 
 - Every new record and statement uses the KT value framing of e2ee.md §5.1
   (`uint16 format`), so later formats add without breaking proofs.
-- References to an identity carry the identity service's origin when it differs from
-  the default, so several services can coexist.
+- Records, statements and references name their identity service, so a successor
+  service or an emergency migration can take over.
+- Moderation decisions are signed records kept apart from the tree, so other
+  moderators can publish their own later.
 - Lookup requests are self-contained and leave the asker anonymous, so a home server
   can later forward them unchanged for privacy.
 - Server-side keys derive from the root seed, so every recovery path that opens the
@@ -217,15 +240,16 @@ identity's inviter is recorded, so the identities form one tree per identity ser
 
 Proposals: KT values at most 4096 bytes (e2ee.md §5.1); a backup blob at most
 16 KiB and 8 passkeys per identity; one move per hour; one bound email address,
-8-digit codes valid 15 minutes with 5 attempts, one pending reset per identity, a
-7-day reset delay; invite codes expire after 7 days. Clients validate every reply
+8-digit codes valid 15 minutes with 5 attempts, one pending reset per identity;
+self-monitoring at least hourly while online; invite codes expire after 7 days; an
+attachment receipt within 10 s of the upload's end, and 30 s without progress counts
+as a stall. Clients validate every reply
 against these limits before allocating.
 
 ## Slices
 
 1. Identity service: a `nuschl-id` role in `nuschld` with the directory, `id:` and
-   `user:` labels, invites and the tree, witness submission, a NixOS module and the
-   client setting.
+   `user:` labels, invites and the tree, witness submission and a NixOS module.
 2. Home statements, lookups, inboxes and the move flow.
 3. Direct conversations on both home servers, with root-derived server-side keys.
 4. Recovery-key login screen (#363), then passkey backup and recovery.
@@ -241,23 +265,14 @@ an identity service.
 - Public registration (email maybe; no proof of work; no probation for now).
 - Social recovery: k of n chosen contacts confirm a reset, with the email reset's
   delay and objection.
-- Moving between identity services with a signed `MovedTo` statement.
+- Moderation communities: users and servers subscribe to moderators they trust.
+- Migration to a successor identity service with a signed `MovedTo` statement.
 - Reducing channel servers' `acct:` roster commitment once `id:` records exist.
 
-## Open questions (recommended default first)
+## Open question (recommended default first)
 
-1. **Invite tree and operators:** id.nuschl.eu manages the one tree; operators get
-   an operator identity with unlimited invites, so their community is one subtree;
-   each home server decides which registered identities it hosts.
-2. **Keeping both copies of a direct conversation:** the initiator's home server
-   orders commits; each sender posts its messages to both home servers; the other
-   server takes over ordering if the first disappears. History keys and the
-   device-sync key are sealed under `HKDF(root seed, "server-keys")` on each user's
-   home server.
-3. **Reset delay and objection:** 7 days; any device with the device-signing key, or
-   the recovery key, can object.
-4. **Email at registration:** offered and optional.
-5. **Usernames on a self-hosted identity service:** `name@id.example.org`, with bare
-   names meaning id.nuschl.eu.
-6. **Browser ceremony on Linux desktops:** the id.nuschl.eu page acts as the linking
-   device until a desktop passkey API exists for that rpId.
+1. **Keeping both copies of a direct conversation:** MLS messages to both home
+   servers; attachments once to the recipient's server with a signed receipt, to the
+   sender's server as fallback; the other server fetches blobs by content hash
+   ("Direct conversations"). Alternative: the sender's client uploads the second copy
+   later at low priority.
