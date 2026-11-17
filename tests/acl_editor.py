@@ -512,7 +512,7 @@ def actions(args, root, shell, application, bot, murmur):
     click_matching("Inheritable by subchannels")
     activate("Add rule")
     target_field = type_field("ACL rule target", "native-team")
-    activate("Speak: unset")
+    activate("Speak: Allow")
     activate("Save permissions")
     eventually(
         lambda: text_contains("Apply or discard the edited rule target"),
@@ -568,8 +568,7 @@ def actions(args, root, shell, application, bot, murmur):
         "replacement account lookup did not resolve",
     )
     activate("Apply target")
-    activate("Speak: unset")
-    activate("Speak: allow")
+    activate("Speak: Deny")
     activate("Move rule up")
     save()
     shell.screenshot(args.output / "native-child-rules.png")
