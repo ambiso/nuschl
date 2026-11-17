@@ -1004,7 +1004,7 @@ fn channels_sheet(
                 )
                 .child(icon_button(
                     "close-channels",
-                    "x",
+                    "window-close",
                     "Close channels",
                     TEXT_MUTED,
                     None,

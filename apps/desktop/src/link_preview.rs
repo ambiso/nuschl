@@ -256,7 +256,7 @@ pub fn composer(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement>
         .when(remove, |row| {
             row.child(crate::dialogs::icon_button(
                 "remove-link-preview",
-                "x",
+                "window-close",
                 "Remove link preview",
                 TEXT_MUTED,
                 None,
