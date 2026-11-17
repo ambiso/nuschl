@@ -795,8 +795,6 @@
         packages.${distroOutput "linux-portable"} = linuxPortable;
         packages.${distroOutput "server-static"} = serverStatic;
         packages.${distroOutput "arch-bin"} = linuxDistro.archBin;
-        packages.${distroOutput "deb-source"} = linuxDistro.debSource;
-        packages.${distroOutput "deb-source-check"} = linuxDistro.debSourceCheck;
         legacyPackages.crate2nixInputs = crate2nixInputs;
         packages.default-crane = cranePackage;
         packages.emojiAssets = emojiAssets;
