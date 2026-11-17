@@ -6,10 +6,10 @@
 
 Nuschl is a voice and text chat app for [Mumble](https://www.mumble.info/) servers.
 It works with the Mumble servers you already use, keeps your chat history, and shows
-code, images and formulas in messages. Nuschl also has its own server, `nuschld`,
-which stock Mumble clients can use too: with Nuschl on both ends, the server keeps
-the history, you can edit messages, and direct messages reach people who are
-offline. End-to-end encryption is being built ([how far it is](#security-and-privacy)).
+code, images, formulas, emoji and link previews in messages. Nuschl also has its own
+server, `nuschld`, which stock Mumble clients can use too: with Nuschl on both ends,
+the server keeps the history, you can edit messages, and direct messages reach
+people who are offline. End-to-end encryption is being built ([how far it is](#security-and-privacy)).
 Nuschl's own code is memory-safe Rust, and what other people send you is handled in
 sandboxed helper processes.
 
@@ -21,12 +21,12 @@ More about the app: [docs/desktop.md](docs/desktop.md).
 
 ## Install
 
-Downloads for **0.1.0** include the required helper programs and licenses:
+Downloads for **0.2.0** include the required helper programs and licenses:
 
 | Platform | Download |
 | --- | --- |
-| Windows x86_64 | [Portable ZIP](https://github.com/nuschl-eu/nuschl/releases/download/v0.1.0/nuschl-0.1.0-windows-x86_64.zip) |
-| macOS Intel and Apple silicon | [Universal app ZIP](https://github.com/nuschl-eu/nuschl/releases/download/v0.1.0/nuschl-0.1.0-macos-universal.zip) |
+| Windows x86_64 | [Portable ZIP](https://github.com/nuschl-eu/nuschl/releases/download/v0.2.0/nuschl-0.2.0-windows-x86_64.zip) |
+| macOS Intel and Apple silicon | [Universal app ZIP](https://github.com/nuschl-eu/nuschl/releases/download/v0.2.0/nuschl-0.2.0-macos-universal.zip) |
 | Linux | [Nix installation](#nixos-and-nix) |
 
 Download the complete ZIP for your platform; the individual files on the release
@@ -38,8 +38,10 @@ are below.
 Try it without installing anything:
 
 ```sh
-nix run github:nuschl-eu/nuschl
+nix run github:nuschl-eu/nuschl/v0.2.0
 ```
+
+Without `/v0.2.0`, the flake builds the latest `main`.
 
 To keep it, add the flake as an input and install
 `inputs.nuschl.packages.${pkgs.stdenv.hostPlatform.system}.default`, or use the Home
@@ -95,10 +97,10 @@ screen readers, and F1 lists the keys.
 ### Android, iOS and the web
 
 Android and iOS remain planned ([docs/clients.md](docs/clients.md)). The web client
-supports text chat and local history. Host it with `nixosModules.web`, which serves
-the app and its relay from your domain with ACME. TLS runs in the browser, so the
-relay sees ciphertext. Browser voice, video and MLS remain unfinished
-([docs/web.md](docs/web.md)).
+supports text chat, voice and local history. Host it with `nixosModules.web`, which
+serves the app and its relay from your domain with ACME. TLS runs in the browser, so the
+relay sees ciphertext. Video and MLS in the browser remain unfinished
+([docs/web.md](docs/web.md), [browser voice](docs/browser-audio.md)).
 
 ## Getting started
 
@@ -118,10 +120,18 @@ fingerprint (`?fp=sha256:…`), and then nobody needs to confirm it.
 
 **Talking.** Click a channel to read its conversation; double-click it to join its
 voice. You join muted: unmute with the microphone button at the bottom left. Nuschl
-then sends your voice whenever you speak. For push to talk, open Settings (the
+then sends your voice whenever you speak. Only your own Unmute opens the
+microphone: reconnects, server changes and restarts keep you muted, and mute and
+deafen carry over to the next connection. For push to talk, open Settings (the
 sliders next to the microphone), choose **Push to talk** under Transmission, and
 record a key under Shortcuts. The key also works while Nuschl is in the background,
 where the desktop allows system-wide shortcuts (GNOME asks you once).
+
+**Messages.** The smiley button beside the message box opens the emoji picker, and
+short codes such as `:smile:` type emoji. On Linux, a link you send gets a preview
+card (title, description and image) that your computer fetches directly;
+**Settings → Link previews** turns this off. Received cards display without fetching
+anything ([docs/link-previews.md](docs/link-previews.md)).
 
 **Your microphone.** **Settings → Microphone test** lets you hear yourself as others
 would and check for echo, without being on a server. Nuschl cancels echo and noise
@@ -131,9 +141,10 @@ itself, or uses the system's echo cancellation on Linux when it finds one.
 
 `nuschld` is Nuschl's server. Stock Mumble clients (1.3 to 1.5) use it like the
 standard Mumble server, and it can import an existing one with its users, channels
-and permissions. The [NixOS operator guide](docs/server-operators.md) covers TLS,
-web access, firewall rules, administrator setup, witnesses and backups. A minimal
-NixOS server starts with:
+and permissions (on Linux 6.12 or later). The
+[NixOS operator guide](docs/server-operators.md) covers TLS, web access, firewall
+rules, administrator setup, witnesses and backups. A minimal NixOS server starts
+with:
 
 ```nix
 imports = [ inputs.nuschl.nixosModules.default ];
@@ -166,7 +177,8 @@ player has live updates, scrubbing and drag-and-drop ordering. Queues, playback
 positions and the latest 1,000 history entries per queue survive deployment
 restarts. Its Mumble comment gives the instance address and link instructions.
 Each channel has its own queue or shares another channel's. VAD-based ducking and
-playback settings are adjustable on the page.
+playback settings are adjustable on the page. With an import service configured,
+people can search for albums missing from the library and add them from the page.
 On NixOS: `imports = [ inputs.nuschl.nixosModules.musicbot ];` and
 `services.nuschl-musicbot`; details in [docs/musicbot.md](docs/musicbot.md).
 
