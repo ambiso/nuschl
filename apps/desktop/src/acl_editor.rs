@@ -1317,21 +1317,35 @@ pub fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Desktop>) -> 
         .flex_col()
         .gap_3()
         .child(header)
+        // The status line holds "Unsaved changes" at its end, so edits
+        // leave the layout in place.
         .child(
             div()
-                .min_w_0()
-                .whitespace_normal()
+                .flex()
+                .items_start()
+                .gap_3()
                 .text_sm()
-                .text_color(color(if editor.state.error {
-                    DANGER
-                } else {
-                    TEXT_MUTED
-                }))
-                .child(text!(editor.state.message.clone()).with_id("acl-status")),
-        )
-        .when(editor.dirty || unapplied, |body| {
-            body.child(note("acl-dirty", "Unsaved changes"))
-        });
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .whitespace_normal()
+                        .text_color(color(if editor.state.error {
+                            DANGER
+                        } else {
+                            TEXT_MUTED
+                        }))
+                        .child(text!(editor.state.message.clone()).with_id("acl-status")),
+                )
+                .when(editor.dirty || unapplied, |line| {
+                    line.child(
+                        div()
+                            .flex_shrink_0()
+                            .text_color(color(WARNING))
+                            .child(text!("Unsaved changes").with_id("acl-dirty")),
+                    )
+                }),
+        );
     let Some(draft) = editor.state.draft() else {
         return body.into_any_element();
     };
