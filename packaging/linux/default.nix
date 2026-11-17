@@ -1,23 +1,19 @@
-# Pure public builder entrypoint. The coordinator owns flake output registration.
+# Debian and Arch packages of the Linux desktop. Versions come from the
+# workspace version; packages are published from release tags.
 {
   pkgs,
   toolchain,
   sourceInfo,
-  versionMetadata ? null,
   nativeNotices,
   desktopFiles,
   appstreamXML,
+  revision ? "1",
   maintainer ? "Local package validation <nobody@example.invalid>",
 }:
 let
-  inherit (pkgs) lib;
   projectRoot = sourceInfo.outPath;
-  baseVersion =
+  version =
     (builtins.fromTOML (builtins.readFile (projectRoot + "/Cargo.toml"))).workspace.package.version;
-  versions = import ./version.nix {
-    inherit baseVersion sourceInfo;
-    metadata = versionMetadata;
-  };
   portable = import ../../nix/portable-linux.nix {
     inherit
       pkgs
@@ -26,37 +22,29 @@ let
       nativeNotices
       desktopFiles
       appstreamXML
+      version
       ;
-    version = versions.debianUpstream;
   };
   deb = import ../debian/package.nix {
     inherit pkgs projectRoot maintainer;
     stage = portable.stage;
-    version = versions.debianVersion;
-    sourceDateEpoch = versions.sourceDateEpoch;
-  };
-  archBin = import ../arch/package.nix {
-    inherit pkgs;
-    stage = portable.stage;
-    version = versions.archPkgver;
-    packageRevision = versions.archPkgrel;
-    sourceDateEpoch = versions.sourceDateEpoch;
+    version = "${version}-${revision}";
+    sourceDateEpoch = 1;
   };
 in
 {
-  inherit
-    versions
-    deb
-    archBin
-    ;
+  inherit deb;
   nativeStage = portable.stage;
-  metadataTests = import ./metadata-tests.nix { inherit pkgs; };
-}
-// lib.optionalAttrs versions.officialVersion {
+  archBin = import ../arch/package.nix {
+    inherit pkgs version;
+    stage = portable.stage;
+    packageRevision = revision;
+    sourceDateEpoch = 1;
+  };
   aptRepository = import ../debian/apt-repository.nix {
     inherit pkgs;
-    packages = [ (deb + "/nuschl_${versions.debianVersion}_amd64.deb") ];
+    packages = [ (deb + "/nuschl_${version}-${revision}_amd64.deb") ];
     suite = "trixie";
-    publicationEpoch = versions.sourceDateEpoch;
+    publicationEpoch = 1;
   };
 }
