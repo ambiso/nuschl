@@ -766,6 +766,22 @@ def actions(args, root, shell, application, bot, murmur):
     wait("Registered users · Sets no permissions", "push button")
     activate("Remove rule")
     mark("group_picked_as_rule_target")
+    # Check access evaluates the parents' rules with the draft: an unsaved
+    # password denies Everyone Traverse in Lobby, so nothing there is allowed;
+    # a reload lets them in again.
+    type_field("New channel password", "door-code")
+    activate("Set password")
+    activate("Everyone")
+    eventually(
+        lambda: text_contains("Enter: Not allowed · Cannot pass Lobby"),
+        "Check access did not explain the draft",
+    )
+    assert text_contains("Includes unsaved changes")
+    activate("Reload and discard draft")
+    eventually(
+        lambda: text_contains("Enter: Allowed · "), "Check access kept the discarded draft"
+    )
+    mark("check_access_explains_the_draft")
     return {
         "fresh_offline_lookup": True,
         "unknown_account_refused": True,
@@ -783,6 +799,7 @@ def actions(args, root, shell, application, bot, murmur):
         "fresh_editor_after_reconnect": True,
         "channel_password_admits_token_holders": True,
         "group_picked_as_rule_target": True,
+        "check_access_explains_the_draft": True,
         "registered_ids": IDS.copy(),
         "server": args.server,
         "diagnostic_rate_override": args.high_admin_limit,

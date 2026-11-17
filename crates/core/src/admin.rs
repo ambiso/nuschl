@@ -349,6 +349,45 @@ pub fn group_has_local_definition(group: &AclGroup) -> bool {
         || !group.remove.is_empty()
 }
 
+/// What `acl`'s own channel defines, as the permission model reads it: the
+/// channel's own rules and groups. Inherited copies in a query reply come from
+/// the parents' nodes instead.
+pub fn node(acl: &Acl, parent: Option<u32>) -> crate::acl::Node {
+    crate::acl::Node {
+        parent,
+        inherit_acl: acl.inherit_acls,
+        acls: acl
+            .entries
+            .iter()
+            .filter(|entry| !entry.inherited)
+            .map(|entry| crate::acl::AclEntry {
+                apply_here: entry.apply_here,
+                apply_subs: entry.apply_subs,
+                user_id: entry.user_id,
+                group: entry.group.clone().unwrap_or_default(),
+                grant: entry.grant,
+                deny: entry.deny,
+            })
+            .collect(),
+        groups: acl
+            .groups
+            .iter()
+            .filter(|group| group_has_local_definition(group))
+            .map(|group| {
+                (
+                    group.name.clone(),
+                    crate::acl::Group {
+                        inherit: group.inherit,
+                        inheritable: group.inheritable,
+                        add: group.add.iter().copied().collect(),
+                        remove: group.remove.iter().copied().collect(),
+                    },
+                )
+            })
+            .collect(),
+    }
+}
+
 /// A UI chooses globally unique tickets and validates its original connection
 /// before issuing effects. Pending requests never permit editing the draft.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -595,6 +634,28 @@ mod tests {
                 inherited_members: vec![42],
             }],
         }
+    }
+
+    #[test]
+    fn a_node_holds_the_channels_own_rules_and_groups() {
+        let mut acl = acl();
+        acl.groups.push(AclGroup {
+            name: "helpers".into(),
+            inherited: false,
+            inherit: false,
+            inheritable: true,
+            add: vec![5],
+            remove: vec![6],
+            inherited_members: vec![],
+        });
+        let node = node(&acl, Some(3));
+        assert_eq!(node.parent, Some(3));
+        assert!(node.inherit_acl);
+        assert_eq!(node.acls.len(), 1);
+        assert_eq!(node.acls[0].user_id, Some(9876));
+        assert_eq!(node.groups.keys().collect::<Vec<_>>(), ["helpers"]);
+        let helpers = &node.groups["helpers"];
+        assert!(!helpers.inherit && helpers.add.contains(&5) && helpers.remove.contains(&6));
     }
 
     #[test]

@@ -22,6 +22,8 @@ use nuschl_core::{
 use nuschl_session::connection::Command;
 use std::{cell::Cell, ops::Range, rc::Rc};
 
+mod check_access;
+
 // Shared buttons occupy 35 logical pixels; keep their full hit/focus box inside
 // every fixed-height virtual row, including the final row at fractional zoom.
 const ROW_HEIGHT: f32 = 36.;
@@ -54,6 +56,7 @@ pub struct Editor {
     password: Entity<InputState>,
     /// The channel's name when the editor opened, kept for the read-only view.
     pub(crate) channel_name: String,
+    check: Option<check_access::Check>,
     member: Entity<InputState>,
     input_readonly: Cell<[bool; 4]>,
     rule_scroll: UniformListScrollHandle,
@@ -107,6 +110,7 @@ impl Editor {
             group_name: input("New group name", window, cx),
             password: input("New channel password", window, cx),
             channel_name: String::new(),
+            check: None,
             rule_scroll: UniformListScrollHandle::new(),
             group_scroll: UniformListScrollHandle::new(),
             member_scroll: std::array::from_fn(|_| UniformListScrollHandle::new()),
@@ -847,6 +851,7 @@ pub fn sync(this: &mut Desktop, cx: &mut Context<Desktop>) {
         _ => return,
     };
     sync_lookup(this, token, index, cx);
+    check_access::sync(this, token, index);
     let Some(pending) = pending else {
         return;
     };
@@ -1401,7 +1406,9 @@ pub fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Desktop>) -> 
             "Select a rule to edit its target, scope, and permissions.",
         ));
     }
-    body = body.child(groups(view, editor, cx));
+    body = body
+        .child(groups(view, editor, cx))
+        .child(check_access::render(view, editor, cx));
     if pending {
         body = body.child(note(
             "acl-waiting",

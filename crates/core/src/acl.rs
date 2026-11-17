@@ -5,10 +5,9 @@
 //! (invert) and `~` (evaluate in the ACL's channel) prefixes. Behaviour follows
 //! stock Murmur's `ChanACL::effectivePermissions` and `Group::appliesToUser`.
 //!
-//! The evaluation functions are private to [`crate::authz`]: handlers ask it
-//! whether an actor may do something and never evaluate ACLs themselves. The
-//! data types and the editor's views (inherited entries, group members) are
-//! public.
+//! nuschld evaluates through its `authz` module only; clients use the same
+//! functions to explain access.
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub mod perm {
@@ -150,10 +149,15 @@ impl Subject<'_> {
 /// Access tokens are channel passwords: they are kept and compared only as
 /// digests, in constant time.
 pub fn token_digest(token: &str) -> [u8; 32] {
-    let digest = ring::digest::digest(&ring::digest::SHA256, token.to_lowercase().as_bytes());
-    let mut out = [0; 32];
-    out.copy_from_slice(digest.as_ref());
-    out
+    Sha256::digest(token.to_lowercase().as_bytes()).into()
+}
+
+fn equal_constant_time(a: &[u8; 32], b: &[u8; 32]) -> bool {
+    let difference = a
+        .iter()
+        .zip(b)
+        .fold(0, |difference, (x, y)| difference | (x ^ y));
+    std::hint::black_box(difference) == 0
 }
 
 /// Channels from the root down to `channel`, inclusive; empty if it does not exist.
@@ -173,9 +177,53 @@ fn path_from_root(tree: &impl Tree, channel: u32) -> Vec<u32> {
     path
 }
 
-pub(super) fn effective_permissions(tree: &impl Tree, subject: &Subject, channel: u32) -> u32 {
+pub fn effective_permissions(tree: &impl Tree, subject: &Subject, channel: u32) -> u32 {
+    evaluate(tree, subject, channel, |_, _| {})
+}
+
+/// What decided a permission bit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reason {
+    /// Mumble's defaults: Traverse, Enter, Speak, Whisper, Text message, Listen.
+    Default,
+    /// `tree.node(channel).acls[index]`.
+    Rule {
+        channel: u32,
+        index: usize,
+    },
+    /// Write implies the channel-management permissions.
+    Write,
+    Superuser,
+    /// Traverse is denied in this channel on the way down.
+    Unreachable {
+        channel: u32,
+    },
+}
+
+/// The effective permissions and, for each bit position, what decided it.
+pub fn explain(tree: &impl Tree, subject: &Subject, channel: u32) -> (u32, [Reason; 32]) {
+    let mut reasons = [Reason::Default; 32];
+    let granted = evaluate(tree, subject, channel, |bits, reason| {
+        for (bit, slot) in reasons.iter_mut().enumerate() {
+            if bits & (1 << bit) != 0 {
+                *slot = reason;
+            }
+        }
+    });
+    (granted, reasons)
+}
+
+/// Murmur's `ChanACL::effectivePermissions`; `note` hears which bits each step
+/// decides.
+fn evaluate(
+    tree: &impl Tree,
+    subject: &Subject,
+    channel: u32,
+    mut note: impl FnMut(u32, Reason),
+) -> u32 {
     use perm::*;
     if subject.superuser() {
+        note(ALL, Reason::Superuser);
         return ALL & !(SPEAK | WHISPER);
     }
     let path = path_from_root(tree, channel);
@@ -188,14 +236,19 @@ pub(super) fn effective_permissions(tree: &impl Tree, subject: &Subject, channel
         };
         if !node.inherit_acl {
             granted = DEFAULT;
+            note(ALL, Reason::Default);
         }
-        for acl in &node.acls {
+        for (index, acl) in node.acls.iter().enumerate() {
             let matches_user = acl.user_id.is_some() && acl.user_id == subject.user_id;
             let matches_group =
                 acl.user_id.is_none() && group_applies(tree, channel, current, &acl.group, subject);
             if !(matches_user || matches_group) {
                 continue;
             }
+            let reason = Reason::Rule {
+                channel: current,
+                index,
+            };
             let here = current == channel && acl.apply_here;
             let inherited = current != channel && acl.apply_subs;
             let apply = here || inherited;
@@ -219,13 +272,16 @@ pub(super) fn effective_permissions(tree: &impl Tree, subject: &Subject, channel
             }
             if current == 0 && here {
                 granted |= acl.grant & ROOT_ONLY;
+                note(acl.grant & ROOT_ONLY, reason);
             }
             if apply {
                 granted |= acl.grant & !(ROOT_ONLY | CACHED);
                 granted &= !acl.deny;
+                note((acl.grant & !(ROOT_ONLY | CACHED)) | acl.deny, reason);
             }
         }
         if !traverse && !write {
+            note(ALL, Reason::Unreachable { channel: current });
             return NONE;
         }
     }
@@ -233,7 +289,7 @@ pub(super) fn effective_permissions(tree: &impl Tree, subject: &Subject, channel
         return NONE;
     }
     if granted & WRITE != 0 {
-        granted |= TRAVERSE
+        let mut implied = TRAVERSE
             | ENTER
             | MUTE_DEAFEN
             | MOVE
@@ -243,15 +299,17 @@ pub(super) fn effective_permissions(tree: &impl Tree, subject: &Subject, channel
             | MAKE_TEMP_CHANNEL
             | LISTEN;
         if channel == 0 {
-            granted |= ROOT_ONLY;
+            implied |= ROOT_ONLY;
         }
+        note(implied & !granted, Reason::Write);
+        granted |= implied;
     }
     granted
 }
 
 /// Murmur's `Group::appliesToUser`: `current` is the channel permissions are
 /// evaluated for, `acl_channel` the channel holding the ACL entry.
-pub(super) fn group_applies(
+pub fn group_applies(
     tree: &impl Tree,
     current: u32,
     acl_channel: u32,
@@ -286,7 +344,7 @@ pub(super) fn group_applies(
     let matches = if token {
         let wanted = token_digest(name);
         subject.tokens.iter().fold(false, |found, held| {
-            found | crate::password::equal_constant_time(held, &wanted)
+            found | equal_constant_time(held, &wanted)
         })
     } else if hash {
         subject.hash == Some(name)
@@ -612,6 +670,52 @@ mod tests {
         assert_ne!(
             effective_permissions(&tree, &subject(Some(7), 0), 3) & ENTER,
             0
+        );
+    }
+
+    #[test]
+    fn explain_names_what_decided_each_permission() {
+        let mut tree = tree();
+        tree.get_mut(&1).unwrap().acls.push(acl("all", 0, SPEAK));
+        let (granted, reasons) = explain(&tree, &subject(Some(3), 0), 2);
+        assert_eq!(
+            granted,
+            effective_permissions(&tree, &subject(Some(3), 0), 2)
+        );
+        let bit = |permission: u32| permission.trailing_zeros() as usize;
+        assert_eq!(
+            reasons[bit(SPEAK)],
+            Reason::Rule {
+                channel: 1,
+                index: 0
+            }
+        );
+        assert_eq!(
+            reasons[bit(MAKE_TEMP_CHANNEL)],
+            Reason::Rule {
+                channel: 0,
+                index: 1
+            }
+        );
+        assert_eq!(reasons[bit(ENTER)], Reason::Default);
+        let (_, admin) = explain(&tree, &subject(Some(7), 0), 2);
+        assert_eq!(
+            admin[bit(WRITE)],
+            Reason::Rule {
+                channel: 0,
+                index: 0
+            }
+        );
+        assert_eq!(admin[bit(MOVE)], Reason::Write);
+        let mut entry = acl("all", 0, TRAVERSE);
+        entry.apply_subs = false;
+        tree.get_mut(&1).unwrap().acls.push(entry);
+        let (granted, reasons) = explain(&tree, &subject(None, 0), 3);
+        assert_eq!(granted, NONE);
+        assert_eq!(reasons[bit(ENTER)], Reason::Unreachable { channel: 1 });
+        assert_eq!(
+            explain(&tree, &subject(Some(0), 0), 3).1[bit(KICK)],
+            Reason::Superuser
         );
     }
 
