@@ -153,10 +153,12 @@ def actions(args, root, shell, application, bot, _murmur):
             if sum(all(abs(a-b) <= 2 for a, b in zip(pixel, thumb)) for pixel in pixels) >= max(1, round(2 * zoom / 100)):
                 rows.append(row)
         if not visible:
-            # Rounded container corners can share the border/normal-thumb
-            # colour. The straight gutter must have no overflowing-axis paint.
+            # Rounded container corners and dividers that cross the gutter
+            # (the emoji picker's line under its tabs) share the normal-thumb
+            # colour and paint a row or two; a thumb paints a segment.
             corner = round(12 * zoom / 100)
-            assert not [row for row in rows if corner < row < height-corner], (name, rows)
+            painted = [row for row in rows if corner < row < height-corner]
+            assert len(painted) < corner, (name, painted)
             return {"bounds": node.extents(), "painted_thumb": None, "png": shot.name}
         assert rows, f"no visible native thumb: {name}, {crop}"
         # A border alone is not a thumb: require a bounded segment on a long list.
