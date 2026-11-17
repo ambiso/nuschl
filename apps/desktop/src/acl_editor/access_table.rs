@@ -2,20 +2,27 @@
 //! Channel permissions (#341): the channel's own rules as a table of rows
 //! (Everyone, groups, people) and five columns. A cell cycles Not set, Allow
 //! and Deny and rewrites the rules in the table's order.
-use super::{Editor, MEMBER, change, group_target, name, note, section, with_help};
+use super::{
+    Editor, FLASH, Jump, MEMBER, active_editor, change, check_access, group_target, name, note,
+    parents::{self, Parents},
+    section, show_source,
+};
 use crate::{
-    dialogs::{Tone, Tooltip, named_button, styled_button},
+    dialogs::{Tone, Tooltip, named_button},
+    menus::MenuTarget,
+    panels::{Panel, channel_name},
+    picker::Picker,
     state::{Desktop, ServerView},
     theme::*,
 };
 use gpui_kit::{prelude::*, *};
 use nuschl_core::{
     access::{self, Bits, COLUMNS, Cell, Who},
-    acl::{self, Reason, Subject},
+    acl::{self, Reason},
     admin,
-    model::{Acl, AclEntry, permission},
+    model::{Acl, permission},
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Instant};
 
 fn label(view: &ServerView, who: &Who) -> String {
     match who {
@@ -48,6 +55,33 @@ fn cycle(this: &mut Desktop, token: u64, who: Who, column: usize) {
     });
 }
 
+/// The search field that adds a row, for `Editor::new`.
+pub(super) fn picker(token: u64, window: &mut Window, cx: &mut Context<Desktop>) -> Picker {
+    Picker::new(
+        "Add a row",
+        "Add someone: a group or a person",
+        |this| match this.panel.as_mut() {
+            Some(Panel::Acl { editor, .. }) => Some(&mut editor.table_picker),
+            _ => None,
+        },
+        move |this, key, window, cx| {
+            change(this, token, |editor| {
+                if let Some(who) = check_access::from_key(key)
+                    && !editor.table_rows.contains(&who)
+                {
+                    editor.table_rows.push(who);
+                }
+            });
+            if let Some(editor) = active_editor(this, token) {
+                editor.table_picker.clear(window, cx);
+            }
+            cx.notify();
+        },
+        window,
+        cx,
+    )
+}
+
 /// Clears everything `who`'s row sets here; inherited values stay.
 fn remove(this: &mut Desktop, token: u64, who: Who) {
     change(this, token, |editor| {
@@ -67,55 +101,94 @@ fn remove(this: &mut Desktop, token: u64, who: Who) {
     });
 }
 
-/// What a member of `who`'s row may do in the channel, and why.
-fn evaluate(snapshot: &Acl, base: &acl::Node, who: &Who) -> (u32, [Reason; 32]) {
-    let mut node = base.clone();
-    if let Who::Group(group) = who {
-        node.groups
-            .entry(group.clone())
-            .or_default()
-            .add
-            .insert(MEMBER);
-    }
+/// What a member of `who`'s row may do in the channel, why, and the tree the
+/// reasons point into. Until the parents' rules are read, the channel's own
+/// rule list stands in for the path (`flat`).
+fn evaluate(
+    parents: &Parents,
+    snapshot: &Acl,
+    base: &acl::Node,
+    who: &Who,
+) -> (u32, [Reason; 32], HashMap<u32, acl::Node>, bool) {
     let channel = snapshot.channel;
-    let tree = HashMap::from([(channel, node)]);
-    let subject = Subject {
-        user_id: match who {
-            Who::Everyone => None,
-            Who::Group(_) => Some(MEMBER),
-            Who::Person(id) => Some(*id),
-        },
-        channel,
-        hash: None,
-        tokens: &[],
-        strong: false,
+    let (tree, flat) = if parents.done {
+        (parents::tree(&parents.acls, snapshot, who), false)
+    } else {
+        let mut node = base.clone();
+        if let Who::Group(group) = who {
+            node.groups
+                .entry(group.clone())
+                .or_default()
+                .add
+                .insert(MEMBER);
+        }
+        (HashMap::from([(channel, node)]), true)
     };
-    acl::explain(&tree, &subject, channel)
+    let (granted, reasons) = acl::explain(&tree, &parents::subject(who, channel, None), channel);
+    (granted, reasons, tree, flat)
 }
 
-/// What decided a permission, in words.
-fn source(reason: Reason, entries: &[AclEntry], who: &Who, view: &ServerView) -> String {
+/// The table row a rule belongs to.
+fn row_of(entry: &acl::AclEntry) -> Who {
+    match (entry.user_id, entry.group.as_str()) {
+        (Some(id), _) => Who::Person(id),
+        (None, "all") => Who::Everyone,
+        (None, group) => Who::Group(group.to_owned()),
+    }
+}
+
+/// What decided a permission, in words, and the other channel and row it was
+/// set in.
+fn source(
+    reason: Reason,
+    tree: &HashMap<u32, acl::Node>,
+    flat: bool,
+    snapshot: &Acl,
+    who: &Who,
+    view: &ServerView,
+) -> (String, Option<(u32, Who)>) {
     match reason {
-        Reason::Default => "Mumble's default".into(),
-        Reason::Rule { index, .. } => {
-            let Some(entry) = entries.get(index) else {
-                return "a rule".into();
+        Reason::Default => ("Mumble's default".into(), None),
+        Reason::Rule { channel, index } => {
+            let Some(entry) = tree.get(&channel).and_then(|node| node.acls.get(index)) else {
+                return ("a rule".into(), None);
             };
             let target = match entry.user_id {
                 Some(id) => name(view, id),
-                None => group_target(entry.group.as_deref().unwrap_or("")),
+                None => group_target(&entry.group),
             };
-            if entry.inherited {
-                format!("a {target} rule in a parent channel")
-            } else if access::who(entry).as_ref() == Some(who) {
-                "this row".into()
+            if flat
+                && snapshot
+                    .entries
+                    .get(index)
+                    .is_some_and(|entry| entry.inherited)
+            {
+                (format!("a {target} rule in a parent channel"), None)
+            } else if channel != snapshot.channel {
+                (
+                    format!("the {target} row in {}", channel_name(view, channel)),
+                    Some((channel, row_of(entry))),
+                )
+            } else if row_of(entry) == *who {
+                ("this row".into(), None)
             } else {
-                format!("the {target} row")
+                (format!("the {target} row"), None)
             }
         }
-        Reason::Write => "Write ACL".into(),
-        Reason::Superuser => "SuperUser".into(),
-        Reason::Unreachable { .. } => "Traverse denied here".into(),
+        Reason::Write => ("Write ACL".into(), None),
+        Reason::Superuser => ("SuperUser".into(), None),
+        Reason::Unreachable { channel } => (
+            format!("Traverse denied in {}", channel_name(view, channel)),
+            None,
+        ),
+    }
+}
+
+/// The server the open editor belongs to.
+fn server_index(this: &Desktop) -> Option<usize> {
+    match this.panel.as_ref()? {
+        Panel::Acl { origin, .. } => origin.live_index(this),
+        _ => None,
     }
 }
 
@@ -269,13 +342,8 @@ pub(super) fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Deskto
                 })
                 .child(SharedString::from(row_label.clone())),
         );
-        let (granted, reasons) = evaluate(&snapshot, &base, who);
+        let (granted, reasons, tree, flat) = evaluate(&editor.parents, &snapshot, &base, who);
         for (column, (heading, bits, _)) in COLUMNS.iter().enumerate() {
-            let target = who.clone();
-            let click = move |this: &mut Desktop, _: &mut Window, cx: &mut Context<Desktop>| {
-                cycle(this, token, target.clone(), column);
-                cx.notify();
-            };
             let allowed = granted & bits;
             let (label, state) = match allowed {
                 0 => ("No", "Not allowed"),
@@ -284,19 +352,35 @@ pub(super) fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Deskto
             };
             let detail = partly(*bits, allowed);
             let cell = own.cell(column);
+            // Where an inherited value was set: (channel, row, menu label).
+            let mut jumps: Vec<(u32, Who, String)> = Vec::new();
             let (tone, set_here, help) = if cell == Cell::NotSet {
                 let mut sources: Vec<String> = Vec::new();
                 for bit in (0..32).filter(|bit| bits & (1 << bit) != 0) {
-                    let source = source(reasons[bit], &snapshot.entries, who, view);
-                    if !sources.contains(&source) {
-                        sources.push(source);
+                    let (text, from) = source(reasons[bit], &tree, flat, &snapshot, who, view);
+                    if !sources.contains(&text) {
+                        sources.push(text);
+                    }
+                    if let Some((channel, row)) = from
+                        && !jumps.iter().any(|(seen, _, _)| *seen == channel)
+                    {
+                        jumps.push((
+                            channel,
+                            row,
+                            format!("Show in {}", channel_name(view, channel)),
+                        ));
                     }
                 }
+                let menu = if jumps.is_empty() {
+                    ""
+                } else {
+                    " Right-click to show where it is set."
+                };
                 (
                     Tone::Ghost,
                     false,
                     format!(
-                        "{state} by {}.{detail} Click to set it here.",
+                        "{state} by {}.{detail} Click to set it here.{menu}",
                         sources.join(" and ")
                     ),
                 )
@@ -312,6 +396,31 @@ pub(super) fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Deskto
                     format!("{state}, set here.{detail} Click to change it."),
                 )
             };
+            let to_jump = move |server: usize, (channel, who, label): &(u32, Who, String)| {
+                (
+                    Jump {
+                        server,
+                        channel: *channel,
+                        who: who.clone(),
+                        column,
+                    },
+                    label.clone(),
+                )
+            };
+            let target = who.clone();
+            let first = jumps.first().cloned();
+            let click =
+                move |this: &mut Desktop, window: &mut Window, cx: &mut Context<Desktop>| {
+                    // Alt-click goes where an inherited value is set.
+                    if window.modifiers().alt {
+                        if let (Some(server), Some(first)) = (server_index(this), first.as_ref()) {
+                            show_source(this, to_jump(server, first).0);
+                        }
+                    } else {
+                        cycle(this, token, target.clone(), column);
+                    }
+                    cx.notify();
+                };
             let button = named_button(
                 SharedString::from(format!("acl-cell-{token}-{number}-{column}")),
                 label,
@@ -323,16 +432,67 @@ pub(super) fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Deskto
                 click,
                 cx,
             );
+            let flash = editor
+                .flash
+                .as_ref()
+                .filter(|flash| flash.who == *who && flash.column == column)
+                .map(|flash| {
+                    let first = flash.shown.get().is_none();
+                    let shown = *flash.shown.get().get_or_insert_with(Instant::now);
+                    flash.shown.set(Some(shown));
+                    let t = (shown.elapsed().as_secs_f32() / FLASH.as_secs_f32()).min(1.);
+                    // Ease out: strong at first, settling gently.
+                    let strength = if cx.reduce_motion() {
+                        f32::from(u8::from(t < 1.))
+                    } else {
+                        (1. - t).powi(3)
+                    };
+                    (first, strength)
+                });
             row = row.child(
                 div()
                     .id(SharedString::from(format!(
                         "acl-cell-help-{token}-{number}-{column}"
                     )))
+                    .relative()
                     .flex_1()
                     .min_w_0()
-                    .when(!set_here, |cell| cell.opacity(0.6))
+                    .rounded(px(6.))
+                    .when_some(flash, |cell, (first, strength)| {
+                        cell.bg(color(ACCENT).opacity(0.55 * strength))
+                            .when(first, |cell| {
+                                // Bring the arrived-at cell into view once.
+                                cell.child(
+                                    canvas(
+                                        |bounds, window, _| window.request_autoscroll(bounds),
+                                        |_, _, _, _| {},
+                                    )
+                                    .absolute()
+                                    .size_full(),
+                                )
+                            })
+                    })
                     .tooltip(move |_, cx| cx.new(|_| Tooltip(help.clone().into())).into())
-                    .child(button),
+                    .when(!jumps.is_empty(), |cell| {
+                        cell.on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                let Some(server) = server_index(this) else {
+                                    return;
+                                };
+                                this.menu_acl =
+                                    jumps.iter().map(|jump| to_jump(server, jump)).collect();
+                                this.open_menu(server, MenuTarget::AclSource, event.position);
+                                cx.stop_propagation();
+                                cx.notify();
+                            }),
+                        )
+                    })
+                    .child(
+                        div()
+                            .when(!set_here, |cell| cell.opacity(0.6))
+                            .child(button),
+                    ),
             );
         }
         let mut end = div().w(px(84.)).flex_shrink_0();
@@ -359,43 +519,10 @@ pub(super) fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Deskto
         }
     }
     let section = section.child(grid);
-    let mut people: Vec<_> = view
-        .users
-        .values()
-        .filter_map(|user| Some((user.user_id?, user.name.clone())))
-        .collect();
-    people.sort_by(|a, b| a.1.cmp(&b.1));
-    let candidates = [Who::Everyone, Who::Group("auth".into())]
-        .into_iter()
-        .chain(
-            draft
-                .groups()
-                .iter()
-                .map(|row| Who::Group(row.value.name.clone())),
-        )
-        .chain(people.into_iter().map(|(id, _)| Who::Person(id)))
-        .filter(|who| !targets.contains(who));
-    let mut picker = div().flex().flex_wrap().gap_2();
-    for (number, who) in candidates.enumerate() {
-        let row_label = label(view, &who);
-        picker = picker.child(with_help(
-            format!("acl-table-add-help-{token}-{number}"),
-            "Add a row; it is saved once one of its cells is set.",
-            styled_button(
-                SharedString::from(format!("acl-table-add-{token}-{number}")),
-                format!("Add {row_label}"),
-                Tone::Ghost,
-                move |this, _, cx| {
-                    change(this, token, |editor| {
-                        if !editor.table_rows.contains(&who) {
-                            editor.table_rows.push(who.clone());
-                        }
-                    });
-                    cx.notify();
-                },
-                cx,
-            ),
-        ));
-    }
+    let picker = editor.table_picker.render(
+        &format!("acl-table-add-{token}"),
+        &check_access::choices(view, draft, &targets),
+        cx,
+    );
     section.child(picker).into_any_element()
 }

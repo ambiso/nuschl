@@ -34,6 +34,9 @@ pub enum MenuTarget {
     Image,
     /// A message's text (`Desktop::text.menu`).
     Message,
+    /// An inherited permission in the channel permissions table
+    /// (`Desktop::menu_acl`).
+    AclSource,
 }
 
 /// Original saved endpoint plus observed connection/target lifetimes. Local
@@ -393,7 +396,10 @@ impl Desktop {
             let channel = match target {
                 MenuTarget::Channel(channel) => Some(channel),
                 MenuTarget::User(session) => view.users.get(&session).map(|user| user.channel),
-                MenuTarget::Server | MenuTarget::Image | MenuTarget::Message => None,
+                MenuTarget::Server
+                | MenuTarget::Image
+                | MenuTarget::Message
+                | MenuTarget::AclSource => None,
             };
             let wanted = channel
                 .into_iter()
@@ -775,6 +781,21 @@ impl Desktop {
 
     fn menu_entries(&self, menu: &Menu) -> Vec<Entry> {
         let mut entries = Vec::new();
+        if menu.target == MenuTarget::AclSource {
+            for (number, (jump, label)) in self.menu_acl.iter().enumerate() {
+                let jump = jump.clone();
+                let mut entry = local_item(label.clone(), "search", move |this, _, _, cx| {
+                    crate::acl_editor::show_source(this, jump.clone());
+                    cx.notify();
+                });
+                // One call site for every source channel: keys differ by number.
+                if let Entry::Item { key, .. } = &mut entry {
+                    key.push_str(&format!(":{number}"));
+                }
+                entries.push(entry);
+            }
+            return entries;
+        }
         if matches!(menu.target, MenuTarget::Image | MenuTarget::Message) {
             match menu.target {
                 MenuTarget::Image => {
@@ -1515,7 +1536,7 @@ impl Desktop {
                     None,
                 );
             }
-            MenuTarget::Image | MenuTarget::Message => unreachable!(),
+            MenuTarget::Image | MenuTarget::Message | MenuTarget::AclSource => unreachable!(),
         }
         entries.retain(|entry| {
             !matches!(
