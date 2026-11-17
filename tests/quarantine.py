@@ -3,12 +3,15 @@
 A listed step still runs. Its result is printed as "QUARANTINED PASS" or
 "QUARANTINED FAIL (#issue): step: error" with the traceback, and a failure
 does not stop the test. A step's `measured` value (a duration or count) is
-printed in both lines. A step that is not listed fails as usual.
+printed in both lines; `stolen()` adds the share of CPU time the hypervisor
+took meanwhile. A step that is not listed fails as usual.
 """
 
 import contextlib
+import os
 from pathlib import Path
 import sys
+import time
 import traceback
 
 LIST = Path(__file__).with_name("quarantine.txt")
@@ -21,6 +24,19 @@ def issue(name):
         if fields and not line.startswith("#") and fields[0] == name:
             return fields[1]
     return None
+
+
+def cpu_counters():
+    """Now, the CPU seconds the hypervisor took from this machine, and the seconds tasks waited for a CPU."""
+    steal = int(Path("/proc/stat").read_text().split()[8]) / os.sysconf("SC_CLK_TCK")
+    waited = int(Path("/proc/pressure/cpu").read_text().split()[4].removeprefix("total=")) / 1e6
+    return time.monotonic(), steal, waited
+
+
+def stolen(before):
+    """The share of this machine's CPU time the hypervisor took since `before` (cpu_counters())."""
+    now, steal, _ = cpu_counters()
+    return f"{(steal - before[1]) / (now - before[0]) / os.cpu_count():.0%} stolen"
 
 
 @contextlib.contextmanager
