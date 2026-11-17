@@ -68,7 +68,9 @@ record of e2ee.md §3.1 (root key, device-signing certificate, device certificat
 revocations), the home statement, the username and display name, an email binding
 and reset entries. Its KT log, built from `nuschl-kt` and witnessed as in
 witness.md, covers them with the labels `id:<fingerprint>` (reserved in e2ee.md
-§5.1), `home:<fingerprint>`, `user:<username>` and `reset:<fingerprint>`. Backups
+§5.1), `home:<fingerprint>`, `user:<username>`, `reset:<fingerprint>` and
+`pack:<pack_id>` (sticker pack versions, [sticker plan](sticker-packs-plan.md)
+§2.1, #273). Backups
 are the `RecoveryBlob` under the recovery key and one blob per passkey under a key
 derived from its PRF output; each holds the root seed. The email address stays with
 the service to send codes; the record carries its salted hash, signed by the
