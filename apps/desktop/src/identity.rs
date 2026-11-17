@@ -155,6 +155,8 @@ pub struct OwnIdentity {
     /// Shown once, until the user saved or skipped it.
     pub recovery_key: Option<String>,
     pub error: Option<String>,
+    /// The Copy button says Copied until this task ends.
+    pub copied: Option<Task<()>>,
 }
 
 impl OwnIdentity {
@@ -240,13 +242,60 @@ pub fn settings_rows(this: &Desktop, cx: &mut Context<Desktop>) -> Vec<AnyElemen
             );
         }
         if let Some(key) = &own.recovery_key {
+            let copied = key.clone();
             rows.push(
                 div()
-                    .p_3()
-                    .rounded(px(6.))
-                    .bg(color(INPUT))
-                    .font_family(theme::mono_font())
-                    .child(text!(key.clone()).with_id("kt-recovery-key"))
+                    .text_xs()
+                    .text_color(color(WARNING))
+                    .child(
+                        text!(
+                            "Keep this key secret: anyone who has it can take over your identity. \
+                             Store it in a password manager or on paper."
+                        )
+                        .with_id("kt-recovery-warning"),
+                    )
+                    .into_any_element(),
+            );
+            rows.push(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .p_3()
+                            .rounded(px(6.))
+                            .bg(color(INPUT))
+                            .font_family(theme::mono_font())
+                            .child(text!(key.clone()).with_id("kt-recovery-key")),
+                    )
+                    .child(styled_button(
+                        "kt-copy-recovery",
+                        if own.copied.is_some() {
+                            "✓ Copied"
+                        } else {
+                            "Copy"
+                        },
+                        Tone::Secondary,
+                        move |this, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(copied.clone()));
+                            // Copied for two seconds, then Copy again.
+                            this.own_identity.copied = Some(cx.spawn(async move |this, cx| {
+                                cx.background_executor()
+                                    .timer(std::time::Duration::from_secs(2))
+                                    .await;
+                                this.update(cx, |this, cx| {
+                                    this.own_identity.copied = None;
+                                    cx.notify();
+                                })
+                                .ok();
+                            }));
+                            cx.notify();
+                        },
+                        cx,
+                    ))
                     .into_any_element(),
             );
         }
@@ -268,9 +317,10 @@ pub fn settings_rows(this: &Desktop, cx: &mut Context<Desktop>) -> Vec<AnyElemen
                     "kt-saved-recovery",
                     "I wrote it down",
                     Tone::Primary,
+                    // Hides the key; Show recovery key brings it back.
                     |this, _, cx| {
                         this.own_identity.recovery_key = None;
-                        this.driver.identity(CryptoRequest::RecoveryKeySaved);
+                        this.own_identity.copied = None;
                         cx.notify();
                     },
                     cx,

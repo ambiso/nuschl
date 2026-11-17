@@ -1493,6 +1493,9 @@ impl Desktop {
     pub fn close_settings(&mut self) {
         self.commit_settings();
         self.settings_open = false;
+        // A shown recovery key stays hidden until Show recovery key again.
+        self.own_identity.recovery_key = None;
+        self.own_identity.copied = None;
         self.appearance.close_picker();
         self.shortcuts.recording = None;
         self.preview = None;
