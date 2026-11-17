@@ -235,6 +235,7 @@ pub struct Menu {
 pub enum PromptAction {
     CreateChannel {
         parent: u32,
+        temporary: bool,
     },
     Kick {
         session: u32,
@@ -514,7 +515,7 @@ impl Desktop {
             PromptAction::Kick { session } | PromptAction::Ban { session } => {
                 MenuTarget::User(session)
             }
-            PromptAction::CreateChannel { parent } => MenuTarget::Channel(parent),
+            PromptAction::CreateChannel { parent, .. } => MenuTarget::Channel(parent),
             _ => MenuTarget::Server,
         };
         let mut origin = self
@@ -648,15 +649,10 @@ impl Desktop {
                 .detach();
                 return;
             }
-            PromptAction::CreateChannel { parent } => {
+            PromptAction::CreateChannel { parent, temporary } => {
                 if text.trim().is_empty() {
                     return;
                 }
-                let temporary = self
-                    .client
-                    .servers
-                    .get(index)
-                    .is_some_and(|server| !server.may(parent, perm::MAKE_CHANNEL));
                 Command::CreateChannel {
                     parent,
                     name: text.trim().to_string(),
@@ -1320,24 +1316,41 @@ impl Desktop {
                 }
                 let write = server.may(channel, perm::WRITE);
                 let edit_acl = write || server.may(0, perm::WRITE);
-                let create = server.may(channel, perm::MAKE_CHANNEL)
-                    || server.may(channel, perm::MAKE_TEMP_CHANNEL);
+                let permanent = server.may(channel, perm::MAKE_CHANNEL);
+                let temporary = server.may(channel, perm::MAKE_TEMP_CHANNEL);
+                let create = permanent || temporary;
                 if connected && (write || create || edit_acl) {
                     entries.push(Entry::Separator);
                 }
-                if connected && create {
-                    entries.push(item("Create sub-channel…", "plus", move |this, index, window, cx| {
-                        let temporary = !this.client.servers[index].may(channel, perm::MAKE_CHANNEL);
+                // Separate calls: a menu item's key is its call site.
+                let create = move |temporary: bool| {
+                    move |this: &mut Desktop,
+                          index: usize,
+                          window: &mut Window,
+                          cx: &mut Context<Desktop>| {
                         this.open_prompt(
                             index,
-                            PromptAction::CreateChannel { parent: channel },
+                            PromptAction::CreateChannel {
+                                parent: channel,
+                                temporary,
+                            },
                             "Create a channel",
-                            if temporary { "You may create temporary channels here; they disappear when empty." } else { "Name of the new channel." },
+                            if temporary {
+                                "Name of the new channel. It disappears when it is empty."
+                            } else {
+                                "Name of the new channel."
+                            },
                             String::new(),
                             window,
                             cx,
                         );
-                    }));
+                    }
+                };
+                if connected && permanent {
+                    entries.push(item("Create sub-channel…", "plus", create(false)));
+                }
+                if connected && temporary {
+                    entries.push(item("Create temporary sub-channel…", "plus", create(true)));
                 }
                 if connected && write {
                     entries.push(item(
