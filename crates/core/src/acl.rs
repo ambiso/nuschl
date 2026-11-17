@@ -5,10 +5,9 @@
 //! (invert) and `~` (evaluate in the ACL's channel) prefixes. Behaviour follows
 //! stock Murmur's `ChanACL::effectivePermissions` and `Group::appliesToUser`.
 //!
-//! The evaluation functions are private to [`crate::authz`]: handlers ask it
-//! whether an actor may do something and never evaluate ACLs themselves. The
-//! data types and the editor's views (inherited entries, group members) are
-//! public.
+//! nuschld evaluates through its `authz` module only; clients use the same
+//! functions to explain access.
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub mod perm {
@@ -150,10 +149,15 @@ impl Subject<'_> {
 /// Access tokens are channel passwords: they are kept and compared only as
 /// digests, in constant time.
 pub fn token_digest(token: &str) -> [u8; 32] {
-    let digest = ring::digest::digest(&ring::digest::SHA256, token.to_lowercase().as_bytes());
-    let mut out = [0; 32];
-    out.copy_from_slice(digest.as_ref());
-    out
+    Sha256::digest(token.to_lowercase().as_bytes()).into()
+}
+
+fn equal_constant_time(a: &[u8; 32], b: &[u8; 32]) -> bool {
+    let difference = a
+        .iter()
+        .zip(b)
+        .fold(0, |difference, (x, y)| difference | (x ^ y));
+    std::hint::black_box(difference) == 0
 }
 
 /// Channels from the root down to `channel`, inclusive; empty if it does not exist.
@@ -173,7 +177,7 @@ fn path_from_root(tree: &impl Tree, channel: u32) -> Vec<u32> {
     path
 }
 
-pub(super) fn effective_permissions(tree: &impl Tree, subject: &Subject, channel: u32) -> u32 {
+pub fn effective_permissions(tree: &impl Tree, subject: &Subject, channel: u32) -> u32 {
     use perm::*;
     if subject.superuser() {
         return ALL & !(SPEAK | WHISPER);
@@ -251,7 +255,7 @@ pub(super) fn effective_permissions(tree: &impl Tree, subject: &Subject, channel
 
 /// Murmur's `Group::appliesToUser`: `current` is the channel permissions are
 /// evaluated for, `acl_channel` the channel holding the ACL entry.
-pub(super) fn group_applies(
+pub fn group_applies(
     tree: &impl Tree,
     current: u32,
     acl_channel: u32,
@@ -286,7 +290,7 @@ pub(super) fn group_applies(
     let matches = if token {
         let wanted = token_digest(name);
         subject.tokens.iter().fold(false, |found, held| {
-            found | crate::password::equal_constant_time(held, &wanted)
+            found | equal_constant_time(held, &wanted)
         })
     } else if hash {
         subject.hash == Some(name)

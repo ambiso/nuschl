@@ -1890,9 +1890,9 @@ fn a_listener_ends_when_unregistering_takes_its_listen_away() {
 
 // ---- nothing else decides ----
 
-/// The ACL engine's evaluation and the cache are private to authz (the
-/// compiler enforces that); this also keeps the other inline forms of a
-/// permission decision out of the rest of the server.
+/// Within the server only authz evaluates ACLs (the engine is
+/// `nuschl_core::acl`) and holds the cache; this also keeps the other inline
+/// forms of a permission decision out of the rest of the server.
 #[test]
 fn nothing_outside_authz_decides_permissions() {
     let forbidden = [

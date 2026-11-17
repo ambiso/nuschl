@@ -34,7 +34,7 @@ use nuschl_protocol::{control as proto, kind, nuschl::v1::error::Code};
 use proto::permission_denied::DenyType;
 use std::{cell::RefCell, collections::HashMap};
 
-pub mod acl;
+pub use nuschl_core::acl;
 
 use acl::{Subject, perm};
 
