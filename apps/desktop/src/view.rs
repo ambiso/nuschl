@@ -1105,7 +1105,6 @@ fn channel_row(
         .min_w_0()
         .overflow_hidden()
         .pr_2()
-        .pl(px(4. + depth.min(10) as f32 * 14.))
         .rounded(px(6.))
         .cursor_pointer()
         .text_color(color(if selected || in_voice {
@@ -1139,22 +1138,25 @@ fn channel_row(
                 cx.notify();
             }),
         )
+        // The branch toggle spans the row's height, from its left edge through
+        // the indent and chevron into the gap before the channel icon.
         .child(
             div()
                 .id(("branch", id as usize))
-                .size(px(18.))
+                .group("branch")
+                .h_full()
                 .flex_shrink_0()
                 .flex()
                 .items_center()
-                .justify_center()
-                .rounded(px(4.))
+                .pl(px(4. + depth.min(10) as f32 * 14.))
+                .pr(px(6.))
+                .mr(px(-6.))
                 .text_color(color(TEXT_FAINT))
                 .when(has_children, |branch| {
                     branch
                         .role(Role::Button)
                         .tab_index(0)
                         .aria_label(format!("Toggle {}", entry.name))
-                        .hover(|style| style.bg(color(BORDER_STRONG)).text_color(color(TEXT)))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.client.servers[server_index].set_expanded(id, !expanded);
                             cx.stop_propagation();
@@ -1167,16 +1169,30 @@ fn channel_row(
                                 cx.notify();
                             }
                         }))
-                        .child(icon(
-                            if collapsed {
-                                "chevron-right"
-                            } else {
-                                "chevron-down"
-                            },
-                            14.,
-                            color(TEXT_FAINT),
-                        ))
-                }),
+                })
+                .child(
+                    div()
+                        .size(px(18.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(4.))
+                        .when(has_children, |chevron| {
+                            chevron
+                                .group_hover("branch", |style| {
+                                    style.bg(color(BORDER_STRONG)).text_color(color(TEXT))
+                                })
+                                .child(icon(
+                                    if collapsed {
+                                        "chevron-right"
+                                    } else {
+                                        "chevron-down"
+                                    },
+                                    14.,
+                                    color(TEXT_FAINT),
+                                ))
+                        }),
+                ),
         )
         .child(
             div()
