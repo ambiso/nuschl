@@ -52,22 +52,6 @@ pub fn accessible<M: gpui_kit::base::input::InputModeKind>(
     );
     state
 }
-/// "Disconnected from 14:51 to 14:52 (40 s)…", with dates only when they differ from today.
-fn gap_text(from_ms: i64, to_ms: i64) -> String {
-    let seconds = (to_ms - from_ms).max(0) / 1000;
-    let duration = if seconds < 120 {
-        format!("{seconds} s")
-    } else {
-        format!("{} min", seconds / 60)
-    };
-    let strip = |text: String| text.trim_start_matches("Today at ").to_string();
-    format!(
-        "Disconnected from {} to {} ({duration}). Messages sent meanwhile were not received.",
-        strip(local_time(from_ms)),
-        strip(local_time(to_ms))
-    )
-}
-
 /// Milliseconds on a monotonic clock, for the SDK's timers (it reads no
 /// clock itself).
 pub fn monotonic_ms() -> u64 {
@@ -2543,9 +2527,11 @@ impl Desktop {
                     server,
                     from_ms,
                     to_ms,
-                } => self
-                    .client
-                    .log_gap(&server, gap_text(from_ms, to_ms), to_ms),
+                } => {
+                    let time = |ms| local_time(ms).trim_start_matches("Today at ").to_string();
+                    let text = nuschl_client::client::gap_text(from_ms, to_ms, time);
+                    self.client.log_gap(&server, text, to_ms);
+                }
                 Update::MessageDeleted {
                     server,
                     conversation,

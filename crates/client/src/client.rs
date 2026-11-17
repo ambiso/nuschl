@@ -413,6 +413,22 @@ pub struct Client {
     plugin_data: plugin::PluginQueue,
 }
 
+/// "Disconnected from 14:51 to 14:52 (40 s)…", with the times worded by the
+/// UI's clock.
+pub fn gap_text(from_ms: i64, to_ms: i64, time: impl Fn(i64) -> String) -> String {
+    let seconds = (to_ms - from_ms).max(0) / 1000;
+    let duration = if seconds < 120 {
+        format!("{seconds} s")
+    } else {
+        format!("{} min", seconds / 60)
+    };
+    format!(
+        "Disconnected from {} to {} ({duration}). Messages sent meanwhile were not received.",
+        time(from_ms),
+        time(to_ms)
+    )
+}
+
 impl Client {
     pub fn new(
         platform: Box<dyn Platform>,
@@ -1779,7 +1795,8 @@ impl Client {
         self.platform.search(request, scope, query, after)
     }
 
-    /// Log a line of the connection gap in every conversation of `server`.
+    /// Log a line of the connection gap ([`gap_text`]) in every
+    /// conversation of `server`.
     pub fn log_gap(&mut self, server: &str, text: String, to_ms: i64) {
         if let Some(index) = self.server_index(server) {
             for channel in &mut self.servers[index].channels {
@@ -3445,6 +3462,16 @@ mod tests {
     };
     use nuschl_core::ChatMessage;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn gap_text_words_the_duration_and_uses_the_given_clock() {
+        let time = |ms: i64| format!("t{}", ms / 1000);
+        assert_eq!(
+            gap_text(1_000, 41_000, time),
+            "Disconnected from t1 to t41 (40 s). Messages sent meanwhile were not received."
+        );
+        assert!(gap_text(0, 300_000, time).contains("(5 min)"));
+    }
 
     /// A platform that records what the client asked of it.
     #[derive(Default)]
