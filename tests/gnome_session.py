@@ -221,9 +221,9 @@ class GnomeSession:
 
     def _pointer(self):
         if not self.pointer_ready:
-            self.eval("global._nuschlPointer = imports.gi.Clutter.get_default_backend().get_default_seat()"
+            self.eval("global._nuschlPointer = global.stage.context.get_backend().get_default_seat()"
                       ".create_virtual_device(imports.gi.Clutter.InputDeviceType.POINTER_DEVICE);"
-                      "global._nuschlKeyboard = imports.gi.Clutter.get_default_backend().get_default_seat()"
+                      "global._nuschlKeyboard = global.stage.context.get_backend().get_default_seat()"
                       ".create_virtual_device(imports.gi.Clutter.InputDeviceType.KEYBOARD_DEVICE); 'ok'")
             # Events from a device the seat has not added yet are lost (the
             # accessibility test's first key, Ctrl+V, often was).
