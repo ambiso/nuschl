@@ -502,7 +502,10 @@ mod tests {
         };
         // After expiry: a newer version installs; the same one is unconfirmed.
         assert!(newer(&manifest("9.0.0"), "0.1.0", 300).unwrap());
-        assert!(matches!(newer(&manifest("0.1.0"), "0.1.0", 300), Err(Error::Expired)));
+        assert!(matches!(
+            newer(&manifest("0.1.0"), "0.1.0", 300),
+            Err(Error::Expired)
+        ));
         assert!(!newer(&manifest("0.1.0"), "0.1.0", 150).unwrap());
     }
 
