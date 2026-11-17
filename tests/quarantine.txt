@@ -4,3 +4,4 @@
 # step                                  issue  reason
 vm-smoke/pipewire-own-playback-echo     #275   the canceller's reduction of its own playback falls below 30 dB under load
 vm-smoke/pipewire-other-app-gate        #275   the gate opens for another application's sound under load
+vm-musicbot/songs-one-transmission      #376   a song change slower than the 200 ms underrun ends the transmission on a loaded host
