@@ -550,7 +550,7 @@ impl App {
                     from_ms,
                     to_ms,
                 } => {
-                    let text = self.gap_text(from_ms, to_ms);
+                    let text = nuschl_client::client::gap_text(from_ms, to_ms, |ms| self.time(ms));
                     self.client.log_gap(&server, text, to_ms);
                 }
                 Update::MessageDeleted {
@@ -595,20 +595,6 @@ impl App {
         } else {
             when.strftime("%Y-%m-%d %H:%M").to_string()
         }
-    }
-
-    fn gap_text(&self, from_ms: i64, to_ms: i64) -> String {
-        let seconds = (to_ms - from_ms).max(0) / 1000;
-        let duration = if seconds < 120 {
-            format!("{seconds} s")
-        } else {
-            format!("{} min", seconds / 60)
-        };
-        format!(
-            "Disconnected from {} to {} ({duration}). Messages sent meanwhile were not received.",
-            self.time(from_ms),
-            self.time(to_ms)
-        )
     }
 
     // Servers.
