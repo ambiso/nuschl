@@ -102,6 +102,15 @@ def actions(args, root, shell, application, bot, _murmur):
                         break
         return None
 
+    def channel_tree():
+        # A viewport too narrow for the sidebar shows the channel tree in a
+        # sheet behind the Channels button.
+        found = eventually(lambda: named("Channels", "tree")
+            or named("Channels", "push button"), "missing Channels")
+        if found.role == "push button":
+            found.press()
+        return wait("Channels", "tree")
+
     def rule(name):
         return eventually(lambda: find_rule(name), f"missing rule {name}")
 
@@ -204,6 +213,7 @@ def actions(args, root, shell, application, bot, _murmur):
             shell.chord("Control_L", "equal")
             time.sleep(.1)
         time.sleep(.3)
+        channel_tree()
         channel = wait("Root", "tree item", prefix=True)
         focus(channel)
         shell.click(*point(channel), button=3)
@@ -353,7 +363,8 @@ def actions(args, root, shell, application, bot, _murmur):
         for _ in range(steps):
             shell.chord("Control_L", "equal")
             time.sleep(.1)
-        channels = wait("Channels")
+        time.sleep(.3)
+        channels = channel_tree()
         shell.wheel(*point(channels), -80)
         time.sleep(.3)
         user = wait("Control sender", "tree item", prefix=True)
