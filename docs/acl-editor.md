@@ -5,10 +5,11 @@ and choose **Edit permissions…**. Web and TUI editor parity remain queued; the
 shared draft/API boundary below is intended for those frontends too.
 
 Select a rule to edit its target, scope and permissions. A target is a
-registered user or a group: pick one of Mumble's built-in groups (Everyone,
-Registered users, People in this channel, People outside this channel) or the
-channel's groups, or type a group expression (`!group`, `~group`, `sub,1`,
-`#token`, `$certificate`). Each permission is a row with Allow, Not set and Deny,
+registered user or a group: search for one of Mumble's built-in groups
+(Everyone, Registered users, People in this channel, People outside this
+channel) or the channel's groups in **Group for this rule**, or type a group
+expression (`!group`, `~group`, `sub,1`, `#token`, `$certificate`). Each
+permission is a row with Allow, Not set and Deny,
 explained on hover; rule rows summarise whom they target and what they allow and
 deny. Apply or explicitly discard a typed target before saving,
 creating another rule, or changing selection. Rules can be created, removed and
