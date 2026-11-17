@@ -1551,6 +1551,71 @@ fn effect(entry: &AclEntry, short: bool) -> String {
     }
 }
 
+/// Mumble's built-in groups and the channel's groups, to pick as a rule's
+/// target; a pick fills in the expression, which "Apply target" applies.
+fn group_picker(editor: &Editor, id: RowId, cx: &mut Context<Desktop>) -> AnyElement {
+    const BUILT_IN: [(&str, &str); 4] = [
+        ("all", "Everyone, registered or not."),
+        ("auth", "Everyone with a registered account."),
+        (
+            "in",
+            "Everyone in the channel the permission is checked for.",
+        ),
+        (
+            "out",
+            "Everyone outside the channel the permission is checked for.",
+        ),
+    ];
+    let token = editor.token;
+    let defined: Vec<String> = editor
+        .state
+        .draft()
+        .map(|draft| {
+            draft
+                .groups()
+                .iter()
+                .map(|row| row.value.name.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    let choices = BUILT_IN
+        .iter()
+        .map(|&(group, help)| (group.to_owned(), group_target(group), help))
+        .chain(defined.into_iter().map(|group| {
+            let label = format!("@{group}");
+            (
+                group,
+                label,
+                "A group of this channel, defined here or inherited.",
+            )
+        }));
+    let mut picker = div().flex().flex_wrap().gap_2();
+    for (group, label, help) in choices {
+        picker = picker.child(with_help(
+            format!("acl-pick-help-{token}-{id}-{group}"),
+            help,
+            styled_button(
+                SharedString::from(format!("acl-pick-{token}-{id}-{group}")),
+                label,
+                Tone::Ghost,
+                move |this, window, cx| {
+                    if let Some(editor) = active_editor(this, token)
+                        && editor.state.pending().is_none()
+                        && editor.rule().is_some_and(|(selected, _)| selected == id)
+                    {
+                        editor
+                            .target
+                            .update(cx, |input, cx| input.set_value(group.clone(), window, cx));
+                    }
+                    cx.notify();
+                },
+                cx,
+            ),
+        ));
+    }
+    picker.into_any_element()
+}
+
 /// `control` with `help` shown on hover.
 fn with_help(id: impl Into<SharedString>, help: &'static str, control: AnyElement) -> AnyElement {
     div()
@@ -1674,6 +1739,7 @@ fn rule_detail(
                     }),
             ),
         )
+        .children((!user).then(|| group_picker(editor, id, cx)))
         .child(field(
             if user {
                 "Registered account name or #id"

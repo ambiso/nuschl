@@ -4,8 +4,13 @@ The native client provides a local ACL/group draft editor. Right-click a channel
 and choose **Edit permissions…**. Web and TUI editor parity remain queued; the
 shared draft/API boundary below is intended for those frontends too.
 
-Select a rule to edit its group expression or registered-user target, scope and
-grant/deny bits. Apply or explicitly discard a typed target before saving,
+Select a rule to edit its target, scope and permissions. A target is a
+registered user or a group: pick one of Mumble's built-in groups (Everyone,
+Registered users, People in this channel, People outside this channel) or the
+channel's groups, or type a group expression (`!group`, `~group`, `sub,1`,
+`#token`, `$certificate`). Each permission is a row with Allow, Not set and Deny,
+explained on hover; rule rows summarise whom they target and what they allow and
+deny. Apply or explicitly discard a typed target before saving,
 creating another rule, or changing selection. Rules can be created, removed and
 reordered; inherited rules are inspectable but read-only. Channel inheritance
 and group inherit/inheritable flags are separate controls. Select a group to add
