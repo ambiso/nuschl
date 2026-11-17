@@ -389,13 +389,13 @@ def desktop(args):
             observation.pop("requested_radio_focus_error", None)
             activate("Settings")
             group = wait("Link previews")
-            def scoped_radio():
+            def scoped_radio(name=mode):
                 pending, visited = [(group, 0)], 0
                 while pending:
                     node, depth = pending.pop()
                     visited += 1
                     assert visited <= 64 and depth <= 12, "bounded preview radio group exceeded"
-                    if node.role == "radio button" and node.name == mode:
+                    if node.role == "radio button" and node.name == name:
                         return node
                     pending.extend((child, depth + 1) for child in node.children())
                 return None
@@ -412,12 +412,13 @@ def desktop(args):
             shell.key("space")
             active = mode if expected_active is None else expected_active
             def applied():
-                current = labels()
-                return (any(label.startswith(f"Active policy: {active}.") for label in current)
-                    and (expected_error is None or expected_error in current))
+                # The selector shows the policy in effect as the selected radio.
+                selected = scoped_radio(active)
+                return (selected is not None
+                    and selected.call("Accessible", "GetState")[0][0] & (1 << 23)
+                    and (expected_error is None or expected_error in labels()))
             eventually(applied, f"{mode} preference did not complete with active policy {active}")
-            last_policy_labels[:] = [label[:512] for label in labels()
-                if label.startswith("Active policy:")][:4]
+            last_policy_labels[:] = [f"selected: {active}"]
             activate("Done")
         def events():
             snapshot = control("snapshot")
@@ -611,7 +612,7 @@ def desktop(args):
                     diagnostic["preview_labels"] = [row["name"] for row in rows
                         if "preview" in row["name"].lower() or row["name"].startswith("Text only")][:64]
                     diagnostic["policy_labels"] = [row["name"] for row in rows
-                        if row["name"].startswith("Active policy:")][:4]
+                        if row["role"] == "radio button" and row["states"] & (1 << 23)][:4]
                     diagnostic["send_labels"] = [row["name"] for row in rows
                         if row["name"] in ("Send", "Sending…")]
                     diagnostic["focused"] = [row for row in rows if row["states"] & (1 << 12)][:16]

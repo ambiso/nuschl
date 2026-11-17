@@ -272,18 +272,9 @@ pub fn composer(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement>
     Some(card.into_any_element())
 }
 
+/// The selector shows the policy in effect, which managed settings may set.
 pub fn settings(this: &Desktop, cx: &mut Context<Desktop>) -> AnyElement {
-    let mode = this.settings.link_previews.mode;
-    let active_mode = if cfg!(target_os = "linux") {
-        this.client.link_preview_settings().mode
-    } else {
-        Mode::Off
-    };
-    let effective = match active_mode {
-        Mode::Off => "Off",
-        Mode::Direct => "Direct",
-    };
-    let effective = format!("Active policy: {effective}.");
+    let mode = this.client.link_preview_settings().mode;
     div().flex().flex_col().gap_2()
         .when(cfg!(target_os = "linux"), |settings| settings.child(crate::settings::segmented("link-preview-mode", "Link previews", [
             ("Off", Mode::Off), ("Direct", Mode::Direct),
@@ -294,7 +285,6 @@ pub fn settings(this: &Desktop, cx: &mut Context<Desktop>) -> AnyElement {
         }).collect(), cx)))
         .when(!cfg!(target_os = "linux"), |settings| settings.child(div().text_sm().child(text!("Link previews are not available on this platform yet.").with_id("link-preview-platform-unavailable"))))
         .child(div().text_xs().text_color(color(TEXT_MUTED)).child(text!("Off makes no requests. Direct contacts the website. Receivers never fetch previews.").with_id("link-preview-privacy")))
-        .child(div().text_xs().text_color(color(TEXT_MUTED)).child(text!(effective).with_id("link-preview-effective-policy")))
         .into_any_element()
 }
 
