@@ -271,6 +271,24 @@ def actions(args, root, shell, application, bot, murmur):
         (args.output / "idle.json").write_text(json.dumps(result, indent=2) + "\n")
         return result
 
+    def check_server_menu():
+        """The ⋯ menu opens below its button for any click point and for Return."""
+        g = geometry()
+        button = named("Server options", "push button")
+        x, y, width, height = button.extents()
+        opened = []
+        for dx, dy in ((4, 4), (width - 4, height - 4)):
+            shell.click(g["x"] + x + dx, g["y"] + y + dy)
+            opened.append(eventually(menu, "server menu missing").extents())
+            close_menu()
+        button.call("Component", "GrabFocus")
+        shell.key("Return")
+        opened.append(eventually(menu, "Return did not open the server menu").extents())
+        close_menu()
+        assert opened[0] == opened[1] == opened[2], opened
+        assert opened[0][1] >= y + height - 2, (opened[0], button.extents())
+        return opened[0]
+
     def close_profile():
         dialog = eventually(
             lambda: named("Details", "dialog"), "profile dialog missing"
@@ -440,6 +458,7 @@ def actions(args, root, shell, application, bot, murmur):
             eventually(lambda: menu() is None, "outside click did not dismiss menu")
             record["reading_keys_and_dismissal"] = True
             if width == 1280:
+                record["server_menu"] = check_server_menu()
                 message = eventually(
                     lambda: next(
                         (
