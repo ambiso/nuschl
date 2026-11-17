@@ -2,11 +2,11 @@
 //! Check access (#341): what someone may do in the edited channel and what
 //! decided each permission. The parents' own rules are read one query at a
 //! time; the channel itself comes from the draft, so unsaved changes count.
-use super::{Editor, active_editor, group_target, name, note, with_help};
+use super::{Editor, MEMBER, active_editor, group_target, name, note, section, with_help};
 use crate::{
-    dialogs::{Tone, styled_button},
     menus::{ActionOrigin, MenuTarget},
     panels::{Panel, channel_name},
+    picker::{Choice, Picker},
     state::{Desktop, ServerView},
 };
 use gpui_kit::{prelude::*, *};
@@ -19,16 +19,53 @@ use nuschl_core::{
 use nuschl_session::connection::Command;
 use std::collections::HashMap;
 
-/// A registration number servers leave unused, standing for "a member of
-/// this group".
-const MEMBER: u32 = u32::MAX;
-
 #[derive(Clone, PartialEq, Eq)]
 pub enum Who {
     Everyone,
+    /// A group name, including Mumble's `auth` (registered users).
     Group(String),
-    /// Someone online, by session.
+    /// A registered account.
     Person(u32),
+}
+
+impl Who {
+    fn key(&self) -> String {
+        match self {
+            Who::Everyone => "all".into(),
+            Who::Group(group) => format!("group:{group}"),
+            Who::Person(id) => format!("person:{id}"),
+        }
+    }
+
+    fn from_key(key: &str) -> Option<Self> {
+        if key == "all" {
+            return Some(Who::Everyone);
+        }
+        if let Some(group) = key.strip_prefix("group:") {
+            return Some(Who::Group(group.to_owned()));
+        }
+        key.strip_prefix("person:")?.parse().ok().map(Who::Person)
+    }
+}
+
+/// The search field that picks whom to check, for `Editor::new`.
+pub(super) fn picker(token: u64, window: &mut Window, cx: &mut Context<Desktop>) -> Picker {
+    Picker::new(
+        "Check access for",
+        "Everyone, a group or a person",
+        |this| match this.panel.as_mut() {
+            Some(Panel::Acl { editor, .. }) => Some(&mut editor.check_picker),
+            _ => None,
+        },
+        move |this, key, _, cx| {
+            if let Some(who) = Who::from_key(key) {
+                pick(this, token, who);
+            }
+            cx.notify();
+        },
+        window,
+        cx,
+    )
 }
 
 pub struct Check {
@@ -56,15 +93,22 @@ fn parents(view: &ServerView, channel: u32) -> Option<Vec<u32>> {
     Some(chain)
 }
 
+/// Shows `who`'s access; the parents' rules are read once per editor, so
+/// later picks switch at once.
 fn pick(this: &mut Desktop, token: u64, who: Who) {
     if let Some(editor) = active_editor(this, token) {
-        editor.check = Some(Check {
-            who,
-            parents: Vec::new(),
-            reading: None,
-            error: None,
-        });
-        next(this, token);
+        match editor.check.as_mut() {
+            Some(check) if check.error.is_none() => check.who = who,
+            _ => {
+                editor.check = Some(Check {
+                    who,
+                    parents: Vec::new(),
+                    reading: None,
+                    error: None,
+                });
+                next(this, token);
+            }
+        }
     }
 }
 
@@ -195,57 +239,60 @@ pub(super) fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Deskto
         return div().into_any_element();
     };
     let channel = draft.channel();
-    let mut people: Vec<_> = view.users.values().collect();
-    people.sort_by(|a, b| a.name.cmp(&b.name));
-    let choices = [(
-        Who::Everyone,
-        "Everyone".to_owned(),
-        "Someone without an account, in this channel.",
-    )]
+    // Everyone and the groups first, then every account the client knows.
+    let mut accounts: Vec<(u32, String)> = view
+        .registered_users
+        .iter()
+        .flatten()
+        .filter_map(|account| Some((account.user_id, account.name.clone()?)))
+        .chain(
+            view.users
+                .values()
+                .filter_map(|user| Some((user.user_id?, user.name.clone()))),
+        )
+        .collect();
+    accounts.sort_by(|a, b| {
+        a.1.to_lowercase()
+            .cmp(&b.1.to_lowercase())
+            .then(a.0.cmp(&b.0))
+    });
+    accounts.dedup_by_key(|account| account.0);
+    let online = |id: u32| view.users.values().any(|user| user.user_id == Some(id));
+    let choices: Vec<Choice> = [
+        (Who::Everyone, "Everyone".to_owned(), "Without an account"),
+        (
+            Who::Group("auth".into()),
+            group_target("auth"),
+            "Built-in group",
+        ),
+    ]
     .into_iter()
     .chain(draft.groups().iter().map(|row| {
         (
             Who::Group(row.value.name.clone()),
             format!("@{}", row.value.name),
-            "A registered member of this group, in this channel.",
+            "Group",
         )
     }))
-    .chain(people.into_iter().map(|user| {
+    .chain(accounts.into_iter().map(|(id, account)| {
         (
-            Who::Person(user.session),
-            user.name.clone(),
-            "As they are now: their account, certificate and channel.",
+            Who::Person(id),
+            account,
+            if online(id) { "Online" } else { "Account" },
         )
-    }));
-    let chosen = editor.check.as_ref().map(|check| &check.who);
-    let mut picker = div().flex().flex_wrap().gap_2();
-    for (number, (who, label, help)) in choices.enumerate() {
-        let selected = chosen == Some(&who);
-        picker = picker.child(with_help(
-            format!("acl-check-help-{token}-{number}"),
-            help,
-            styled_button(
-                SharedString::from(format!("acl-check-{token}-{number}")),
-                if selected {
-                    format!("✓ {label}")
-                } else {
-                    label
-                },
-                Tone::Ghost,
-                move |this, _, cx| {
-                    pick(this, token, who.clone());
-                    cx.notify();
-                },
-                cx,
-            ),
-        ));
-    }
-    let mut section = div()
-        .flex()
-        .flex_col()
-        .gap_2()
-        .child(note("acl-check-title", "Check access"))
-        .child(picker);
+    }))
+    .map(|(who, label, kind)| Choice {
+        key: who.key(),
+        label,
+        kind,
+    })
+    .collect();
+    let mut section = section(
+        "acl-check-title",
+        "Check access",
+        "Pick someone to see what they may do here and why: their account, groups and certificate, in this channel.",
+    )
+    .child(editor.check_picker.render(&format!("acl-check-{token}"), &choices, cx));
     let Some(check) = &editor.check else {
         return section.into_any_element();
     };
@@ -262,15 +309,8 @@ pub(super) fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Deskto
             ))
             .into_any_element();
     }
-    let person = match check.who {
-        Who::Person(session) => match view.users.get(&session) {
-            Some(user) => Some(user),
-            None => {
-                return section
-                    .child(note("acl-check-left", "They left the server."))
-                    .into_any_element();
-            }
-        },
+    let online = match check.who {
+        Who::Person(id) => view.users.values().find(|user| user.user_id == Some(id)),
         _ => None,
     };
     let tree = tree(check, draft);
@@ -278,10 +318,10 @@ pub(super) fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Deskto
         user_id: match check.who {
             Who::Everyone => None,
             Who::Group(_) => Some(MEMBER),
-            Who::Person(_) => person.and_then(|user| user.user_id),
+            Who::Person(id) => Some(id),
         },
-        channel: person.map_or(channel, |user| user.channel),
-        hash: person.and_then(|user| user.certificate_hash.as_deref()),
+        channel,
+        hash: online.and_then(|user| user.certificate_hash.as_deref()),
         tokens: &[],
         strong: false,
     };

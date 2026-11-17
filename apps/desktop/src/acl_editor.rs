@@ -62,6 +62,7 @@ pub struct Editor {
     /// The channel's name when the editor opened, kept for the read-only view.
     pub(crate) channel_name: String,
     check: Option<check_access::Check>,
+    check_picker: crate::picker::Picker,
     /// Rows added to the access table that set nothing yet.
     table_rows: Vec<nuschl_core::access::Who>,
     /// Closing waits for Save, Discard or Keep editing.
@@ -124,6 +125,7 @@ impl Editor {
             password: input("New channel password", window, cx),
             channel_name: String::new(),
             check: None,
+            check_picker: check_access::picker(token, window, cx),
             table_rows: Vec::new(),
             leaving: false,
             show_rules: false,
@@ -915,6 +917,13 @@ pub fn open(
         editor,
     });
     query(this, token, DraftRequest::Load, cx);
+    // Check access lists every account; the list needs Register at the root.
+    if let Some(view) = this.client.servers.get(index)
+        && view.registered_users.is_none()
+        && view.may(0, permission::REGISTER)
+    {
+        this.run(index, Command::QueryRegisteredUsers);
+    }
     cx.notify();
 }
 

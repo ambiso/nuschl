@@ -30,6 +30,7 @@ mod motion;
 mod names;
 mod notify;
 mod panels;
+mod picker;
 mod presentation;
 mod preview;
 mod rail;
