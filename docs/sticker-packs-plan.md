@@ -16,7 +16,17 @@ later; everything else is in §10.
 - **Owner 2026-11-17, versions:** a pack is a chain of versions, each signed by
   the author's identity. A message names one version, so a later compromise of
   the author's key adds versions and leaves earlier messages unchanged. Editing
-  and update prompts come later in the UI; the formats support them now.
+  comes later in the UI; the formats support it now.
+- **Owner 2026-11-17, order:** identity (#366) is built before stickers, since
+  signed versions and updates depend on it (§8).
+- **Owner 2026-11-17, signer reference:** a version carries a reference to its
+  signing key and no certificate; the verifier fetches the key from id.nuschl.eu
+  (§2.1).
+- **Owner 2026-11-17, versions in the UI:** the library pins one version per pack,
+  and the user can update to a newer one or switch back to an earlier one (§3.4).
+- **Owner 2026-11-17, encoding:** "no protobuf is ok; it's a standard
+  technology". Manifests and version records are protobuf messages (prost);
+  hashes and signatures cover the exact stored bytes (§2.1).
 - **Owner 2026-11-17, keys:** an AEAD encrypts each blob under its own derived
   key, so a moderation report reveals one sticker (#274).
 - **Owner 2026-11-17, visibility:** whoever sees one sticker or holds a link can
@@ -77,12 +87,25 @@ message AuthorSignature {
 - **Author:** the device-signing key (e2ee.md §3.1) signs with the composite
   ML-DSA-65 + Ed25519 signature. `pack_id = SHA-256("nuschl stickers/1 pack id"
   || identity || pack_nonce)[..16]` binds the pack to the identity.
-- **Verifying:** the client takes the identity's record from id.nuschl.eu's
-  directory, checked against its KT log under the pinned log key (identity plan),
-  and requires `generation` to be the identity's current one. It verifies the
-  newest version it knows; earlier versions are covered through `prev`. This
-  works on every server, stock Mumble included. Without a fresh record the pack
-  shows "author unchecked" and updates wait.
+- **Signer reference:** `identity` and `generation` name the signing key; the
+  version carries no certificate. The verifier fetches that generation's
+  device-signing certificate from id.nuschl.eu's directory, checked against its
+  KT log under the pinned log key (identity plan).
+- **Logging and rotation:** the author's device publishes each version's
+  `pack_hash` under the label `pack:<pack_id>` in id.nuschl.eu's log, and the
+  service accepts it only from the identity's current generation. A version is
+  valid when the log recorded it while its signing generation was current, so a
+  rotation (e2ee.md §3.6) leaves earlier versions valid, and a stolen old key
+  gets nothing logged. This works on every server, stock Mumble included;
+  without a fresh lookup the pack shows "author unchecked" and updates wait.
+  The service learns which identity publishes which `pack_id`.
+- **Encoding:** records are protobuf messages (prost, Owner 2026-11-17), like
+  the wire protocol, with evolution through field numbers. `pack_hash` and the
+  signature cover the exact stored bytes, and verifiers check the bytes they
+  received, so the encoding needs no canonical form. Parsing is strict: §7's
+  limits apply, and signed records with unknown fields are refused; prost skips
+  unknown fields, so the parser compares the decoded record's encoded length
+  with the input.
 - **Sealed:** the signature sits in a blob under the pack key, so a server
   learns at most who uploaded a version; viewers verify the signature. Clients
   drop versions whose signature or `pack_id` check fails.
@@ -127,11 +150,11 @@ ChaCha20-Poly1305 and SHA-256 come from ring, signatures from `nuschl-identity`.
   readable to everyone who received it, so rotating the key hides nothing.
 - **Discovery** (follows from the identity plan): a client learns of a newer
   version from a received reference with the same `pack_id`, and, when the pack
-  view opens, by asking the author's home server, found through id.nuschl.eu,
-  for the pack's versions. It fetches missing versions through `prev`, verifies
-  them, and offers the newest (D14).
-- **Forks:** two versions with the same number stop updates for that pack and
-  show both, the sign of racing devices or a stolen key.
+  view opens, from the `pack:<pack_id>` lookup at id.nuschl.eu. It fetches the
+  versions from the author's home server, found through id.nuschl.eu, and
+  verifies them.
+- **Forks:** a logged version whose `prev` differs from the previously logged one
+  stops updates for that pack and shows both, the sign of racing devices.
 - **Identity:** passkey and recovery-key recovery keep the identity, and the
   library comes back with the user's device-sync data (§3.4), so packs continue.
   An email reset makes a new identity, which the KT log shows; it publishes a new
@@ -215,14 +238,21 @@ version chains, blob hashes and sizes, who uploaded and who fetched what and
 when; the author's home server also learns who asks for its packs' versions. A
 `history/1` server reads the messages, keys included.
 
-### 3.4 Library
+### 3.4 Library and versions
 
-The library (packs, their keys, accepted versions, and for one's own packs the
-`pack_nonce`) is part of the user's device-sync data on the home server (e2ee.md
-§3.7), sealed as the identity plan describes, so linked devices share it and
-recovery restores it. Locally the desktop keeps it in the storage worker and
-images under `stickers/<digest>`; the web client uses IndexedDB. Received
-stickers outside the library share that store, bounded to 256 MiB, least
+The library pins one version per pack. The pack view lists the versions known
+from the log (number and logged date) and offers "Update" to the newest, and
+switching back to any earlier version the device still holds or the server
+keeps. Received messages always show the version they reference, whatever the
+pinned version. A server keeps the versions its messages reference, plus each
+user's pinned and previous version, so a switch back works.
+
+The library (packs, their keys, pinned and previous versions, and for one's own
+packs the `pack_nonce`) is part of the user's device-sync data on the home
+server (e2ee.md §3.7), sealed as the identity plan describes, so linked devices
+share it and recovery restores it. Locally the desktop keeps it in the storage
+worker and images under `stickers/<digest>`; the web client uses IndexedDB.
+Received stickers outside the library share that store, bounded to 256 MiB, least
 recently used first.
 
 ## 4. Importer for external pack links
@@ -341,14 +371,15 @@ Best-effort wording by a non-lawyer; it needs a legal check before launch.
 ## 7. Storage and limits
 
 Each blob is stored once per server and counts toward the quota of the first
-uploader of its pack. Versions stay as long as the server keeps history.
+uploader of its pack. Versions stay as long as the server keeps history, and
+pinned and previous versions as long as a user pins them (§3.4).
 
 | Limit | Default | Reason |
 | --- | --- | --- |
 | Stickers per pack | 1–200, plus one cover | every conforming external pack fits |
 | Image | <= 300 KiB, <= 512 x 512 px | as the import source |
 | Manifest | <= 64 KiB (format 1), <= 10 KiB (format 2) | 200 entries with alt text |
-| Version record | <= 16 KiB | 202 hashes and the sealed signature |
+| Version record | <= 16 KiB | 202 hashes and the sealed signature (signer reference, no certificate) |
 | Version | <= 64 MiB of blobs | 201 x 301 KiB padded |
 | Versions per pack | <= 100 per server | bounded chains |
 | Packs | 1 GiB and 100 packs per user, 20 GiB per server | operator cost |
@@ -364,33 +395,43 @@ pack), arrow-key cells with §3.2's names, and search over emoji names, keywords
 and alt text. Click sends and closes; Shift+click sends and stays open. A
 received sticker opens its pack with "Install" and "Report".
 
+Identity comes first (Owner 2026-11-17). The identity plan's slices are I1 (the
+identity service with its directory, KT log and witnesses), I2 (home statements,
+lookups and moves) and I3 (direct conversations on both home servers);
+device-signing keys exist (e2ee.md §3).
+
 | # | Slice | Needs |
 | --- | --- | --- |
-| S1 | `nuschl-stickers`: versions, signatures, keys, both formats, links, vectors | — |
+| S1 | `nuschl-stickers`: versions, signer references, keys, both formats, links, vectors | — |
 | S2 | Content worker `StickerCheck` and `StickerFrames` | — |
-| S3 | Desktop library in device-sync data, picker tab, create from files, terms | S1, S2 |
-| S4 | nuschld pack store on home servers, upload, fetch by hash, NixOS options | S1, #366 |
-| S5 | Importer with the external fetch (D1) | S3, S4 |
-| S6 | Sending, showing, pack view and Install on the three paths | S3, S4, #93, #216 |
-| S7 | Reports through #274, removal and blocks | S4, #274 |
-| S8 | Web: library, picker, rendering, sending, pack view | S1, S6 |
+| S3 | Desktop library in device-sync data, picker tab, create from files, terms | S1, S2, I1 |
+| S4 | nuschld pack store on home servers, upload, fetch by hash, NixOS options | S1, I2, I3 |
+| S5 | `pack:` label at the identity service, publishing and verifying versions | S1, I1 |
+| S6 | Importer with the external fetch (D1) | S3, S4 |
+| S7 | Sending, showing, pack view and Install on the three paths | S3, S4, S5, #93, #216 |
+| S8 | Version list, Update and switching back in the pack view | S7 |
+| S9 | Reports through #274, removal and blocks | S4, #274 |
+| S10 | Web: library, picker, rendering, sending, pack view | S1, S7 |
 
 ## 9. Tests
 
 - Unit: vectors for `k_blob`, `key_commit`, `pack_id`, version records and
   `pack_hash` in both formats; a blob outside the version, under a key that
   misses `key_commit`, or with a `sticker_key` that misses the derivation is
-  refused; a version signed by another identity or an old generation, a broken
-  `prev`, or a fork is refused or flagged; a revealed `sticker_key` opens its
-  blob only; the content worker refuses a declared 65535 x 65535 PNG, a
-  10,000-frame APNG, truncated files and MIME mismatches.
+  refused; a version signed by another identity, by a generation other than the
+  current one when logged, with a broken `prev`, or forked is refused or
+  flagged; a version logged before a rotation stays valid; a signed record with
+  an unknown field is refused; a revealed `sticker_key` opens its blob only;
+  the content worker refuses a declared 65535 x 65535 PNG, a 10,000-frame APNG,
+  truncated files and MIME mismatches.
 - Integration through `nuschl-testkit`: a synthetic external pack on a loopback
   CDN fixture; a library hit makes 0 requests; two importers through one server
   make one request per file and one stored `pack_hash`; a recipient's home
   server fetches a blob by hash from the sender's.
 - VM with two home servers and an identity service: a sticker in a direct
   conversation reaches both servers; a later member sees old stickers; version 2
-  is offered while version 1 messages keep showing; an author's move keeps old
+  is offered while version 1 messages keep showing, and switching back to
+  version 1 works; an author's move keeps old
   messages working; a report verifies with the redacted pack key; a removed pack
   shows unavailable.
 - Local only (GUI): desktop smoke with AT-SPI names; stock Mumble shows the
@@ -398,7 +439,7 @@ received sticker opens its pack with "Install" and "Report".
 
 ## 10. Later
 
-- Editing packs, update prompts and fork display in the UI.
+- Editing packs in the UI.
 - Nuschl pack links (`pack_id`, `pack_hash`, key and author; no server needed).
 - Adding packs from links and files on the web (D7: desktop only in v1).
 - Fetching packs on stock Mumble servers through the home server (D6: packs on
@@ -416,9 +457,10 @@ received sticker opens its pack with "Install" and "Report".
 - **D11 Author signature:** sealed under the pack key. Uploads to the author's
   home server come from the author's account, so public signatures add nothing
   for hosting and would show every server who authored what.
-- **D13 Update discovery:** received references, and the author's home server
-  when the pack view opens, found through id.nuschl.eu; lookup privacy is
-  deferred there too.
+- **D13 Update discovery:** received references, and the `pack:` lookup at
+  id.nuschl.eu when the pack view opens; lookup privacy is deferred there too.
+- **D14 Applying updates** (Owner 2026-11-17): offered with Update, and switching
+  back to earlier versions (§3.4).
 
 **Open (recommended default first):**
 
@@ -430,11 +472,10 @@ received sticker opens its pack with "Install" and "Report".
 - **D9 Server defaults:** 1 GiB and 100 packs per user, 20 GiB per server, 2 GiB
   of external cache, on; nuschl.eu's servers review reports in triage.nuschl.eu
   (#205).
-- **D10 External CDN facts** before S5: certificate chain, rate limits and
+- **D10 External CDN facts** before S6: certificate chain, rate limits and
   `Retry-After`, and whether its terms allow third-party fetching.
 - **D12 Pack key:** one per pack; or one per version, which hides nothing from
   earlier readers.
-- **D14 Applying updates:** an Update button; or applied on arrival.
 - **D15 #274 alignment:** `env'` leaves `pack_key` empty and a report reveals
   `sticker_key`; #274's §3 and §6 change with it. The identity plan leaves this
   unchanged.
