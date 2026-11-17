@@ -37,7 +37,10 @@ def exchange(executable, payloads, arguments=()):
         input=b"".join(frame(index + 1, payload) for index, payload in enumerate(payloads)),
         capture_output=True,
         timeout=30,
-        check=True,
+    )
+    assert process.returncode == 0, (
+        f"{Path(executable).name} exited with {process.returncode}: "
+        f"{process.stderr.decode(errors='replace')[-4096:]}"
     )
     stream = io.BytesIO(process.stdout)
     results = []
@@ -194,7 +197,11 @@ else:
         ], check=True, timeout=15, env=environment)
         document = subprocess.run([
             str(binaries / "nuschl"), "render", "line one\nline two",
-        ], capture_output=True, check=True, timeout=15)
+        ], capture_output=True, timeout=15)
+        assert document.returncode == 0, (
+            f"nuschl render exited with {document.returncode}: "
+            f"{document.stderr.decode(errors='replace')[-4096:]}"
+        )
         assert json.loads(document.stdout)["blocks"] == [{"kind": "text", "text": "line one\nline two"}]
 
 
