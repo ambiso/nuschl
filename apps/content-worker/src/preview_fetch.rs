@@ -228,7 +228,8 @@ impl Parser {
                     }
                     match call.proceed().ok_or(Failure::Malformed)? {
                         RecvResponseResult::RecvBody(body) => {
-                            if let BodyMode::LengthDelimited(size) = body.body_mode()
+                            if self.purpose == Purpose::Image
+                                && let BodyMode::LengthDelimited(size) = body.body_mode()
                                 && size > self.purpose.body_limit() as u64
                             {
                                 return Err(Failure::TooLarge);
@@ -248,13 +249,14 @@ impl Parser {
                     let (used, written) = call
                         .read(&self.pending, &mut out)
                         .map_err(|_| Failure::Malformed)?;
-                    if self
-                        .body
-                        .len()
-                        .checked_add(written)
-                        .is_none_or(|n| n > self.purpose.body_limit())
-                    {
-                        return Err(Failure::TooLarge);
+                    let room = self.purpose.body_limit() - self.body.len();
+                    if written > room {
+                        // A document's metadata comes first: extract from what was read.
+                        if self.purpose == Purpose::Image {
+                            return Err(Failure::TooLarge);
+                        }
+                        self.body.extend_from_slice(&out[..room]);
+                        return self.complete();
                     }
                     self.body.extend_from_slice(&out[..written]);
                     self.pending.drain(..used);
@@ -387,6 +389,40 @@ mod tests {
         }
     }
     #[test]
+    fn a_long_document_ends_at_the_limit_and_a_long_image_is_rejected() {
+        let limit = Purpose::Document.body_limit();
+        let page = [b"<title>early</title>".as_slice(), &vec![b'x'; limit]].concat();
+        let chunked: Vec<u8> = page
+            .chunks(4096)
+            .flat_map(|part| [format!("{:x}\r\n", part.len()).as_bytes(), part, b"\r\n"].concat())
+            .collect();
+        for raw in [
+            [
+                format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", page.len()).as_bytes(),
+                &page,
+            ]
+            .concat(),
+            [
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".as_slice(),
+                &chunked,
+            ]
+            .concat(),
+            [b"HTTP/1.0 200 OK\r\n\r\n".as_slice(), &page].concat(),
+        ] {
+            let body = parse(&raw, Purpose::Document, wire::MAX_CHUNK_BYTES)
+                .unwrap()
+                .decode_body(Purpose::Document)
+                .unwrap();
+            assert_eq!(body, page[..limit]);
+        }
+        let image = Purpose::Image.body_limit() + 1;
+        let raw = [b"HTTP/1.0 200 OK\r\n\r\n".as_slice(), &vec![0; image]].concat();
+        assert_eq!(
+            parse(&raw, Purpose::Image, wire::MAX_CHUNK_BYTES).unwrap_err(),
+            Failure::TooLarge
+        );
+    }
+    #[test]
     fn aggregate_head_body_informational_and_chunk_limits_do_not_reset() {
         assert!(
             parse(
@@ -403,9 +439,9 @@ mod tests {
         );
         let huge = format!(
             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
-            Purpose::Document.body_limit() + 1
+            Purpose::Image.body_limit() + 1
         );
-        assert!(parse(huge.as_bytes(), Purpose::Document, 32).is_err());
+        assert!(parse(huge.as_bytes(), Purpose::Image, 32).is_err());
         let infos = [
             b"HTTP/1.1 103 Early Hints\r\n\r\n".repeat(wire::MAX_INFORMATIONAL + 1),
             b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),

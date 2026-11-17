@@ -158,7 +158,8 @@ class Http(socketserver.BaseRequestHandler):
             elif parsed.path == "/large-head":
                 stream.sendall(b"HTTP/1.1 200 OK\r\nX-Padding: " + b"x" * (33 * 1024) + b"\r\n\r\n")
             elif parsed.path == "/large-body":
-                reply(stream, b"x" * (256 * 1024 + 1))
+                # Past the 256 KiB document limit, with its metadata first.
+                reply(stream, b'<meta property="og:title" content="Synthetic preview"><body>' + b"x" * (256 * 1024))
             elif parsed.path == "/raw-overhead":
                 stream.sendall(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: text/html\r\n\r\n" + b"1\r\nx\r\n" * 80000 + b"0\r\n\r\n")
             elif parsed.path == "/stall":

@@ -99,7 +99,7 @@ Proposed initial limits:
 | Resource | Limit |
 |---|---|
 | Candidate URL | 2 KiB, HTTP(S), no userinfo/control characters |
-| Metadata document | 256 KiB, HTML only, no content decompression initially |
+| Metadata document | First 256 KiB, HTML only, no content decompression initially |
 | Extraction | 4096 tags/comments/doctypes, 256 metadata tags, 4 KiB per attribute value |
 | Redirects | At most three across the preview fetch |
 | Source image | 2 MiB encoded; existing worker pixel/dimension/CPU limits |

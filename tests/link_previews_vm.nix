@@ -196,7 +196,7 @@ pkgs.testers.runNixOSTest {
         assert authority["cgroup"] == "0::/system.slice/nuschl-preview-native-test.service\n", authority
         native_groups[native_units[0]] = authority["cgroup"].split("::", 1)[1].rstrip("\n")
         result = json.loads(machine.succeed(f"test $(stat -c%s {native_directory}/fetch-result.json) -le 65536 && cat {native_directory}/fetch-result.json"))
-        assert result["passed"] is True and len(result["checks"]) == 11, result
+        assert result["passed"] is True and len(result["checks"]) == 12, result
         # The test requests peer shutdown. Let its joined finalizer publish the
         # final event oracle before finally requests forced cleanup.
         machine.wait_until_succeeds("test \"$(systemctl show -p ActiveState --value nuschl-preview-native-peers.service)\" = inactive", timeout=timedelta(seconds=15))
