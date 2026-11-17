@@ -126,7 +126,7 @@ impl<'a> Role<'a> {
     #[rustfmt::skip]
     fn capabilities(self) -> Capabilities<'a> {
         match self {
-            Role::Preview { .. } => Capabilities { name: "preview", memory: 512 * MIB, cpu_seconds: Some(5), linux_only: true, ..NOTHING },
+            Role::Preview { .. } => Capabilities { name: "preview", memory: 512 * MIB, cpu_seconds: Some(5), ..NOTHING },
             Role::Content { cpu_seconds, .. } => Capabilities { name: "content", memory: 512 * MIB, cpu_seconds: Some(cpu_seconds), ..NOTHING },
             Role::Math => Capabilities { name: "math", memory: 512 * MIB, cpu_seconds: Some(120), ..NOTHING },
             Role::Update { post_quantum: true } => Capabilities { name: "update.mldsa44", memory: 256 * MIB, cpu_seconds: Some(5), ..NOTHING },
@@ -189,7 +189,17 @@ pub fn sibling(name: &str) -> io::Result<std::path::PathBuf> {
 /// command already carries the confinement.
 pub struct Containment {
     #[cfg(windows)]
-    _job: win32job::Job,
+    job: win32job::Job,
+}
+
+impl Containment {
+    /// Whether the job lists no process: neither the launch stage nor its
+    /// worker, which starts inside the job (`windows_policy::IN_JOB`).
+    #[cfg(windows)]
+    pub fn is_empty(&self) -> io::Result<bool> {
+        let processes = self.job.query_process_id_list().map_err(io::Error::other)?;
+        Ok(processes.is_empty())
+    }
 }
 
 /// Contain a worker started from [`command`] by other means than [`spawn`]
@@ -207,7 +217,7 @@ pub fn contain(child: &Child) -> io::Result<Containment> {
         let job = win32job::Job::create_with_limit_info(&limits).map_err(io::Error::other)?;
         job.assign_process(handle as isize)
             .map_err(io::Error::other)?;
-        Ok(Containment { _job: job })
+        Ok(Containment { job })
     }
     #[cfg(not(windows))]
     {

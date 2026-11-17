@@ -128,7 +128,7 @@ record a key under Shortcuts. The key also works while Nuschl is in the backgrou
 where the desktop allows system-wide shortcuts (GNOME asks you once).
 
 **Messages.** The smiley button beside the message box opens the emoji picker, and
-short codes such as `:smile:` type emoji. On Linux, a link you send gets a preview
+short codes such as `:smile:` type emoji. A link you send gets a preview
 card (title, description and image) that your computer fetches directly;
 **Settings → Link previews** turns this off. Received cards display without fetching
 anything ([docs/link-previews.md](docs/link-previews.md)).

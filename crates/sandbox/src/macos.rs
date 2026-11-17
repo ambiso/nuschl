@@ -209,14 +209,20 @@ mod tests {
                 [&sending[..], &["--file", &me_text]].concat(),
             ),
             (Role::Transfer { file: None }, receiving.to_vec()),
+            (
+                Role::Preview {
+                    operation: crate::PreviewOperation::Prepare,
+                },
+                pure.to_vec(),
+            ),
+            (
+                Role::Preview {
+                    operation: crate::PreviewOperation::Fetch,
+                },
+                [&pure[..], &["--preview-fetch"]].concat(),
+            ),
         ] {
             assert_eq!(launch(role), expected, "{role:?}");
-        }
-        for operation in [
-            crate::PreviewOperation::Prepare,
-            crate::PreviewOperation::Fetch,
-        ] {
-            assert!(super::command(me, Role::Preview { operation }).is_err());
         }
         let media = launch(Role::Media);
         assert_eq!(media[..2], ["-p", MEDIA]);

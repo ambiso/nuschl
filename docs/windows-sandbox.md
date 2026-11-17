@@ -58,6 +58,7 @@ command-line quoting and the per-worker policies are unit-tested on every platfo
 | Worker | AppContainer profile | Kind | Capabilities | Files | Committed memory |
 | --- | --- | --- | --- | --- | --- |
 | content | `nuschl.content` | less privileged | none | none | 512 MiB, plus the request's CPU seconds |
+| link preview (the content worker's HTTP and metadata parsing) | `nuschl.preview` | less privileged | none | none | 512 MiB, and 5 CPU seconds |
 | math | `nuschl.math` | less privileged | none | none | 512 MiB, and 120 CPU seconds over its life (it is restarted), as on Linux |
 | storage | `nuschl.storage.<hash of the directory>` | less privileged | none | the history directory's contents (the directory itself: list, add, delete entries) | 1 GiB |
 | crypto | `nuschl.crypto.<hash of the directory>` | less privileged | none | its `keys` directory's contents (likewise) | 1 GiB |

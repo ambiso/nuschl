@@ -323,6 +323,7 @@ async fn observed_namespace_retirement(fake: &Path) {
             .spawn()
             .unwrap();
         let wrapper = child.id().unwrap();
+        let containment = nuschl_sandbox::contain(&child).unwrap();
         let mut retirement = host::preview_lifecycle::Retirement::new(&mut child);
         retirement.ready().await.unwrap();
         let mut init = owned_init(wrapper);
@@ -350,9 +351,12 @@ async fn observed_namespace_retirement(fake: &Path) {
             reply.payload,
             ContentResponse::Preview(Response::Metadata { .. })
         ));
-        tokio::time::timeout(Duration::from_secs(5), retirement.retire(&mut child))
-            .await
-            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            retirement.retire(&mut child, &containment),
+        )
+        .await
+        .unwrap();
         assert!(
             original_init_has_retired(&mut init),
             "role credit returned before original PID1 retirement"
@@ -376,14 +380,18 @@ async fn unknown_startup_remains_pending(fake: &Path) {
             .kill_on_drop(true)
             .spawn()
             .unwrap();
+        let containment = nuschl_sandbox::contain(&child).unwrap();
         let mut retirement = host::preview_lifecycle::Retirement::new(&mut child);
         assert!(retirement.ready().await.is_err());
         child.kill().await.unwrap();
         assert!(child.wait().await.is_ok());
         assert!(
-            tokio::time::timeout(Duration::from_millis(100), retirement.retire(&mut child))
-                .await
-                .is_err(),
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                retirement.retire(&mut child, &containment)
+            )
+            .await
+            .is_err(),
             "unknown startup was incorrectly credited as retired"
         );
         assert!(
