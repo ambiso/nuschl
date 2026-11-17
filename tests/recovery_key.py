@@ -108,8 +108,10 @@ def main():
 
             press("Settings")
             # The identity is made on connect; until then Settings shows no key.
+            # The warning is read before the key is shown.
+            reveal("Show recovery key")
+            assert named("Keep this key secret", prefix=True), "no warning before the key is shown"
             reveal("Show recovery key").press()
-            reveal("Keep this key secret", prefix=True)
             # The app sets the clipboard while its window is active.
             shell.eval("global.get_window_actors().map(a => a.meta_window).find(w => "
                        "w.get_title().startsWith('Nuschl')).activate(global.get_current_time()); 'ok'")
@@ -135,7 +137,6 @@ def main():
             press("Settings")
             reveal("Show recovery key")
             assert named(key, "label") is None, "the recovery key showed again after reopening Settings"
-            assert named("Keep this key secret", prefix=True) is None, "the warning stayed without the key"
             result = {"passed": True, "copied": True, "warned": True, "shown_again": True,
                       "hidden_after_close": True}
             (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n")

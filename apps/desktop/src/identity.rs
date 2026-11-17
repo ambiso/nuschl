@@ -241,8 +241,8 @@ pub fn settings_rows(this: &Desktop, cx: &mut Context<Desktop>) -> Vec<AnyElemen
                     .into_any_element(),
             );
         }
-        if let Some(key) = &own.recovery_key {
-            let copied = key.clone();
+        // Read before the key is shown.
+        if view.recovery_pending || own.recovery_key.is_some() {
             rows.push(
                 div()
                     .text_xs()
@@ -256,6 +256,9 @@ pub fn settings_rows(this: &Desktop, cx: &mut Context<Desktop>) -> Vec<AnyElemen
                     )
                     .into_any_element(),
             );
+        }
+        if let Some(key) = &own.recovery_key {
+            let copied = key.clone();
             rows.push(
                 div()
                     .flex()
