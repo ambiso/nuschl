@@ -518,7 +518,7 @@ def actions(args, root, shell, application, bot, murmur):
         lambda: text_contains("Apply or discard the edited rule target"),
         "unapplied displayed group was silently saved as @all",
     )
-    activate("Inherited · @admin")
+    click_matching("Inherited · @admin · ")
     assert named("Apply target", "push button") is not None, (
         "selection silently left the edited rule"
     )
@@ -538,8 +538,8 @@ def actions(args, root, shell, application, bot, murmur):
     activate("Apply target")
     type_field("ACL rule target", "never-apply-this-target")
     activate("Discard target edit")
-    activate("Inherited · @admin")
-    activate("@native-team")
+    click_matching("Inherited · @admin · ")
+    click_matching("@native-team · Allows")
     mark("unapplied_target_save_and_selection_blocked_until_explicit_apply_or_discard")
     click_matching("Apply to subchannels")
     activate("Add rule")
@@ -662,7 +662,7 @@ def actions(args, root, shell, application, bot, murmur):
     # The menu may not offer ordinary channel editing, but root administrators
     # retain the separate Edit permissions action and can remove the denial.
     open_acl("Lobby")
-    activate(f"Welcome reader (#{IDS['reader']})")
+    click_matching(f"Welcome reader (#{IDS['reader']}) · ")
     activate("Remove rule")
     save()
     admin = operator(root, pin)

@@ -313,7 +313,7 @@ fn inspect_row(editor: &Editor, kind: Inspect, index: usize) -> Option<(u64, Str
             Some((
                 row.id,
                 format!(
-                    "{}{}",
+                    "{}{} · {}",
                     if row.value.inherited {
                         "Inherited · "
                     } else {
@@ -322,10 +322,8 @@ fn inspect_row(editor: &Editor, kind: Inspect, index: usize) -> Option<(u64, Str
                     row.value
                         .user_id
                         .map(|id| format!("#{id}"))
-                        .unwrap_or_else(|| format!(
-                            "@{}",
-                            row.value.group.as_deref().unwrap_or("?")
-                        ))
+                        .unwrap_or_else(|| group_target(row.value.group.as_deref().unwrap_or("?"))),
+                    effect(&row.value, true)
                 ),
             ))
         }
@@ -532,7 +530,7 @@ pub fn render_stale(editor: &Editor, cx: &mut Context<Desktop>) -> AnyElement {
                 "{}{} · {}",
                 if entry.inherited { "Inherited · " } else { "" },
                 scope(entry),
-                effect(entry)
+                effect(entry, false)
             ),
         ));
     }
@@ -1265,12 +1263,12 @@ pub fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Desktop>) -> 
                     let row = draft.entries().get(index)?;
                     let label = match row.value.user_id {
                         Some(id) => name(view, id),
-                        None => format!("@{}", row.value.group.as_deref().unwrap_or("?")),
+                        None => group_target(row.value.group.as_deref().unwrap_or("?")),
                     };
                     Some((
                         row.id,
                         format!(
-                            "{}{}",
+                            "{}{} · {}",
                             if row.value.inherited {
                                 if draft.inherit_acls() {
                                     "Inherited · "
@@ -1280,7 +1278,8 @@ pub fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Desktop>) -> 
                             } else {
                                 ""
                             },
-                            label
+                            label,
+                            effect(&row.value, true)
                         ),
                         editor.selected_rule == Some((index, row.id)),
                     ))
@@ -1507,15 +1506,32 @@ fn permission_grid(
     grid.into_any_element()
 }
 
-/// What a rule allows and denies, in words.
-fn effect(entry: &AclEntry) -> String {
+/// Whom a group target means, in words for Mumble's built-in groups.
+fn group_target(group: &str) -> String {
+    match group {
+        "all" => "Everyone".into(),
+        "auth" => "Registered users".into(),
+        "in" => "People in this channel".into(),
+        "out" => "People outside this channel".into(),
+        _ if group.starts_with('#') => format!("Password holders ({group})"),
+        _ => format!("@{group}"),
+    }
+}
+
+/// What a rule allows and denies, in words; `short` names at most three
+/// permissions per list.
+fn effect(entry: &AclEntry, short: bool) -> String {
     let names = |wanted: Option<bool>| {
-        permission::NAMED
+        let names: Vec<_> = permission::NAMED
             .iter()
             .filter(|(bit, _)| setting(entry, *bit) == wanted)
             .map(|(_, label)| *label)
-            .collect::<Vec<_>>()
-            .join(", ")
+            .collect();
+        if short && names.len() > 3 {
+            format!("{}, {} and {} more", names[0], names[1], names.len() - 2)
+        } else {
+            names.join(", ")
+        }
     };
     let (allowed, denied) = (names(Some(true)), names(Some(false)));
     match (allowed.is_empty(), denied.is_empty()) {
