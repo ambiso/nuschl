@@ -7,319 +7,257 @@ custody and key transparency of [e2ee.md](e2ee.md) §3 to §5, the witnesses of
 [SECURITY.md](../SECURITY.md). PR #363 gives every identity a recovery key that
 the device keeps; PR #273 signs sticker pack versions with the author's identity.
 
+The plan holds the required features and the choices that are hard to change later
+(see "Lock-in guards"); everything else is in "Later".
+
 ## Decisions (Owner, 2026-11-17)
 
+- **Minimal design.** "lets try to keep the design as minmimal as possible while
+  putting in the required features or making sure we don't lock ourselves into a
+  wrong design that can't be easily changed later."
 - **Migratable identities.** "Ideally I'd want to keep identities fully migratable
   so a disappearing or malicious home-server can't impact much."
-- **id.nuschl.eu is the identity service and the passkey rpId.** It replaces
-  auth.nuschl.eu, the rpId decided on 2026-11-13; passkeys are still unimplemented,
-  so the change is a rename. The service runs passkey ceremonies with PRF, keeps encrypted
-  identity backups, handles recovery, keeps a directory, and runs a key-transparency
-  log with witnesses.
-- **Safeguards** (proposed, accepted by the Owner):
-  1. The identity service keeps public data and sealed blobs only: a directory, a KT
-     log and backups that only the passkey's PRF output or the recovery key opens. If
-     it disappears, existing identities, contacts and conversations keep working;
-     new devices, recoveries and lookups stop.
-  2. Self-hosters can configure their own identity service (`id.example.org`, same
-     protocol); id.nuschl.eu is the default.
-  3. *Proposed, awaiting confirmation:* lookups go through the user's home server
-     as a proxy, or as batched KT queries, so the identity service sees which
-     identities are looked up and leaves the asking user unknown.
-- **Light federation.** Home servers carry what costs per user and is easy to run:
-  the SFU for streams and calls, voice, direct messages, attachments and stickers.
-  The identity service finds a user's home server and sends all email, so it carries
-  the mail setup for every home server. A user whom a home server blocks moves to
-  another one and is reachable again.
-- **Moving home servers** is a statement signed with the user's identity ("I now live
-  at server Y"), recorded in the identity service's directory and KT log.
+- **id.nuschl.eu is the identity service and the passkey rpId**, renamed from
+  auth.nuschl.eu (decided 2026-11-13; passkeys are unimplemented). It runs passkey
+  ceremonies with PRF, keeps encrypted backups, handles recovery and email, and keeps
+  a directory and a key-transparency log with witnesses.
+- **Safeguards.** The identity service keeps public data and sealed blobs only; if it
+  disappears, existing identities, contacts and conversations keep working.
+  Self-hosters configure their own service (`id.example.org`, same protocol);
+  id.nuschl.eu is the default.
+- **Light federation.** Home servers carry the SFU, voice, direct messages,
+  attachments and stickers. The identity service tells where a user's home server
+  is and sends all email. A user whom a home server blocks moves to another one.
+- **Moving home servers** is a statement signed by the identity ("I now live at
+  server Y"), recorded in the identity service's directory and log.
+- **Direct conversations live on both participants' home servers.** Either one
+  suffices to restore the conversation, also when every device of both users has
+  lost its state and only the recovery key remains.
+- **Usernames** are globally unique and managed by id.nuschl.eu, with free display
+  names.
+- **Lookups** go straight to the identity service.
 - **Recovery** works with a synced passkey, with the recovery key on a later login
   screen, or by email. An email reset makes a new identity that the identity service
-  vouches for; it is public, delayed, open to objection, and contacts see it as
-  unverified.
-- **Invite tree.** "Also maybe we can have an invite tree like lobste.rs so spam or
-  sockpuppet accounts can be identified more easily (and a later public registration
-  phase which can be more heavily moderated)"
+  vouches for: public, delayed, open to objection, and unverified for contacts.
+- **Invite tree.** "an invite tree like lobste.rs so spam or sockpuppet accounts can
+  be identified more easily (and a later public registration phase which can be more
+  heavily moderated)". Invites are available at once, so abuse is handled by cutting
+  the tree at the abusing account. Later public registration: email maybe, no proof
+  of work, no probation for now.
 
-## Roles
+## Roles and data
 
-| Role | Who runs it | Purpose |
-| --- | --- | --- |
-| Identity service | id.nuschl.eu by default; any operator with the same protocol | Directory, KT log, encrypted backups, passkey ceremonies, recovery, email |
-| Home server | a `nuschld` the user chooses | Inbox, direct messages and calls, attachments, stickers, device sync, SFU |
-| Channel server | any `nuschld` where the user has an account | Channels, ACLs and accounts as in e2ee.md §6 and extension.md |
-| Witness | `nuschl-witness` (witness.md) | Cosigns the identity service's log and every server's log |
-| Device | the user's crypto worker | All private keys (e2ee.md §3.5) and the cached records of contacts |
+| Role | Holds |
+| --- | --- |
+| Identity service (id.nuschl.eu or `id.example.org`) | Directory and KT log, backups, passkey credentials, email addresses, invite tree |
+| Home server (a `nuschld` the user chooses) | The user's account, an inbox for conversation invites, direct conversations and calls, attachments, stickers, the user's sealed server-side keys |
+| Channel server (any `nuschld`) | Channels, ACLs and accounts, as in e2ee.md |
+| Witness (`nuschl-witness`) | Cosignatures over the identity service's and every server's log |
+| Device (crypto worker) | All private keys (e2ee.md §3.5), the recovery key (#363), contacts' cached records |
 
-One `nuschld` can be a user's home server and a channel server for many others.
-Servers federate through the identity service's directory and through clients:
-a client connects to every server that hosts one of its conversations, and servers
-talk only to the identity service.
+One `nuschld` can be a home server and a channel server at once. A client connects
+to the identity service and to every server that hosts one of its conversations.
 
-## Data each role holds
+**Identity service.** Per identity fingerprint, the directory holds the identity
+record of e2ee.md §3.1 (root key, device-signing certificate, device certificates,
+revocations), the home statement, the username and display name, an email binding
+and reset entries. Its KT log, built from `nuschl-kt` and witnessed as in
+witness.md, covers them with the labels `id:<fingerprint>` (reserved in e2ee.md
+§5.1), `home:<fingerprint>`, `user:<username>` and `reset:<fingerprint>`. Backups
+are the `RecoveryBlob` under the recovery key and one blob per passkey under a key
+derived from its PRF output; each holds the root seed. The email address stays with
+the service to send codes; the record carries its salted hash, signed by the
+device-signing key. The invite tree stays outside the log.
 
-**Identity service**
-
-- *Directory*, per identity fingerprint: the identity record of e2ee.md §3.1 (root
-  public key, device-signing certificate, device certificates, revocations), the
-  current home statement, an optional handle, an optional email binding, and reset
-  entries.
-- *KT log* over the directory, built from `nuschl-kt` and witnessed as in witness.md,
-  origin `id.nuschl.eu:443/nuschl-kt/v1`. Labels: `id:<fingerprint>` (reserved in
-  e2ee.md §5.1), `home:<fingerprint>`, `handle:<name>`, `reset:<fingerprint>`.
-- *Backups*: the `RecoveryBlob` sealed under the recovery key, and one blob per
-  passkey sealed under a key derived from that passkey's PRF output. A blob holds the
-  root seed plus pins and verified contacts under the device-sync key (e2ee.md §3.7).
-- *Passkey credentials*: credential ids and public keys for rpId `id.nuschl.eu`.
-- *Email*: the address behind each email binding, kept by the service to send codes.
-  The record carries a salted hash of the address, signed by the device-signing key.
-- *Invite tree*: for each identity, the identity that invited it and the signed
-  registration invite, outside the KT log (see "Invite tree").
-
-**Home server**
-
-- The user's account, bound by an `AccountStatement` in its own KT log (e2ee.md §3.8).
-- An inbox per user: sealed invites (MLS Welcomes, key packages) from any identity.
-- Conversations it hosts: direct messages and calls, as ciphertext through the
-  delivery service of e2ee.md §6.3, with the SFU and voice for them.
-- Attachments ([files.md](files.md)), sticker packs (#273) and device-sync blobs.
-- Metadata: who talks to whom on it, sizes, times and IP addresses.
-
-**Channel server**: unchanged from e2ee.md; its log keeps `acct:`, `name:` and
-`reg:` for its own accounts.
-
-**Device**: the keys of e2ee.md §3.5, the recovery key (#363), and per contact the
-cached identity record, home statement and the id service's head they were checked at.
+**Home server.** The account is bound by an `AccountStatement` (e2ee.md §3.8). The
+server stores ciphertext and delivery metadata only: who talks to whom on it, sizes,
+times and IP addresses.
 
 ## Flows
 
 ### Register
 
 1. On first connect the device creates the identity and its recovery key (#363).
-   Publishing it at the identity service takes a registration invite (see "Invite
-   tree").
-2. The server the user registers with becomes the home server; the device binds the
-   account with an `AccountStatement`.
-3. The device publishes the identity record and `Home { origin, log id, seq = 1 }`,
-   signed by the device-signing key, to the identity service.
-4. Optional, offered on the same screen: a passkey with PRF at id.nuschl.eu, which
-   stores a backup blob; an email address, confirmed by a code; a handle.
+2. The user redeems a registration invite and picks a username at the identity
+   service; the device publishes the identity record there.
+3. The home server is the server the user registers with. The device binds the
+   account and publishes `Home { origin, seq = 1 }`, signed by the device-signing key.
+4. Optional on the same screen: a passkey with PRF, which stores a backup blob, and
+   an email address confirmed by a code.
 
 ### Add a device
 
-Linking stays as in e2ee.md §3.4. The new device's certificate goes to the identity
-service's record as well as to every channel server's log. A user without another
-device at hand uses passkey recovery below, which adds the device the same way.
-
-### Move home server
-
-1. The user registers at server Y and binds the account there.
-2. A device signs `Home { Y, seq + 1 }`; the identity service publishes it. The
-   sequence number rises with every move, so a replayed old statement fails.
-3. Contacts learn the move on their next lookup or monitoring pass (e2ee.md §5.4
-   monitors direct contacts on every connect) and send new invites to Y.
-4. For each conversation hosted on the old server X, the user's client starts a
-   successor group on Y with the same members and posts "moved to Y" in the old group
-   while X still serves it. Devices keep their local history; attachments are uploaded
-   again from devices that hold them.
-
-Every step works without X, so a vanished or hostile home server costs the user the
-conversations and files it hosted, and keeps identity, contacts and verification.
+Linking as in e2ee.md §3.4; the new device's certificate also goes to the identity
+service's record.
 
 ### Look up a user
 
-1. Input: an invite link or QR code (fingerprint, the identity service's origin when
-   it differs from the default, a home hint), a handle, or a fingerprint from a
-   channel server's `acct:` binding.
-2. The client sends the KT query to its home server, which forwards it to the
-   identity service, batched with other users' queries and stripped of the asker.
-3. The client checks the lookup proofs and the witnesses' cosignatures itself
-   (e2ee.md §5.4, witness.md), then pins the identity on first use (e2ee.md §4).
-4. To start a conversation, the client puts a sealed invite into the contact's inbox
-   on their home server.
+The client asks the identity service by username or fingerprint (from an invite
+link, a QR code or a channel server's `acct:` binding), checks the proofs and the
+witnesses' cosignatures (e2ee.md §5.4, witness.md), and pins the identity on first
+use (e2ee.md §4). To start a conversation it puts a sealed MLS invite into the
+contact's inbox on their home server.
 
-### Recover with a passkey
+### Direct conversations
 
-A synced passkey (for example in a password manager) restores the identity without
-the recovery key.
+Both participants' home servers keep the conversation. Requirements:
 
-1. On the login screen, "Recover with passkey" runs a WebAuthn assertion for rpId
-   `id.nuschl.eu` with the PRF extension.
-2. The PRF output, through HKDF, opens that passkey's backup blob.
-3. The root rotates the device-signing key, certifies the new device, and revokes the
-   devices the user marks as lost, as e2ee.md §3.5 describes for recovery. The
-   identity and every contact's verification survive.
+- Each of the two servers holds the full encrypted history and what a member needs
+  to rejoin the group or to start a successor with the same members (e2ee.md §6).
+- Every key needed to read the history (history keys, e2ee.md §6.6, and the
+  device-sync key of §3.7) is also stored on the user's home server, sealed under a
+  key derived from the root seed. The recovery key and the passkey backup open the
+  root seed, so either restores the conversations without any device.
+- If one server disappears, the other keeps serving, and the participants continue
+  there or on a new home server.
+
+How the two copies stay in step is open question 2.
+
+### Move home server
+
+1. The user registers at server Y, binds the account, and a device signs
+   `Home { Y, seq + 1 }`; the identity service publishes it. A replayed old
+   statement fails on `seq`.
+2. Contacts see the move on their next lookup or monitoring pass (e2ee.md §5.4).
+3. The user's client copies its conversations to Y from the other participants' home
+   servers or from its devices.
+
+Every step works without the old server.
+
+### Recover with a passkey or the recovery key
+
+A synced passkey (for example in a password manager) runs a WebAuthn assertion for
+rpId `id.nuschl.eu` with PRF; the PRF output, through HKDF, opens that passkey's
+backup blob. The later login screen (#363) does the same with the 56-character
+recovery key and the `RecoveryBlob`. With the root seed, the device rotates the
+device-signing key, certifies itself, revokes the devices the user marks as lost
+(e2ee.md §3.5), and opens its sealed keys on the home server. Identity, verification
+and history survive.
 
 Native apps run the ceremony through the platform's passkey API where the app may
 claim `id.nuschl.eu` (Apple associated domains, Android Digital Asset Links, the
-Windows WebAuthn API), so the root stays in the crypto worker. Elsewhere the browser
-opens a page on id.nuschl.eu that unwraps the root, certifies the new device over the
-linking protocol of e2ee.md §3.4, and discards the root (e2ee.md §3.1).
-
-### Recover with the recovery key
-
-The later login screen (#363) takes the 56-character key, fetches the `RecoveryBlob`
-from the identity service or from an export file (e2ee.md §3.7), and continues as in
-step 3 above.
+Windows WebAuthn API), so the root seed stays in the crypto worker. Elsewhere a page
+on id.nuschl.eu unwraps the root, certifies the new device over the linking protocol
+of e2ee.md §3.4 and discards the root; that page's code is trusted while it runs.
 
 ### Recover by email
 
-Email proves control of an address only, so an email reset creates a new
-identity, and the identity service vouches for it.
+Email proves control of an address only, so an email reset creates a new identity,
+and the identity service vouches for it.
 
-1. "Recover by email" sends a code to the bound address. The new device creates a new
-   root and submits it with the code.
-2. The identity service publishes `reset:<old fingerprint>`: "replaced by <new
-   fingerprint>, vouched by id.nuschl.eu (email)", with an effective time after the
-   delay.
-3. During the delay, any device of the old identity sees the entry through
-   self-monitoring (e2ee.md §5.4) and raises the blocking alarm of §4. A
-   `ResetObjection` signed by the old device-signing key, or by the root opened with
-   the recovery key, cancels the reset; the cancellation is logged too. The service
-   also mails the address at start and end.
-4. After the delay, the handle, home statement and email binding move to the new
-   identity. Contacts see a key change (e2ee.md §4) labelled "reset, vouched by
-   id.nuschl.eu"; verified contacts drop to unverified and verify again.
+1. A code goes to the bound address; the new device submits a new root with it.
+2. The service publishes `reset:<old fingerprint>`: "replaced by <new fingerprint>,
+   vouched by id.nuschl.eu (email)", effective after the delay, and mails the
+   address at start and end.
+3. During the delay, the old identity's devices see the entry through self-monitoring
+   and raise the blocking alarm of e2ee.md §4. A `ResetObjection` signed by the old
+   device-signing key, or by the root opened with the recovery key, cancels the reset
+   in the log.
+4. After the delay, the username, home statement and email binding move to the new
+   identity. Contacts see a key change labelled "reset, vouched by id.nuschl.eu";
+   verified contacts drop to unverified.
 
 Signal binds an identity to a phone number. A new install re-registers with an SMS
 code, Registration Lock requires the user's PIN for that, and a new identity key
 shows contacts "safety number changed"; contacts rely on Signal's server for the
-binding until they compare safety numbers. The email reset follows that
-pattern, and the KT entry and the delay make the identity service's vouching visible
-and contestable.
+binding until they compare safety numbers. The KT entry and the delay make the
+identity service's vouching visible and contestable.
 
-### Social recovery
-
-Chosen contacts confirm a reset jointly, as an alternative to email. The shape
-matches the email reset (public entry, delay, objection) with k of n contact
-signatures in place of the code. Open question 6.
+The new identity starts with an empty history. Sticker pack versions are signed by
+the author's identity and `pack_id` derives from its fingerprint (#273), so only the
+old identity adds versions to its packs. The new identity publishes a new pack whose
+metadata says "replaces pack X"; clients show that note as unverified and leave
+installing it to the user.
 
 ## Invite tree
 
-Registration at the identity service starts by invitation, as on lobste.rs. Each
-identity records who invited it, so the identities form a tree with the service's
-first identity at the root; a moderator sees each account's inviter and can act on a
-whole branch.
+Registration at the identity service starts with an invite, as on lobste.rs. An
+invite is a single-use code signed by the inviter's device-signing key over the
+code's hash and an expiry; the invitee's first publication signs it too. Each
+identity's inviter is recorded, so the identities form one tree per identity service.
 
-- **Invites.** A registration invite is a single-use code from an identity's devices,
-  signed by its device-signing key over the code's hash and an expiry. The new
-  identity's first publication signs the code too, so the edge "A invited B" carries
-  both signatures and the service holds no edge without them.
-- **Who sees it.** A public tree, like lobste.rs's, makes spam tracing open to anyone
-  and shows everyone's social connections, which a messenger keeps private. The
-  recommendation is the moderators' view: the edges stay in the directory, outside
-  the KT log; moderators of the identity service see the tree, and each user sees
-  their own inviter and invitees. Contacts see neither.
-- **Against spam and sockpuppets.** Invites are limited per account and per period,
-  and a new account invites only after a waiting time. A moderator who finds spam or
-  sockpuppets looks at the inviter and the siblings: many reported accounts under one
-  inviter point to the inviter. Action on a branch is a moderator's decision after
-  reviewing its accounts, starting with the inviter's invite rights; whole-branch
-  bans stay rare, since honest invitees sit in the same branches.
-- **What a ban does.** The service withdraws the account's handle and invite rights
-  and stops publishing its new records. Signed revocations stay accepted, so the
-  user keeps control of their keys, and existing contacts and conversations go on.
-- **With the rest of the plan.** An email reset keeps the old identity's place in the
-  tree, since the service vouches for the reset; passkey and recovery-key recovery
-  keep the identity itself. Moving home servers leaves the tree unchanged. A
-  self-hosted identity service runs its own tree with its own first identity.
-
-**Later: public registration.** A separate phase opens registration without an
-invite, with heavier moderation: rate limits per address and network, proof of work
-or a confirmed email, and a probation period with lower limits (fewer conversations
-with strangers per day, no invites). Accounts registered this way hang under a
-"public" node of the tree, so moderators can treat them as one branch.
-
-## Sticker packs after a reset
-
-Pack versions are signed by the author's identity and the `pack_id` derives from its
-fingerprint (#273), so only the old identity adds versions to an old pack. The new
-identity publishes a new pack whose metadata says "replaces pack X". Clients show
-that note as unverified, and installing the new pack is the user's choice. Passkey and recovery-key recovery keep the identity, so their packs continue.
+- **Visibility.** The service's moderators see the tree; each user sees their own
+  inviter and invitees.
+- **Moderation.** Invites are available at once and unlimited by default. When a
+  branch spams or holds sockpuppets, a moderator cuts the tree at the abusing account:
+  that account and its subtree lose their usernames and invite rights, and the
+  service stops publishing their new records. Signed revocations stay accepted, so
+  users keep control of their keys. Moderators can limit one account's invites and
+  re-admit individual accounts of a cut subtree.
+- **Operators** (proposed, open question 1). An operator gets an operator identity
+  whose invites are unlimited, admits whoever they want, and their community is one
+  subtree that can be cut at the operator. Each home server decides which registered
+  identities it hosts.
+- **Interplay.** An email reset keeps the old place in the tree, since the service
+  vouches for it. Moving home servers leaves the tree unchanged. A self-hosted
+  identity service runs its own tree.
 
 ## When a party is malicious or gone
 
-| Party | If it disappears | If it is malicious, it can | It is limited by |
+| Party | If it disappears | If it is malicious, it can | Limited by |
 | --- | --- | --- | --- |
-| Identity service | Existing identities, contacts and conversations keep working from cached records. New devices without linking, recoveries, new lookups, handle changes and moves stop until it returns or the user switches services | Deny service; delay or omit updates; see registrations, emails, ceremony IPs and which identities are looked up; vouch for an email reset; serve a hostile ceremony page to browser users | Records, moves and bindings carry the identity's signatures; witnesses bound split views and freezes to 24 h (witness.md); backups need the PRF output or recovery key; resets are logged, delayed and objectable; native ceremonies keep the root on the device |
-| Home server | Its hosted conversations and files are gone; the user moves (above) | Deny service; drop invites; see metadata of its conversations | MLS keeps content end-to-end; a move needs the user's signature; contacts follow the signed home statement |
+| Identity service | Existing identities, contacts and conversations keep working; new registrations, recoveries, lookups and moves wait | Deny service; delay updates; see registrations, emails and lookups; vouch for an email reset; serve a hostile browser ceremony page | Signatures on every record; witnesses bound split views and freezes to 24 h; backups need the PRF output or recovery key; resets are logged, delayed and objectable |
+| Home server | The other participant's home server keeps each direct conversation; the user moves | Deny service; drop invites; see metadata | End-to-end encryption; moves need the user's signature |
 | Channel server | Its channels are gone | As in e2ee.md §2 | As in e2ee.md §2 and §5 |
-| Witness | Clients see "Automatic verification unavailable" (e2ee.md §5.9) | Cosign a split view with a colluding log | The witness set; manual verification |
-| Stolen unlocked device | — | Add devices, move the home server, object to a reset | Self-monitoring alarms on every other device; revocation and a move back |
+| Stolen unlocked device | — | Add devices, move the home server, object to a reset | Self-monitoring alarms on the other devices; revocation and a move back |
+
+## Lock-in guards
+
+- Every new record and statement uses the KT value framing of e2ee.md §5.1
+  (`uint16 format`), so later formats add without breaking proofs.
+- References to an identity carry the identity service's origin when it differs from
+  the default, so several services can coexist.
+- Lookup requests are self-contained and leave the asker anonymous, so a home server
+  can later forward them unchanged for privacy.
+- Server-side keys derive from the root seed, so every recovery path that opens the
+  root restores history.
+- Home statements carry a sequence number, so moves are ordered and replays fail.
 
 ## Bounds
 
-All numbers are proposals.
-
-- Identity record values keep the KT value limit of e2ee.md §5.1 (4096 bytes per
-  value; certificates come from the directory and match the commitment).
-- Backup blob: at most 16 KiB; at most 8 passkeys per identity.
-- Home statements: `seq` strictly increasing; one move per hour per identity.
-- Email: one bound address; codes of 8 digits valid for 15 minutes with 5 attempts;
-  one pending reset per identity; reset delay 7 days.
-- Invites: 5 per account per 30 days, available after 14 days; codes expire after
-  7 days.
-- Lookups: at most 64 labels per batch; the home server rate-limits per account and
-  the identity service per home server.
-- Inbox: invites up to the delivery service's frame limit; per-sender and
-  per-recipient quotas set by the home server.
-- Clients validate every reply against these limits before allocating, as AGENTS.md
-  requires for network input.
+Proposals: KT values at most 4096 bytes (e2ee.md §5.1); a backup blob at most
+16 KiB and 8 passkeys per identity; one move per hour; one bound email address,
+8-digit codes valid 15 minutes with 5 attempts, one pending reset per identity, a
+7-day reset delay; invite codes expire after 7 days. Clients validate every reply
+against these limits before allocating.
 
 ## Slices
 
-1. **Rename.** Record id.nuschl.eu as the rpId in the docs that name auth.nuschl.eu.
-2. **Identity service.** A `nuschl-id` role in `nuschld` with the directory, the
-   `id:` label and witness submission, a NixOS module, and the client setting with
-   id.nuschl.eu as default.
-3. **Home statements.** `Home` signing, the `home:` label, client lookup and
-   monitoring, and the move flow with successor groups.
-4. **Lookups.** The home-server proxy with batching; invites into home inboxes;
-   visiting identities admitted to conversations they hold a Welcome for.
-5. **Recovery-key login screen** (#363) against the stored `RecoveryBlob`.
-6. **Passkey backup and recovery**: native ceremonies per platform, then the browser
-   page.
-7. **Email**: binding, mail delivery, `reset:` entries, delay, objection and the
-   client's reset UI.
-8. **Stickers**: the "replaces pack X" note (#273).
-9. **Social recovery**, if the Owner chooses it.
-10. **Invite tree**: invite codes, edges, quotas and the moderators' view, with the
-    identity service (slice 2); public registration later.
+1. Identity service: a `nuschl-id` role in `nuschld` with the directory, `id:` and
+   `user:` labels, invites and the tree, witness submission, a NixOS module and the
+   client setting.
+2. Home statements, lookups, inboxes and the move flow.
+3. Direct conversations on both home servers, with root-derived server-side keys.
+4. Recovery-key login screen (#363), then passkey backup and recovery.
+5. Email binding and resets.
 
 Each slice has unit tests and loopback integration tests through `nuschl-testkit`;
-the move and reset flows also get a NixOS VM test with two home servers and an
-identity service.
+the move, restore and reset flows also get a NixOS VM test with two home servers and
+an identity service.
+
+## Later
+
+- Lookup privacy through a home-server proxy or batched queries.
+- Public registration (email maybe; no proof of work; no probation for now).
+- Social recovery: k of n chosen contacts confirm a reset, with the email reset's
+  delay and objection.
+- Moving between identity services with a signed `MovedTo` statement.
+- Reducing channel servers' `acct:` roster commitment once `id:` records exist.
 
 ## Open questions (recommended default first)
 
-1. **Hosting a direct conversation:** the initiator's home server hosts it and the
-   other side connects there as a visiting identity. Alternative: home servers relay
-   to each other, which adds server-to-server trust and protocol.
-2. **Reset delay and objection:** 7 days; any device with the device-signing key, or
-   the recovery key, can object. Alternative: a shorter delay when the identity was
-   inactive for 30 days, like Registration Lock.
-3. **Email at registration:** offered and optional. Alternative: required for
-   identities registered through id.nuschl.eu.
-4. **Handles:** optional, unique per identity service, as `handle:` labels.
-   Alternative: handles of the form `name@home-server`, which change with a move.
-5. **Lookup privacy:** the home-server proxy with batching first; private
-   information retrieval later if needed.
-6. **Social recovery:** later, after email; k of n chosen contacts, same delay and
-   objection.
-7. **Changing identity service:** a signed `MovedTo { id service }` statement in the
-   old service's log, and references that carry the new origin. Default: later; first
-   slices support one service per identity.
-8. **Channel servers' `acct:` roster commitment:** kept until the identity service's
-   `id:` record is deployed, then reduced to the root and the statement hash.
-9. **Browser ceremony on Linux desktops:** the id.nuschl.eu page as the linking device
-   until a desktop passkey API exists for that rpId.
-10. **Backup contents:** the root seed plus pins and verified contacts. Alternative:
-    the root seed only.
-11. **Invite tree visibility:** moderators of the identity service, plus each user's
-    own inviter and invitees. Alternative: public, as on lobste.rs.
-12. **Invite quotas:** 5 per account per 30 days, after 14 days of membership.
-    Moderators raise or lower them per account.
-13. **Branch actions:** reviewed per account, starting with the inviter's invite
-    rights. Alternative: automatic suspension of a branch above a report threshold.
-14. **Public registration:** later, after the invite phase, with rate limits, proof
-    of work or email, and 30 days of probation.
+1. **Invite tree and operators:** id.nuschl.eu manages the one tree; operators get
+   an operator identity with unlimited invites, so their community is one subtree;
+   each home server decides which registered identities it hosts.
+2. **Keeping both copies of a direct conversation:** the initiator's home server
+   orders commits; each sender posts its messages to both home servers; the other
+   server takes over ordering if the first disappears. History keys and the
+   device-sync key are sealed under `HKDF(root seed, "server-keys")` on each user's
+   home server.
+3. **Reset delay and objection:** 7 days; any device with the device-signing key, or
+   the recovery key, can object.
+4. **Email at registration:** offered and optional.
+5. **Usernames on a self-hosted identity service:** `name@id.example.org`, with bare
+   names meaning id.nuschl.eu.
+6. **Browser ceremony on Linux desktops:** the id.nuschl.eu page acts as the linking
+   device until a desktop passkey API exists for that rpId.
