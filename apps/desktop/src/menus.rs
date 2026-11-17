@@ -1847,6 +1847,8 @@ fn people_entries(
 struct MenuSurfaceState {
     scroll: ScrollHandle,
     focus: FocusHandle,
+    /// The focus trap's container; never focused itself.
+    trap: FocusHandle,
 }
 
 /// Every context menu shares one finite, zoom-aware scroll and focus boundary.
@@ -1867,6 +1869,7 @@ impl RenderOnce for MenuSurface {
             MenuSurfaceState {
                 scroll: ScrollHandle::new(),
                 focus,
+                trap: cx.focus_handle(),
             }
         });
         let state = state.read(cx);
@@ -1923,7 +1926,9 @@ impl RenderOnce for MenuSurface {
                                 &state.scroll,
                                 APP,
                             ))
-                            .focus_trap("context-menu-focus", &state.focus),
+                            // A handle of its own: focus_trap tracks it, and each
+                            // focused handle may be tracked once per frame.
+                            .focus_trap("context-menu-focus", &state.trap),
                     ),
                 ),
         )
