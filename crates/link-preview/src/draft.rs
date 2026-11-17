@@ -263,10 +263,12 @@ impl<K: Clone + Eq> DraftPreviews<K> {
         state.phase = match (state.phase, &state.target) {
             (phase, _) if draft.carry.is_err() || !self.enabled || state.target.is_none() => {
                 effects.extend(self.cancel_phase(&phase));
+                // Only a link that could otherwise have had a card says why
+                // it goes without one.
                 match draft.carry {
-                    Err(reason) => Phase::TextOnly(reason),
-                    Ok(()) if !self.enabled => Phase::Disabled,
-                    Ok(()) => Phase::Idle,
+                    _ if !self.enabled => Phase::Disabled,
+                    Err(reason) if state.target.is_some() => Phase::TextOnly(reason),
+                    _ => Phase::Idle,
                 }
             }
             (phase, _) if state.removed => {
@@ -1145,7 +1147,22 @@ mod tests {
             };
             assert!(previews.update(blocked, 0).is_empty());
             assert_eq!(previews.status(&1), Status::TextOnly(reason));
+            // Without a link there is nothing to explain.
+            let plain = Draft {
+                carry: Err(reason),
+                ..draft(&1, "an image", None)
+            };
+            assert!(previews.update(plain, 0).is_empty());
+            assert_eq!(previews.status(&1), Status::None);
         }
+        // With previews off, a link with an attachment says nothing either.
+        let mut off = Previews::new();
+        let blocked = Draft {
+            carry: Err(Ineligible::Attachments),
+            ..draft(&1, &text, Some(URL))
+        };
+        assert!(off.update(blocked, 0).is_empty());
+        assert_eq!(off.status(&1), Status::Disabled);
         // Adding an attachment while fetching cancels the fetch.
         let ticket = fetched(&previews.update(draft(&1, &text, Some(URL)), 0))
             .pop()
