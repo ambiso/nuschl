@@ -23,6 +23,30 @@ dialog does: two local rules that apply in the channel only, `@all` denied and
 `#<password>` granted Enter, Speak, Whisper, Text message, Link channel and
 Traverse. People with the password as an access token may enter.
 
+**Channel permissions** shows the channel's permissions as a table: rows for
+Everyone, groups and people, columns See & join (Traverse, Enter, Listen),
+Speak (Speak, Whisper), Chat (Text message), Moderate (Mute/deafen, Move) and
+Manage channel (Write ACL, Make channel, Make temporary, Link channel). A click
+on a cell cycles this channel's own setting for the row: not set, allow, deny.
+Each edit rewrites the channel's own rules in one order:
+Everyone, group denies, group allows, people; the password rules stay last. So
+a person beats their groups, groups beat Everyone, and among groups allow beats
+deny. The table reads existing rules when that order decides the same as
+theirs, as with Murmur's default root rules; otherwise it says the channel's
+rules depend on their order and leaves them to **Advanced rules**, the
+rule list the server applies top to bottom. While the table shows the channel,
+that list stays collapsed behind **Show advanced rules**. Every cell shows
+the result for a member of its row in this channel (Yes, No or Partly),
+evaluated with `nuschl_core::acl` over the channel's whole rule list. Cells set
+in this channel are solid; the others are dimmed, and hovering names what
+decided them: Mumble's default, another row, a rule in a parent channel or
+Write ACL. Hovering a Partly cell lists which permissions are allowed. So a
+click on one row shows at once which other rows it changes. **Remove** clears
+everything a row sets here.
+
+Closing the editor with unsaved changes asks first: **Save** (closes once the
+save is confirmed), **Discard** or **Keep editing**.
+
 **Check access** lists what Everyone, a member of one of the channel's groups,
 or someone online may do in the channel, and what decided each permission: a
 rule and its channel, Mumble's defaults, Write ACL, SuperUser, or a parent
@@ -140,7 +164,8 @@ local overrides, ordered user/group rules, subchannel permission denial with an
 unrelated control, dirty conflict retention, root-admin recovery of a child that
 denies Write, stale callbacks, reconnect and restart persistence, a channel
 password that admits only a client holding it as an access token, and Check
-access explaining an unsaved password.
+access explaining an unsaved password, and an access-table edit saved as a
+stock Murmur rule.
 
 The same fixture's `--geometry` mode loads 512 rules and 512 groups, checking
 pointer/keyboard endpoints, bounded instantiated rows, focus reveal and text

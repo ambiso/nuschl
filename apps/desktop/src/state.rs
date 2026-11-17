@@ -1683,8 +1683,11 @@ impl Desktop {
             if self.menu.take().is_none()
                 && self.prompt.take().is_none()
                 && self.second_server.take().is_none()
-                && self.panel.take().is_none()
             {
+                if self.panel.is_some() {
+                    crate::acl_editor::close(self);
+                    return true;
+                }
                 self.form = None;
                 if self.settings_open {
                     self.close_settings();
