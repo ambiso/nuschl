@@ -781,8 +781,8 @@ class Audit:
         self.sample("5d microphone test running")
         button("Stop test").press()
         time.sleep(2)
-        button("Done").press()
-        eventually(lambda: not any(label == "Done" for _, _, label, _ in items(nuschl)), "Settings did not close",
+        button("Close dialog").press()
+        eventually(lambda: not any(label == "Close dialog" for _, _, label, _ in items(nuschl)), "Settings did not close",
                    timeout=20)
         self.settle(minimum=15)
         self.sample("5e Settings closed")

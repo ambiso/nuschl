@@ -481,8 +481,8 @@ def actions(args, root, shell, application, bot, murmur):
 
     open_acl()
     stale_save = wait("Save permissions", "push button")
-    stale_close = wait("Done", "push button")
-    activate("Done")
+    stale_close = wait("Close dialog", "push button")
+    activate("Close dialog")
     open_acl()
     try:
         accepted = stale_save.call("Action", "DoAction", "i", "0")[0]
@@ -518,7 +518,7 @@ def actions(args, root, shell, application, bot, murmur):
         admin.close()
     mark("native_root_group_and_offline_member_saved")
     shell.screenshot(args.output / "native-root-group.png")
-    activate("Done")
+    activate("Close dialog")
     open_acl("Lobby")
     activate("@native-team · inherited")
     type_field("Registered group member", f"#{IDS['offline']}")
@@ -672,7 +672,7 @@ def actions(args, root, shell, application, bot, murmur):
         ),
         "explicit ACL reload did not discard the draft",
     )
-    activate("Done")
+    activate("Close dialog")
     # The menu may not offer ordinary channel editing, but root administrators
     # retain the separate Edit permissions action and can remove the denial.
     open_acl("Lobby")
@@ -685,7 +685,7 @@ def actions(args, root, shell, application, bot, murmur):
     finally:
         admin.close()
     mark("dirty_conflict_retained_and_root_admin_recovers_denied_child_acl")
-    activate("Done")
+    activate("Close dialog")
     open_acl()
     type_field("New group name", "unsaved-draft")
     activate("Create group")
@@ -730,14 +730,14 @@ def actions(args, root, shell, application, bot, murmur):
     mark("rules_persist_and_unsent_draft_absent_after_restart")
     if args.reconnect_settle:
         time.sleep(args.reconnect_settle)
-    activate("Done")
+    activate("Close dialog")
     open_acl()
     save()
     mark("fresh_editor_after_reconnect")
     # A channel password is stored as Mumble's channel dialog stores it: @all is
     # denied Enter, Speak, Whisper, Text message, Link channel and Traverse here,
     # and the #token group is granted them.
-    activate("Done")
+    activate("Close dialog")
     open_acl("Lobby")
     type_field("New channel password", "door-code")
     activate("Set password")
@@ -809,7 +809,7 @@ def actions(args, root, shell, application, bot, murmur):
     mark("check_access_explains_the_draft")
     # The permission table writes its rules: denying Registered users Speak in Music
     # saves one rule for @auth, applying here and below.
-    activate("Done")
+    activate("Close dialog")
     open_acl("Music")
     eventually(lambda: text_contains("Channel permissions"), "access table missing")
     # Registered users inherit Make temporary from Root, so their row is there.
@@ -840,7 +840,7 @@ def actions(args, root, shell, application, bot, murmur):
     type_field("Add a row", "native")
     shell.key("Return")
     matching("@native-team · Speak: ")
-    activate("Done")
+    activate("Close dialog")
     eventually(lambda: text_contains("Save your changes?"), "closing did not ask")
     activate("Discard")
     eventually(lambda: not text_contains("Channel permissions"), "Discard kept the editor open")
@@ -863,7 +863,7 @@ def actions(args, root, shell, application, bot, murmur):
     wait("@admin · Manage channel: Yes, set here", "push button")
     time.sleep(0.3)
     shell.screenshot(args.output / "native-access-jump.png")
-    activate("Done")
+    activate("Close dialog")
     mark("inherited_value_shows_its_channel")
     return {
         "fresh_offline_lookup": True,

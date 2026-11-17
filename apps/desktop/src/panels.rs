@@ -79,37 +79,6 @@ impl Panel {
     }
 }
 
-fn heading(title: String, acl_token: Option<u64>, cx: &mut Context<Desktop>) -> AnyElement {
-    div()
-        .p_6()
-        .pb_4()
-        .flex()
-        .items_center()
-        .gap_3()
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_xl()
-                .font_weight(FontWeight::BOLD)
-                .child(text!(title).with_id("panel-title")),
-        )
-        .child(styled_button(
-            SharedString::from(acl_token.map(|token|format!("acl-close-{token}")).unwrap_or_else(||"panel-done".into())),
-            "Done",
-            Tone::Primary,
-            move |this, _, cx| {
-                if acl_token.is_none() || matches!(this.panel.as_ref(),Some(Panel::Acl {editor,..}) if Some(editor.token)==acl_token) {
-                    crate::acl_editor::close(this);
-                    cx.notify();
-                }
-            },
-            cx,
-        ))
-        .into_any_element()
-}
-
 fn row(label: &'static str, value: String, index: usize) -> AnyElement {
     div()
         .flex()
@@ -794,27 +763,29 @@ pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
             (format!("Edit {}", channel_name(view, *channel)), 520., body)
         }
     };
-    let content = div()
-        .flex()
-        .flex_col()
-        .child(heading(
-            title,
-            match panel {
-                Panel::Acl { editor, .. } => Some(editor.token),
-                _ => None,
-            },
-            cx,
-        ))
-        .child(body)
-        .into_any_element();
+    // An editor's close acts on that editor only.
+    let token = match panel {
+        Panel::Acl { editor, .. } => editor.token,
+        _ => 0,
+    };
     Some(modal(
         this,
         "panel",
         "Details",
+        title,
+        token,
         width,
-        content,
+        body,
         cx,
-        crate::acl_editor::close,
+        move |this| {
+            let current = match this.panel.as_ref() {
+                Some(Panel::Acl { editor, .. }) => editor.token,
+                _ => 0,
+            };
+            if current == token {
+                crate::acl_editor::close(this);
+            }
+        },
     ))
 }
 

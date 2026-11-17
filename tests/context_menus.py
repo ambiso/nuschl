@@ -318,7 +318,7 @@ def actions(args, root, shell, application, bot, murmur):
             lambda: named("Details", "dialog"), "profile dialog missing"
         )
         eventually(
-            lambda: named("Done", "push button", dialog), "profile Done missing"
+            lambda: named("Close dialog", "push button", dialog), "profile Done missing"
         ).press()
         eventually(
             lambda: named("Details", "dialog") is None, "profile remained after Done"

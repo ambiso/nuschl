@@ -474,8 +474,8 @@ class AccessibilityTest:
         time.sleep(1)
         assert not any(role == "dialog" and name == "Add or connect to a Mumble server"
                        for _, _, role, name in snapshot(nuschl)), "Server settings acted behind Settings"
-        self.find(snapshot(nuschl), "push button", "Done").call("Action", "DoAction", "i", "0")
-        eventually(lambda: not any(name == "Done" for _, _, _, name in snapshot(nuschl)),
+        self.find(snapshot(nuschl), "push button", "Close dialog").call("Action", "DoAction", "i", "0")
+        eventually(lambda: not any(name == "Close dialog" for _, _, _, name in snapshot(nuschl)),
                    "Settings did not close", timeout=10)
         print("Settings: every shortcut row has a named Record button; recording is announced as a status.",
               flush=True)
@@ -508,12 +508,12 @@ class AccessibilityTest:
             eventually(in_prompt, "Shift+Tab took the focus out of the prompt", timeout=10)
         self.check_single_focus()
         # Settings' Done is behind the prompt.
-        named("push button", "Done").press()
+        named("push button", "Close dialog").press()
         time.sleep(1)
         assert named("dialog", "Settings"), "Done acted behind the prompt"
         self.find(prompt(), "push button", "Cancel").press()
         eventually(lambda: not named("dialog", "Input"), "Cancel did not close the prompt", timeout=10)
-        named("push button", "Done").press()
+        named("push button", "Close dialog").press()
         eventually(lambda: not named("dialog", "Settings"), "Done did not close Settings", timeout=10)
         print("A prompt over Settings kept the focus and the presses.", flush=True)
 

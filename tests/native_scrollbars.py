@@ -261,7 +261,7 @@ def actions(args, root, shell, application, bot, _murmur):
         shell.type("selected-by-pointer")
         eventually(lambda: input_value(field, f"selected-input-{zoom}") == "selected-by-pointer",
                    "canvas intercepted input text selection")
-        done = wait("Done", "push button")
+        done = wait("Close dialog", "push button")
         focus(done, dialog)
         # The outer bar remains painted after its content has moved.
         record["dialog"] = bar(dialog, zoom, "modal-end")
@@ -291,7 +291,7 @@ def actions(args, root, shell, application, bot, _murmur):
     assert fonts.extents() == before, "font gutter wheel escaped into the dialog"
     records.append({"settings_fonts": font_bar, "settings": bar(dialog, 100, "settings"),
                     "font_gutter_wheel_isolated": True})
-    done = wait("Done", "push button")
+    done = wait("Close dialog", "push button")
     focus(done, dialog)
     shell.click(*point(done))
     eventually(lambda: not named("Settings", "dialog"), "Settings did not close")

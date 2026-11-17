@@ -1403,30 +1403,6 @@ pub fn dialog(
         .flex_col()
         .child(
             div()
-                .p_6()
-                .pb_4()
-                .flex()
-                .items_center()
-                .child(
-                    div()
-                        .flex_1()
-                        .text_xl()
-                        .font_weight(FontWeight::BOLD)
-                        .child(text!("Settings").with_id("settings-heading")),
-                )
-                .child(styled_button(
-                    "close-settings",
-                    "Done",
-                    Tone::Primary,
-                    |this, _, cx| {
-                        this.close_settings();
-                        cx.notify();
-                    },
-                    cx,
-                )),
-        )
-        .child(
-            div()
                 .px_6()
                 .pb_6()
                 .flex()
@@ -1456,6 +1432,8 @@ pub fn dialog(
         this,
         "settings-dialog",
         "Settings",
+        "Settings",
+        0,
         560.,
         content,
         cx,

@@ -2185,17 +2185,11 @@ pub fn prompt(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
         .flex_col()
         .child(
             div()
-                .p_6()
+                .px_6()
                 .pb_4()
                 .flex()
                 .flex_col()
                 .gap_2()
-                .child(
-                    div()
-                        .text_xl()
-                        .font_weight(FontWeight::BOLD)
-                        .child(text!(prompt.title.clone()).with_id("prompt-title")),
-                )
                 .child(
                     div()
                         .text_sm()
@@ -2262,6 +2256,8 @@ pub fn prompt(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
         this,
         "prompt-dialog",
         if confirm_only { "Confirm" } else { "Input" },
+        prompt.title.clone(),
+        0,
         460.,
         content,
         cx,

@@ -422,26 +422,33 @@ pub fn scrollable(id: &'static str, label: &'static str, handle: ScrollHandle) -
             .absolute()
             .size(px(0.)),
         )
-        .on_key_down(move |event, window, cx| {
-            if event.keystroke.modifiers.modified() {
-                return;
-            }
-            let mut offset = keys.offset();
-            let page = keys.bounds().size.height * 0.85;
-            offset.y = match event.keystroke.key.as_str() {
-                "down" => offset.y - window.rem_size() * 2.,
-                "up" => offset.y + window.rem_size() * 2.,
-                "pagedown" => offset.y - page,
-                "pageup" => offset.y + page,
-                "home" => px(0.),
-                "end" => -keys.max_offset().y,
-                _ => return,
-            }
-            .clamp(-keys.max_offset().y, px(0.));
-            keys.set_offset(offset);
-            window.refresh();
-            cx.stop_propagation();
-        })
+        .on_key_down(scroll_keys(keys))
+}
+
+/// Arrow, Page and Home/End keys scroll `handle`'s region.
+pub fn scroll_keys(
+    handle: ScrollHandle,
+) -> impl Fn(&KeyDownEvent, &mut Window, &mut App) + 'static {
+    move |event, window, cx| {
+        if event.keystroke.modifiers.modified() {
+            return;
+        }
+        let mut offset = handle.offset();
+        let page = handle.bounds().size.height * 0.85;
+        offset.y = match event.keystroke.key.as_str() {
+            "down" => offset.y - window.rem_size() * 2.,
+            "up" => offset.y + window.rem_size() * 2.,
+            "pagedown" => offset.y - page,
+            "pageup" => offset.y + page,
+            "home" => px(0.),
+            "end" => -handle.max_offset().y,
+            _ => return,
+        }
+        .clamp(-handle.max_offset().y, px(0.));
+        handle.set_offset(offset);
+        window.refresh();
+        cx.stop_propagation();
+    }
 }
 
 /// One height budget for the entire notice stack, in zoom-aware logical pixels.

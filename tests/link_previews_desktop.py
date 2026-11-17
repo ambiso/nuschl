@@ -428,7 +428,7 @@ def desktop(args):
                     and (expected_error is None or expected_error in labels()))
             eventually(applied, f"{mode} preference did not complete with active policy {active}")
             last_policy_labels[:] = [f"selected: {active}"]
-            activate("Done")
+            activate("Close dialog")
         def events():
             snapshot = control("snapshot")
             assert not snapshot["overrun"]
@@ -835,8 +835,8 @@ def desktop(args):
             assert receiver.users[own["session"]]["channel"] == voice_channel
             assert all(event["user"]["channel"] == voice_channel for event in list(receiver.events)[voice_start:]
                 if event.get("kind") == "user" and event["user"]["session"] == own["session"])
-            activate("Close channels")
-            eventually(lambda: named("Channels and servers", "dialog") is None, "Close channels kept the sheet open")
+            activate("Close dialog")
+            eventually(lambda: named("Channels and servers", "dialog") is None, "Close dialog kept the sheet open")
             wait("Messages in #Lobby", "list")
             activate("Channels")
             wait("Channels and servers", "dialog")
@@ -847,7 +847,7 @@ def desktop(args):
             assert root_channel.call("Component", "GrabFocus")[0]
             root_channel.press()
             wait("Messages in #Root", "list")
-            activate("Close channels")
+            activate("Close dialog")
             eventually(lambda: named("Channels and servers", "dialog") is None, "returning to Root kept the sheet open")
             assert copied_input(select_all=True) == compact_body, "returning to Root changed the retained draft"
             eventually(ready_card, "returning to Root did not restore the ready preview")
