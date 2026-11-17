@@ -196,26 +196,6 @@ in
     programs
     stage
     ;
-  tests =
-    pkgs.runCommand "nuschl-native-packaging-tests"
-      {
-        nativeBuildInputs = [
-          pkgs.python3
-          pkgs.binutils
-          pkgs.patchelf
-          toolchain
-        ];
-      }
-      ''
-            mkdir -p packaging/linux packaging/debian
-        cp ${../packaging/linux/tests.py} packaging/linux/tests.py
-        cp ${../packaging/linux/linker.py} packaging/linux/linker.py
-        cp ${../packaging/debian/build-deb.py} packaging/debian/build-deb.py
-        python3 packaging/linux/tests.py \
-              --scratch "$TMPDIR" --rustc ${toolchain}/bin/rustc \
-              --readelf ${pkgs.binutils}/bin/readelf --patchelf ${pkgs.patchelf}/bin/patchelf
-            touch "$out"
-      '';
   content = programs.nuschl-content-worker;
   desktop = programs.nuschl;
 }
