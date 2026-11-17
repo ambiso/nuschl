@@ -766,7 +766,7 @@ fn sidebar(
         .map(|(index, channel)| {
             let id = channel.id;
             let selected = index == selected_channel;
-            div()
+            let row = div()
                 .id(("direct-row", id as usize))
                 .role(Role::TreeItem)
                 .tab_index(0)
@@ -799,8 +799,22 @@ fn sidebar(
                         })
                         .child(channel.name.trim_start_matches("@ ").to_string()),
                 )
-                .children(unread_badge(channel))
-                .into_any_element()
+                .children(unread_badge(channel));
+            layout::focusable_button(
+                ("direct-row", id as usize),
+                row,
+                dialogs::accessible_click(
+                    Rc::new(
+                        move |this: &mut Desktop,
+                              window: &mut Window,
+                              cx: &mut Context<Desktop>| {
+                            this.browse_channel(server_index, id, window, cx);
+                            cx.notify();
+                        },
+                    ),
+                    cx,
+                ),
+            )
         })
         .collect::<Vec<_>>();
     div()
@@ -1089,7 +1103,7 @@ fn channel_row(
     let full_name = entry.name.clone();
     let unread_count = unread.map_or(entry.unread, |unread| unread.count);
     let mention = unread.map_or(entry.unread_mention, |unread| unread.mention);
-    div()
+    let row = div()
         .id(("channel-row", id as usize))
         .role(Role::TreeItem)
         .tab_index(0)
@@ -1273,8 +1287,20 @@ fn channel_row(
                     .child(icon("user", 12., color(shade)))
                     .child(text!(hidden_users.to_string()).with_id(("member-count-text", index))),
             )
-        })
-        .into_any_element()
+        });
+    layout::focusable_button(
+        ("channel-row", id as usize),
+        row,
+        dialogs::accessible_click(
+            Rc::new(
+                move |this: &mut Desktop, window: &mut Window, cx: &mut Context<Desktop>| {
+                    this.browse_channel(server_index, id, window, cx);
+                    cx.notify();
+                },
+            ),
+            cx,
+        ),
+    )
 }
 
 /// People sit under their channel's name, further in than its sub-channels'
