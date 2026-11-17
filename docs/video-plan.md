@@ -269,7 +269,7 @@ encoder offers them, spatial layers.
   issued by the SFU after admission, per-allocation `max-bps` at the tier cap
   plus 20 %.
 - Headers (CSP, COOP/COEP, Permissions-Policy denying WebAuthn) live in
-  `nix/stream-module.nix` (#227). The passkey rpId is auth.nuschl.eu (Owner).
+  `nix/stream-module.nix` (#227). The passkey rpId is id.nuschl.eu (Owner).
 - Project caps: §2 and §5.2, 4 h room lifetime, limited room creations per IP
   (IPv6 per /64). Operators self-host with the same NixOS module.
 - The stream host learns IP addresses, timing, room ids, participant counts and
@@ -318,7 +318,7 @@ Murmur 1.4 and 1.5 with a stock Mumble client, and relay-only by packet capture.
 - Relay-only users are always relayed, in a browser through TURN.
 - libcrux with hpke-rs for the X-Wing HPKE-PSK exchange on both targets.
 - Key messages ≤16 KiB, credentials by fingerprint and cached.
-- Domains: stream.nuschl.eu, turn.nuschl.eu, auth.nuschl.eu as the passkey rpId.
+- Domains: stream.nuschl.eu, turn.nuschl.eu, id.nuschl.eu as the passkey rpId.
 
 **Open, with the recommended default:**
 1. **Call model:** one call per channel with camera and screen as sources (§2).
