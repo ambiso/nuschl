@@ -61,7 +61,7 @@ mod windows {
         math::{MathRequest, MathResponse},
         write_frame,
     };
-    use nuschl_sandbox::{Containment, Role, command, contain};
+    use nuschl_sandbox::{Containment, Role, command, contain, windows_policy::IN_JOB};
     use serde_json::{Value, json};
     use tokio::{
         io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader},
@@ -626,6 +626,10 @@ mod windows {
         let _containment = contain(&child).map_err(|error| error.to_string())?;
         let mut input = child.stdin.take().ok_or("no stdin")?;
         input
+            .write_all(&[IN_JOB])
+            .await
+            .map_err(|error| error.to_string())?;
+        input
             .write_all(format!("{request}\n").as_bytes())
             .await
             .map_err(|error| error.to_string())?;
@@ -643,8 +647,8 @@ mod windows {
 
     // ------------------------------------------------------ the real workers
 
-    fn spawn(mut command: Command) -> Result<(Child, Containment), String> {
-        let child = command
+    async fn spawn(mut command: Command) -> Result<(Child, Containment), String> {
+        let mut child = command
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit())
@@ -652,6 +656,11 @@ mod windows {
             .spawn()
             .map_err(|error| format!("spawn: {error}"))?;
         let containment = contain(&child).map_err(|error| error.to_string())?;
+        let input = child.stdin.as_mut().ok_or("no stdin")?;
+        input
+            .write_all(&[IN_JOB])
+            .await
+            .map_err(|error| error.to_string())?;
         Ok((child, containment))
     }
 
@@ -712,7 +721,7 @@ mod windows {
         if wanted("math") {
             let rendered = async {
                 let command = command(&worker("math"), Role::Math).map_err(|e| e.to_string())?;
-                let (mut child, _containment) = spawn(command)?;
+                let (mut child, _containment) = spawn(command).await?;
                 let request = MathRequest {
                     tex: r"\frac{a}{b} + \sqrt{x^2}".into(),
                     display: false,
@@ -752,7 +761,7 @@ mod windows {
                 directory: &history,
             };
             let command = command(&worker("storage"), role).map_err(|e| e.to_string())?;
-            let (mut child, _containment) = spawn(command)?;
+            let (mut child, _containment) = spawn(command).await?;
             let message = nuschl_core::ChatMessage {
                 server: "vm".into(),
                 channel: "Root".into(),
@@ -798,7 +807,7 @@ mod windows {
         let identity = async {
             let role = Role::Crypto { directory: &keys };
             let command = command(&worker("crypto"), role).map_err(|e| e.to_string())?;
-            let (mut child, _containment) = spawn(command)?;
+            let (mut child, _containment) = spawn(command).await?;
             send(
                 &mut child,
                 1,
@@ -824,7 +833,7 @@ mod windows {
 
         let media = async {
             let command = command(&worker("media"), Role::Media).map_err(|e| e.to_string())?;
-            let (mut child, _containment) = spawn(command)?;
+            let (mut child, _containment) = spawn(command).await?;
             send(
                 &mut child,
                 0,
@@ -872,7 +881,7 @@ mod windows {
                 file: Some(offered),
             };
             let command = command(&worker("transfer"), role).map_err(|e| e.to_string())?;
-            let (mut child, _containment) = spawn(command)?;
+            let (mut child, _containment) = spawn(command).await?;
             send(
                 &mut child,
                 1,
@@ -915,7 +924,7 @@ mod windows {
             use base64::Engine as _;
             let role = Role::Transfer { file: None };
             let command = command(&worker("transfer"), role).map_err(|e| e.to_string())?;
-            let (mut child, _containment) = spawn(command)?;
+            let (mut child, _containment) = spawn(command).await?;
             send(
                 &mut child,
                 1,

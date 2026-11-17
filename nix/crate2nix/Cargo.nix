@@ -24595,7 +24595,7 @@ rec {
           {
             name = "tokio";
             packageId = "tokio";
-            features = [ "process" "time" ];
+            features = [ "io-util" "process" "time" ];
           }
           {
             name = "win32job";
