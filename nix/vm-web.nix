@@ -2,8 +2,9 @@
 # share-link landing page and the app-link files, and the tunnel relay behind it.
 # A client without a browser logs in to a stock Murmur through the relay (TLS on
 # the client, as the web client will do in WebAssembly), the packaged web app in
-# headless Chromium joins voice by double-click and connects its saved servers on
-# load, and what the relay must refuse is refused. No ACME in the VM: plain HTTP.
+# headless Chromium joins voice by double-click, connects its saved servers on
+# load and counts the people inside a collapsed channel, and what the relay must
+# refuse is refused. No ACME in the VM: plain HTTP.
 {
   pkgs,
   relay,
@@ -48,6 +49,9 @@ pkgs.testers.runNixOSTest {
           enable = true;
           openFirewall = true;
           welcometext = "Welcome through the relay";
+          # Every client reaches Murmur from the relay's one address; the browser
+          # steps open more connections than the default autoban allows.
+          autobanAttempts = 0;
         };
         environment.systemPackages = [ pkgs.sqlite ];
         # Another TCP service on a port the relay would forward to: not Mumble.
@@ -72,6 +76,7 @@ pkgs.testers.runNixOSTest {
           NUSCHL_PLAYWRIGHT = "${pkgs.playwright-driver}/index.mjs";
           NUSCHL_CHROMIUM = "${pkgs.chromium}/bin/chromium";
         };
+        fonts.packages = [ pkgs.dejavu_fonts ];
         virtualisation.memorySize = 2048;
       };
   };
@@ -90,7 +95,7 @@ pkgs.testers.runNixOSTest {
     murmur.succeed(
         "systemctl stop murmur",
         "sqlite3 /var/lib/murmur/murmur.sqlite \"INSERT INTO channels (server_id, channel_id, parent_id, name, inheritacl)"
-        " VALUES (1, 1, 0, 'Lobby', 1), (1, 2, 0, 'Music', 1), (1, 3, 0, 'AFK', 1)\"",
+        " VALUES (1, 1, 0, 'Lobby', 1), (1, 2, 0, 'Music', 1), (1, 3, 0, 'AFK', 1), (1, 4, 1, 'Games', 1)\"",
         "systemctl start murmur",
     )
     murmur.wait_for_open_port(64738)
@@ -150,5 +155,10 @@ pkgs.testers.runNixOSTest {
     assert "TLS" in out or "NotMumble" in out, out
     # The kernel refuses loopback to the relay as well (IPAddressDeny).
     web.succeed("systemctl show nuschl-web-relay -p IPAddressDeny | grep -q 127.0.0.0/8")
+
+    # The app's collapsed Lobby counts bob in Games below it (#451).
+    client.succeed("mkdir -p /tmp/shots")
+    print(client.succeed("node ${../tests/web_tree.browser.mjs} ${pkgs.chromium}/bin/chromium ${pkgs.playwright-driver} /tmp/shots"))
+    client.copy_from_machine("/tmp/shots", "screenshots")
   '';
 }

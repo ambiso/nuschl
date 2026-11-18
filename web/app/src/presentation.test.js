@@ -9,6 +9,21 @@ test("channel navigation preserves tree and only opens root initially", () => {
  const cycle = [{id:1,parent:2},{id:2,parent:1}];
  assert.ok(channelRows(cycle,new Map([["s:1",true],["s:2",true]]),"s").length<=2);
 });
+test("a collapsed channel counts the people in its hidden subchannels",()=>{
+  // Root 0 > Lobby 1 > Games 2 > Quiet 3, and Root > Music 4.
+  const channels=[{id:0,parent:null,name:"Root"},{id:1,parent:0,name:"Lobby"},{id:2,parent:1,name:"Games"},{id:3,parent:2,name:"Quiet"},{id:4,parent:0,name:"Music"}];
+  const users=[{channel:1},{channel:2},{channel:3,talking:true},{channel:3},{channel:4}];
+  const counts=open=>channelRows(channels,new Map(open.map(id=>[`s:${id}`,true])),"s",users)
+    .map(({id,open,hiddenUsers,hiddenTalking})=>[id,open?"open":hiddenUsers,hiddenTalking??null]);
+  // Lobby collapsed: Games and Quiet below it; Lobby's own person is shown as a row.
+  assert.deepEqual(counts([]),[[0,"open",null],[1,3,true],[4,0,false]]);
+  // Lobby open, Games collapsed: only Quiet is hidden.
+  assert.deepEqual(counts([1]),[[0,"open",null],[1,"open",null],[2,2,true],[4,0,false]]);
+  assert.deepEqual(counts([1,2]),[[0,"open",null],[1,"open",null],[2,"open",null],[3,0,false],[4,0,false]]);
+  // The root collapsed holds everyone below it; nobody talks once Quiet is silent.
+  assert.deepEqual(channelRows(channels,new Map([["s:0",false]]),"s",users.map(({channel})=>({channel})))
+    .map(({hiddenUsers,hiddenTalking})=>[hiddenUsers,hiddenTalking]),[[5,false]]);
+});
 test("preview preserves blank lines/Unicode and full expansion never edits source", () => {
  const text="👋\n\n"+"line\n".repeat(20);
  const document={blocks:[{kind:"text",text}]};
