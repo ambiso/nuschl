@@ -843,7 +843,9 @@ def desktop(args):
             shell.key("Escape")
             eventually(lambda: named("Channels and servers", "dialog") is None, "Escape kept the sheet open")
             activate("Channels")
-            root_channel = reveal_channel("Root")
+            wait("Channels and servers", "dialog")
+            # A screen reader presses a row wherever the sheet has scrolled it.
+            root_channel = wait("Root", "tree item")
             assert root_channel.call("Component", "GrabFocus")[0]
             root_channel.press()
             wait("Messages in #Root", "list")

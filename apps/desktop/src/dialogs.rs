@@ -23,12 +23,12 @@ fn activation(event: &KeyDownEvent) -> bool {
     event.keystroke.key == "enter" || event.keystroke.key == "space"
 }
 
-/// Assistive technology activates a button by running its action. The
+/// Assistive technology activates a button or row by running its action. The
 /// built-in fallback clicks the node's centre instead, which misses (or hits
-/// another control) while a scroll region clips the button. As for keys
-/// (`keep_dialog_focus`) and the pointer (the backdrop), only controls inside
-/// the dialog in front act.
-fn accessible_click<F>(
+/// another control, such as a dialog's backdrop) while a scroll region clips
+/// the control. As for keys (`keep_dialog_focus`) and the pointer (the
+/// backdrop), only controls inside the dialog in front act.
+pub fn accessible_click<F>(
     action: Rc<F>,
     cx: &mut Context<Desktop>,
 ) -> impl Fn(&FocusHandle, &mut Window, &mut App) + 'static
