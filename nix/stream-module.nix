@@ -53,14 +53,16 @@ let
     "frame-ancestors 'none'"
     "require-trusted-types-for 'script'"
   ];
-  # No identity code runs here, so passkeys are denied too.
-  headers = ''
+  # No identity code runs here, so passkeys are denied too. The call page alone
+  # may ask for the camera and screen; nginx drops inherited add_header lines in a
+  # block with its own, so /call repeats the full set.
+  headers = capture: ''
     add_header Content-Security-Policy "${csp}" always;
     add_header Cross-Origin-Opener-Policy same-origin always;
     add_header Cross-Origin-Embedder-Policy require-corp always;
     add_header Cross-Origin-Resource-Policy same-origin always;
     add_header Origin-Agent-Cluster "?1" always;
-    add_header Permissions-Policy "display-capture=(), camera=(), microphone=(), geolocation=(), publickey-credentials-get=(), publickey-credentials-create=()" always;
+    add_header Permissions-Policy "display-capture=${capture}, camera=${capture}, microphone=(), geolocation=(), publickey-credentials-get=(), publickey-credentials-create=()" always;
     add_header Referrer-Policy no-referrer always;
     add_header X-Content-Type-Options nosniff always;
     ${lib.optionalString cfg.forceSSL ''add_header Strict-Transport-Security "max-age=31536000" always;''}
@@ -190,7 +192,7 @@ in
         root = cfg.site;
         extraConfig = ''
           access_log off;
-          ${headers}
+          ${headers "()"}
         '';
         locations =
           (
@@ -199,7 +201,10 @@ in
             else
               {
                 "/".tryFiles = "$uri =404";
-                "= /call".tryFiles = "/call.html =404";
+                "= /call" = {
+                  tryFiles = "/call.html =404";
+                  extraConfig = headers "(self)";
+                };
               }
           )
           // lib.optionalAttrs cfg.sfu.enable {

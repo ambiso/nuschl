@@ -29,7 +29,13 @@
       <ul id="roster"></ul>
     </aside>
     <footer>
-      <div id="controls"></div>
+      <div id="controls">
+        <button type="button" id="camera" aria-pressed="false" disabled>Start camera</button>
+        <select id="camera-quality" aria-label="Camera quality"></select>
+        <button type="button" id="screen" aria-pressed="false" disabled>Share screen</button>
+        <select id="screen-quality" aria-label="Screen quality"></select>
+        <span id="notice" role="status" hidden></span>
+      </div>
       <div id="host-actions" hidden>
         <button type="button" id="end-call">End call</button>
       </div>

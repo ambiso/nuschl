@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 // The call view: a grid of camera tiles, a large view for a shared screen or a
 // pinned camera, the roster and the host's actions. DOM nodes only, no markup
-// strings (the stream host requires Trusted Types). B1 adds Start camera and Share
-// screen to `#controls`.
+// strings (the stream host requires Trusted Types). This page's own sources show as
+// tiles too; `controls.js` starts and stops them.
 
 const endings = {
   transforms: ["Browser not supported", "Use a current Firefox or Chromium."],
@@ -27,8 +27,11 @@ const element = (document, name, attributes = {}, ...children) => {
   return node;
 };
 
+const pin = (track) => `${track.peer}/${track.screen ? "screen" : "camera"}`;
+
 export class View {
-  /** The pinned camera's mid. */
+  /** The pinned source, "peer/camera" or "peer/screen": it keeps its place when its
+   * publisher restarts the encoder on a new media section. */
   pinned = null;
   /** A tile per video track mid, kept while the track lasts. */
   tiles = new Map();
@@ -73,11 +76,18 @@ export class View {
     if (call.relay) values.push("Relay only");
     status.textContent = values.join(" · ");
 
-    // Tiles: one per video track; the large view holds the pinned camera or a screen.
-    const videos = [...call.tracks].filter(([, track]) => track.kind === "video");
-    for (const [mid, tile] of this.tiles) if (!call.tracks.has(mid)) { tile.remove(); this.tiles.delete(mid); }
-    if (!call.tracks.has(this.pinned)) this.pinned = null;
-    const featured = this.pinned ?? videos.find(([, track]) => track.screen)?.[0] ?? null;
+    // Tiles: one per video track and per own source; the large view holds the pinned
+    // tile or someone else's screen.
+    const own = [...call.sources].map(([kind, source]) => [
+      `own:${source.track.id}`,
+      { peer: call.self, screen: kind === "screen", stream: source.stream, own: true },
+    ]);
+    const videos = [...call.tracks].filter(([, track]) => track.kind === "video").concat(own);
+    const shown = new Set(videos.map(([key]) => key));
+    for (const [key, tile] of this.tiles) if (!shown.has(key)) { tile.remove(); this.tiles.delete(key); }
+    // A pin stays while its source is away, as during an encoder restart.
+    const pinned = videos.find(([, track]) => pin(track) === this.pinned)?.[0];
+    const featured = pinned ?? videos.find(([, track]) => track.screen && !track.own)?.[0] ?? null;
     for (const [mid, track] of videos) {
       const tile = this.tiles.get(mid) ?? this.tile(mid, track);
       const parent = mid === featured ? large : grid;
@@ -85,7 +95,7 @@ export class View {
         parent.append(tile);
         tile.querySelector("video").play().catch(() => {});
       }
-      tile.querySelector("button").setAttribute("aria-pressed", String(mid === this.pinned));
+      tile.querySelector("button").setAttribute("aria-pressed", String(mid === pinned));
     }
     large.hidden = featured === null;
     empty.hidden = videos.length > 0;
@@ -102,23 +112,26 @@ export class View {
     video.muted = true;
     video.srcObject = track.stream;
     const label = track.screen ? `${this.name(track.peer)} · Screen` : this.name(track.peer);
-    const pin = element(this.document, "button", { type: "button", class: "pin", "aria-pressed": "false" }, "Pin");
-    pin.setAttribute("aria-label", `Pin ${label}`);
-    pin.addEventListener("click", () => {
-      this.pinned = this.pinned === mid ? null : mid;
+    const toggle = element(this.document, "button", { type: "button", class: "pin", "aria-pressed": "false" }, "Pin");
+    toggle.setAttribute("aria-label", `Pin ${label}`);
+    toggle.addEventListener("click", () => {
+      this.pinned = this.pinned === pin(track) ? null : pin(track);
       this.render();
     });
     const tile = element(this.document, "figure", { class: "tile", "data-state": "waiting", "data-peer": String(track.peer) },
-      video, element(this.document, "figcaption", {}, label), pin);
+      video, element(this.document, "figcaption", {}, label), toggle);
     if (track.screen) tile.dataset.screen = "";
+    if (track.own) tile.dataset.own = "";
     video.addEventListener("loadeddata", () => { tile.dataset.state = "playing"; });
     this.tiles.set(mid, tile);
     return tile;
   }
 
   person(id, role) {
+    const own = id === this.call.self ? [...this.call.sources.keys()].map((kind) => ({ screen: kind === "screen" })) : [];
     const sources = [...this.call.tracks.values()]
       .filter((track) => track.peer === id && track.kind === "video")
+      .concat(own)
       .map((track) => (track.screen ? "Screen" : "Camera"));
     const item = element(this.document, "li", {}, element(this.document, "span", { class: "name" }, this.name(id)));
     if (role === "host") item.append(element(this.document, "span", { class: "tag" }, "Host"));

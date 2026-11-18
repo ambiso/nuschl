@@ -212,7 +212,8 @@ pkgs.testers.runNixOSTest {
               return out
 
           call = head("/call")
-          assert call.startswith("http/1.1 200") and "display-capture=()" in call
+          assert call.startswith("http/1.1 200") and "display-capture=(self), camera=(self), microphone=()" in call
+          assert "display-capture=(), camera=()" in head("/app.js")
           assert head("/app.js").startswith("http/1.1 200")
           for missing in ["/", "/missing"]:
               assert head(missing).startswith("http/1.1 404"), missing
