@@ -120,8 +120,8 @@ advisories against the same packages are still checked.
 
 Revisit the corresponding entries whenever GPUI Kit or Syntect is upgraded. Do not
 add a workspace-direct dependency on these packages to exploit a transitive allowance.
-The release process also needs a third-party notice inventory; cargo-deny alone does
-not establish fulfillment of attribution or copyleft conditions.
+cargo-deny checks the license policy; the release notices, built with cargo-about
+from the same accepted licenses, carry the attribution ([release notices](release-notices.md)).
 
 ## Audit scope
 

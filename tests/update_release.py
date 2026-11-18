@@ -56,34 +56,13 @@ class ReleaseGates(unittest.TestCase):
             (binaries / (name + suffix)).write_bytes(b"synthetic binary; never executed")
         notices = install / "licenses" if platform == "windows-x86_64" else install / "Contents/Resources/licenses"
         notices.mkdir(parents=True)
-        for bundled, original in (("EUPL-1.2", "LICENSE"), ("Mumble-BSD", "crates/protocol/proto/LICENSE.mumble"),
-                                  ("NewCMMath-GUST-Font-License", "crates/math/fonts/GUST-FONT-LICENSE.txt")):
-            shutil.copyfile(REPO / original, notices / bundled)
-        # Synthetic inventory: validates gate mechanics only, never attribution
+        # Synthetic notices: validates gate mechanics only, never attribution
         # completeness for the real app or any upstream license choice.
         scope = notice_scope or platform
-        selected, external_names = prepare.notice_scope(self.policy, scope)
-        targets = {}
-        for item in selected:
-            for name in item["packages"]:
-                targets.setdefault(name, []).append(item["target"])
-        native = [item["target"] for item in selected if item["features"]]
-        packages = [{"name": name, "version": "0.1.0", "license": "EUPL-1.2", "source": "project-path",
-                     "first_party": True, "targets": triples, "files": []} for name, triples in targets.items()]
-        for name in (("ed25519-dalek", "ml-dsa") if native else ()):
-            path = notices / "crates" / (name + "-0.1.0") / "LICENSE"
-            path.parent.mkdir(parents=True)
-            path.write_text("Synthetic gate fixture notice. No real license assurance.\n")
-            packages.append({"name": name, "version": "0.1.0", "first_party": False, "targets": native,
-                             "files": [{"path": "LICENSE", "sha256": prepare.digest(path)}]})
-        external = []
-        for name in sorted(external_names):
-            path = notices / "external" / name / "NOTICE"
-            path.parent.mkdir(parents=True)
-            path.write_text("Synthetic gate fixture only.\n")
-            external.append({"name": name, "files": [{"path": "NOTICE", "sha256": prepare.digest(path)}]})
-        (notices / "THIRD-PARTY.json").write_text(json.dumps({"format": 1, "bundle_scope": scope, "unresolved": [], "roots_by_target": selected,
-                                                              "packages": packages, "external_components": external}))
+        (notices / "THIRD-PARTY.txt").write_text("Synthetic gate fixture notices.\n")
+        (notices / "THIRD-PARTY.json").write_text(json.dumps({
+            "scope": scope, "policy": self.policy[scope], "notices_sha256": prepare.digest(notices / "THIRD-PARTY.txt"),
+            "crates": [{"name": "ml-dsa", "version": "0.1.0", "license": "Apache-2.0 OR MIT"}]}))
         directory = self.root / "artifact"
         directory.mkdir()
         info = {"repository": "fixture/project", "commit": "a"*40, "version": "0.1.0", "platform": platform,
@@ -150,8 +129,7 @@ class ReleaseGates(unittest.TestCase):
         directory, install, notices, repack = self.package()
         report_path = notices/"THIRD-PARTY.json"
         original = json.loads(report_path.read_text())
-        for change in ({"unresolved":[{"name":"missing"}]}, {"roots_by_target":[]},
-                       {"packages":[]}, {"external_components":[]}):
+        for change in ({"scope":"web"}, {"policy":{}}, {"crates":[]}, {"notices_sha256":"0"*64}):
             report_path.write_text(json.dumps(original | change)); repack()
             with self.assertRaises(ValueError): self.accept(directory)
             shutil.rmtree(self.root/"extracted")
@@ -162,8 +140,8 @@ class ReleaseGates(unittest.TestCase):
         directory, _, notices, repack = self.package(platform="macos-universal")
         path = notices/"THIRD-PARTY.json"
         original = json.loads(path.read_bytes())
-        for change in ({"bundle_scope":"web"}, {"roots_by_target":original["roots_by_target"][:1]},
-                       {"bundle_scope":"all", "roots_by_target":self.policy}):
+        for change in ({"scope":"web"}, {"policy":self.policy["web"]},
+                       {"scope":"web", "policy":self.policy["web"]}):
             path.write_text(json.dumps(original | change)); repack()
             with self.assertRaises(ValueError): self.accept(directory, "macos-universal")
             shutil.rmtree(self.root/"extracted")
@@ -174,7 +152,7 @@ class ReleaseGates(unittest.TestCase):
         with self.assertRaises(ValueError): self.accept(directory)
         shutil.rmtree(self.root/"extracted")
         (install/"nuschl-update-verify-mldsa44.exe").write_bytes(b"synthetic")
-        (notices/"crates/ml-dsa-0.1.0/LICENSE").write_text("tampered"); repack()
+        (notices/"THIRD-PARTY.txt").write_text("tampered"); repack()
         with self.assertRaises(ValueError): self.accept(directory)
 
     def test_attribution_cannot_silently_expand_the_installation_file_budget(self):

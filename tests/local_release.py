@@ -46,7 +46,7 @@ class LocalRelease(unittest.TestCase):
         subprocess.run([SIGNER, 'keygen', '--secret-file', self.secret, '--public-file', self.public],
                        check=True, capture_output=True)
         for name in ('release/make-update.py', 'release/prepare-artifacts.py',
-                     'release/notice-roots.json', 'release/notice-scopes.json', 'cliff.toml'):
+                     'release/notice-roots.json', 'cliff.toml'):
             target = self.repo / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, target)

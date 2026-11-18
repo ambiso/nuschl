@@ -22,7 +22,7 @@ export default defineConfig({
       writeBundle() {
         const output = path.join(noticeOut, "licenses/runtime");
         const result = spawnSync("python3", [path.resolve(noticeRoot, "../../../release/web-notices.py"),
-          "--profile", "musicbot", "--app", noticeOut,
+          "--app", noticeOut,
           "--lock", path.join(noticeRoot, "package-lock.json"),
           "--own-license", path.resolve(noticeRoot, "../../../LICENSE"), "--output", output], { stdio: "inherit" });
         if (result.error || result.status !== 0) throw new Error("musicbot runtime notice completeness failed", { cause: result.error });

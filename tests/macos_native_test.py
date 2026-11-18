@@ -67,7 +67,7 @@ class ActualArchive(unittest.TestCase):
                 body = original.extractfile(member) if member.isfile() else None
                 if change and member.isfile() and member.name.endswith("/licenses/THIRD-PARTY.json"):
                     report = json.load(body)
-                    report["bundle_scope"] = "windows-x86_64"
+                    report["scope"] = "windows-x86_64"
                     raw = json.dumps(report).encode()
                     member.size = len(raw)
                     body = io.BytesIO(raw)
@@ -110,7 +110,7 @@ class ActualArchive(unittest.TestCase):
 
     def test_real_notice_scope_cannot_be_relabelled(self):
         self.repack(change=True)
-        with self.assertRaisesRegex(ValueError, "attribution scope"):
+        with self.assertRaisesRegex(ValueError, "third-party notices"):
             self.prepare()
 
     def test_real_archive_with_traversal_never_extracts(self):

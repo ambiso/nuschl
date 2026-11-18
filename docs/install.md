@@ -164,9 +164,10 @@ zips both, publishes every file of each installation as its own release asset, a
 writes `update.json`, which lists every Windows/macOS installation file with its
 size and SHA-256. It also publishes the validated deployable static web bundle,
 Linux Nix installation references, source lock file and build evidence. These
-are clearly labelled; there is no portable Linux executable archive. Source-scoped compact runtime notices accompany native/cross/web packages;
-missing/mismatched terms or byte hashes still block CI payload upload and
-publication. See [notice evidence and final review gates](release-notices.md).
+are clearly labelled; there is no portable Linux executable archive. Third-party
+notices from cargo-about accompany native/cross/web packages; a crate without
+license text fails the build, and a bundle whose scope or text hash differs blocks
+CI payload upload and publication. See [release notices](release-notices.md).
 
 Two different kinds of signing are involved:
 
