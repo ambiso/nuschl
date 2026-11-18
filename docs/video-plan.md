@@ -29,7 +29,8 @@ decisions (§11).
 - **Phases:** browser pages first (camera, screen and watching), launched from
   Nuschl or opened from the link, then native Linux capture, encoding and
   viewing; end-to-end-mode servers last (§3).
-- **Codec (Owner):** royalty-free codecs only: AV1 first, VP9 where it helps.
+- **Codec (Owner):** royalty-free codecs only, one per call: AV1, or VP9 when
+  a participant lacks AV1 decoding.
   The pages use the browser's own encoding and decoding; native clients use
   hardware AV1 first, software AV1 as the fallback, and rav1d for decoding.
   The SFU forwards encoded frames as they are.
@@ -248,12 +249,17 @@ encoder offers them, spatial layers.
   camera's frames for its talker's voice playout delay, aiming for audio
   ahead by at most 45 ms and behind by at most 125 ms (ITU-R BT.1359).
 - **Browser (Owner).** The pages use the browser's own video encoding and
-  decoding: WebRTC, and WebCodecs where needed. They negotiate AV1 first and
-  VP9 second; a viewer without AV1 decoding (WebKit today) receives a VP9
-  encoding, which costs its publisher a second encoding per source, since the
-  SFU forwards without transcoding. A browser with neither gets a clear
-  message. The page goes by `getStats`. The native path above stays as it
-  is.
+  decoding: WebRTC, and WebCodecs where needed. A browser with neither AV1 nor
+  VP9 decoding gets a clear message. The page goes by `getStats`. The native
+  path above stays as it is.
+- **One codec per call (Owner).** Participants state AV1 and VP9 decoding
+  support at admission; the SFU sets the call codec, AV1 when every
+  participant decodes it and VP9 otherwise (WebKit today), and tells the
+  publishers. Publishers encode each source once. When a participant without
+  AV1 joins, the call switches to VP9; when the last one leaves, it switches
+  back. The switch rides on the rekey that the join or leave triggers anyway
+  (within 2 s): each publisher restarts its encoder in the new codec, whose
+  first frame is a key frame, and receivers change decoders there.
 
 ## 7. Consent, privacy and bounds
 
@@ -352,7 +358,8 @@ Murmur 1.4 and 1.5 with a stock Mumble client, and relay-only by packet capture.
 - Video calls and screen sharing are one feature, planned and built together.
 - AV1: hardware first on every platform, software AV1 as the fallback; rav1d
   for native software decoding. Since 2026-11-18 VP9 is allowed too:
-  royalty-free codecs only, so H.264 and HEVC stay out.
+  royalty-free codecs only, so H.264 and HEVC stay out, and each call
+  negotiates one codec for all participants (§6).
 - Phase 1 captures in the browser, launched from Nuschl; native Linux follows.
 - Up to 4K60 screens; each receiver gets min(request, capacity, network,
   policy); relaying is the publisher's opt-in when its upload falls short.
@@ -368,8 +375,10 @@ Murmur 1.4 and 1.5 with a stock Mumble client, and relay-only by packet capture.
 - In a call a Nuschl user starts, stock Mumble users join through the link
   in the channel message and share their own camera and screen from the page.
   P covers the owner actions only.
-- The pages use the browser's own video encoding and decoding, AV1 first and
-  VP9 where it helps; a browser with neither gets a clear message.
+- The pages use the browser's own video encoding and decoding; a browser with
+  neither AV1 nor VP9 gets a clear message.
+- One codec per call: AV1 when every participant decodes it, VP9 otherwise;
+  publishers encode each source once.
 - On Nuschl servers, later: the voice channel's WebRTC session is the call,
   and Start camera and Share screen add tracks to it (§3).
 - Camera quality and screen quality are user-selectable (§5).
@@ -398,5 +407,5 @@ Murmur 1.4 and 1.5 with a stock Mumble client, and relay-only by packet capture.
 libwebrtc's future handling of the AV1 envelope; spatial layers and simulcast
 with the envelope; hardware AV1 encoding per browser and per GPU vendor; the
 §5.1 figures on real content; camera SVC in hardware encoders; native 4K60
-decoding; the publisher-lease stop deadline; the SFrame envelope for VP9; all
-effort estimates.
+decoding; the publisher-lease stop deadline; the SFrame envelope for VP9; VP9
+decoding in native clients for calls that switch to VP9; all effort estimates.
