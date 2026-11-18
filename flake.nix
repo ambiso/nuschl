@@ -816,6 +816,7 @@
         packages.${distroOutput "linux-portable"} = linuxPortable;
         packages.${distroOutput "server-static"} = serverStatic;
         packages.${distroOutput "arch-bin"} = linuxDistro.archBin;
+        packages.${distroOutput "apt-repository"} = linuxDistro.aptRepository.command;
         legacyPackages.crate2nixInputs = crate2nixInputs;
         packages.default-crane = cranePackage;
         packages.emojiAssets = emojiAssets;
