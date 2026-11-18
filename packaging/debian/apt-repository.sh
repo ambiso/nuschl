@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: EUPL-1.2
+# Usage: apt-repository DIR KEY [DEB...]
+# Adds each DEB to the APT repository in DIR, signs every .deb in its pool
+# that has no .sig yet, writes the indexes and a Release valid for 30 days for
+# the suites stable, trixie and noble, signs them with KEY (InRelease and
+# Release.gpg) and exports the public key to DIR/nuschl-archive-keyring.gpg.
+# Run it without DEBs to re-sign the repository before Valid-Until passes.
+set -euo pipefail
+dir=$1 key=$2
+shift 2
+pool=$dir/pool/main/n/nuschl
+mkdir -p "$pool"
+for deb in "$@"; do
+  # shellcheck disable=SC2016 # dpkg-deb expands the fields
+  name=$(dpkg-deb --showformat '${Package}_${Version}_${Architecture}' --show "$deb")
+  install -m644 "$deb" "$pool/$name.deb"
+done
+sign() { gpg --batch --yes --local-user "$key" --digest-algo SHA512 "$@"; }
+for deb in "$pool"/*.deb; do
+  test -e "$deb.sig" || sign --detach-sign --output "$deb.sig" "$deb"
+done
+cd "$dir"
+gpg --batch --yes --export --output nuschl-archive-keyring.gpg "$key"
+packages=dists/stable/main/binary-amd64
+mkdir -p "$packages"
+apt-ftparchive -o APT::FTPArchive::MD5=false -o APT::FTPArchive::SHA1=false packages pool > "$packages/Packages"
+gzip -9 -n -c "$packages/Packages" > "$packages/Packages.gz"
+for suite in stable trixie noble; do
+  mkdir -p "dists/$suite/main/binary-amd64"
+  test "$suite" = stable || cp "$packages/Packages" "$packages/Packages.gz" "dists/$suite/main/binary-amd64/"
+  rm -f "dists/$suite/Release" "dists/$suite/InRelease" "dists/$suite/Release.gpg"
+  apt-ftparchive -o APT::FTPArchive::MD5=false -o APT::FTPArchive::SHA1=false \
+    -o APT::FTPArchive::Release::Origin=Nuschl -o APT::FTPArchive::Release::Label=Nuschl \
+    -o APT::FTPArchive::Release::Suite="$suite" -o APT::FTPArchive::Release::Codename="$suite" \
+    -o APT::FTPArchive::Release::Architectures=amd64 -o APT::FTPArchive::Release::Components=main \
+    -o APT::FTPArchive::Release::ValidTime=2592000 release "dists/$suite" > Release
+  mv Release "dists/$suite/Release"
+  sign --clearsign --output "dists/$suite/InRelease" "dists/$suite/Release"
+  sign --armor --detach-sign --output "dists/$suite/Release.gpg" "dists/$suite/Release"
+done

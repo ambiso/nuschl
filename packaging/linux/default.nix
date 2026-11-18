@@ -69,27 +69,33 @@ let
     "libspa-0.2-modules"
     "libpulse0"
   ];
-  deb = import ../debian/package.nix {
-    inherit
-      pkgs
-      stage
-      maintainer
-      depends
-      ;
-    version = "${version}-${revision}";
+  debWith =
+    revision:
+    import ../debian/package.nix {
+      inherit
+        pkgs
+        stage
+        maintainer
+        depends
+        ;
+      version = "${version}-${revision}";
+    };
+  deb = debWith revision;
+  # The owner's repository command, and a test repository with this package
+  # and its next revision for the upgrade test.
+  aptRepository = import ../debian/apt-repository.nix {
+    inherit pkgs;
+    packages = [
+      deb
+      (debWith (toString (pkgs.lib.toInt revision + 1)))
+    ];
   };
 in
 {
-  inherit stage deb;
+  inherit stage deb aptRepository;
   archBin = import ../arch/package.nix {
     inherit pkgs version stage;
     packageRevision = revision;
     sourceDateEpoch = 1;
-  };
-  aptRepository = import ../debian/apt-repository.nix {
-    inherit pkgs;
-    packages = [ deb ];
-    suite = "trixie";
-    publicationEpoch = 1;
   };
 }
