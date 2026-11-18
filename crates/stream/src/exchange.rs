@@ -353,11 +353,11 @@ impl Publisher {
             || self
                 .pending
                 .iter()
-                .any(|p| p.subscriber == request.subscriber)
+                .any(|pending| pending.subscriber == request.subscriber)
             || self
                 .subscribers
                 .iter()
-                .any(|v| v.subscriber == request.subscriber)
+                .any(|granted| granted.subscriber == request.subscriber)
         {
             return Err(Error::Replay);
         }
@@ -666,14 +666,13 @@ impl Subscriber {
         if counter - *last - 1 > MAX_MISSED_REKEYS {
             return Err(Error::LimitReached);
         }
-        let mut skipped = None;
+        let mut key = *channel;
         for _ in *last + 1..counter {
-            skipped = Some(ratchet(skipped.as_ref().unwrap_or(channel)));
+            key = ratchet(&key);
         }
-        let key = skipped.as_ref().unwrap_or(channel);
         let mut plaintext = [0; EPOCH_KEY_LEN];
         libcrux_chacha20poly1305::decrypt(
-            key,
+            &key,
             &mut plaintext,
             sealed,
             &rekey_header(&self.id, counter),
@@ -684,8 +683,7 @@ impl Subscriber {
         if received.epoch <= *epoch {
             return Err(Error::StaleEpoch);
         }
-        let next = ratchet(key);
-        *channel = next;
+        *channel = ratchet(&key);
         *last = counter;
         *epoch = received.epoch;
         Ok(SubscriberEvent::Rekeyed(received))
