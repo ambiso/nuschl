@@ -9,6 +9,7 @@
 use crate::{
     config::Config,
     protocol::{self, ClientMessage, PeerInfo, ServerMessage, Track, TurnCredentials},
+    quality,
     rooms::{self, Bucket, Join, Nonce, PeerId, Refusal, RoomId, Rooms},
     routing::Routing,
 };
@@ -255,6 +256,7 @@ impl Core {
             .enable_av1(true)
             .enable_vp9(true)
             .enable_opus(true, false)
+            .set_extension(quality::DESCRIPTOR_ID, quality::descriptor_extension())
             .build(now);
         for address in &self.local {
             if let Ok(candidate) = Candidate::host(*address, "udp") {
@@ -761,6 +763,7 @@ impl Core {
                     packet.payload.clone(),
                 )
                 .marker(packet.header.marker)
+                .ext_vals(quality::forwarded(&packet.header.ext_vals))
                 .nackable(video),
             );
             self.dirty.push((id, Leg::Subscribe));
