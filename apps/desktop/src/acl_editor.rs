@@ -1129,12 +1129,13 @@ pub fn sync(this: &mut Desktop, cx: &mut Context<Desktop>) {
     }
 }
 
-/// Sets the typed password (or `value`) on the draft, as Mumble's channel dialog does.
-fn set_password(this: &mut Desktop, token: u64, value: Option<&str>, cx: &mut Context<Desktop>) {
-    let value = match (value, active_editor(this, token)) {
-        (Some(value), Some(_)) => value.to_owned(),
-        (None, Some(editor)) => editor.password.read(cx).value().to_string(),
-        (_, None) => return,
+/// Sets the typed password on the draft, or removes the password with `remove`,
+/// as Mumble's channel dialog does.
+fn set_password(this: &mut Desktop, token: u64, remove: bool, cx: &mut Context<Desktop>) {
+    let value = match active_editor(this, token) {
+        Some(_) if remove => String::new(),
+        Some(editor) => editor.password.read(cx).value().to_string(),
+        None => return,
     };
     change(this, token, |editor| {
         if let Some(Err(error)) = editor
@@ -1509,7 +1510,7 @@ pub fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Desktop>) -> 
         SharedString::from(format!("acl-set-password-{token}")),
         "Set password",
         Tone::Secondary,
-        move |this, _, cx| set_password(this, token, None, cx),
+        move |this, _, cx| set_password(this, token, false, cx),
         cx,
     ));
     if password.is_some() {
@@ -1517,7 +1518,7 @@ pub fn render(view: &ServerView, editor: &Editor, cx: &mut Context<Desktop>) -> 
             SharedString::from(format!("acl-remove-password-{token}")),
             "Remove password",
             Tone::Danger,
-            move |this, _, cx| set_password(this, token, Some(""), cx),
+            move |this, _, cx| set_password(this, token, true, cx),
             cx,
         ));
     }
