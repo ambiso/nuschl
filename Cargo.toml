@@ -34,8 +34,8 @@ nuschl-kt = { path = "crates/kt", version = "0.2.0" }
 nuschl-e2ee = { path = "crates/e2ee", version = "0.2.0" }
 
 nuschl-session = { path = "crates/session", version = "0.2.0" }
-# Pure-Rust Opus, a libopus port; the owner's fork, pinned by commit.
-opus-rs = { version = "0.1.42", git = "https://github.com/ambiso/opus-rs", rev = "cced3b908b5667aacde8b190729e1bb5dc75bcc8" }
+# Pure-Rust Opus, a libopus port: the owner's fork, its main branch; Cargo.lock pins the commit.
+opus-rs = { version = "0.1.42", git = "https://github.com/ambiso/opus-rs" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
