@@ -69,7 +69,8 @@ decisions (§11).
 - **Start and end:** a Nuschl user's **Start call** or **Share screen**
   creates the call and posts its card and link. The call ends when the last
   publisher leaves or after 4 h. The creator, holding P, can **End call**,
-  **Rotate link** (a new S and room) and remove a publisher.
+  **Rotate link** (a new S and room) and remove a publisher. Removing ends
+  that connection; since everyone shares S, Rotate link keeps the person out.
 
 ## 3. Phases
 
