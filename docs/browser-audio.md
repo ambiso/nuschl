@@ -23,6 +23,11 @@ audio releases capture and invalidates old results. A late permission result
 is stopped after a newer mute. Unmute also waits for the server's matching
 self-state acknowledgment; local intent alone does not permit transmission.
 
+When the browser ends or mutes the capture track or suspends the AudioContext
+while capture is open (a hidden page on a phone, another app taking the
+microphone, an unplugged device), Nuschl mutes and shows "Microphone stopped".
+Capture stays closed until the user's next Unmute, also when the page returns.
+
 Mute closes capture immediately. Deafen closes capture and flushes playback.
 An explicit playback gesture can reopen the local playback gate, while the
 SDK's effective deafen state continues to gate output pending acknowledgment.

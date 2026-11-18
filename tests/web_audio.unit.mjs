@@ -281,3 +281,40 @@ test("wide worklet sums opposing headroom before clipping, with gain frozen per 
   mixer.render(left,right);assert.equal(mixer.left,scratch[0]);assert.equal(mixer.right,scratch[1]);
   const tooLarge=new Float32Array(MAX_QUEUED_SAMPLES+1).fill(1);mixer.render(tooLarge);assert.ok(tooLarge.every(v=>v===0));
 });
+
+test("capture the browser ends, mutes or suspends mutes Nuschl and stays closed",async()=>{
+  const keys=["isSecureContext","AudioContext","AudioWorkletNode"];
+  const originals=new Map([...keys.map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]),["mediaDevices",Object.getOwnPropertyDescriptor(navigator,"mediaDevices")]]);
+  Object.defineProperty(globalThis,"isSecureContext",{value:true,configurable:true});
+  Object.defineProperty(globalThis,"AudioContext",{value:class{constructor(){this.state="running";this.sampleRate=48000;this.currentTime=0;}resume(){return Promise.resolve();}close(){return Promise.resolve();}},configurable:true});
+  Object.defineProperty(globalThis,"AudioWorkletNode",{value:class{},configurable:true});
+  let calls=0,track;
+  Object.defineProperty(navigator,"mediaDevices",{configurable:true,value:{getUserMedia:async()=>{
+    calls++;track={muted:false,readyState:"live",enabled:false,stop(){this.readyState="ended";},getSettings:()=>({})};
+    return {getAudioTracks:()=>[track],getTracks:()=>[track]};
+  }}});
+  try {
+    for(const stop of ["ended","mute","suspended"]) {
+      calls=0;const stops=[];const audio=new BrowserAudio({onStopped:()=>stops.push(stop)});
+      audio.syncVoice(voice());audio.initializing=Promise.resolve();
+      audio.workerReady=true;audio.nodesReady=true;
+      audio.worker={postMessage:()=>{},terminate:()=>{}};
+      audio.captureNode={port:{postMessage:()=>{}},connect:()=>{},disconnect:()=>{}};
+      audio.playbackNode={port:{postMessage:()=>{}},disconnect:()=>{}};
+      await audio.activateGesture({microphone:true});
+      audio.ctx.createMediaStreamSource=()=>({connect:()=>{},disconnect:()=>{}});
+      await turn();audio.applyPolicy();
+      assert.equal(audio.captureRunning,true,stop);assert.equal(calls,1);
+      if(stop==="suspended"){audio.ctx.state="interrupted";audio.ctx.onstatechange();}else track[`on${stop}`]();
+      assert.deepEqual(stops,[stop]);assert.equal(audio.phase,"stopped");
+      assert.equal(audio.stream,null);assert.equal(track.readyState,"ended");
+      // The page returns with Nuschl still unmuted (the mute is in flight): capture stays closed.
+      audio.ctx.state="running";audio.ctx.onstatechange();
+      audio.syncVoice({...voice(),voice_generation:"9007199254740994"});
+      assert.equal(calls,1);assert.equal(audio.captureRunning,false);assert.equal(audio.phase,"stopped");
+      audio.ctx.onstatechange=null;await audio.dispose();
+    }
+  } finally {
+    for(const [key,descriptor] of originals){const target=key==="mediaDevices"?navigator:globalThis;if(descriptor)Object.defineProperty(target,key,descriptor);else delete target[key];}
+  }
+});

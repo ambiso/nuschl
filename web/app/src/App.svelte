@@ -72,7 +72,7 @@
     onEnd:() => { audio?.playDisconnected(); rpc?.close("Voice ended in the background. Reload to reconnect."); }});
   $effect(() => callSession.update(voice ? {channel:voiceChannel?.name || "Voice channel", server:voiceServer?.name || "", muted:microphoneMuted} : null));
   const voiceStatus = $derived(!voice?.joined ? "Joining…" : voice.deafened ? "Sound off"
-    : microphoneMuted ? "Microphone muted" : audioState?.phase === "permission-pending" ? "Waiting for microphone permission"
+    : microphoneMuted ? (audioState?.phase === "stopped" ? "Microphone stopped" : "Microphone muted") : audioState?.phase === "permission-pending" ? "Waiting for microphone permission"
     : audioState?.phase === "denied" ? "Microphone permission denied" : audioState?.phase === "unavailable" ? "Audio unavailable"
     : audioState?.microphone && voice.can_transmit ? "Microphone on" : voice.muted ? "Microphone blocked" : "Microphone off");
   const rows = $derived(selected ? channelRows(selected.channels, expanded, selected.id, selected.users) : []);
@@ -196,6 +196,7 @@
       onPacket: packet => command("voice_packet",packet),
       onReady: ready => command("audio_ready",ready),
       onState: state => { audioState = state; },
+      onStopped: () => { if (!microphoneMuted) toggleMicrophone(); },
     });
     const ownedWorker = worker;
     rpc = new SdkRpc(ownedWorker,{onClose:reason => {

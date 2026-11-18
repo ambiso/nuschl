@@ -4,8 +4,8 @@ import {context,sameContext,sameDestination,validPacket,FRAME,RATE,MAX_PENDING,O
 // The UI owns this adapter; the codec worker receives only PCM/Opus, local
 // epochs and speaker numbers. No SDK client, identity, endpoint or key crosses.
 export class BrowserAudio {
-  constructor({onPacket=()=>{},onReady=()=>{},onState=()=>{}}={}) {
-    this.onPacket=onPacket;this.onReady=onReady;this.onState=onState;
+  constructor({onPacket=()=>{},onReady=()=>{},onState=()=>{},onStopped=()=>{}}={}) {
+    this.onPacket=onPacket;this.onReady=onReady;this.onState=onState;this.onStopped=onStopped;
     this.voice=null;this.ctx=null;this.worker=null;this.stream=null;this.source=null;
     this.workerReady=false;this.nodesReady=false;this.disposed=false;
     this.epoch="0";this.revision=0;this.receiveEpoch="rx0";this.receiveRevision=0;this.job=0;this.intent=0;this.consent=null;
@@ -41,9 +41,10 @@ export class BrowserAudio {
         this.ctx=new AudioContext({sampleRate:RATE,latencyHint:"interactive"});
         if(this.ctx.sampleRate!==RATE)throw new Error("This browser cannot provide a 48 kHz audio context.");
         this.ctx.onstatechange=()=>{
-          if(this.ctx?.state!=="running") {
-            this.stopCapture(true);this.resetMedia();this.status("suspended","Enable audio to resume playback and microphone use.");
-          } else this.applyPolicy();
+          if(this.ctx?.state==="running"){this.applyPolicy();return;}
+          const capturing=Boolean(this.stream);
+          this.stopCapture(true);this.resetMedia();
+          if(capturing)this.stopped();else this.status("suspended","Enable audio to resume playback.");
         };
       }
       // Keep this call synchronous with the gesture for Safari/mobile autoplay.
@@ -143,9 +144,7 @@ export class BrowserAudio {
       this.stream=stream;
       for(const track of stream.getAudioTracks()) {
         track.enabled=false;
-        track.onended=()=>{this.stopCapture(true);this.resetMedia({preservePlayback:true});this.reportReady();this.status("device-ended","The microphone disconnected. Unmute to choose it again.");};
-        track.onmute=()=>{this.resetMedia({preservePlayback:true});this.reportReady();this.status("device-muted","The microphone is temporarily unavailable.");};
-        track.onunmute=()=>{this.applyPolicy();};
+        track.onended=track.onmute=()=>{this.stopCapture(true);this.resetMedia({preservePlayback:true});this.reportReady();this.stopped();};
       }
       const settings=stream.getAudioTracks()[0]?.getSettings()||{};
       this.applied={echoCancellation:settings.echoCancellation??"unknown",noiseSuppression:settings.noiseSuppression??"unknown",autoGainControl:settings.autoGainControl??"unknown",sampleRate:settings.sampleRate??"unknown"};
@@ -161,11 +160,14 @@ export class BrowserAudio {
       if(this.consent&&!this.stream&&intent!==this.intent)this.acquireCapture();
     }
   }
+  // The browser stopped or muted capture (a hidden page, another app, an
+  // unplugged device), so Nuschl mutes. Only the user's Unmute opens it again.
+  stopped() {this.onStopped();this.status("stopped","Microphone stopped");}
   stopCapture(clearConsent) {
     if(clearConsent){this.intent++;this.consent=null;this.awaitingUnmute=false;}
     clearTimeout(this.permissionHold);
     this.source?.disconnect();this.source=null;
-    if(this.stream)for(const track of this.stream.getTracks()){track.onended=null;track.onmute=null;track.onunmute=null;track.stop();}
+    if(this.stream)for(const track of this.stream.getTracks()){track.onended=null;track.onmute=null;track.stop();}
     this.stream=null;
     this.captureRunning=false;
     if(this.captureNode)this.captureNode.port.postMessage({kind:"configure",epoch:this.epoch,enabled:false});
@@ -222,7 +224,7 @@ export class BrowserAudio {
     if(capture)this.status("capturing");
     else if(this.voice?.deafened||this.localDeaf)this.status("deafened");
     else if(this.pendingCapture)this.status("permission-pending","Allow microphone access to speak.");
-    else if(!["denied","unavailable","error","transport-error","device-ended"].includes(this.phase)&&this.voice?.joined)
+    else if(!["denied","unavailable","error","transport-error","stopped"].includes(this.phase)&&this.voice?.joined)
       this.status(this.voice.muted||this.localBlocked?"muted":"listening");
   }
   reportReady() {
