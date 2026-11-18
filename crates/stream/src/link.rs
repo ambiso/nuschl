@@ -1,66 +1,92 @@
 // SPDX-License-Identifier: EUPL-1.2
-//! Watch and call links (docs/video-plan.md §3), and the keys derived from the
-//! link secret S:
+//! Call links (docs/video-plan.md §3), and the keys derived from the link secret S and
+//! the creator's secret P:
 //!
 //! ```text
-//! https://<host>/watch#v=1&k=<S>          posted to the channel
-//! https://<host>/call#v=1&k=<S>&p=<P>     opened by the call's creator only
+//! https://<host>/call#v=1&k=<S>&h=<V>          posted to the channel
+//! https://<host>/call#v=1&k=<S>&h=<V>&p=<P>    opened by the call's creator only
+//!
+//! host_key = HKDF-Expand(HKDF-Extract("nuschl/stream/v2", P), "nuschl/stream/v2 host", 32)
+//! V        = SHA-256(host_key)                 the room check
 //! ```
 //!
-//! S and P are 32 bytes in unpadded base64url. The host is the configured stream host,
-//! in lowercase, with an optional port. Parsing accepts one canonical form of at most
-//! [`Link::MAX_LEN`] bytes, on that host only: page code served from the link's origin
-//! sees S.
+//! S, V and P are 32 bytes in unpadded base64url. The host is the configured stream
+//! host, in lowercase, with an optional port. Parsing accepts one canonical form of at
+//! most [`Link::MAX_LEN`] bytes, on that host only: page code served from the link's
+//! origin sees S. P stays on the creator's device; the SFU receives `host_key`, and the
+//! link's V lets every holder check that a room's `host_key` is the creator's.
 
 use std::fmt;
 
 use base64ct::{Base64UrlUnpadded, Encoding as _};
 use rand_core::TryCryptoRng;
 
-use crate::{Error, hkdf_expand, hkdf_extract, random};
+use crate::{Error, hkdf_expand, hkdf_extract, random, sha256};
 
 pub(crate) const LABEL: &str = "nuschl/stream/v2";
 const ENCODED_SECRET_LEN: usize = 43;
 
-/// A parsed watch or call link. `Debug` leaves out the secrets.
+/// The SFU room of the link secret S.
+pub fn stream_id(secret: &[u8; 32]) -> [u8; 16] {
+    LinkKeys::derive(secret).stream_id
+}
+
+/// The key every holder of S proves to the SFU to join the room.
+pub fn admit_key(secret: &[u8; 32]) -> [u8; 32] {
+    LinkKeys::derive(secret).admit_key
+}
+
+/// The key the creator proves to the SFU to create, moderate and end the room. Only
+/// `host_key` goes to the SFU; P stays on the creator's device.
+pub fn host_key(publisher: &[u8; 32]) -> [u8; 32] {
+    hkdf_expand(
+        &hkdf_extract(LABEL.as_bytes(), publisher),
+        label("host").as_bytes(),
+    )
+}
+
+/// V, the link's check value for a room's `host_key`.
+pub fn room_check(host_key: &[u8; 32]) -> [u8; 32] {
+    sha256(&[host_key])
+}
+
+/// A parsed call link. `Debug` leaves out the secrets.
 pub struct Link {
     host: String,
     secret: [u8; 32],
+    room_check: [u8; 32],
     publisher: Option<[u8; 32]>,
 }
 
 impl Link {
     pub const MAX_LEN: usize = 512;
 
-    /// A new call link on the stream host (`host[:port]`) with fresh S and P.
+    /// A new creator's link on the stream host (`host[:port]`) with fresh S and P.
     pub fn generate<R: TryCryptoRng + ?Sized>(host: &str, rng: &mut R) -> Result<Self, Error> {
         check_host(host)?;
+        let secret = random(rng)?;
+        let publisher = random(rng)?;
         Ok(Self {
             host: host.to_owned(),
-            secret: random(rng)?,
-            publisher: Some(random(rng)?),
+            secret,
+            room_check: room_check(&host_key(&publisher)),
+            publisher: Some(publisher),
         })
     }
 
-    /// Parses a link on the stream host `host`.
+    /// Parses a link on the stream host `host`. A link with P must carry P's V.
     pub fn parse(link: &str, host: &str) -> Result<Self, Error> {
         if link.len() > Self::MAX_LEN {
             return Err(Error::TooLong);
         }
         check_host(host)?;
-        let page = link
+        let fragment = link
             .strip_prefix("https://")
             .and_then(|rest| rest.strip_prefix(host))
             .and_then(|rest| rest.strip_prefix('/'))
-            .ok_or(Error::Malformed("link origin"))?;
-        let (page, fragment) = page
-            .split_once('#')
-            .ok_or(Error::Malformed("link fragment"))?;
-        let call = match page {
-            "watch" => false,
-            "call" => true,
-            _ => return Err(Error::Malformed("link page")),
-        };
+            .ok_or(Error::Malformed("link origin"))?
+            .strip_prefix("call#")
+            .ok_or(Error::Malformed("link page"))?;
         let mut params = fragment.split('&');
         match params.next() {
             Some("v=1") => {}
@@ -68,15 +94,21 @@ impl Link {
             _ => return Err(Error::Malformed("link version")),
         }
         let secret = decode_param(params.next(), "k=")?;
-        let publisher = call
-            .then(|| decode_param(params.next(), "p="))
+        let check = decode_param(params.next(), "h=")?;
+        let publisher = params
+            .next()
+            .map(|param| decode_param(Some(param), "p="))
             .transpose()?;
         if params.next().is_some() {
             return Err(Error::Malformed("link parameters"));
         }
+        if publisher.is_some_and(|publisher| room_check(&host_key(&publisher)) != check) {
+            return Err(Error::Malformed("link room check"));
+        }
         Ok(Self {
             host: host.to_owned(),
             secret,
+            room_check: check,
             publisher,
         })
     }
@@ -89,24 +121,30 @@ impl Link {
         &self.secret
     }
 
-    /// P, for call links only.
+    /// V, which a room's `host_key` must hash to.
+    pub fn room_check(&self) -> &[u8; 32] {
+        &self.room_check
+    }
+
+    /// P, for the creator's link only.
     pub fn publisher(&self) -> Option<&[u8; 32]> {
         self.publisher.as_ref()
     }
 
-    /// The link to post: S only.
-    pub fn watch_url(&self) -> String {
-        format!("https://{}/watch#v=1&k={}", self.host, encode(&self.secret))
-    }
-
-    pub fn call_url(&self) -> Option<String> {
-        let publisher = self.publisher.as_ref()?;
-        Some(format!(
-            "https://{}/call#v=1&k={}&p={}",
+    /// The link to post: S and V.
+    pub fn url(&self) -> String {
+        format!(
+            "https://{}/call#v=1&k={}&h={}",
             self.host,
             encode(&self.secret),
-            encode(publisher)
-        ))
+            encode(&self.room_check)
+        )
+    }
+
+    /// The creator's link, with P.
+    pub fn creator_url(&self) -> Option<String> {
+        let publisher = self.publisher.as_ref()?;
+        Some(format!("{}&p={}", self.url(), encode(publisher)))
     }
 
     pub fn keys(&self) -> LinkKeys {
@@ -118,7 +156,7 @@ impl fmt::Debug for Link {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Link")
             .field("host", &self.host)
-            .field("call", &self.publisher.is_some())
+            .field("creator", &self.publisher.is_some())
             .finish_non_exhaustive()
     }
 }

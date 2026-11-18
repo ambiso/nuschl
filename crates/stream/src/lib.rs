@@ -80,7 +80,7 @@ pub use exchange::{
     REQUEST_LIFETIME_MS, RESEND_AFTER_MS, Rekey, SWITCH_AFTER_MS, Subscriber, SubscriberEvent,
     SubscriberId,
 };
-pub use link::{Link, LinkKeys};
+pub use link::{Link, LinkKeys, admit_key, host_key, room_check, stream_id};
 
 /// The largest key message.
 pub const MAX_KEY_MESSAGE: usize = 16 * 1024;

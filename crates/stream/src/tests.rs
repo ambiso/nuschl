@@ -209,109 +209,146 @@ fn rfc9180_psk_mode_vector() {
 
 /// The key schedule against an HKDF written separately over Python's hmac module.
 #[test]
-fn stream_id_known_answer() {
-    let link = Link::parse(
-        "https://stream.nuschl.eu/watch#v=1&k=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
-        HOST,
-    )
-    .unwrap();
-    assert_eq!(link.secret(), &core::array::from_fn(|i| i as u8));
+fn key_schedule_known_answers() {
+    let secret: [u8; 32] = core::array::from_fn(|i| i as u8);
+    let publisher: [u8; 32] = core::array::from_fn(|i| i as u8 + 32);
     assert_eq!(
-        link.keys().stream_id().to_vec(),
+        stream_id(&secret).to_vec(),
         hex("6e97e9849dc0269b159081f2dcfb96dc")
     );
+    assert_eq!(
+        admit_key(&secret).to_vec(),
+        hex("351c31140d48a2cc4a1a738b543bf220c48f0cb2f828363b52e79ae95870e0b8")
+    );
+    let host = host_key(&publisher);
+    assert_eq!(
+        host.to_vec(),
+        hex("8956ee0f52f292a9d547563b15118898448f91b8606e4d39cd57509a8ba0e6e8")
+    );
+    assert_eq!(
+        room_check(&host).to_vec(),
+        hex("f05928124bd59c65ea006285f6eedecc875ee3d08bd993dee40419277fddded4")
+    );
+
+    let link = Link::parse(CREATOR_LINK, HOST).unwrap();
+    assert_eq!(link.secret(), &secret);
+    assert_eq!(link.publisher(), Some(&publisher));
+    assert_eq!(link.room_check(), &room_check(&host));
+    assert_eq!(link.keys().stream_id(), &stream_id(&secret));
+    assert_eq!(link.keys().admit_key(), &admit_key(&secret));
 }
+
+const K: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+const H: &str = "8FkoEkvVnGXqAGKF9u7ezIde49CL2ZPe5AQZJ3_d3tQ";
+const P: &str = "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8";
+const CREATOR_LINK: &str = concat!(
+    "https://stream.nuschl.eu/call#v=1&k=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    "&h=8FkoEkvVnGXqAGKF9u7ezIde49CL2ZPe5AQZJ3_d3tQ",
+    "&p=ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8"
+);
 
 // -------------------------------------------------------------------------------------
 // Links
 
 #[test]
 fn links_round_trip_and_keep_secrets_out_of_debug() {
-    let call = link(3);
-    let parsed = Link::parse(&call.call_url().unwrap(), HOST).unwrap();
-    assert_eq!(parsed.call_url(), call.call_url());
-    let watch = Link::parse(&call.watch_url(), HOST).unwrap();
-    assert_eq!(watch.secret(), call.secret());
-    assert_eq!(watch.publisher(), None);
-    assert_eq!(watch.call_url(), None);
-    assert_eq!(watch.keys().stream_id(), call.keys().stream_id());
-    assert_ne!(link(4).keys().stream_id(), call.keys().stream_id());
+    let creator = link(3);
+    let parsed = Link::parse(&creator.creator_url().unwrap(), HOST).unwrap();
+    assert_eq!(parsed.creator_url(), creator.creator_url());
+    let posted = Link::parse(&creator.url(), HOST).unwrap();
+    assert_eq!(posted.secret(), creator.secret());
+    assert_eq!(posted.room_check(), creator.room_check());
+    assert_eq!(posted.publisher(), None);
+    assert_eq!(posted.creator_url(), None);
+    assert_eq!(
+        creator.room_check(),
+        &room_check(&host_key(creator.publisher().unwrap()))
+    );
+    assert_ne!(link(4).keys().stream_id(), creator.keys().stream_id());
 
-    let url = call.call_url().unwrap();
-    let encoded_secret = url.split("k=").nth(1).unwrap().split('&').next().unwrap();
-    for debug in [format!("{call:?}"), format!("{:?}", call.keys())] {
-        assert!(!debug.contains(encoded_secret), "{debug}");
+    let url = creator.creator_url().unwrap();
+    for name in ["k=", "p="] {
+        let encoded = url.split(name).nth(1).unwrap().split('&').next().unwrap();
+        for debug in [format!("{creator:?}"), format!("{:?}", creator.keys())] {
+            assert!(!debug.contains(encoded), "{debug}");
+        }
     }
 }
 
 #[test]
 fn links_reject_every_other_form() {
-    let k = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
-    let good = format!("https://stream.nuschl.eu/watch#v=1&k={k}");
+    let good = format!("https://stream.nuschl.eu/call#v=1&k={K}&h={H}");
     assert!(Link::parse(&good, HOST).is_ok());
-    let with_port = format!("https://stream.nuschl.eu:8443/watch#v=1&k={k}");
+    let with_port = format!("https://stream.nuschl.eu:8443/call#v=1&k={K}&h={H}");
     assert!(Link::parse(&with_port, "stream.nuschl.eu:8443").is_ok());
+    let p = |rest: &str| format!("https://stream.nuschl.eu/{rest}");
     for (link, error) in [
         (with_port.clone(), Error::Malformed("link origin")),
         (
-            format!("http://stream.nuschl.eu/watch#v=1&k={k}"),
+            format!("http://stream.nuschl.eu/call#v=1&k={K}&h={H}"),
             Error::Malformed("link origin"),
         ),
         (
-            format!("https://Stream.nuschl.eu/watch#v=1&k={k}"),
+            format!("https://Stream.nuschl.eu/call#v=1&k={K}&h={H}"),
             Error::Malformed("link origin"),
         ),
         (
-            format!("https://evil.example/watch#v=1&k={k}"),
+            format!("https://evil.example/call#v=1&k={K}&h={H}"),
             Error::Malformed("link origin"),
         ),
         (
-            format!("https://stream.nuschl.eu.evil/watch#v=1&k={k}"),
+            format!("https://stream.nuschl.eu.evil/call#v=1&k={K}&h={H}"),
             Error::Malformed("link origin"),
         ),
         (
-            format!("https://stream.nuschl.eu/a/watch#v=1&k={k}"),
+            p(&format!("a/call#v=1&k={K}&h={H}")),
             Error::Malformed("link page"),
         ),
         (
-            format!("https://stream.nuschl.eu/view#v=1&k={k}"),
+            p(&format!("watch#v=1&k={K}&h={H}")),
             Error::Malformed("link page"),
         ),
+        (p("call"), Error::Malformed("link page")),
         (
-            "https://stream.nuschl.eu/watch".to_owned(),
-            Error::Malformed("link fragment"),
-        ),
-        (
-            format!("https://stream.nuschl.eu/watch#v=2&k={k}"),
+            p(&format!("call#v=2&k={K}&h={H}")),
             Error::UnsupportedVersion,
         ),
         (
-            format!("https://stream.nuschl.eu/watch#k={k}&v=1"),
+            p(&format!("call#k={K}&v=1&h={H}")),
             Error::Malformed("link version"),
         ),
         (
-            format!("https://stream.nuschl.eu/watch#v=1&k={k}&p={k}"),
+            p(&format!("call#v=1&k={K}")),
             Error::Malformed("link parameters"),
         ),
         (
-            format!("https://stream.nuschl.eu/call#v=1&k={k}"),
+            p(&format!("call#v=1&h={H}&k={K}")),
             Error::Malformed("link parameters"),
         ),
         (
-            format!("https://stream.nuschl.eu/watch#v=1&k={k}A"),
+            p(&format!("call#v=1&k={K}&h={H}&p={P}&p={P}")),
+            Error::Malformed("link parameters"),
+        ),
+        // P must hash to the link's V.
+        (
+            p(&format!("call#v=1&k={K}&h={K}&p={P}")),
+            Error::Malformed("link room check"),
+        ),
+        (
+            p(&format!("call#v=1&k={K}A&h={H}")),
             Error::Malformed("link secret"),
         ),
         (
-            format!("https://stream.nuschl.eu/watch#v=1&k={}", &k[1..]),
+            p(&format!("call#v=1&k={}&h={H}", &K[1..])),
             Error::Malformed("link secret"),
         ),
         // The last character carries 4 bits; nonzero padding bits are not canonical.
         (
-            format!("https://stream.nuschl.eu/watch#v=1&k={}9", &k[..42]),
+            p(&format!("call#v=1&k={}9&h={H}", &K[..42])),
             Error::Malformed("link secret"),
         ),
         (
-            format!("https://stream.nuschl.eu/watch#v=1&k={}", "a".repeat(500)),
+            p(&format!("call#v=1&k={}", "a".repeat(500))),
             Error::TooLong,
         ),
     ] {
@@ -743,7 +780,7 @@ fn mutated_bodies_reach_the_parsers() {
 #[test]
 fn link_parser_survives_noise() {
     let mut noise = rng(28);
-    let good = link(29).call_url().unwrap();
+    let good = link(29).creator_url().unwrap();
     for _ in 0..2000 {
         let [position, value, kind] = random::<3, _>(&mut noise).unwrap();
         let mut bytes = good.clone().into_bytes();
@@ -756,7 +793,7 @@ fn link_parser_survives_noise() {
         if let Ok(text) = String::from_utf8(bytes)
             && let Ok(parsed) = Link::parse(&text, HOST)
         {
-            let canonical = parsed.call_url().unwrap_or_else(|| parsed.watch_url());
+            let canonical = parsed.creator_url().unwrap_or_else(|| parsed.url());
             assert_eq!(canonical, text);
         }
     }
