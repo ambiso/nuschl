@@ -116,6 +116,11 @@ let
     moduleName = "nuschl_content_wasm";
     name = "nuschl-web-content-codec";
   };
+  streamWasm = bindings {
+    packageId = "nuschl-stream-wasm";
+    moduleName = "nuschl_stream_wasm";
+    name = "nuschl-web-stream-worker";
+  };
   rawApp = pkgs.buildNpmPackage {
     pname = "nuschl-web-app";
     version = "0.1.0";
@@ -170,6 +175,7 @@ in
     wasm
     audioWasm
     contentWasm
+    streamWasm
     rawApp
     ;
 }

@@ -21,8 +21,8 @@
 //! under a new epoch.
 //!
 //! This crate holds the calls' AES code, apart from the key agreement, so the crypto
-//! worker links no AES. Its callers, the SDK driver and the browser stream worker, wait
-//! for their SECURITY.md rows.
+//! worker links no AES. The browser stream worker (`nuschl-stream-wasm`) calls it; the
+//! SDK driver waits for its SECURITY.md row.
 
 pub mod rfc9605;
 

@@ -24,7 +24,7 @@ ignore = [
   { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.38 namespaces in Typst's citation styles, math worker only, unreachable as RUSTSEC-2026-0194" },
   { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml (serde_yaml) behind Typst's yaml() and bibliographies, removed from the math worker's Typst library; its formulas cannot contain code" },
   { id = "RUSTSEC-2024-0320", reason = "yaml-rust loads syntect syntax definitions in Typst's raw-text highlighting, which formulas from the math worker's LaTeX converter never use" },
-  { id = "RUSTSEC-2023-0071", reason ="rsa (Marvin timing side channel in private-key operations) only generates the local Mumble client key; TLS signing uses ring, and no RSA decryption or signing runs on untrusted input" },
+  { id = "RUSTSEC-2023-0071", reason = "rsa (Marvin timing side channel in private-key operations) only generates the local Mumble client key; TLS signing uses ring, and no RSA decryption or signing runs on untrusted input" },
 ]
 
 [licenses]
@@ -47,11 +47,21 @@ allow = [
 # its Noise transit encryption, compiled in although 0.8 does not negotiate it,
 # and its WebAssembly-only WebSocket stack.
 exceptions = [
-  { allow = ["Unlicense"], crate = "noise-protocol" },
-  { allow = ["Unlicense"], crate = "noise-rust-crypto" },
-  { allow = ["Unlicense"], crate = "ws_stream_wasm" },
-  { allow = ["Unlicense"], crate = "async_io_stream" },
-  { allow = ["Unlicense"], crate = "pharos" },
+  { allow = [
+    "Unlicense",
+  ], crate = "noise-protocol" },
+  { allow = [
+    "Unlicense",
+  ], crate = "noise-rust-crypto" },
+  { allow = [
+    "Unlicense",
+  ], crate = "ws_stream_wasm" },
+  { allow = [
+    "Unlicense",
+  ], crate = "async_io_stream" },
+  { allow = [
+    "Unlicense",
+  ], crate = "pharos" },
 ]
 
 [bans]
@@ -174,7 +184,8 @@ deny = [
   { name = "nuschl-stream", wrappers = [
     "nuschl",
     "nuschl-crypto-worker",
-  ], reason = "Call key agreement belongs to the crypto worker; the desktop parses call links and derives the lease keys (SECURITY.md); driver and browser callers wait for their SECURITY.md rows (docs/video-plan.md §4)" },
+    "nuschl-stream-wasm",
+  ], reason = "Call key agreement belongs to the crypto worker and the browser call page's stream worker; the desktop parses call links and derives the lease keys (SECURITY.md); the SDK driver waits for its SECURITY.md row (docs/video-plan.md §4)" },
   { name = "aes-gcm", wrappers = [
     "dimpl",
     "noise-rust-crypto",

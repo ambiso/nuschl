@@ -6,8 +6,8 @@
 //!
 //! The crate holds protocol and key state only: callers pass the time (Unix
 //! milliseconds) and a cryptographic RNG, and carry the messages over the SFU. cargo-deny
-//! admits the crypto worker as its one caller; the SDK driver (R1), the desktop (D1) and
-//! the browser stream worker (K2) wait for their SECURITY.md rows.
+//! admits the crypto worker, the desktop's link handling and the browser stream worker
+//! (`nuschl-stream-wasm`); the SDK driver (R1) waits for its SECURITY.md row.
 //!
 //! ```text
 //! prk        = HKDF-Extract(salt = "nuschl/stream/v2", S)

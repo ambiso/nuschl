@@ -862,6 +862,7 @@
         packages.web-wasm = webClient.wasm;
         packages.web-audio-wasm = webClient.audioWasm;
         packages.web-content-wasm = webClient.contentWasm;
+        packages.web-stream-wasm = webClient.streamWasm;
         packages.release-notices-linux = releaseNotices.linux.bundle;
         packages.release-notices-linux-portable = releaseNotices.portable.bundle;
         packages.release-notices-server-static = releaseNotices.serverStatic.bundle;
@@ -944,6 +945,12 @@
             node --test tests/content_window.unit.mjs tests/sdk_rpc.unit.mjs tests/sdk_rpc_startup.unit.mjs \
               tests/web_audio.unit.mjs tests/web_content.unit.mjs tests/share_links.mjs \
               tests/web_output_quality.mjs tests/web_playout_clock.mjs
+            touch $out
+          '';
+          # The call page's stream worker on wasm32 replays the native transcript.
+          stream-wasm = pkgs.runCommand "nuschl-stream-wasm" { nativeBuildInputs = [ pkgs.nodejs ]; } ''
+            node ${./tests/stream_wasm.mjs} ${webClient.streamWasm} \
+              ${./crates/stream-wasm/test-vectors/transcript.txt}
             touch $out
           '';
           # Unit tests of the repository's Python tools; cases that need private
