@@ -26,6 +26,7 @@ mod tests {
     #[test]
     fn production_factories_keep_audio_across_budget_updates_and_resets() {
         for mut encoder in [new().unwrap(), live().unwrap()] {
+            assert_eq!(encoder.application(), Application::Audio);
             assert_eq!(encoder.bitrate_bps, 128_000);
             assert_eq!(encoder.complexity, 9);
             assert!(!encoder.use_cbr && encoder.vbr_constraint());
@@ -36,6 +37,7 @@ mod tests {
             for bitrate in [128_000, 32_000, 48_000, 64_000, 128_000] {
                 encoder.bitrate_bps = bitrate;
                 encoder.reset();
+                assert_eq!(encoder.application(), Application::Audio);
                 assert_eq!(encoder.bitrate_bps, bitrate);
                 assert_eq!(encoder.use_inband_fec, fec);
                 assert_eq!(encoder.packet_loss_perc, loss);

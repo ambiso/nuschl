@@ -83,7 +83,7 @@ fn main() {
     costs.sort_unstable();
     println!(
         "{{\"application\":\"{:?}\",\"lookahead_samples\":{},\"complexity\":{},\"frames\":{},\"encode_p50_ns\":{},\"encode_p95_ns\":{},\"encode_max_ns\":{}}}",
-        application,
+        encoder.application(),
         encoder.lookahead(),
         encoder.complexity,
         costs.len(),

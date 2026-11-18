@@ -29508,8 +29508,8 @@ rec {
         workspace_member = null;
         src = pkgs.fetchgit {
           url = "https://github.com/ambiso/opus-rs";
-          rev = "fddb8b45f972f4fb4be6b186750afa28611a28aa";
-          sha256 = "0kbapz6l1wzdm9p6905988b7q42msn3w9pwvqjls9yl193yvbhpy";
+          rev = "1666bbc5730bd3f6ac624a2d056e0ec7b18093c6";
+          sha256 = "14p3gpv0igz41qmp2hbn476b8g7xmvvsalbzxmhf5aipx94yq4lf";
         };
         libName = "opus_rs";
         authors = [
@@ -29520,7 +29520,7 @@ rec {
             name = "fearless_simd";
             packageId = "fearless_simd 1.2.0";
             usesDefaultFeatures = false;
-            target = { target, features }: (("x86" == target."arch" or null) || ("x86_64" == target."arch" or null));
+            target = { target, features }: (("x86" == target."arch" or null) || ("x86_64" == target."arch" or null) || ("aarch64" == target."arch" or null) || ("wasm32" == target."arch" or null));
           }
         ];
         features = {

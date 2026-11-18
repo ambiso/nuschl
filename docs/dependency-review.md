@@ -38,7 +38,7 @@ algorithms globally, or relax the crypto-bigint advisory policy below. See the
 | Content | pulldown-cmark and Syntect with fancy-regex | No native Oniguruma; fixed bundled syntax/theme set; content worker and timeout |
 | Echo cancellation | Sonora | Rust port of WebRTC processing; assess quality/timing before routing real calls |
 | Noise suppression | nnnoiseless | Rust RNNoise-derived implementation; enable only when route policy calls for suppression |
-| Opus | opus-rs, a git dependency on the owner's fork pinned by commit | Rust port of libopus with `#![forbid(unsafe_code)]`; on x86 one AVX2 kernel of the SILK encoder runs through `fearless_simd` 1.2 (below); media worker, browser audio worker and music bot codec worker; conformance and stock-client audio tests required |
+| Opus | opus-rs, a git dependency on the owner's fork pinned by commit | Rust port of libopus with `#![forbid(unsafe_code)]`. Its SIMD kernels run through `fearless_simd` 1.2: on x86 the FFT, pitch correlation, PVQ search and SILK quantizer for decoder and encoder at the runtime-detected level; on aarch64 the NEON SILK quantizer; wasm32 builds without `simd128`, as Nuschl's, run scalar code. Media worker, browser audio worker and music bot codec worker; conformance and stock-client audio tests required |
 | History | SQLx/Tokio, bundled SQLite locally and PostgreSQL for servers | SQLite FFI and database access remain in the storage worker; extension loading/deserialization are disabled |
 | Desktop | GPUI Kit without default component/assets features | Native rendering exception, not a message HTML or embedded-browser runtime |
 | TLS | rustls with ring | Explicit crypto exception; no OpenSSL dependency |

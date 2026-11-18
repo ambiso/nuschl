@@ -150,6 +150,7 @@ mod tests {
         assert!(!encoder.encoder.use_cbr && encoder.encoder.vbr_constraint());
         for bitrate in [128_000, 32_000, 48_000, 64_000, 128_000] {
             encoder.set_bitrate(bitrate).unwrap();
+            assert_eq!(encoder.encoder.application(), Application::Audio);
             assert_eq!(encoder.lookahead_samples(), 312);
             let samples: Vec<_> = (0..FRAME_SAMPLES)
                 .map(|index| {
