@@ -18,6 +18,7 @@
   import { welcomeDocuments } from "./welcome.js";
   import { SdkRpc, SdkUnavailableError } from "./sdk-rpc.js";
   import { BrowserAudio } from "./audio.js";
+  import { CallSession } from "./call-session.js";
   import { ErrorLifetime } from "./error-lifetime.js";
   const link = inviteFragment(location.hash);
   let relay = $state(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/relay`);
@@ -65,6 +66,8 @@
   const voiceChannel = $derived(voiceServer?.channels.find(channel => channel.id === voice?.channel_id));
   const microphoneMuted = $derived(voiceServer?.muted !== false || voiceServer?.deafened === true);
   const playbackDeafened = $derived(voiceServer?.deafened !== false);
+  const callSession = new CallSession();
+  $effect(() => callSession.update(voice ? {channel:voiceChannel?.name || "Voice channel", server:voiceServer?.name || "", muted:microphoneMuted} : null));
   const voiceStatus = $derived(!voice?.joined ? "Joining…" : voice.deafened ? "Sound off"
     : microphoneMuted ? "Microphone muted" : audioState?.phase === "permission-pending" ? "Waiting for microphone permission"
     : audioState?.phase === "denied" ? "Microphone permission denied" : audioState?.phase === "unavailable" ? "Audio unavailable"
@@ -171,7 +174,8 @@
     const viewport = window.visualViewport;
     const resizeViewport = () => { if (orderDrag) cancelOrder(); document.documentElement.style.setProperty("--app-height", `${viewport?.height || window.innerHeight}px`); };
     resizeViewport(); viewport?.addEventListener("resize", resizeViewport);
-    const cleanup = () => { stopTimeLocale(); contentBridge?.dispose(); cancelOrder(); window.removeEventListener("keydown", escapeOrder, true); window.removeEventListener("resize", cancelOrder); motion.removeEventListener("change", updateMotion); media.removeEventListener("change", updateMobile); viewport?.removeEventListener("resize", resizeViewport); rpc?.close("Client closed.",{notify:false}); worker = null; disposeAudio(); };
+    callSession.attach();
+    const cleanup = () => { callSession.detach(); stopTimeLocale(); contentBridge?.dispose(); cancelOrder(); window.removeEventListener("keydown", escapeOrder, true); window.removeEventListener("resize", cancelOrder); motion.removeEventListener("change", updateMotion); media.removeEventListener("change", updateMobile); viewport?.removeEventListener("resize", resizeViewport); rpc?.close("Client closed.",{notify:false}); worker = null; disposeAudio(); };
     const unavailable = reason => {
       contentBridge?.dispose();
       worker = null; clientUnavailable = true; loaded = false; cancelOrder(); arrangeServers = false;

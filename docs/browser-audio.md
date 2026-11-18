@@ -110,6 +110,22 @@ The modules operate with same-origin scripts/workers/connections and
 JavaScript `unsafe-eval`. Deployment must permit microphone access for the
 application origin; camera access is not needed for voice.
 
+## Screen off
+
+`CallSession` (`web/app/src/call-session.js`) holds a screen wake lock while the
+page is joining or in voice, so the screen stays on. The browser releases the
+lock when the page is hidden; the page requests it again each time it becomes
+visible and releases it on leave. When the browser refuses the lock (hidden page,
+low battery, policy), voice runs on without it. Chrome on Android has the Screen
+Wake Lock API since 84 and Safari on iOS since 16.4, in Home Screen web apps since
+18.4 ([MDN compatibility data](https://github.com/mdn/browser-compat-data/blob/main/api/WakeLock.json)).
+
+`web/app/src/call-session.test.js` covers the lock's state machine;
+`tests/web_call_session.browser.mjs <repository> <chromium> <playwright-core/index.mjs>`
+runs it in Chromium with the production CSP and the browser's Wake Lock API.
+Headless Chromium keeps every page visible, so that test sets the page's
+visibility itself.
+
 ## Verification scope
 
 `node --test tests/web_audio.unit.mjs` exercises the production worklet queue,
