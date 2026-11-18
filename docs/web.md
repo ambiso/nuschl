@@ -332,7 +332,10 @@ with a call link opens it ([desktop](desktop.md#calls)); the creator's link adds
   `track.quality` and sends its quality requests from `Call`. Embedding the
   call view in the web client is a follow-up.
 - **Tests:** `checks.call-page` runs `web/call/call.test.js` against the
-  stream worker's wasm.
+  stream worker's wasm; `checks.vm-call-page` (`nix/call-page-vm.nix`,
+  `tests/call_page.py`) runs headless Chromium and Firefox against the SFU and
+  coturn with synthetic publishers and leaves screenshots in
+  `result/screenshots`.
 
 ## SDK and browser capability status
 

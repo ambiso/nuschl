@@ -1095,6 +1095,14 @@
               turnModule = self.nixosModules.turn;
               streamModule = self.nixosModules.stream;
             };
+            # The call page in headless Chromium and Firefox, subscribing through the
+            # SFU and TURN to synthetic publishers (`nix build .#checks.x86_64-linux.vm-call-page`).
+            vm-call-page = import ./nix/call-page-vm.nix {
+              inherit pkgs;
+              turnModule = self.nixosModules.turn;
+              streamModule = self.nixosModules.stream;
+              callSite = self.packages.${system}.call-site;
+            };
             # The music bot under its module, against Murmur and a fake library
             # (`nix build .#checks.x86_64-linux.vm-musicbot`).
             vm-musicbot = import ./nix/vm-musicbot.nix {
