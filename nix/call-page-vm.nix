@@ -1,7 +1,8 @@
 # The call page (web/call) on the stream host under its module, with coturn
 # under the TURN module, in headless Chromium and Firefox (tests/call_page.py):
 # synthetic publishers on the stream host's origin, a Chromium and a relay-only
-# Firefox subscriber, the refusals. The page's screenshots are the test's output
+# Firefox subscriber, a page user publishing Chromium's fake camera and screen,
+# a codec switch, the refusals. The page's screenshots are the test's output
 # (`result/screenshots`). The stream host serves HTTPS with a certificate made
 # for the test; no ACME.
 {
@@ -104,7 +105,7 @@ pkgs.testers.runNixOSTest {
       { nodes, ... }:
       {
         virtualisation = {
-          memorySize = 6144;
+          memorySize = 8192;
           cores = 4;
         };
         environment.systemPackages = [
