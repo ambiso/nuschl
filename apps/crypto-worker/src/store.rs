@@ -177,6 +177,8 @@ mod tests {
 
     #[test]
     fn sealed_files_round_trip_and_the_key_file_is_private() {
+        // 45 bytes: random ciphertext contains them with probability near 2^-360.
+        const PLAINTEXT: &[u8] = b"{\"marker\":\"9f3c61e2a7d84b05c19e7a2f6b3d8e40\"}";
         let directory = tempfile::tempdir().unwrap();
         let open = || {
             Store::open(
@@ -187,12 +189,12 @@ mod tests {
         };
         let store = open();
         assert!(store.load("state").unwrap().is_none());
-        store.save("state", b"{}").unwrap();
+        store.save("state", PLAINTEXT).unwrap();
         drop(store);
         let store = open();
-        assert_eq!(&store.load("state").unwrap().unwrap()[..], b"{}");
+        assert_eq!(&store.load("state").unwrap().unwrap()[..], PLAINTEXT);
         let raw = fs::read(directory.path().join("state")).unwrap();
-        assert!(!raw.windows(2).any(|w| w == b"{}"));
+        assert!(!raw.windows(PLAINTEXT.len()).any(|w| w == PLAINTEXT));
         #[cfg(unix)]
         for name in ["store.key", "store.lock", "state"] {
             use std::os::unix::fs::PermissionsExt as _;
