@@ -4,7 +4,7 @@
 //! Load the generated WASM in its own bounded audio worker, never the TLS worker.
 #![forbid(unsafe_code)]
 
-use opus_pure::{Application, MAX_PACKET_SAMPLES, OpusDecoder, OpusEncoder, packet};
+use opus_rs::{Application, OpusDecoder, OpusEncoder, packet};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use wasm_bindgen::prelude::*;
 
@@ -22,6 +22,8 @@ pub const MAX_BITRATE: u32 = 256_000;
 /// Leaves space for Mumble's header inside its 1024-byte tunneled voice bound.
 pub const MAX_ENCODED_BYTES: usize = 960;
 pub const OUTPUT_CHANNELS: usize = 2;
+/// The longest Opus packet, 120 ms, in samples per channel.
+pub const MAX_PACKET_SAMPLES: usize = 5760;
 pub const MAX_DECODED_SAMPLES: usize = MAX_PACKET_SAMPLES * OUTPUT_CHANNELS;
 
 #[cfg_attr(all(target_arch = "wasm32", target_os = "unknown"), wasm_bindgen)]
@@ -106,7 +108,7 @@ impl VoiceDecoder {
         if encoded.is_empty() || encoded.len() > 1024 {
             return Err("invalid Opus packet size".into());
         }
-        let expected = packet::samples_48k(encoded).map_err(|error| error.to_string())?;
+        let expected = packet_samples(encoded)?;
         if expected == 0 || expected > MAX_PACKET_SAMPLES || expected % 480 != 0 {
             return Err("invalid Opus packet duration".into());
         }
@@ -128,6 +130,13 @@ impl VoiceDecoder {
     }
 }
 
+/// A packet's duration in samples per channel at 48 kHz, after checking its framing.
+fn packet_samples(opus: &[u8]) -> Result<usize, String> {
+    packet::parse(opus)
+        .and_then(|_| packet::nb_samples(opus, SAMPLE_RATE as i32))
+        .map_err(str::to_owned)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,13 +147,9 @@ mod tests {
         assert_eq!(encoder.encoder.complexity, 5);
         assert!(!encoder.encoder.use_inband_fec);
         assert_eq!(encoder.encoder.packet_loss_perc, 0);
-        assert_eq!(
-            encoder.encoder.rate_control,
-            opus_pure::RateControl::ConstrainedVbr
-        );
+        assert!(!encoder.encoder.use_cbr && encoder.encoder.vbr_constraint());
         for bitrate in [128_000, 32_000, 48_000, 64_000, 128_000] {
             encoder.set_bitrate(bitrate).unwrap();
-            assert_eq!(encoder.encoder.application(), Application::Audio);
             assert_eq!(encoder.lookahead_samples(), 312);
             let samples: Vec<_> = (0..FRAME_SAMPLES)
                 .map(|index| {
@@ -154,8 +159,7 @@ mod tests {
                 })
                 .collect();
             let encoded = encoder.encode(&samples).unwrap();
-            packet::validate(&encoded).unwrap();
-            assert_eq!(packet::samples_48k(&encoded).unwrap(), FRAME_SAMPLES);
+            assert_eq!(packet_samples(&encoded).unwrap(), FRAME_SAMPLES);
             assert!(encoded.len() <= bitrate as usize / 400);
         }
     }

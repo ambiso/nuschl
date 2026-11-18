@@ -5,6 +5,7 @@
 //! rings; they never lock, allocate or block. This thread decodes, buffers,
 //! mixes, cancels echo, encodes and talks to the supervisor.
 use crate::{
+    MAX_PACKET_BYTES,
     adaptive::{Controller, WINDOW},
     capture::CaptureConverter,
     capture_queue::CaptureQueue,
@@ -22,7 +23,7 @@ use cpal::{
 };
 use nuschl_core::audio::{AudioDevice, AudioSettings, EchoMode, EchoSource};
 use nuschl_ipc::{Envelope, LiveMediaEvent, LiveMediaRequest, read_frame, write_frame};
-use opus_pure::{MAX_PACKET_BYTES, OpusEncoder};
+use opus_rs::OpusEncoder;
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::{
     collections::VecDeque,
@@ -810,7 +811,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 )?;
                 transmit.active = !packet.end;
                 if packet.end {
-                    let _ = transmit.encoder.reset_state();
+                    transmit.encoder.reset();
                 }
             }
             transmit.sequence += 2;
@@ -874,7 +875,7 @@ fn finish(
     )?;
     transmit.sequence += 2;
     transmit.active = false;
-    let _ = transmit.encoder.reset_state();
+    transmit.encoder.reset();
     Ok(())
 }
 
@@ -2045,18 +2046,17 @@ mod tests {
 
     #[test]
     fn real_mono_packets_fit_default_and_reduced_live_targets_without_devices() {
-        let mut encoder =
-            opus_pure::OpusEncoder::new(48_000, 1, opus_pure::Application::Voip).unwrap();
+        let mut encoder = OpusEncoder::new(48_000, 1, opus_rs::Application::Voip).unwrap();
         encoder.use_inband_fec = true;
         encoder.packet_loss_perc = 5;
         let mut tx = super::Transmit {
             encoder,
             queue: CaptureQueue::default(),
-            packet: [0; opus_pure::MAX_PACKET_BYTES],
+            packet: [0; MAX_PACKET_BYTES],
             sequence: 0,
             active: false,
         };
-        let mut decoder = opus_pure::OpusDecoder::new(48_000, 1).unwrap();
+        let mut decoder = opus_rs::OpusDecoder::new(48_000, 1).unwrap();
         for target in [
             nuschl_core::audio::DEFAULT_VOICE_BITRATE,
             24_000,
@@ -2080,7 +2080,8 @@ mod tests {
     }
 
     use super::*;
-    use opus_pure::{MAX_PACKET_SAMPLES, OpusDecoder};
+    use crate::MAX_PACKET_SAMPLES;
+    use opus_rs::OpusDecoder;
 
     #[test]
     fn processed_prefix_marker_fixture_uses_the_real_queue_and_encoder() {
@@ -2097,9 +2098,9 @@ mod tests {
             assert!(queue.due(now).is_none(), "a prefix cannot open the gate");
         }
         let mut tx = super::Transmit {
-            encoder: OpusEncoder::new(48_000, 1, opus_pure::Application::Voip).unwrap(),
+            encoder: OpusEncoder::new(48_000, 1, opus_rs::Application::Voip).unwrap(),
             queue: CaptureQueue::default(),
-            packet: [0; opus_pure::MAX_PACKET_BYTES],
+            packet: [0; MAX_PACKET_BYTES],
             sequence: 0,
             active: false,
         };

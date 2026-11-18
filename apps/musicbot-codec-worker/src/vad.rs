@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: EUPL-1.2
 //! Voice activity in what the bot hears, for ducking: each talker's Opus is
-//! decoded (opus-pure) and every 10 ms frame is judged. A frame is speech when
+//! decoded (opus-rs) and every 10 ms frame is judged. A frame is speech when
 //! RNNoise thinks so *and* it stands well above the talker's own background
 //! level, which speech does between syllables and steady noise never does:
 //! RNNoise alone takes quiet hiss for speech. An open microphone, silence,
 //! hum or background noise does not duck the music.
 use nnnoiseless::DenoiseState;
-use opus_pure::OpusDecoder;
+use opus_rs::OpusDecoder;
 use std::collections::HashMap;
 
 const RATE: i32 = 48_000;
@@ -144,7 +144,7 @@ fn level_db(frame: &[f32]) -> f32 {
 mod tests {
     use super::*;
     use nuschl_ipc::musicbot::speech_threshold;
-    use opus_pure::{Application, OpusEncoder};
+    use opus_rs::{Application, OpusEncoder};
 
     /// Encodes mono 48 kHz audio into 20 ms Opus packets.
     fn packets(audio: &[f32]) -> Vec<Vec<u8>> {

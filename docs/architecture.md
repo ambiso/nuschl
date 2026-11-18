@@ -139,7 +139,7 @@ optimization. If the route is opaque, retain the uncertainty and expose a device
 override rather than stacking a speculative second canceller.
 
 The in-application DSP is Rust: Sonora for WebRTC-derived AEC and AGC2, nnnoiseless
-for RNNoise-derived suppression, and opus-pure for the codec. Their interoperability,
+for RNNoise-derived suppression, and opus-rs for the codec. Their interoperability,
 robustness and cost are measured in [the DSP evaluation](dsp-evaluation.md); perceptual
 quality on recorded speech is still open. Being written in Rust is not proof of memory
 safety or correct Opus output. Codec and

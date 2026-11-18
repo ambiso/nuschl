@@ -3253,6 +3253,8 @@ name = "nuschl-client"
 version = "0.2.0"
 dependencies = [
  "hex",
+ "icu_collator",
+ "js-sys",
  "nuschl-core",
  "nuschl-ipc",
  "nuschl-legacy-html",
@@ -3328,7 +3330,7 @@ dependencies = [
  "nuschl-protocol",
  "nuschl-session",
  "nuschld",
- "opus-pure",
+ "opus-rs",
  "prost",
  "pulldown-cmark",
  "serde_json",
@@ -3696,10 +3698,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
-name = "opus-pure"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5afacd236411dddcc284983066ef66b27e306e53ce4de85cd745b3da9be8a0be"
+name = "opus-rs"
+version = "0.1.42"
+source = "git+https://github.com/ambiso/opus-rs?rev=fddb8b45f972f4fb4be6b186750afa28611a28aa#fddb8b45f972f4fb4be6b186750afa28611a28aa"
+dependencies = [
+ "fearless_simd 1.2.0",
+]
 
 [[package]]
 name = "p12-keystore"

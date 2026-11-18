@@ -23232,8 +23232,8 @@ rec {
             packageId = "nuschl-audio-jitter";
           }
           {
-            name = "opus-pure";
-            packageId = "opus-pure";
+            name = "opus-rs";
+            packageId = "opus-rs";
           }
           {
             name = "wasm-bindgen";
@@ -24262,8 +24262,8 @@ rec {
             target = { target, features }: (target."windows" or false);
           }
           {
-            name = "opus-pure";
-            packageId = "opus-pure";
+            name = "opus-rs";
+            packageId = "opus-rs";
           }
           {
             name = "pipewire";
@@ -24466,8 +24466,8 @@ rec {
             packageId = "nuschl-ipc";
           }
           {
-            name = "opus-pure";
-            packageId = "opus-pure";
+            name = "opus-rs";
+            packageId = "opus-rs";
           }
           {
             name = "rubato";
@@ -29501,14 +29501,39 @@ rec {
         ];
 
       };
-      "opus-pure" = rec {
-        crateName = "opus-pure";
-        version = "0.2.3";
+      "opus-rs" = rec {
+        crateName = "opus-rs";
+        version = "0.1.42";
         edition = "2024";
-        src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../vendor/opus-pure; };
-        libName = "opus_pure";
-        features = {
+        workspace_member = null;
+        src = pkgs.fetchgit {
+          url = "https://github.com/ambiso/opus-rs";
+          rev = "fddb8b45f972f4fb4be6b186750afa28611a28aa";
+          sha256 = "0kbapz6l1wzdm9p6905988b7q42msn3w9pwvqjls9yl193yvbhpy";
         };
+        libName = "opus_rs";
+        authors = [
+          "jinti<shenjindi@fourz.cn>"
+        ];
+        dependencies = [
+          {
+            name = "fearless_simd";
+            packageId = "fearless_simd 1.2.0";
+            usesDefaultFeatures = false;
+            target = { target, features }: (("x86" == target."arch" or null) || ("x86_64" == target."arch" or null));
+          }
+        ];
+        features = {
+          "deep-plc" = [ "dnn" ];
+          "default" = [ "std" "heap" ];
+          "dred" = [ "deep-plc" ];
+          "fuzzing" = [ "std" ];
+          "heap" = [ "std" ];
+          "libm" = [ "dep:libm" "fearless_simd/libm" ];
+          "osce" = [ "deep-plc" ];
+          "std" = [ "fearless_simd/std" ];
+        };
+        resolvedDefaultFeatures = [ "default" "heap" "std" ];
       };
       "ordered-float 4.6.0" = rec {
         crateName = "ordered-float";

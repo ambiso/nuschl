@@ -421,6 +421,13 @@ multispeaker, loss/jitter or perceptual parity.
 
 ## Explicit reference decoder setting
 
+Nuschl now uses [opus-rs](https://github.com/ambiso/opus-rs), a Rust port of
+libopus. The measurements below were taken with opus-pure 0.2.3 and its
+vendored Nuschl patches, before that switch.
+
+opus-rs has the same control, `OpusDecoder::set_phase_inversion_disabled`, and
+keeps it across `reset()`; the native Speaker and browser VoiceDecoder set it.
+
 Stock Mumble sets `OPUS_SET_PHASE_INVERSION_DISABLED(1)` after decoder creation.
 Published opus-pure 0.2.3's CELT decoder passed `disable_inv=false` and exposed
 no public control. The earlier reference-libopus fixtures use defaults, so

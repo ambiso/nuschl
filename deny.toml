@@ -87,7 +87,7 @@ deny = [
   { name = "cpal", wrappers = [
     "nuschl-media-worker",
   ], reason = "Native audio APIs belong in the media worker" },
-  { name = "opus-pure", wrappers = [
+  { name = "opus-rs", wrappers = [
     "nuschl-media-worker",
     "nuschl-audio-wasm",
     "nuschl-musicbot-codec-worker",
@@ -204,6 +204,8 @@ deny = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# opus-rs, the Opus codec: the owner's fork, pinned by commit in Cargo.toml.
+allow-git = ["https://github.com/ambiso/opus-rs"]
 
 [[bans.features]]
 name = "str0m"

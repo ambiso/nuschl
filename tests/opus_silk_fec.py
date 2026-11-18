@@ -3,7 +3,7 @@
 """Device-free independent libopus vs safe-Rust SILK, DTX and framing audit.
 
 The library is a test oracle only. No servers, host devices or Cargo builds.
-Compile opus_silk_probe.rs against the vendor crate; see docs/opus-silk.md.
+Compile opus_silk_probe.rs against opus-rs; see docs/opus-silk.md.
 """
 import argparse
 import ctypes as C

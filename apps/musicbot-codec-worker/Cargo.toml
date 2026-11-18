@@ -12,7 +12,7 @@ nuschl-ipc.workspace = true
 audioadapter-buffers = "5.2.0"
 # Voice activity detection for ducking (RNNoise).
 nnnoiseless = { version = "0.5.2", default-features = false }
-opus-pure = "0.2.3"
+opus-rs.workspace = true
 rubato = "5.0.1"
 symphonia = { version = "0.6.1", default-features = false, features = [
   "aac",
@@ -30,7 +30,13 @@ symphonia = { version = "0.6.1", default-features = false, features = [
 nuschl-core.workspace = true
 nuschl-protocol.workspace = true
 nuschl-testkit.workspace = true
-tokio = { version = "1.54.1", features = ["io-util", "macros", "rt", "sync", "time"] }
+tokio = { version = "1.54.1", features = [
+  "io-util",
+  "macros",
+  "rt",
+  "sync",
+  "time",
+] }
 
 [lints]
 workspace = true

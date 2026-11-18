@@ -749,7 +749,8 @@ mod tests {
 #[cfg(test)]
 mod evaluation {
     use super::*;
-    use opus_pure::{Application, MAX_PACKET_BYTES, MAX_PACKET_SAMPLES, OpusDecoder, OpusEncoder};
+    use crate::{MAX_PACKET_BYTES, MAX_PACKET_SAMPLES};
+    use opus_rs::{Application, OpusDecoder, OpusEncoder};
     use std::time::Instant;
 
     /// A talker: harmonics of a gliding pitch with syllable-rate envelope and pauses.
@@ -922,7 +923,7 @@ mod evaluation {
             chain_rtf * 100.
         );
         println!(
-            "  opus-pure encode at 40 kb/s with FEC: {:.2}%, decode: {:.3}% per talker ({:.1} kb/s actual)",
+            "  opus-rs encode at 40 kb/s with FEC: {:.2}%, decode: {:.3}% per talker ({:.1} kb/s actual)",
             encode / seconds as f64 * 100.,
             decode / seconds as f64 * 100.,
             bytes as f64 * 8. / seconds as f64 / 1000.

@@ -1,7 +1,7 @@
 # Evaluation of the Rust audio stack
 
 Nuschl's media worker uses memory-safe ports instead of the C/C++ originals:
-[opus-pure](https://crates.io/crates/opus-pure) for Opus,
+[opus-rs](https://github.com/ambiso/opus-rs) for Opus,
 [Sonora](https://crates.io/crates/sonora) for WebRTC's high-pass filter, AEC3 and AGC2, and
 [nnnoiseless](https://crates.io/crates/nnnoiseless) for RNNoise. This page records
 how they were evaluated and what the measurements show. All numbers are from
@@ -20,6 +20,10 @@ how they were evaluated and what the measurements show. All numbers are from
 libopus is loaded only by the test process, through ctypes, as a reference.
 
 ## Opus (opus-pure)
+
+Nuschl now uses [opus-rs](https://github.com/ambiso/opus-rs), a Rust port of
+libopus. The measurements below were taken with opus-pure 0.2.3 and its
+vendored Nuschl patches, before that switch.
 
 **Decoder conformance.** The same packets, decoded by libopus 1.6.1 and by
 opus-pure, agree to within float rounding in every mode:
