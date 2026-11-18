@@ -78,7 +78,7 @@ use rand_core::TryCryptoRng;
 pub use exchange::{
     EpochKey, MAX_MISSED_REKEYS, MIN_EPOCH_INTERVAL_MS, Publisher, PublisherEvent,
     REQUEST_LIFETIME_MS, RESEND_AFTER_MS, Rekey, SWITCH_AFTER_MS, Subscriber, SubscriberEvent,
-    SubscriberId,
+    SubscriberId, for_publisher,
 };
 pub use link::{Link, LinkKeys, admit_key, host_key, room_check, stream_id};
 
