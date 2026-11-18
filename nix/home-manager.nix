@@ -159,6 +159,7 @@ let
     "e2ee_direct_messages"
     "key_transparency"
     "share_web_host"
+    "call_host"
     "voice_bitrate"
   ];
   unknownSettings = lib.subtractLists settingNames (lib.attrNames cfg.settings);
