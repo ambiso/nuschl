@@ -30,10 +30,11 @@ decisions (§11).
   Nuschl or opened from the link, then native Linux capture, encoding and
   viewing; end-to-end-mode servers last (§3).
 - **Codec (Owner):** royalty-free codecs only, one per call: AV1, or VP9 when
-  a participant lacks AV1 decoding. The pages use the browser's own encoding
-  and decoding; native clients encode and decode in hardware first (VA-API on
-  Linux), with software AV1 encoding and rav1d decoding as the fallback. The
-  SFU forwards encoded frames as they are.
+  a participant lacks AV1 decoding, later VP8 as the third choice. The pages
+  use the browser's own encoding and decoding; native clients encode and
+  decode in hardware first (VA-API on Linux), with software AV1 encoding and
+  rav1d decoding as the fallback. The SFU forwards encoded frames as they
+  are.
 
 ## 1. What exists
 
@@ -248,9 +249,9 @@ encoder offers them, spatial layers.
 - **Encoding.** One `nuschl-video-worker --encode` role per source: PipeWire
   DMA-BUF into the hardware encoder without a CPU copy, the software AV1
   encoder S0f picks otherwise (rav1e preferred), live rate control and at
-  most 2 queued frames. Encoders have had exploited bugs
-  ([CVE-2023-5217](https://nvd.nist.gov/vuln/detail/CVE-2023-5217)), so
-  encoding runs isolated too.
+  most 2 queued frames. Encoders have had exploited bugs (libvpx's VP8
+  encoder, [CVE-2023-5217](https://nvd.nist.gov/vuln/detail/CVE-2023-5217)),
+  so encoding runs isolated too, including any native software VP8.
 - **Decoding.** A `--decode` role per call: the hardware decoder first, rav1d
   (Owner) as the AV1 software fallback, with pixel, memory and CPU caps.
   Decoded frames stay on the device.
@@ -317,6 +318,11 @@ encoder offers them, spatial layers.
   back. The switch rides on the rekey that the join or leave triggers anyway
   (within 2 s): each publisher restarts its encoder in the new codec, whose
   first frame is a key frame, and receivers change decoders there.
+- **VP8, later (Owner, #442).** The third choice in the order AV1 → VP9 → VP8,
+  for devices whose hardware or browser lacks the other two. VP8 is
+  royalty-free (Google's irrevocable patent grant and the 2013 Google–MPEG LA
+  licence) and mandatory in WebRTC browsers (RFC 7742). It has temporal
+  layers only, no spatial SVC layers, and lower efficiency per bit.
 
 ## 7. Consent, privacy and bounds
 
@@ -437,8 +443,8 @@ Murmur 1.4 and 1.5 with a stock Mumble client, and relay-only by packet capture.
   P covers the owner actions only.
 - The pages use the browser's own video encoding and decoding; a browser with
   neither AV1 nor VP9 gets a clear message.
-- One codec per call: AV1 when every participant decodes it, VP9 otherwise;
-  publishers encode each source once.
+- One codec per call: AV1 when every participant decodes it, VP9 otherwise,
+  later VP8 as the third choice (#442); publishers encode each source once.
 - Native software VP9: libvpx or FFmpeg's VP9 decoder in its own isolated
   video-worker role, as the fallback to hardware codecs (§6).
 - Frame transport: framed pipes first, then `memfd` slots for pixels with
