@@ -236,8 +236,9 @@ class AccessibilityTest:
             (profile / "config/servers.json").write_text(json.dumps([dict(
                 id=str(uuid.uuid4()), name="Accessible server", host="127.0.0.1", port=port, username="Andi",
                 certificate_sha256=pin)]))
-            # GPUI's accessibility warnings, for check_single_focus.
-            logging = env.get("RUST_LOG", "nuschl=info") + ",gpui::window::a11y=warn"
+            # GPUI's warnings, for check_single_focus; errors without a target
+            # include a screen reader's action that GPUI could not deliver.
+            logging = "error," + env.get("RUST_LOG", "nuschl=info") + ",gpui=warn"
             app = self.spawn([str(self.args.binaries / "nuschl"), "--profile-dir", str(profile),
                               f"mumble://Andi@127.0.0.1:{port}/Lobby/Development"],
                              env | {"RUST_LOG": logging}, "desktop.log")
@@ -504,7 +505,8 @@ class AccessibilityTest:
         dialog in front. Both dialogs once tracked one focus handle, which then
         made both the focused node."""
         def named(role, name):
-            return next((node for _, node, r, n in snapshot(nuschl) if r == role and n == name), None)
+            # One call returns the whole tree; a walk takes seconds for Settings.
+            return next((node for node, r, n, _ in items(nuschl) if r == role and n == name), None)
 
         def prompt():
             nodes = snapshot(nuschl)
@@ -516,9 +518,22 @@ class AccessibilityTest:
         def in_prompt():
             return any(node.focused for _, node, _, _ in prompt())
 
-        self.find(snapshot(nuschl), "push button", "Settings").press()
-        eventually(lambda: named("push button", "Export…"), "Settings has no Export… button", timeout=15).press()
-        eventually(lambda: named("dialog", "Input"), "the export prompt did not open over Settings", timeout=15)
+        def shown(role, name, message):
+            """The node, or a failure that says whether it came later."""
+            try:
+                return eventually(lambda: named(role, name), message, timeout=15)
+            except AssertionError:
+                started = time.monotonic()
+                while time.monotonic() - started < 30 and not named(role, name):
+                    time.sleep(0.2)
+                late = time.monotonic() - started
+                raise AssertionError(f"{message}; " + (f"it appeared {late:.1f} s later" if named(role, name)
+                                                       else "still absent 30 s later")
+                                     + f"; see {self.args.output / 'desktop.log'}") from None
+
+        named("push button", "Settings").press()
+        shown("push button", "Export…", "Settings has no Export… button").press()
+        shown("dialog", "Input", "the export prompt did not open over Settings")
         eventually(in_prompt, "the prompt's field did not take the focus", timeout=10)
         if self.shell:
             self.shell.chord("Shift_L", "Tab")
