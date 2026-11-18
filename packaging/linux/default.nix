@@ -90,12 +90,58 @@ let
       (debWith (toString (pkgs.lib.toInt revision + 1)))
     ];
   };
+  archDepends = [
+    "glibc"
+    "gcc-libs"
+    "bubblewrap"
+    "util-linux"
+    "desktop-file-utils"
+    "hicolor-icon-theme"
+    "sqlite"
+    "fontconfig"
+    "freetype2"
+    "libxkbcommon"
+    "libxkbcommon-x11"
+    "wayland"
+    "vulkan-icd-loader"
+    "libglvnd"
+    "libx11"
+    "libxcursor"
+    "libxi"
+    "libxrandr"
+    "libxcb"
+    "alsa-lib"
+    "pipewire"
+    "libpulse"
+  ];
+  aurWith =
+    key: signature:
+    import ../arch/package.nix {
+      depends = archDepends;
+      inherit
+        pkgs
+        version
+        deb
+        key
+        signature
+        maintainer
+        ;
+      debianRevision = revision;
+    };
+  # nuschl-bin built from the test repository's signed .deb; building it checks
+  # that makepkg refuses a missing or wrong signature.
+  aurTest = aurWith "${aptRepository.test}/key.asc" "${aptRepository.test}/pool/main/n/nuschl/nuschl_${version}-${revision}_amd64.deb.sig";
+  archiveKey = ../nuschl-archive-keyring.asc;
 in
 {
-  inherit stage deb aptRepository;
-  archBin = import ../arch/package.nix {
-    inherit pkgs version stage;
-    packageRevision = revision;
-    sourceDateEpoch = 1;
-  };
+  inherit
+    stage
+    deb
+    aptRepository
+    aurTest
+    ;
+}
+// pkgs.lib.optionalAttrs (builtins.pathExists archiveKey) {
+  # The PKGBUILD and .SRCINFO to publish, for the archive key in the repository.
+  aur = aurWith archiveKey null;
 }
