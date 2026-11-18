@@ -275,6 +275,14 @@ encoder offers them, spatial layers.
      worker may write the mapping at any time, and `AtomicU8` permits that:
      the trusted side copies pixels out by atomic loads into an owned or GPU
      staging buffer, and no `&[u8]` over the mapping exists.
+     If the step 2 measurement shows atomic byte copies are too slow, one
+     more `unsafe` call is allowed (Owner): a bulk copy out of the mapping
+     into an owned buffer, for example volatile or `ptr::copy_nonoverlapping`.
+     It needs a thorough `SAFETY:` argument (why a concurrent writer yields
+     only arbitrary bytes and no undefined behaviour in the trusted process,
+     including under Rust's data-race rules; the source and destination
+     guarantees; why the destination is never aliased), a Miri or loom test
+     where feasible, and the owner's review of that block.
   3. Hardware frames go zero-copy: VA-API exports decoded surfaces as dmabuf
      fds, passed over the Unix socket in the same ordered protocol and
      imported by the GPU; shared D3D11 textures on Windows and IOSurface on
@@ -428,7 +436,8 @@ Murmur 1.4 and 1.5 with a stock Mumble client, and relay-only by packet capture.
   video-worker role, as the fallback to hardware codecs (§6).
 - Frame transport: framed pipes first, then `memfd` slots for pixels with
   control on the pipe, and dmabuf (or the platform equivalent) for hardware
-  frames (§6). The only `unsafe` is the one `memmap2` mapping of the `memfd`.
+  frames (§6). The only `unsafe` is the one `memmap2` mapping of the `memfd`,
+  plus one reviewed bulk copy if atomic copies measure too slow.
 - On Nuschl servers, later: the voice channel's WebRTC session is the call,
   and Start camera and Share screen add tracks to it (§3).
 - Camera quality and screen quality are user-selectable (§5).
