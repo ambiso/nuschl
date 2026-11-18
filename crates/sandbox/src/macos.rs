@@ -2,7 +2,8 @@
 //! macOS: Seatbelt profiles applied with `sandbox-exec`, without memory or CPU
 //! limits (the supervisors' deadlines bound the workers). Content and storage
 //! workers are pure Rust and start from deny-by-default on top of Apple's base
-//! `system.sb`. The media worker needs CoreAudio's undocumented set of Mach
+//! `system.sb`, with `process-fork` denied after it, so a worker's process is
+//! the only one its profile runs. The media worker needs CoreAudio's undocumented set of Mach
 //! services, so it is confined by a deny list instead (no network, no writes
 //! outside temporary directories, no reads of the home directory beyond audio
 //! preferences) until it can be narrowed on real hardware. No confinement for
@@ -22,6 +23,7 @@ use crate::{Error, Role};
 const CONTENT: &str = r#"(version 1)
 (deny default)
 (import "system.sb")
+(deny process-fork)
 (allow process-exec (literal (param "WORKER")))
 (allow file-read* (literal (param "WORKER")))
 "#;
@@ -29,6 +31,7 @@ const CONTENT: &str = r#"(version 1)
 const STORAGE: &str = r#"(version 1)
 (deny default)
 (import "system.sb")
+(deny process-fork)
 (allow process-exec (literal (param "WORKER")))
 (allow file-read* (literal (param "WORKER")))
 (allow file-read* file-write* (subpath (param "DATA")))
@@ -50,6 +53,7 @@ const MEDIA: &str = r#"(version 1)
 const TRANSFER: &str = r#"(version 1)
 (deny default)
 (import "system.sb")
+(deny process-fork)
 (allow process-exec (literal (param "WORKER")))
 (allow file-read* (literal (param "WORKER")) (literal (param "FILE")))
 (allow system-socket)
@@ -128,8 +132,12 @@ mod tests {
             assert!(balanced(profile), "{profile}");
             assert!(profile.contains(r#"(allow process-exec (literal (param "WORKER")))"#));
         }
-        for profile in [CONTENT, STORAGE] {
+        for profile in [CONTENT, STORAGE, TRANSFER] {
             assert!(profile.contains("(deny default)"));
+            // After the import, so it holds whatever system.sb allows.
+            assert!(profile.contains("(import \"system.sb\")\n(deny process-fork)\n"));
+        }
+        for profile in [CONTENT, STORAGE] {
             assert!(
                 !profile.contains("network"),
                 "pure workers get no network rule at all"
@@ -137,7 +145,6 @@ mod tests {
         }
         assert!(MEDIA.contains("(deny network*)"));
         assert!(MEDIA.contains("(deny file-write*)"));
-        assert!(TRANSFER.contains("(deny default)"));
         assert!(!TRANSFER.contains("file-write"));
     }
 
@@ -247,5 +254,8 @@ mod tests {
             "/usr/bin/touch",
             &[&format!("{home}/nuschl-sandbox-escape")]
         ));
+        // The subshell needs a fork.
+        assert!(run(CONTENT, "/bin/bash", &["-c", "exit 0"]));
+        assert!(!run(CONTENT, "/bin/bash", &["-c", "(exit 0) && exit 0"]));
     }
 }
