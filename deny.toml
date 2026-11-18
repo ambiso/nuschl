@@ -175,10 +175,8 @@ deny = [
   ], reason = "Call key agreement belongs to the crypto worker; driver, desktop and browser callers wait for their SECURITY.md rows (docs/video-plan.md §4)" },
   { name = "aes-gcm", wrappers = [
     "dimpl",
-    "hpke-rs-rust-crypto",
     "noise-rust-crypto",
     "nuschl-sframe",
-    "openmls_rust_crypto",
     "pkcs5",
     "str0m-rust-crypto",
   ], reason = "RustCrypto AES-GCM (AES-NI intrinsics) only through its current users and nuschl-sframe, so nuschl-stream and the crypto worker that links it carry none (docs/video-plan.md §4)" },
