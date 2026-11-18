@@ -72,6 +72,9 @@ pub struct Config {
     pub max_sources_per_peer: usize,
     /// A room and its keys expire this long after it was created.
     pub room_lifetime_secs: u64,
+    /// A room ends when its creator's device has not renewed its lease for
+    /// this long.
+    pub lease_secs: u64,
     /// The largest WebSocket message; SDP and key messages must fit.
     pub max_message_bytes: usize,
     /// Signalling messages per second and peer; twice this is the burst.
@@ -99,6 +102,7 @@ impl Default for Config {
             max_peers_per_room: 16,
             max_sources_per_peer: 3,
             room_lifetime_secs: 4 * 3600,
+            lease_secs: 30,
             max_message_bytes: 256 * 1024,
             messages_per_second: 32,
             creations_per_hour: 20,
@@ -131,6 +135,7 @@ impl Config {
             || self.max_peers_per_room < 2
             || self.max_sources_per_peer == 0
             || self.room_lifetime_secs == 0
+            || self.lease_secs == 0
             || self.max_message_bytes < 16 * 1024
             || self.messages_per_second == 0
             || self.receiver_bitrate == 0

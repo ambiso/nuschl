@@ -246,6 +246,14 @@ pkgs.testers.runNixOSTest {
           assert turn_credentials["urls"] == ["turn:turn.test:3478?transport=udp"], turn_credentials
           assert echoed(relay(turn_credentials["username"], "${sfu4}", password=turn_credentials["credential"])) == (3, 3)
           sfu.succeed("ss -lun | grep -q ':40010 '")
+          lease = lambda method, key: client.succeed(
+              f"curl -sS -o /dev/null -w '%{{http_code}}' -X {method} http://stream.test/sfu/lease "
+              f"--data '{{\"stream_id\": \"{'03' * 16}\", \"host_key\": \"{key}\"}}'"
+          )
+          assert lease("POST", "02" * 32) == "204"
+          assert lease("POST", "05" * 32) == "404"
+          assert lease("DELETE", "02" * 32) == "204"
+          assert lease("POST", "02" * 32) == "404"
           assert sfu.succeed("stat -c %U:%G /run/nuschl-stream-sfu/sfu.sock").strip() == "nuschl-stream-sfu:nuschl-stream-sfu"
     '';
 }

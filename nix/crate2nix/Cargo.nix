@@ -25032,6 +25032,10 @@ rec {
             packageId = "hmac 0.13.0";
           }
           {
+            name = "httparse";
+            packageId = "httparse";
+          }
+          {
             name = "serde";
             packageId = "serde";
             features = [ "derive" ];

@@ -33,8 +33,9 @@
 //! ```
 //!
 //! HKDF-Extract's first argument is the salt; `nonce` is the 32 bytes of `hello`.
-//! Every link carries V, in the same unpadded base64url as S and P:
-//! `/watch#v=1&k=<S>&h=<V>` and `/call#v=1&k=<S>&h=<V>&p=<P>`. A room is named
+//! `crates/stream` provides these as `stream_id`, `admit_key`, `host_key` and
+//! `room_check` (V). Every link carries V, in the same unpadded base64url as S
+//! and P: `/call#v=1&k=<S>&h=<V>`, and the creator's link adds `&p=<P>`. A room is named
 //! by `(room, verifier)`. `create` succeeds only with a `host_key` that hashes
 //! to `verifier`, so a holder of S alone cannot create the room a link names.
 //!
@@ -44,6 +45,22 @@
 //! V        = 078384c474855fcaa97ecbb155d67f03add025efa0c126d8a23c30e71d6c4c37
 //! h=         B4OExHSFX8qpfsuxVdZ_A63QJe-gwSbYojww5x1sTDc
 //! ```
+//!
+//! **Lease.** The creator's device keeps the room alive over plain HTTP on the
+//! same origin; P stays on the device, the SFU receives `host_key`:
+//!
+//! ```text
+//! POST   /sfu/lease  {"stream_id": "<hex>", "host_key": "<hex>"}   renew, every 10 s
+//! DELETE /sfu/lease  {"stream_id": "<hex>", "host_key": "<hex>"}   end the room
+//! → 204 done | 400 malformed | 404 no room for this stream_id and SHA-256(host_key)
+//!   | 429 renewed less than a second ago, or too many connections from the address
+//! ```
+//!
+//! The room `(stream_id, SHA-256(host_key))` ends 30 s (`lease_secs`) after its
+//! creation or its last renewal; ending disconnects every peer with `error
+//! {reason: "ended"}` and refuses joins until the room expires. A body is at
+//! most 1 KiB with a `Content-Length`, a request head at most 8 KiB, and each
+//! request uses one connection of the per-address limit.
 
 use crate::rooms::{PeerId, Role};
 use serde::{Deserialize, Serialize};

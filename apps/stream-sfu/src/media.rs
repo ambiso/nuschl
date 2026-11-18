@@ -9,7 +9,7 @@
 use crate::{
     config::Config,
     protocol::{self, ClientMessage, PeerInfo, ServerMessage, Track, TurnCredentials},
-    rooms::{self, Bucket, Join, Nonce, PeerId, RoomId, Rooms},
+    rooms::{self, Bucket, Join, Nonce, PeerId, Refusal, RoomId, Rooms},
     routing::Routing,
 };
 use std::{
@@ -26,7 +26,10 @@ use str0m::{
     net::{Protocol, Receive},
     rtp::{RtpPacket, RtpWrite},
 };
-use tokio::{net::UdpSocket, sync::mpsc};
+use tokio::{
+    net::UdpSocket,
+    sync::{mpsc, oneshot},
+};
 
 /// One keyframe request per source in this interval reaches its publisher.
 const KEYFRAME_INTERVAL: Duration = Duration::from_secs(2);
@@ -49,6 +52,14 @@ pub enum Command {
     },
     Leave {
         id: PeerId,
+    },
+    /// The creator's device renews the lease of `room` or ends it; the reply is
+    /// the HTTP status.
+    Lease {
+        room: RoomId,
+        host_key: rooms::Key,
+        end: bool,
+        reply: oneshot::Sender<u16>,
     },
 }
 
@@ -146,6 +157,7 @@ impl Core {
                 rooms: config.max_rooms,
                 peers_per_room: config.max_peers_per_room,
                 lifetime: Duration::from_secs(config.room_lifetime_secs),
+                lease: Duration::from_secs(config.lease_secs),
                 creations_per_hour: config.creations_per_hour,
                 room_bitrate: config.room_bitrate,
             }),
@@ -187,7 +199,7 @@ impl Core {
                 _ = expiry.tick() => {
                     self.routing.expire(Instant::now());
                     for id in self.rooms.expire(Instant::now()) {
-                        self.kicks.push((id, "expired"));
+                        self.kicks.push((id, "ended"));
                     }
                 }
             }
@@ -205,6 +217,25 @@ impl Core {
                 out,
             } => self.join(id, client, &nonce, join, out, now),
             Command::Leave { id } => self.remove(id, None),
+            Command::Lease {
+                room,
+                host_key,
+                end,
+                reply,
+            } => {
+                let status = match self.rooms.lease(&room, &host_key, end, now) {
+                    Ok(peers) => {
+                        for peer in peers {
+                            self.kicks.push((peer, "ended"));
+                        }
+                        204
+                    }
+                    Err(Refusal::NoRoom) => 404,
+                    Err(Refusal::Rate) => 429,
+                    Err(_) => 403,
+                };
+                let _ = reply.send(status);
+            }
             Command::Message { id, message } => {
                 if let Err(reason) = self.message(id, message, now) {
                     self.kicks.push((id, reason));

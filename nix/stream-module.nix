@@ -132,6 +132,7 @@ in
             max_peers_per_room = limit 16 "Peers per room.";
             max_sources_per_peer = limit 3 "Tracks one peer may publish.";
             room_lifetime_secs = limit 14400 "Seconds from a room's creation to its end.";
+            lease_secs = limit 30 "Seconds a room lasts without a lease renewal from its creator's device.";
             max_message_bytes = limit 262144 "The largest signalling message.";
             messages_per_second = limit 32 "Signalling messages per peer and second (twice this as a burst).";
             creations_per_hour = limit 20 "Room creations per client address (IPv6 per /64) and hour.";
@@ -188,6 +189,13 @@ in
               extraConfig = ''
                 proxy_set_header X-Real-IP $remote_addr;
                 proxy_buffering off;
+              '';
+            };
+            "= /sfu/lease" = {
+              proxyPass = "http://unix:${socket}:";
+              extraConfig = ''
+                proxy_set_header X-Real-IP $remote_addr;
+                client_max_body_size 1k;
               '';
             };
           };

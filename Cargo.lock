@@ -7549,6 +7549,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "hmac 0.13.0",
+ "httparse",
  "nuschl-testkit",
  "serde",
  "serde_json",

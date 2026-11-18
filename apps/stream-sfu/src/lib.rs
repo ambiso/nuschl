@@ -7,6 +7,7 @@
 //! holds no media key.
 
 pub mod config;
+pub mod http;
 pub mod media;
 pub mod protocol;
 pub mod rooms;
@@ -24,18 +25,21 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    io::{AsyncRead, AsyncWrite},
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, UdpSocket},
-    sync::mpsc,
+    sync::{mpsc, oneshot},
     time::timeout,
 };
-use tokio_tungstenite::tungstenite::{
-    Message,
-    handshake::server::{Request, Response},
-    protocol::WebSocketConfig,
+use tokio_tungstenite::{
+    WebSocketStream,
+    tungstenite::{
+        Message,
+        handshake::derive_accept_key,
+        protocol::{Role, WebSocketConfig},
+    },
 };
 
-/// The WebSocket upgrade, and then the join, must each arrive within this.
+/// The HTTP request, and then the join, must each arrive within this.
 const HANDSHAKE: Duration = Duration::from_secs(10);
 const PING: Duration = Duration::from_secs(30);
 /// Messages waiting for one peer's WebSocket; a peer that falls behind leaves.
@@ -207,46 +211,79 @@ fn text(message: &ServerMessage) -> Message {
     Message::text(serde_json::to_string(message).expect("serializable"))
 }
 
-/// One peer's WebSocket: hello, join, then messages both ways until either
-/// side closes.
-// tungstenite's handshake callback returns its HTTP error response by value.
-#[allow(clippy::result_large_err)]
+/// The body of `POST` and `DELETE /sfu/lease`.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Lease {
+    stream_id: String,
+    host_key: String,
+}
+
+async fn lease(end: bool, body: &[u8], commands: &mpsc::Sender<Command>) -> u16 {
+    let Some((stream_id, host_key)) = serde_json::from_slice::<Lease>(body)
+        .ok()
+        .and_then(|lease| Some((from_hex(&lease.stream_id)?, from_hex(&lease.host_key)?)))
+    else {
+        return 400;
+    };
+    let (reply, status) = oneshot::channel();
+    let command = Command::Lease {
+        room: (stream_id, rooms::verifier(&host_key)),
+        host_key,
+        end,
+        reply,
+    };
+    if commands.send(command).await.is_err() {
+        return 503;
+    }
+    status.await.unwrap_or(503)
+}
+
+/// One connection: a lease request, or a peer's WebSocket with hello, join,
+/// then messages both ways until either side closes.
 async fn connection<S: AsyncRead + AsyncWrite + Unpin>(
-    stream: S,
+    mut stream: S,
     client: Option<IpAddr>,
     id: PeerId,
     config: &Config,
     commands: &mpsc::Sender<Command>,
     mut slot: Slot,
 ) {
-    // Behind the web server (a Unix socket), the client address comes from it.
-    let mut forwarded = None;
-    let callback = |request: &Request, response: Response| {
-        forwarded = request
-            .headers()
-            .get("x-real-ip")
-            .and_then(|value| value.to_str().ok()?.parse::<IpAddr>().ok());
-        Ok(response)
-    };
-    let limits = WebSocketConfig::default()
-        .max_message_size(Some(config.max_message_bytes))
-        .max_frame_size(Some(config.max_message_bytes));
-    let Ok(Ok(mut socket)) = timeout(
-        HANDSHAKE,
-        tokio_tungstenite::accept_hdr_async_with_config(stream, callback, Some(limits)),
-    )
-    .await
-    else {
+    let Ok(Some((request, forwarded))) = timeout(HANDSHAKE, http::read(&mut stream)).await else {
         return;
     };
+    // Behind the web server (a Unix socket), the client address comes from it.
     let client = client
         .or(forwarded)
         .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
-    if !slot.address(client, config.connections_per_address) {
-        let reason = "connections";
-        let _ = socket.send(text(&ServerMessage::Error { reason })).await;
+    let key = match request {
+        _ if !slot.address(client, config.connections_per_address) => {
+            let _ = stream.write_all(http::status(429).as_bytes()).await;
+            return;
+        }
+        http::Request::Refused(code) => {
+            let _ = stream.write_all(http::status(code).as_bytes()).await;
+            return;
+        }
+        http::Request::Lease { end, body } => {
+            let code = lease(end, &body, commands).await;
+            let _ = stream.write_all(http::status(code).as_bytes()).await;
+            return;
+        }
+        http::Request::WebSocket(key) => key,
+    };
+    let accept = format!(
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+         Sec-WebSocket-Accept: {}\r\n\r\n",
+        derive_accept_key(key.as_bytes())
+    );
+    if stream.write_all(accept.as_bytes()).await.is_err() {
         return;
     }
+    let limits = WebSocketConfig::default()
+        .max_message_size(Some(config.max_message_bytes))
+        .max_frame_size(Some(config.max_message_bytes));
+    let mut socket = WebSocketStream::from_raw_socket(stream, Role::Server, Some(limits)).await;
     let nonce = rooms::random::<32>();
     let hello = ServerMessage::Hello {
         nonce: hex::encode(nonce),

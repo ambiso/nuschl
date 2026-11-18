@@ -4,7 +4,8 @@
 //! host publishes AV1 and one participant VP8; every peer receives the others'
 //! RTP payloads byte for byte with consecutive sequence numbers. Key messages
 //! reach the named peer only. Wrong proofs, unknown rooms, oversized key
-//! messages and host actions by participants are refused.
+//! messages and host actions by participants are refused. The creator's lease
+//! renews with `host_key`, and ending it disconnects everyone.
 
 use futures_util::{SinkExt, StreamExt};
 use hmac::{KeyInit, Mac};
@@ -82,6 +83,29 @@ fn start() -> Sfu {
         url: format!("ws://{signalling}/sfu"),
         _directory: directory,
     }
+}
+
+/// `POST` or `DELETE /sfu/lease`; returns the status code.
+fn lease(url: &str, method: &str, stream_id: [u8; 16], host_key: [u8; 32]) -> u16 {
+    use std::io::{Read, Write};
+    let address = url.trim_start_matches("ws://").trim_end_matches("/sfu");
+    let body =
+        json!({"stream_id": hex::encode(stream_id), "host_key": hex::encode(host_key)}).to_string();
+    let mut stream = std::net::TcpStream::connect(address).expect("connect");
+    write!(
+        stream,
+        "{method} /sfu/lease HTTP/1.1\r\nHost: sfu\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    )
+    .expect("request");
+    let mut response = String::new();
+    stream.read_to_string(&mut response).expect("response");
+    response
+        .split_whitespace()
+        .nth(1)
+        .expect("status")
+        .parse()
+        .expect("code")
 }
 
 fn prove(key: &[u8; 32], label: &[u8], nonce: &[u8]) -> String {
@@ -399,6 +423,15 @@ async fn forwards_media_and_key_messages_unchanged() {
 
     let (mut host, welcome) = join(url, &ADMIT, true, true).await;
     assert_eq!(welcome["type"], "welcome");
+    // The creator's device renews the lease with host_key.
+    assert_eq!(lease(url, "POST", ROOM, HOST), 204);
+    assert_eq!(lease(url, "POST", ROOM, HOST), 429, "at most once a second");
+    assert_eq!(
+        lease(url, "POST", ROOM, ADMIT),
+        404,
+        "another key names no room"
+    );
+    assert_eq!(lease(url, "POST", [4; 16], HOST), 404);
     assert_eq!(welcome["role"], "host");
     let turn = &welcome["turn"];
     assert_eq!(turn["urls"], json!(["turn:turn.test:3478?transport=udp"]));
@@ -467,9 +500,10 @@ async fn forwards_media_and_key_messages_unchanged() {
     carol.send(json!({"type": "key", "to": host.id, "data": "a5".repeat(16 * 1024 + 1)}));
     assert_eq!(carol.expect("error").await["reason"], "key");
 
-    // Ending the room disconnects everyone and refuses new joins.
-    host.send(json!({"type": "end"}));
+    // Ending the lease disconnects everyone and refuses new joins.
+    assert_eq!(lease(url, "DELETE", ROOM, HOST), 204);
     assert_eq!(host.expect("error").await["reason"], "ended");
+    assert_eq!(lease(url, "POST", ROOM, HOST), 404);
     let (_, refused) = join(url, &ADMIT, false, false).await;
     assert_eq!(refused["reason"], "ended");
 }

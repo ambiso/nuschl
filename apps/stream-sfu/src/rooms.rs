@@ -9,7 +9,8 @@
 //! sent on its connection, so a proof cannot be replayed on another connection.
 //!
 //! A room keeps its keys until it expires, including while it is empty, so the
-//! room id names the same keys for the whole life of its link.
+//! room id names the same keys for the whole life of its link. A room also
+//! ends when its lease lapses: the creator's device renews it with `host_key`.
 
 use hmac::{KeyInit, Mac};
 use serde::Serialize;
@@ -135,6 +136,9 @@ pub struct Room {
     admit_key: Key,
     host_key: Key,
     expires: Instant,
+    /// The room ends when this passes without a renewal.
+    lease: Instant,
+    renewed: Option<Instant>,
     ended: bool,
     pub peers: Vec<(PeerId, Role)>,
     pub budget: Bucket,
@@ -144,6 +148,7 @@ pub struct Limits {
     pub rooms: usize,
     pub peers_per_room: usize,
     pub lifetime: Duration,
+    pub lease: Duration,
     pub creations_per_hour: u32,
     pub room_bitrate: u64,
 }
@@ -258,6 +263,8 @@ impl Rooms {
                 admit_key,
                 host_key,
                 expires: now + self.limits.lifetime,
+                lease: now + self.limits.lease,
+                renewed: None,
                 ended: false,
                 peers: Vec::new(),
                 budget: media_budget(self.limits.room_bitrate, now),
@@ -290,13 +297,48 @@ impl Rooms {
         Ok(room.peers.drain(..).map(|(id, _)| id).collect())
     }
 
-    /// Removes expired rooms and returns their peers to disconnect.
+    /// The creator's device renews the room's lease, at most once a second,
+    /// or ends the room. Returns the peers to disconnect.
+    pub fn lease(
+        &mut self,
+        room: &RoomId,
+        host_key: &Key,
+        end: bool,
+        now: Instant,
+    ) -> Result<Vec<PeerId>, Refusal> {
+        let lease = self.limits.lease;
+        let room = self
+            .rooms
+            .get_mut(room)
+            .filter(|r| !r.ended)
+            .ok_or(Refusal::NoRoom)?;
+        if room.host_key != *host_key {
+            return Err(Refusal::Proof);
+        }
+        if end {
+            room.ended = true;
+            return Ok(room.peers.drain(..).map(|(id, _)| id).collect());
+        }
+        if room
+            .renewed
+            .is_some_and(|at| now.saturating_duration_since(at) < Duration::from_secs(1))
+        {
+            return Err(Refusal::Rate);
+        }
+        room.renewed = Some(now);
+        room.lease = now + lease;
+        Ok(Vec::new())
+    }
+
+    /// Ends rooms whose lease lapsed, removes expired rooms, and returns the
+    /// peers of both to disconnect.
     pub fn expire(&mut self, now: Instant) -> Vec<PeerId> {
         let mut peers = Vec::new();
         self.rooms.retain(|_, room| {
             let keep = room.expires > now;
-            if !keep {
-                peers.extend(room.peers.iter().map(|(id, _)| *id));
+            if !keep || room.lease <= now {
+                room.ended = true;
+                peers.extend(room.peers.drain(..).map(|(id, _)| id));
             }
             keep
         });
@@ -337,6 +379,7 @@ mod tests {
             rooms: 2,
             peers_per_room: 3,
             lifetime: HOUR,
+            lease: HOUR,
             creations_per_hour: 2,
             room_bitrate: 1_000_000,
         })
@@ -522,6 +565,59 @@ mod tests {
         rooms
             .join(5, &create(5), &n, ip("2001:db8::ffff"), now + HOUR)
             .expect("next hour");
+    }
+
+    #[test]
+    fn leases() {
+        let now = Instant::now();
+        let mut rooms = Rooms::new(Limits {
+            lease: Duration::from_secs(30),
+            ..rooms().limits
+        });
+        let n = [9; 32];
+        let second = Duration::from_secs(1);
+        rooms
+            .join(1, &join(&n, true, true), &n, client(), now)
+            .expect("join");
+        assert_eq!(
+            rooms.lease(&ROOM, &[4; 32], false, now),
+            Err(Refusal::Proof)
+        );
+        let other = ([8; 16], ROOM.1);
+        assert_eq!(rooms.lease(&other, &HOST, false, now), Err(Refusal::NoRoom));
+        assert_eq!(rooms.lease(&ROOM, &HOST, false, now), Ok(vec![]));
+        assert_eq!(
+            rooms.lease(&ROOM, &HOST, false, now + second / 2),
+            Err(Refusal::Rate)
+        );
+        assert_eq!(
+            rooms.lease(&ROOM, &HOST, false, now + 20 * second),
+            Ok(vec![])
+        );
+        // Renewed at 20 s, so the room lasts to 50 s.
+        assert!(rooms.expire(now + 49 * second).is_empty());
+        assert_eq!(rooms.expire(now + 50 * second), vec![1]);
+        assert_eq!(
+            rooms.join(2, &join(&n, false, false), &n, client(), now),
+            Err(Refusal::Ended)
+        );
+        assert_eq!(
+            rooms.lease(&ROOM, &HOST, false, now + 51 * second),
+            Err(Refusal::NoRoom)
+        );
+
+        // Ending through the lease.
+        let room = ([6; 16], ROOM.1);
+        let create = Join {
+            room,
+            ..join(&n, true, true)
+        };
+        rooms.join(3, &create, &n, client(), now).expect("join");
+        assert_eq!(rooms.lease(&room, &HOST, true, now), Ok(vec![3]));
+        assert_eq!(
+            rooms.join(4, &create, &n, client(), now),
+            Err(Refusal::Ended)
+        );
     }
 
     #[test]
