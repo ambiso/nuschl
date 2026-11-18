@@ -49,6 +49,7 @@ import json
 import math
 import os
 from pathlib import Path
+import random
 import shutil
 import signal
 import struct
@@ -709,8 +710,12 @@ def check_room_echo(binary, pipewire, output):
             assert report["echo_db"] is not None and report["reduction_db"] >= 30 and report["transmitted"] <= 0.02, \
                 f"run {run}: the canceller did not remove its own playback: {report}"
         removed.append("none" if report["reduction_db"] is None else f"{report['reduction_db']:.0f}")
-    # Another application plays into the speakers; Nuschl plays nothing.
+    # Another application plays into the speakers; Nuschl plays nothing. Its music
+    # is a melody per channel, the channels taking turns: notes of random pitch
+    # with two harmonics. A pure tone fits the echo at many delays.
     music = output / "other-app.wav"
+    pitches = random.Random(275)
+    melodies = [[110 * 2 ** (pitches.randrange(24) / 12) for _ in range(100)] for _ in range(2)]
     with wave.open(str(music), "wb") as file:
         file.setnchannels(2)
         file.setsampwidth(2)
@@ -718,8 +723,10 @@ def check_room_echo(binary, pipewire, output):
         frames = bytearray()
         for n in range(48000 * 12):
             t = n / 48000
-            left = 0.3 * math.sin(2 * math.pi * 220 * t) * max(0.0, math.sin(2 * math.pi * 2.3 * t))
-            right = 0.3 * math.sin(2 * math.pi * 330 * t) * max(0.0, math.sin(2 * math.pi * 1.7 * t + 1))
+            left, right = (0.17 * sum(math.sin(2 * math.pi * k * melody[int(t / 0.12)] * t) / k for k in (1, 2, 3))
+                           for melody in melodies)
+            left *= max(0.0, math.sin(2 * math.pi * 2.3 * t))
+            right *= max(0.0, math.sin(2 * math.pi * 1.7 * t + 1))
             frames += struct.pack("<hh", int(left * 32767), int(right * 32767))
         file.writeframes(bytes(frames))
     levels = {}
