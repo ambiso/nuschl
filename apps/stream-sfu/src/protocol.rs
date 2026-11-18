@@ -12,15 +12,19 @@
 //! peer → SFU  join {room, verifier, proof, host_proof?, create?: {admit_key, host_key}, codecs}
 //! SFU → peer  welcome {peer, role, peers: [{id, role}], codec, turn?: {urls, username, credential}}
 //!             | error {reason}
-//! peer → SFU  offer {sdp}                  publish connection
+//! peer → SFU  offer {sdp, screens?: [mid]}  publish connection
 //! SFU → peer  answer {sdp}
-//! SFU → peer  offer {sdp, tracks: [{mid, peer, source}]}   subscribe connection
+//! SFU → peer  offer {sdp, tracks: [{mid, peer, source, screen}]}   subscribe connection
 //! peer → SFU  answer {sdp}
 //! peer → SFU  key {to, data}               relayed as key {from, data}
 //! peer → SFU  remove {peer} | end          hosts only
 //! SFU → peer  joined {peer, role} | left {peer}
 //! SFU → peer  codec {codec}
 //! ```
+//!
+//! A publisher's `screens` names the mids of its offer that carry a shared
+//! screen, at most `max_sources_per_peer`; the SFU marks their tracks `screen`
+//! for the pages' large view.
 //!
 //! **One codec per call** (docs/video-plan.md §6). `codecs` lists the video
 //! codecs the peer decodes in WebRTC, `"av1"` and `"vp9"`, at least one. The
@@ -93,6 +97,8 @@ pub enum ClientMessage {
     },
     Offer {
         sdp: String,
+        #[serde(default)]
+        screens: Vec<String>,
     },
     Answer {
         sdp: String,
@@ -206,12 +212,14 @@ pub struct TurnCredentials {
 }
 
 /// A forwarded source: `mid` on the receiver's subscribe connection carries
-/// the source with `source` as its mid on the publisher's connection.
+/// the source with `source` as its mid on the publisher's connection;
+/// `screen` when the publisher named it a shared screen.
 #[derive(Clone, Debug, Serialize)]
 pub struct Track {
     pub mid: String,
     pub peer: PeerId,
     pub source: String,
+    pub screen: bool,
 }
 
 pub fn from_hex<const N: usize>(text: &str) -> Option<[u8; N]> {

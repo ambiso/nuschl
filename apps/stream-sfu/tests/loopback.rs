@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 //! The SFU binary on loopback with three str0m peers standing in for browsers.
 //! A host creates the room; two participants join with the link key alone. The
-//! host publishes AV1 and one participant VP8; every peer receives the others'
+//! host publishes a screen in AV1 and one participant a camera in VP8; every peer receives the others'
 //! RTP payloads byte for byte with consecutive sequence numbers. Key messages
 //! reach the named peer only. Wrong proofs, unknown rooms, oversized key
 //! messages and host actions by participants are refused. The call codec
@@ -184,6 +184,8 @@ struct Peer {
     publish: Option<(Leg, Option<SdpPendingOffer>, Mid, Codec)>,
     subscribe: Option<Leg>,
     tracks: HashMap<String, u64>,
+    /// Publishers whose track is a screen.
+    screens: HashSet<u64>,
     /// Per publisher: received (sequence number, payload type, payload).
     received: HashMap<u64, Vec<(u64, u8, Vec<u8>)>>,
     sent: Vec<Vec<u8>>,
@@ -272,6 +274,7 @@ async fn join_decoding(
         publish: None,
         subscribe: None,
         tracks: HashMap::new(),
+        screens: HashSet::new(),
         received: HashMap::new(),
         sent: Vec::new(),
         seq: 0,
@@ -286,12 +289,13 @@ impl Peer {
         let _ = self.to_sfu.send(message.to_string());
     }
 
-    fn start_publishing(&mut self, codec: Codec) {
+    fn start_publishing(&mut self, codec: Codec, screen: bool) {
         let mut leg = Leg::new();
         let mut api = leg.rtc.sdp_api();
         let mid = api.add_media(MediaKind::Video, Direction::SendOnly, None, None, None);
         let (offer, pending) = api.apply().expect("offer");
-        self.send(json!({"type": "offer", "sdp": offer.to_sdp_string()}));
+        let screens: &[String] = if screen { &[mid.to_string()] } else { &[] };
+        self.send(json!({"type": "offer", "sdp": offer.to_sdp_string(), "screens": screens}));
         self.publish = Some((leg, Some(pending), mid, codec));
     }
 
@@ -305,8 +309,11 @@ impl Peer {
                     let answer = leg.rtc.sdp_api().accept_offer(offer).expect("accept");
                     for track in message["tracks"].as_array().expect("tracks") {
                         let mid = track["mid"].as_str().expect("mid").to_owned();
-                        self.tracks
-                            .insert(mid, track["peer"].as_u64().expect("peer"));
+                        let peer = track["peer"].as_u64().expect("peer");
+                        self.tracks.insert(mid, peer);
+                        if track["screen"] == true {
+                            self.screens.insert(peer);
+                        }
                     }
                     self.send(json!({"type": "answer", "sdp": answer.to_sdp_string()}));
                 }
@@ -458,8 +465,8 @@ async fn forwards_media_and_key_messages_unchanged() {
     assert_eq!(host.expect("joined").await["peer"], alice.id);
 
     // The host publishes AV1, a participant VP8.
-    host.start_publishing(Codec::Av1);
-    alice.start_publishing(Codec::Vp8);
+    host.start_publishing(Codec::Av1, true);
+    alice.start_publishing(Codec::Vp8, false);
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         for peer in [&mut host, &mut alice, &mut bob] {
@@ -492,6 +499,11 @@ async fn forwards_media_and_key_messages_unchanged() {
     assert_forwarded(&alice, &host, Codec::Av1);
     assert_forwarded(&host, &alice, Codec::Vp8);
     assert!(!bob.received.contains_key(&bob.id) && !host.received.contains_key(&host.id));
+    assert_eq!(
+        bob.screens,
+        HashSet::from([host.id]),
+        "the host's track is a screen"
+    );
 
     // A peer without AV1 switches the call to VP9 and back when it leaves; a
     // peer without VP9 cannot join then.

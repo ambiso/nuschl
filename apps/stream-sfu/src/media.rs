@@ -72,15 +72,18 @@ enum Leg {
 struct Source {
     mid: Mid,
     kind: MediaKind,
+    screen: bool,
     /// The simulcast layer forwarded, fixed by the first packet.
     layer: Option<Option<Rid>>,
     keyframe_asked: Option<Instant>,
 }
 
+#[derive(Clone)]
 struct Forward {
     from: PeerId,
     source: Mid,
     kind: MediaKind,
+    screen: bool,
     /// The receiver-side mid, once offered.
     mid: Option<Mid>,
     open: bool,
@@ -96,6 +99,8 @@ struct Peer {
     publish: Option<Rtc>,
     subscribe: Rtc,
     pending: Option<SdpPendingOffer>,
+    /// The mids the publisher's last offer named screens.
+    screens: Vec<String>,
     sources: Vec<Source>,
     forwards: Vec<Forward>,
     budget: Bucket,
@@ -317,7 +322,7 @@ impl Core {
         let mut forwards = Vec::new();
         for other in &others {
             for source in &self.peers[&other.id].sources {
-                forwards.push(forward(other.id, source.mid, source.kind));
+                forwards.push(forward(other.id, source));
             }
         }
         let peer = Peer {
@@ -327,6 +332,7 @@ impl Core {
             publish: None,
             subscribe: self.new_rtc((id, Leg::Subscribe), now),
             pending: None,
+            screens: Vec::new(),
             sources: Vec::new(),
             forwards,
             budget: rooms::media_budget(self.config.receiver_bitrate, now),
@@ -361,8 +367,12 @@ impl Core {
         let room = self.peers.get(&id).ok_or("unknown")?.room;
         match message {
             ClientMessage::Join { .. } => return Err("joined"),
-            ClientMessage::Offer { sdp } => {
+            ClientMessage::Offer { sdp, screens } => {
+                if screens.len() > self.config.max_sources_per_peer {
+                    return Err("sources");
+                }
                 let offer = SdpOffer::from_sdp_string(&sdp).map_err(|_| "sdp")?;
+                self.peers.get_mut(&id).expect("exists").screens = screens;
                 if self.peers[&id].publish.is_none() {
                     let rtc = self.new_rtc((id, Leg::Publish), now);
                     self.peers.get_mut(&id).expect("exists").publish = Some(rtc);
@@ -473,6 +483,7 @@ impl Core {
                     mid: f.mid?.to_string(),
                     peer: f.from,
                     source: f.source.to_string(),
+                    screen: f.screen,
                 })
             })
             .collect();
@@ -673,12 +684,15 @@ impl Core {
             self.kicks.push((id, "sources"));
             return;
         }
-        peer.sources.push(Source {
+        let source = Source {
             mid,
             kind,
+            screen: peer.screens.iter().any(|screen| **screen == *mid),
             layer: None,
             keyframe_asked: None,
-        });
+        };
+        let forwarded = forward(id, &source);
+        peer.sources.push(source);
         let room = peer.room;
         let others: Vec<PeerId> = self.rooms.get(&room).map_or_else(Vec::new, |r| {
             r.peers
@@ -689,7 +703,7 @@ impl Core {
         });
         for other in others {
             if let Some(peer) = self.peers.get_mut(&other) {
-                peer.forwards.push(forward(id, mid, kind));
+                peer.forwards.push(forwarded.clone());
                 self.negotiate(other);
             }
         }
@@ -823,11 +837,12 @@ impl Core {
     }
 }
 
-fn forward(from: PeerId, source: Mid, kind: MediaKind) -> Forward {
+fn forward(from: PeerId, source: &Source) -> Forward {
     Forward {
         from,
-        source,
-        kind,
+        source: source.mid,
+        kind: source.kind,
+        screen: source.screen,
         mid: None,
         open: false,
         stopping: false,
