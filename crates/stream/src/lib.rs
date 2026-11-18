@@ -9,7 +9,7 @@
 //! does no I/O and keeps no global state.
 //!
 //! Key authority stays with the designated crypto worker, the one caller cargo-deny
-//! allows. It holds the link secret, the exchange state and the identity bindings, and
+//! allows. It holds the link secret and the exchange state, and
 //! hands out only what a later, reviewed caller needs. That integration is future work
 //! and held until its SECURITY.md row is approved:
 //! - the SDK driver encrypting media with SFrame (R1), given epoch keys only;
@@ -28,16 +28,16 @@
 //! psk_id     = "nuschl/stream/v2" || stream_id
 //!
 //! viewer                                       sharer
-//! fresh X-Wing (sk_v, pk_v); the identity layer signs binding_digest
-//! KeyRequest{viewer_id, nonce_v, not_after, pk_v, binding} ──►
-//!                                              the identity layer verifies; approve
+//! fresh X-Wing (sk_v, pk_v)
+//! KeyRequest{viewer_id, nonce_v, not_after, pk_v} ──►
+//!                                              approve
 //!                                              rekey: K_{e+1} to every viewer first
 //!                    ◄── KeyGrant{viewer_id, nonce_s, enc, Seal(epoch, K)}
 //! KeyAck{viewer_id, confirm} ──►               (sk_v is dropped once the grant opens)
 //!                    ◄── Rekey{viewer_id, counter, ChaCha20-Poly1305(channel_n, epoch, K)}
 //!
-//! binding_digest = SHA-256("nuschl/stream/v2 binding" || stream_id || viewer_id
-//!                          || nonce_v || not_after || pk_v)
+//! digest     = SHA-256("nuschl/stream/v2 request" || stream_id || viewer_id
+//!                      || nonce_v || not_after || pk_v)
 //! transcript = SHA-256("nuschl/stream/v2 transcript" || version || suite
 //!                      || KeyRequest body || nonce_s)
 //! HPKE       = X-Wing / HKDF-SHA256 / ChaCha20-Poly1305, PSK mode (psk, psk_id),
@@ -54,27 +54,23 @@
 //! viewer's or the sharer's state reads no earlier epoch.
 //!
 //! Every key message is one ChaCha20-Poly1305 envelope under `signal_key`, so only link
-//! holders can read or forge it, and the SFU sees no viewer ids, keys or identity
-//! bindings. Its tag is the cheap check that drops messages from non-holders; the plan's
-//! separate `mac_key` is folded into it.
+//! holders can read or forge it, and the SFU sees no viewer ids or keys. Its tag is the
+//! cheap check that drops messages from non-holders; the plan's separate `mac_key` is
+//! folded into it.
 //!
 //! ```text
 //! struct { uint8 version = 1; uint8 kind; opaque nonce[12]; opaque sealed<..16 KiB>; }
 //!   sealed = ChaCha20-Poly1305(signal_key, nonce, aad = version || kind, body)
 //!
 //! kind 1  KeyRequest       opaque viewer_id[16]; opaque nonce_v[32]; uint64 not_after;
-//!                          opaque pk_v[1216]; opaque binding<0..2^16-1>;
+//!                          opaque pk_v[1216];
 //! kind 2  KeyGrant         opaque viewer_id[16]; opaque nonce_s[32]; opaque enc[1120];
 //!                          opaque sealed_key[52];
 //! kind 3  KeyAck           opaque viewer_id[16]; opaque confirm[32];
 //! kind 4  Rekey            opaque viewer_id[16]; uint64 counter; opaque sealed_key[52];
 //!                          (nonce = 0u32 || counter, aad = viewer_id || counter)
-//! kind 5  NeedCredentials  opaque viewer_id[16]; uint8 count; opaque fingerprint[count][32];
 //!
 //! struct { uint32 epoch; opaque key[32]; } EpochKey;
-//! struct { opaque call_binding<1..2^16-1>;
-//!          uint8 count; opaque fingerprint[count][32];
-//!          uint8 inline_count; opaque credential<1..2^16-1>[inline_count]; } Binding;
 //! ```
 //!
 //! **Delivery.** [`Sharer::rekey`] returns the messages and the new [`SendKey`]. Send the
@@ -98,7 +94,6 @@
 //!   SFU admitting only the publisher that proves P (plan E1), and on identity-bound
 //!   sharers (plan N1).
 
-mod credentials;
 mod exchange;
 mod link;
 mod wire;
@@ -111,14 +106,13 @@ use std::fmt;
 use rand_core::TryCryptoRng;
 use subtle::ConstantTimeEq as _;
 
-pub use credentials::{Binding, CredentialCache, Fingerprint, VerifiableBinding, fingerprint};
 pub use exchange::{
-    JoinDraft, MAX_MISSED_REKEYS, RESEND_AFTER_MS, ReceiveKey, Rekey, SWITCH_AFTER_MS, SendKey,
-    Sharer, SharerEvent, Viewer, ViewerEvent, ViewerId, ViewerState,
+    MAX_MISSED_REKEYS, RESEND_AFTER_MS, ReceiveKey, Rekey, SWITCH_AFTER_MS, SendKey, Sharer,
+    SharerEvent, Viewer, ViewerEvent, ViewerId, ViewerState,
 };
 pub use link::{Link, LinkKeys};
 
-/// The largest key message, including identity credentials sent inline.
+/// The largest key message.
 pub const MAX_KEY_MESSAGE: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

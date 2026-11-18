@@ -13,9 +13,8 @@ use libcrux_kem::Algorithm::XWingKemDraft06;
 use rand_core::{TryCryptoRng, TryRng};
 use subtle::ConstantTimeEq as _;
 
-use crate::credentials::{Binding, CredentialCache, Fingerprint, VerifiableBinding};
 use crate::link::{LinkKeys, label};
-use crate::wire::{Reader, put_opaque16};
+use crate::wire::Reader;
 use crate::{Error, MAX_KEY_MESSAGE, Secret, hkdf_expand, random, sha256};
 
 const VERSION: u8 = 1;
@@ -51,7 +50,6 @@ pub(crate) const REQUEST: u8 = 1;
 pub(crate) const GRANT: u8 = 2;
 pub(crate) const ACK: u8 = 3;
 pub(crate) const REKEY: u8 = 4;
-pub(crate) const NEED_CREDENTIALS: u8 = 5;
 
 pub type ViewerId = [u8; 16];
 
@@ -174,7 +172,6 @@ struct Request<'a> {
     nonce: [u8; 32],
     not_after: u64,
     public_key: &'a [u8; PUBLIC_KEY_LEN],
-    binding: Option<Binding>,
 }
 
 impl<'a> Request<'a> {
@@ -184,27 +181,18 @@ impl<'a> Request<'a> {
         let nonce = reader.array()?;
         let not_after = reader.u64()?;
         let public_key = reader.take(PUBLIC_KEY_LEN)?.try_into().expect("taken");
-        let binding = reader.opaque16(0)?;
-        let binding = if binding.is_empty() {
-            None
-        } else {
-            let mut binding_reader = Reader::new(binding);
-            let decoded = Binding::decode(&mut binding_reader)?;
-            binding_reader.finish()?;
-            Some(decoded)
-        };
         reader.finish()?;
         Ok(Self {
             viewer,
             nonce,
             not_after,
             public_key,
-            binding,
         })
     }
 }
 
-fn binding_digest(
+/// Names one request, so that an approval applies to it alone.
+fn request_digest(
     keys: &LinkKeys,
     viewer: &ViewerId,
     nonce: &[u8; 32],
@@ -212,7 +200,7 @@ fn binding_digest(
     public_key: &[u8],
 ) -> [u8; 32] {
     sha256(&[
-        label("binding").as_bytes(),
+        label("request").as_bytes(),
         keys.stream_id(),
         viewer,
         nonce,
@@ -353,18 +341,10 @@ pub enum ViewerState {
 
 #[derive(Debug)]
 pub enum SharerEvent {
-    /// A viewer asked to join. Verify the binding against `digest`, then call
-    /// [`Sharer::approve`] with both; without a binding policy, approve at once.
+    /// A viewer asked to join; [`Sharer::approve`] it with this digest.
     Requested {
         viewer: ViewerId,
-        /// This request's [`JoinDraft::binding_digest`], which covers pk_v.
         digest: [u8; 32],
-        binding: Option<VerifiableBinding>,
-    },
-    /// The request names credentials this sharer lacks; send `message` to the viewer.
-    NeedCredentials {
-        viewer: ViewerId,
-        message: Vec<u8>,
     },
     Confirmed(ViewerId),
 }
@@ -404,12 +384,11 @@ pub struct Sharer {
     pending: Vec<Pending>,
     viewers: Vec<Granted>,
     seen: Vec<([u8; 32], u64)>,
-    credentials: CredentialCache,
 }
 
 impl Sharer {
     /// A sharer without an epoch; the first [`Sharer::rekey`] creates epoch 1.
-    pub fn new(keys: LinkKeys, credentials: CredentialCache) -> Self {
+    pub fn new(keys: LinkKeys) -> Self {
         Self {
             keys,
             epoch: 0,
@@ -417,7 +396,6 @@ impl Sharer {
             pending: Vec::new(),
             viewers: Vec::new(),
             seen: Vec::new(),
-            credentials,
         }
     }
 
@@ -442,26 +420,16 @@ impl Sharer {
     }
 
     /// Handles a KeyRequest or KeyAck.
-    pub fn receive<R: TryCryptoRng + ?Sized>(
-        &mut self,
-        message: &[u8],
-        now: u64,
-        rng: &mut R,
-    ) -> Result<SharerEvent, Error> {
+    pub fn receive(&mut self, message: &[u8], now: u64) -> Result<SharerEvent, Error> {
         let (kind, body) = open_message(&self.keys, message)?;
         match kind {
-            REQUEST => self.request(body, now, rng),
+            REQUEST => self.request(body, now),
             ACK => self.ack(&body),
             _ => Err(Error::Unexpected),
         }
     }
 
-    fn request<R: TryCryptoRng + ?Sized>(
-        &mut self,
-        body: Vec<u8>,
-        now: u64,
-        rng: &mut R,
-    ) -> Result<SharerEvent, Error> {
+    fn request(&mut self, body: Vec<u8>, now: u64) -> Result<SharerEvent, Error> {
         let request = Request::decode(&body)?;
         if request.not_after < now || request.not_after > now.saturating_add(MAX_NOT_AFTER_MS) {
             return Err(Error::Expired);
@@ -482,26 +450,13 @@ impl Sharer {
         }
         self.seen.push((request.nonce, request.not_after));
         let viewer = request.viewer;
-        let digest = binding_digest(
+        let digest = request_digest(
             &self.keys,
             &viewer,
             &request.nonce,
             request.not_after,
             request.public_key,
         );
-        let binding = match &request.binding {
-            None => None,
-            Some(binding) => match self.credentials.resolve(binding, digest)? {
-                Ok(binding) => Some(binding),
-                Err(missing) => {
-                    let mut reply = viewer.to_vec();
-                    reply.push(u8::try_from(missing.len()).expect("at most 4"));
-                    reply.extend(missing.iter().flatten());
-                    let message = seal_message(&self.keys, NEED_CREDENTIALS, &reply, rng)?;
-                    return Ok(SharerEvent::NeedCredentials { viewer, message });
-                }
-            },
-        };
         let not_after = request.not_after;
         self.pending.push(Pending {
             viewer,
@@ -510,11 +465,7 @@ impl Sharer {
             not_after,
             approved: false,
         });
-        Ok(SharerEvent::Requested {
-            viewer,
-            digest,
-            binding,
-        })
+        Ok(SharerEvent::Requested { viewer, digest })
     }
 
     fn ack(&mut self, body: &[u8]) -> Result<SharerEvent, Error> {
@@ -676,64 +627,6 @@ pub enum ViewerEvent {
         ack: Vec<u8>,
     },
     Rekeyed(ReceiveKey),
-    /// The sharer lacks these credentials: join again with them inline.
-    NeedCredentials(Vec<Fingerprint>),
-}
-
-/// A join before its request is sealed: the identity layer signs
-/// [`JoinDraft::binding_digest`], which covers pk_v.
-pub struct JoinDraft {
-    keys: LinkKeys,
-    id: ViewerId,
-    nonce: [u8; 32],
-    not_after: u64,
-    kem_seed: Secret,
-    public_key: Vec<u8>,
-}
-
-impl JoinDraft {
-    pub fn binding_digest(&self) -> [u8; 32] {
-        binding_digest(
-            &self.keys,
-            &self.id,
-            &self.nonce,
-            self.not_after,
-            &self.public_key,
-        )
-    }
-
-    /// Seals the KeyRequest, valid for [`REQUEST_LIFETIME_MS`].
-    pub fn finish<R: TryCryptoRng + ?Sized>(
-        self,
-        binding: Option<&Binding>,
-        rng: &mut R,
-    ) -> Result<(Viewer, Vec<u8>), Error> {
-        let mut request = [
-            &self.id[..],
-            &self.nonce,
-            &self.not_after.to_be_bytes(),
-            &self.public_key,
-        ]
-        .concat();
-        let mut encoded_binding = Vec::new();
-        if let Some(binding) = binding {
-            binding.encode(&mut encoded_binding)?;
-        }
-        put_opaque16(&mut request, &encoded_binding)?;
-        let message = seal_message(&self.keys, REQUEST, &request, rng)?;
-        let named = binding.map(|b| b.fingerprints.clone()).unwrap_or_default();
-        let viewer = Viewer {
-            keys: self.keys,
-            id: self.id,
-            state: State::Joining {
-                request,
-                not_after: self.not_after,
-                kem_seed: self.kem_seed,
-                named,
-            },
-        };
-        Ok((viewer, message))
-    }
 }
 
 enum State {
@@ -741,7 +634,6 @@ enum State {
         request: Vec<u8>,
         not_after: u64,
         kem_seed: Secret,
-        named: Vec<Fingerprint>,
     },
     /// Holds the key for Rekey number `counter + 1`, and nothing that opens the grant.
     Granted {
@@ -749,8 +641,6 @@ enum State {
         counter: u64,
         epoch: u32,
     },
-    /// The sharer asked for credentials; this join is over.
-    Refused,
 }
 
 /// One join: a fresh X-Wing key pair, used for this request only.
@@ -761,32 +651,38 @@ pub struct Viewer {
 }
 
 impl Viewer {
-    /// Draws the viewer id, nonce and X-Wing key pair.
-    pub fn prepare<R: TryCryptoRng + ?Sized>(
+    /// Draws the viewer id, nonce and X-Wing key pair, and seals the KeyRequest, valid
+    /// for [`REQUEST_LIFETIME_MS`].
+    pub fn join<R: TryCryptoRng + ?Sized>(
         keys: LinkKeys,
         now: u64,
         rng: &mut R,
-    ) -> Result<JoinDraft, Error> {
-        let id = random(rng)?;
-        let nonce = random(rng)?;
+    ) -> Result<(Self, Vec<u8>), Error> {
+        let id: ViewerId = random(rng)?;
+        let nonce: [u8; 32] = random(rng)?;
         let kem_seed = Secret::random(rng)?;
         let (_, public) = libcrux_kem::key_gen_derand(XWingKemDraft06, kem_seed.expose())
             .map_err(|_| Error::Randomness)?;
-        Ok(JoinDraft {
+        let not_after = now.saturating_add(REQUEST_LIFETIME_MS);
+        let request = [&id[..], &nonce, &not_after.to_be_bytes(), &public.encode()].concat();
+        let message = seal_message(&keys, REQUEST, &request, rng)?;
+        let viewer = Self {
             keys,
             id,
-            nonce,
-            not_after: now.saturating_add(REQUEST_LIFETIME_MS),
-            kem_seed,
-            public_key: public.encode(),
-        })
+            state: State::Joining {
+                request,
+                not_after,
+                kem_seed,
+            },
+        };
+        Ok((viewer, message))
     }
 
     pub fn id(&self) -> ViewerId {
         self.id
     }
 
-    /// Handles a KeyGrant, Rekey or NeedCredentials. Messages for other viewers fail
+    /// Handles a KeyGrant or Rekey. Messages for other viewers fail
     /// with [`Error::UnknownViewer`].
     pub fn receive<R: TryCryptoRng + ?Sized>(
         &mut self,
@@ -802,22 +698,6 @@ impl Viewer {
         match (kind, &self.state) {
             (GRANT, State::Joining { .. }) => self.grant(reader, now, rng),
             (REKEY, State::Granted { .. }) => self.rekey(reader),
-            (NEED_CREDENTIALS, State::Joining { named, .. }) => {
-                let count = usize::from(reader.u8()?);
-                let missing: Vec<Fingerprint> = (0..count)
-                    .map(|_| reader.array())
-                    .collect::<Result<_, _>>()?;
-                reader.finish()?;
-                let named_once = missing
-                    .iter()
-                    .enumerate()
-                    .all(|(i, f)| named.contains(f) && !missing[..i].contains(f));
-                if missing.is_empty() || !named_once {
-                    return Err(Error::Unexpected);
-                }
-                self.state = State::Refused;
-                Ok(ViewerEvent::NeedCredentials(missing))
-            }
             _ => Err(Error::Unexpected),
         }
     }
@@ -832,7 +712,6 @@ impl Viewer {
             request,
             not_after,
             kem_seed,
-            ..
         } = &self.state
         else {
             return Err(Error::Unexpected);

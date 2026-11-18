@@ -7,8 +7,8 @@ use hpke_rs_libcrux::{HpkeLibcrux, HpkeLibcruxPrng};
 use libcrux_kem::Algorithm::XWingKemDraft06;
 
 use crate::exchange::{
-    ACK, GRANT, MAX_PENDING, MAX_SEEN, MAX_VIEWERS, NEED_CREDENTIALS, REKEY, REQUEST,
-    REQUEST_LIFETIME_MS, hpke_receiver, hpke_sender, open_message, seal_message, transcript,
+    ACK, GRANT, MAX_PENDING, MAX_SEEN, MAX_VIEWERS, REKEY, REQUEST, REQUEST_LIFETIME_MS,
+    hpke_receiver, hpke_sender, open_message, seal_message, transcript,
 };
 use crate::*;
 
@@ -32,30 +32,20 @@ pub(crate) fn link(seed: u8) -> Link {
 }
 
 pub(crate) fn sharer(link: &Link) -> Sharer {
-    Sharer::new(link.keys(), CredentialCache::new(8, 64 * 1024))
+    Sharer::new(link.keys())
 }
 
-/// A viewer's request without a binding.
 pub(crate) fn request<R: rand_core::TryCryptoRng>(
     link: &Link,
     now: u64,
     rng: &mut R,
 ) -> (Viewer, Vec<u8>) {
-    Viewer::prepare(link.keys(), now, rng)
-        .unwrap()
-        .finish(None, rng)
-        .unwrap()
+    Viewer::join(link.keys(), now, rng).unwrap()
 }
 
 /// Receives a request and approves it.
-pub(crate) fn admit<R: rand_core::TryCryptoRng>(
-    sharer: &mut Sharer,
-    request: &[u8],
-    now: u64,
-    rng: &mut R,
-) -> ViewerId {
-    let SharerEvent::Requested { viewer, digest, .. } = sharer.receive(request, now, rng).unwrap()
-    else {
+pub(crate) fn admit(sharer: &mut Sharer, request: &[u8], now: u64) -> ViewerId {
+    let SharerEvent::Requested { viewer, digest } = sharer.receive(request, now).unwrap() else {
         panic!("expected a request");
     };
     sharer.approve(&viewer, &digest).unwrap();
@@ -72,7 +62,7 @@ pub(crate) fn join(
 ) -> (Viewer, ReceiveKey, Vec<(ViewerId, Vec<u8>)>) {
     let mut rng = rng(seed);
     let (mut viewer, request) = request(link, now, &mut rng);
-    admit(sharer, &request, now, &mut rng);
+    admit(sharer, &request, now);
     let mut others = Vec::new();
     let mut key = None;
     for (to, message) in sharer.rekey(now, &mut rng).unwrap().messages {
@@ -85,7 +75,7 @@ pub(crate) fn join(
         else {
             panic!("expected a grant");
         };
-        let confirmed = sharer.receive(&ack, now, &mut rng).unwrap();
+        let confirmed = sharer.receive(&ack, now).unwrap();
         assert!(matches!(confirmed, SharerEvent::Confirmed(id) if id == viewer.id()));
         key = Some(granted);
     }
@@ -391,8 +381,7 @@ fn rekey_grants_only_approved_requests() {
     let mut sharer = sharer(&link);
     let mut rng = rng(31);
     let (_, request) = request(&link, T0, &mut rng);
-    let SharerEvent::Requested { viewer, digest, .. } =
-        sharer.receive(&request, T0, &mut rng).unwrap()
+    let SharerEvent::Requested { viewer, digest, .. } = sharer.receive(&request, T0).unwrap()
     else {
         panic!("expected a request");
     };
@@ -427,12 +416,11 @@ fn late_approvals_name_the_request() {
     let mut sharer = sharer(&link);
     let mut rng = rng(46);
     let (_, original) = request(&link, T0, &mut rng);
-    let SharerEvent::Requested { viewer, digest, .. } =
-        sharer.receive(&original, T0, &mut rng).unwrap()
+    let SharerEvent::Requested { viewer, digest, .. } = sharer.receive(&original, T0).unwrap()
     else {
         panic!("expected a request");
     };
-    // The request expires while its binding is verified; a rekey drops it.
+    // The request expires before it is approved; a rekey drops it.
     let later = T0 + REQUEST_LIFETIME_MS + 1;
     sharer.rekey(later, &mut rng).unwrap();
     assert_eq!(sharer.viewers().count(), 0);
@@ -442,8 +430,7 @@ fn late_approvals_name_the_request() {
     let (_, mut body) = open_message(&keys, &other).unwrap();
     body[..16].copy_from_slice(&viewer);
     let reused = seal_message(&keys, REQUEST, &body, &mut rng).unwrap();
-    let SharerEvent::Requested { digest: newer, .. } =
-        sharer.receive(&reused, later, &mut rng).unwrap()
+    let SharerEvent::Requested { digest: newer, .. } = sharer.receive(&reused, later).unwrap()
     else {
         panic!("expected a request");
     };
@@ -464,50 +451,6 @@ fn late_approvals_name_the_request() {
     );
 }
 
-/// M1: the binding signs a digest over pk_v; the sharer reports the digest of the
-/// request it received, so a binding copied into another request fails verification.
-#[test]
-fn copied_bindings_are_refused() {
-    let link = link(32);
-    let mut sharer = sharer(&link);
-    let mut rng = rng(33);
-    // A stand-in for the identity layer's signature over the digest.
-    let identity_key = [9u8; 32];
-    let sign = |digest: &[u8; 32]| sha256(&[&identity_key, digest]).to_vec();
-    let verify = |binding: &VerifiableBinding| binding.call_binding == sign(&binding.digest);
-
-    let draft = Viewer::prepare(link.keys(), T0, &mut rng).unwrap();
-    let digest = draft.binding_digest();
-    let binding = Binding {
-        call_binding: sign(&digest),
-        fingerprints: Vec::new(),
-        inline: Vec::new(),
-    };
-    let (_, honest) = draft.finish(Some(&binding), &mut rng).unwrap();
-    let SharerEvent::Requested {
-        binding: Some(received),
-        ..
-    } = sharer.receive(&honest, T0, &mut rng).unwrap()
-    else {
-        panic!("expected a bound request");
-    };
-    assert_eq!(received.digest, digest);
-    assert!(verify(&received));
-
-    // Another link holder copies the binding into a request with its own pk_v.
-    let copier = Viewer::prepare(link.keys(), T0, &mut rng).unwrap();
-    assert_ne!(copier.binding_digest(), digest);
-    let (_, copied) = copier.finish(Some(&binding), &mut rng).unwrap();
-    let SharerEvent::Requested {
-        binding: Some(received),
-        ..
-    } = sharer.receive(&copied, T0, &mut rng).unwrap()
-    else {
-        panic!("expected a bound request");
-    };
-    assert!(!verify(&received));
-}
-
 /// A party with S and every message cannot open a grant: the X-Wing secret is the
 /// viewer's alone, and the epoch keys appear in no message, even with every signal
 /// envelope opened.
@@ -517,7 +460,7 @@ fn passive_link_holder_cannot_decrypt() {
     let mut sharer = sharer(&link);
     let mut rng = rng(12);
     let (mut viewer, request) = request(&link, T0, &mut rng);
-    admit(&mut sharer, &request, T0, &mut rng);
+    admit(&mut sharer, &request, T0);
     let first = sharer.rekey(T0, &mut rng).unwrap();
     let grant = first.messages[0].1.clone();
     let ViewerEvent::Granted { key, ack } = viewer.receive(&grant, T0, &mut rng).unwrap() else {
@@ -569,8 +512,8 @@ fn any_link_holder_can_act_as_sharer() {
     let mut impostor = sharer(&link);
     let mut rng = rng(35);
     let (mut viewer, request) = request(&link, T0, &mut rng);
-    genuine.receive(&request, T0, &mut rng).unwrap();
-    admit(&mut impostor, &request, T0, &mut rng);
+    genuine.receive(&request, T0).unwrap();
+    admit(&mut impostor, &request, T0);
     let forged = impostor.rekey(T0, &mut rng).unwrap();
     let ViewerEvent::Granted { key, .. } =
         viewer.receive(&forged.messages[0].1, T0, &mut rng).unwrap()
@@ -588,14 +531,14 @@ fn parties_without_the_link_secret_are_rejected() {
     let mut rng = rng(13);
     let (mut outsider, request) = self::request(&other, T0, &mut rng);
     assert_eq!(
-        sharer.receive(&request, T0, &mut rng).err(),
+        sharer.receive(&request, T0).err(),
         Some(Error::Authentication)
     );
 
     // An interceptor relaying between two links: the sharer's grant does not open under
     // the other link's keys.
     let (_, request) = self::request(&link, T0, &mut rng);
-    admit(&mut sharer, &request, T0, &mut rng);
+    admit(&mut sharer, &request, T0);
     let grant = sharer.rekey(T0, &mut rng).unwrap().messages.remove(0).1;
     assert_eq!(
         outsider.receive(&grant, T0, &mut rng).err(),
@@ -610,14 +553,10 @@ fn replays_reflections_and_bad_confirmations_fail() {
     let mut sharer = sharer(&link);
     let mut rng = rng(14);
     let (mut viewer, request) = request(&link, T0, &mut rng);
-    let SharerEvent::Requested { digest, .. } = sharer.receive(&request, T0, &mut rng).unwrap()
-    else {
+    let SharerEvent::Requested { digest, .. } = sharer.receive(&request, T0).unwrap() else {
         panic!("expected a request");
     };
-    assert_eq!(
-        sharer.receive(&request, T0, &mut rng).err(),
-        Some(Error::Replay)
-    );
+    assert_eq!(sharer.receive(&request, T0).err(), Some(Error::Replay));
     // Reflected to the viewer itself.
     assert_eq!(
         viewer.receive(&request, T0, &mut rng).err(),
@@ -626,15 +565,12 @@ fn replays_reflections_and_bad_confirmations_fail() {
 
     sharer.approve(&viewer.id(), &digest).unwrap();
     let grant = sharer.rekey(T0, &mut rng).unwrap().messages.remove(0).1;
-    assert_eq!(
-        sharer.receive(&grant, T0, &mut rng).err(),
-        Some(Error::Unexpected)
-    );
+    assert_eq!(sharer.receive(&grant, T0).err(), Some(Error::Unexpected));
     // An ack carrying bytes other than the exported confirmation.
     let forged =
         seal_message(&keys, ACK, &[&viewer.id()[..], &[0; 32]].concat(), &mut rng).unwrap();
     assert_eq!(
-        sharer.receive(&forged, T0, &mut rng).err(),
+        sharer.receive(&forged, T0).err(),
         Some(Error::Authentication)
     );
 
@@ -645,11 +581,8 @@ fn replays_reflections_and_bad_confirmations_fail() {
         viewer.receive(&grant, T0, &mut rng).err(),
         Some(Error::Unexpected)
     );
-    sharer.receive(&ack, T0, &mut rng).unwrap();
-    assert_eq!(
-        sharer.receive(&ack, T0, &mut rng).err(),
-        Some(Error::Replay)
-    );
+    sharer.receive(&ack, T0).unwrap();
+    assert_eq!(sharer.receive(&ack, T0).err(), Some(Error::Replay));
 }
 
 /// L4: a rekey's messages may be sent twice; a viewer that misses one catches up with
@@ -690,20 +623,15 @@ fn time_limits_and_clock_steps() {
     // Expired, or dated further ahead than a minute of clock difference allows.
     let (_, request) = self::request(&link, T0, &mut rng);
     assert_eq!(
-        sharer
-            .receive(&request, T0 + REQUEST_LIFETIME_MS + 1, &mut rng)
-            .err(),
+        sharer.receive(&request, T0 + REQUEST_LIFETIME_MS + 1).err(),
         Some(Error::Expired)
     );
     let (_, request) = self::request(&link, T0 + 2 * REQUEST_LIFETIME_MS, &mut rng);
-    assert_eq!(
-        sharer.receive(&request, T0 - 1, &mut rng).err(),
-        Some(Error::Expired)
-    );
+    assert_eq!(sharer.receive(&request, T0 - 1).err(), Some(Error::Expired));
 
     // A grant after the request's lifetime, and a viewer that never confirms.
     let (mut slow, request) = self::request(&link, T0, &mut rng);
-    admit(&mut sharer, &request, T0, &mut rng);
+    admit(&mut sharer, &request, T0);
     let grant = sharer.rekey(T0, &mut rng).unwrap().messages.remove(0).1;
     assert_eq!(sharer.rekey(T0 + 999, &mut rng).err(), Some(Error::TooSoon));
     assert_eq!(
@@ -733,31 +661,21 @@ fn caps() {
     let mut sharer = sharer(&link);
     for _ in 0..MAX_PENDING {
         let (_, request) = request(&link, T0, &mut rng);
-        sharer.receive(&request, T0, &mut rng).unwrap();
+        sharer.receive(&request, T0).unwrap();
     }
     let (_, extra) = request(&link, T0, &mut rng);
-    assert_eq!(
-        sharer.receive(&extra, T0, &mut rng).err(),
-        Some(Error::LimitReached)
-    );
+    assert_eq!(sharer.receive(&extra, T0).err(), Some(Error::LimitReached));
 
     // The nonce cache holds MAX_SEEN requests until their not_after, removed or not.
     let mut sharer = self::sharer(&link);
     for _ in 0..MAX_SEEN {
         let (viewer, request) = request(&link, T0, &mut rng);
-        sharer.receive(&request, T0, &mut rng).unwrap();
+        sharer.receive(&request, T0).unwrap();
         sharer.remove(&viewer.id());
     }
-    assert_eq!(
-        sharer.receive(&extra, T0, &mut rng).err(),
-        Some(Error::LimitReached)
-    );
+    assert_eq!(sharer.receive(&extra, T0).err(), Some(Error::LimitReached));
     let (_, later) = request(&link, T0 + REQUEST_LIFETIME_MS + 1, &mut rng);
-    assert!(
-        sharer
-            .receive(&later, T0 + REQUEST_LIFETIME_MS + 1, &mut rng)
-            .is_ok()
-    );
+    assert!(sharer.receive(&later, T0 + REQUEST_LIFETIME_MS + 1).is_ok());
 
     // At most MAX_VIEWERS viewers and pending requests together.
     let mut sharer = self::sharer(&link);
@@ -765,7 +683,7 @@ fn caps() {
     while sharer.viewers().count() < MAX_VIEWERS {
         for _ in 0..MAX_PENDING.min(MAX_VIEWERS - sharer.viewers().count()) {
             let (_, request) = request(&link, now, &mut rng);
-            admit(&mut sharer, &request, now, &mut rng);
+            admit(&mut sharer, &request, now);
         }
         sharer.rekey(now, &mut rng).unwrap();
         now += 1000;
@@ -773,10 +691,7 @@ fn caps() {
     // Once every nonce has expired, the viewer cap alone refuses.
     let now = now + 3 * REQUEST_LIFETIME_MS;
     let (_, extra) = request(&link, now, &mut rng);
-    assert_eq!(
-        sharer.receive(&extra, now, &mut rng).err(),
-        Some(Error::LimitReached)
-    );
+    assert_eq!(sharer.receive(&extra, now).err(), Some(Error::LimitReached));
 
     // An X-Wing key that fails the ML-KEM modulus check.
     let (_, request) = self::request(&link, T0, &mut rng);
@@ -784,119 +699,9 @@ fn caps() {
     body[56..56 + 1216].fill(0xff);
     let forged = seal_message(&link.keys(), REQUEST, &body, &mut rng).unwrap();
     assert_eq!(
-        self::sharer(&link).receive(&forged, T0, &mut rng).err(),
+        self::sharer(&link).receive(&forged, T0).err(),
         Some(Error::InvalidPublicKey)
     );
-}
-
-#[test]
-fn credentials_by_fingerprint_with_inline_fallback() {
-    let link = link(19);
-    let keys = link.keys();
-    let mut sharer = sharer(&link);
-    let mut rng = rng(20);
-    // The plan's largest credentials: the identity root key and the device-signing
-    // certificate, with a hybrid CallBinding.
-    let root = vec![1; 1986];
-    let certificate = vec![2; 5439];
-    let by_fingerprint = Binding {
-        call_binding: vec![3; 3471],
-        fingerprints: vec![fingerprint(&root), fingerprint(&certificate)],
-        inline: Vec::new(),
-    };
-    let join = |binding: &Binding, rng: &mut HpkeLibcruxPrng| {
-        Viewer::prepare(link.keys(), T0, rng)
-            .unwrap()
-            .finish(Some(binding), rng)
-            .unwrap()
-    };
-
-    let (mut viewer, request) = join(&by_fingerprint, &mut rng);
-    let SharerEvent::NeedCredentials { message, .. } =
-        sharer.receive(&request, T0, &mut rng).unwrap()
-    else {
-        panic!("expected a cache miss");
-    };
-    let ViewerEvent::NeedCredentials(missing) = viewer.receive(&message, T0, &mut rng).unwrap()
-    else {
-        panic!("expected missing fingerprints");
-    };
-    assert_eq!(missing, by_fingerprint.fingerprints);
-    // L6: replayed, or naming credentials the binding did not name.
-    assert_eq!(
-        viewer.receive(&message, T0, &mut rng).err(),
-        Some(Error::Unexpected)
-    );
-    let (mut other, _) = join(&by_fingerprint, &mut rng);
-    let unnamed = [&other.id()[..], &[1], &[7; 32]].concat();
-    let unnamed = seal_message(&keys, NEED_CREDENTIALS, &unnamed, &mut rng).unwrap();
-    assert_eq!(
-        other.receive(&unnamed, T0, &mut rng).err(),
-        Some(Error::Unexpected)
-    );
-
-    let inline = Binding {
-        inline: vec![certificate.clone(), root.clone()],
-        ..by_fingerprint.clone()
-    };
-    let (_, request) = join(&inline, &mut rng);
-    assert!(request.len() <= MAX_KEY_MESSAGE);
-    let SharerEvent::Requested {
-        binding: Some(binding),
-        ..
-    } = sharer.receive(&request, T0, &mut rng).unwrap()
-    else {
-        panic!("expected a bound request");
-    };
-    assert_eq!(binding.call_binding, vec![3; 3471]);
-    assert_eq!(binding.credentials, vec![root.clone(), certificate.clone()]);
-    // Cached now: fingerprints alone resolve.
-    let (_, request) = join(&by_fingerprint, &mut rng);
-    let SharerEvent::Requested {
-        binding: Some(cached),
-        ..
-    } = sharer.receive(&request, T0, &mut rng).unwrap()
-    else {
-        panic!("expected a bound request");
-    };
-    assert_eq!(cached.credentials, binding.credentials);
-
-    // Inline bytes must match a named fingerprint.
-    let mismatched = Binding {
-        inline: vec![vec![9; 10]],
-        ..by_fingerprint.clone()
-    };
-    let (_, request) = join(&mismatched, &mut rng);
-    assert_eq!(
-        sharer.receive(&request, T0, &mut rng).err(),
-        Some(Error::Malformed("credential matches no fingerprint"))
-    );
-    // Over the 16 KiB cap.
-    let oversized = Binding {
-        inline: vec![vec![4; 12_000]],
-        fingerprints: vec![fingerprint(&[4; 12_000])],
-        call_binding: vec![3; 3471],
-    };
-    let draft = Viewer::prepare(link.keys(), T0, &mut rng).unwrap();
-    assert_eq!(
-        draft.finish(Some(&oversized), &mut rng).err(),
-        Some(Error::TooLong)
-    );
-}
-
-#[test]
-fn credential_cache_is_bounded() {
-    let mut cache = CredentialCache::new(2, 100);
-    let a = cache.insert(vec![1; 40]);
-    let b = cache.insert(vec![2; 40]);
-    cache.insert(vec![1; 40]); // touches a, so b is the oldest
-    let c = cache.insert(vec![3; 40]);
-    assert!(cache.get(&a).is_some() && cache.get(&c).is_some());
-    assert!(cache.get(&b).is_none());
-    let d = cache.insert(vec![4; 90]); // over 100 bytes with any other entry
-    assert!(cache.get(&d).is_some() && cache.get(&a).is_none() && cache.get(&c).is_none());
-    let e = cache.insert(vec![5; 101]);
-    assert!(cache.get(&e).is_none() && cache.get(&d).is_some());
 }
 
 // -------------------------------------------------------------------------------------
@@ -910,7 +715,7 @@ fn mutated_messages_are_rejected() {
     let mut sharer = sharer(&link);
     let mut rng = rng(22);
     let (mut viewer, request) = request(&link, T0, &mut rng);
-    admit(&mut sharer, &request, T0, &mut rng);
+    admit(&mut sharer, &request, T0);
     let grant = sharer.rekey(T0, &mut rng).unwrap().messages.remove(0).1;
     let mut noise = self::rng(23);
     for message in [&request, &grant] {
@@ -923,15 +728,11 @@ fn mutated_messages_are_rejected() {
                 1 => mutated.truncate(index),
                 _ => mutated.extend_from_slice(&[bit; 3]),
             }
-            assert!(sharer.receive(&mutated, T0, &mut rng).is_err());
+            assert!(sharer.receive(&mutated, T0).is_err());
             assert!(viewer.receive(&mutated, T0, &mut rng).is_err());
         }
     }
-    assert!(
-        sharer
-            .receive(&vec![1; MAX_KEY_MESSAGE + 1], T0, &mut rng)
-            .is_err()
-    );
+    assert!(sharer.receive(&vec![1; MAX_KEY_MESSAGE + 1], T0).is_err());
 }
 
 /// Bodies sealed correctly under `signal_key`, so the body parsers themselves see the
@@ -942,16 +743,8 @@ fn mutated_bodies_reach_the_parsers() {
     let keys = link.keys();
     let mut rng = rng(25);
     let mut noise = self::rng(26);
-    let binding = Binding {
-        call_binding: vec![1; 40],
-        fingerprints: vec![[2; 32], fingerprint(&[3; 8])],
-        inline: vec![vec![3; 8]],
-    };
     let mut sharer = sharer(&link);
-    let (mut viewer, request) = Viewer::prepare(link.keys(), T0, &mut rng)
-        .unwrap()
-        .finish(Some(&binding), &mut rng)
-        .unwrap();
+    let (mut viewer, request) = request(&link, T0, &mut rng);
     let (_, request_body) = open_message(&keys, &request).unwrap();
 
     for len in 0..request_body.len() + 2 {
@@ -961,28 +754,19 @@ fn mutated_bodies_reach_the_parsers() {
         let mut body = request_body.clone();
         body.resize(len, 0);
         let message = seal_message(&keys, REQUEST, &body, &mut rng).unwrap();
-        assert!(
-            sharer.receive(&message, T0, &mut rng).is_err(),
-            "length {len}"
-        );
+        assert!(sharer.receive(&message, T0).is_err(), "length {len}");
     }
-    let tail = request_body.len() - 100;
     for _ in 0..500 {
         let mut body = request_body.clone();
         let [position, value] = random::<2, _>(&mut noise).unwrap();
-        // Mostly in the binding at the end, where the length fields are.
-        body[tail + usize::from(position) % 100] = value;
+        body[usize::from(position) * request_body.len() / 256] = value;
         let message = seal_message(&keys, REQUEST, &body, &mut rng).unwrap();
-        let _ = sharer.receive(&message, T0, &mut rng);
+        let _ = sharer.receive(&message, T0);
     }
 
-    // Grant and NeedCredentials bodies at a new viewer, Rekey bodies at a granted one.
+    // Grant bodies at a new viewer, Rekey bodies at a granted one.
     let (mut granted, _, _) = join(&link, &mut self::sharer(&link), T0, 27);
-    for (kind, len) in [
-        (GRANT, 16 + 32 + 1120 + 52),
-        (NEED_CREDENTIALS, 16 + 1 + 64),
-        (REKEY, 16 + 8 + 52),
-    ] {
+    for (kind, len) in [(GRANT, 16 + 32 + 1120 + 52), (REKEY, 16 + 8 + 52)] {
         let target = if kind == REKEY {
             &mut granted
         } else {
@@ -998,14 +782,6 @@ fn mutated_bodies_reach_the_parsers() {
                 "kind {kind} length {cut}"
             );
         }
-    }
-    for count in [0, 5, 255] {
-        let body = [&viewer.id()[..], &[count], &[0; 32 * 5]].concat();
-        let message = seal_message(&keys, NEED_CREDENTIALS, &body, &mut rng).unwrap();
-        assert!(
-            viewer.receive(&message, T0, &mut rng).is_err(),
-            "count {count}"
-        );
     }
 }
 
