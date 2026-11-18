@@ -56,7 +56,7 @@ import time
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from local_murmur import Murmur, eventually, free_port  # noqa: E402
+from local_murmur import Murmur, Stale, eventually, free_port  # noqa: E402
 from mumble_client import Client, certificate_pin  # noqa: E402
 
 # AT-SPI role numbers (atspi-constants.h).
@@ -129,8 +129,8 @@ class Node:
 
 
 def snapshot(application):
-    """(depth, node, role, name) for the whole tree. Nodes that disappear while
-    the UI updates are skipped together with their subtree."""
+    """(depth, node, role, name) for the whole tree. A node that disappears while
+    the UI updates raises Stale, so eventually() takes a fresh snapshot."""
     entries = []
 
     def visit(node, depth):
@@ -138,8 +138,10 @@ def snapshot(application):
             entries.append((depth, node, node.role, node.name))
             children = node.children() if depth < 60 else []
         except RuntimeError as error:
-            if "Unknown object" in str(error):
-                return
+            # UnknownObject from AccessKit names the removed node's path; zbus
+            # answers UnknownInterface while it unregisters the node's interfaces.
+            if node.path in str(error) or "Unknown interface 'org.a11y.atspi.Accessible'" in str(error):
+                raise Stale(str(error)) from error
             raise
         for child in children:
             visit(child, depth + 1)
