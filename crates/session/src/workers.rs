@@ -43,7 +43,8 @@ impl Storage {
             start("nuschl-storage-worker", Role::Storage { directory }).await?,
         ))
     }
-    fn new(worker: Worker) -> Self {
+    /// A storage worker its caller started (a trusted test's own).
+    pub fn new(worker: Worker) -> Self {
         Self {
             worker,
             request_id: 0,
