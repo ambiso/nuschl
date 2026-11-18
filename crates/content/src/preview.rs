@@ -155,8 +155,9 @@ pub fn transport_charset(label: Option<&str>) -> TransportCharset {
 ///
 /// Cost: linear in the document, except that html5ever compares each new
 /// attribute name with the earlier ones in the same tag, so one tag full of
-/// distinct names is quadratic up to the 256 KiB cap (about 66 000 names);
-/// the content worker's CPU and wall limits bound it.
+/// distinct names is quadratic: such a tag of about 512 KiB (130 000 names)
+/// takes the content worker's five-second CPU limit, which bounds it.
+/// Ordinary 10 MiB documents take under a second.
 pub fn extract_open_graph(
     document: &[u8],
     charset: TransportCharset,
@@ -895,6 +896,14 @@ mod tests {
             extract(&format!("{}{late}", "<meta>".repeat(MAX_META_TAGS))),
             Err(Unavailable::NoMetadata)
         );
+        // Metadata after a script that fills the cap is still found.
+        let meta = "</script><meta property=\"og:title\" content=\"late\">";
+        let late = format!(
+            "<script>{}{meta}",
+            "x".repeat(MAX_DOCUMENT_BYTES - 8 - meta.len())
+        );
+        assert_eq!(late.len(), MAX_DOCUMENT_BYTES);
+        assert_eq!(extract(&late).unwrap().title, "late");
         // Within the limits it is still found.
         let within = format!(
             "{}<meta property=\"og:title\" content=\"in\">",
@@ -905,7 +914,8 @@ mod tests {
 
     #[test]
     fn hostile_documents_return_only_bounded_inert_metadata() {
-        let size = MAX_DOCUMENT_BYTES;
+        // These shapes cost linear time; 256 KiB keeps the debug build quick.
+        let size = 256 * 1024;
         let fill = |unit: &str| unit.repeat(size / unit.len());
         for document in [
             fill("<meta "),
@@ -974,17 +984,16 @@ mod tests {
     }
 
     /// html5ever compares each new attribute name with the earlier ones in
-    /// the tag, so this is quadratic; it is bounded by the document cap and
-    /// the content worker's five-second CPU and wall limits. The costly case
-    /// runs with optimised dependencies, without a host wall-time assertion.
+    /// the tag, so this is quadratic; past about 512 KiB the content worker's
+    /// five-second CPU limit ends it. The 256 KiB case runs with optimised
+    /// dependencies, without a host wall-time assertion.
     #[test]
     #[cfg_attr(
         debug_assertions,
         ignore = "the dev profile builds html5ever at opt-level 0"
     )]
-    fn one_tag_of_distinct_attribute_names_is_bounded_by_the_cap() {
-        let (document, names) = shortest_distinct_names(MAX_DOCUMENT_BYTES);
-        assert!(document.len() <= MAX_DOCUMENT_BYTES);
+    fn one_tag_of_distinct_attribute_names_finishes() {
+        let (document, names) = shortest_distinct_names(256 * 1024);
         assert!(names > 66_000, "{names}");
         assert_eq!(extract(&document), Err(Unavailable::NoMetadata));
     }

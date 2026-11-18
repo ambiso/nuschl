@@ -5,8 +5,8 @@ use base64::Engine as _;
 use nuschl_content::ContentRenderer;
 use nuschl_core::{ContentBlock, MessageDocument};
 use nuschl_ipc::{
-    ContentRequest, ContentResponse, EncodedImage, Envelope, PreparedContent, ThumbnailPng,
-    read_frame, write_frame,
+    ContentRequest, ContentResponse, EncodedImage, Envelope, MAX_FRAME_BYTES, PreparedContent,
+    ThumbnailPng, read_frame_within, write_frame,
 };
 
 mod preview;
@@ -27,7 +27,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let renderer = ContentRenderer::new()?;
     let mut input = io::stdin().lock();
     let mut output = io::stdout().lock();
-    while let Some(request) = read_frame::<ContentRequest>(&mut input)? {
+    // Trusted requests: a preview document is the largest.
+    let limit = MAX_FRAME_BYTES.max(nuschl_ipc::preview::MAX_REQUEST_FRAME_BYTES);
+    while let Some(request) = read_frame_within::<ContentRequest>(&mut input, limit)? {
         let response = answer(&renderer, request.payload).unwrap_or_else(ContentResponse::Rejected);
         write_frame(&mut output, &Envelope::new(request.request_id, response))?;
     }

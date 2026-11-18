@@ -7,7 +7,7 @@ use crate::model::{MAX_ALT_BYTES, MAX_DESCRIPTION_BYTES, MAX_TITLE_BYTES, MAX_UR
 use crate::text::is_normalized;
 
 /// The largest document extraction accepts, as the fetch caps it.
-pub const MAX_DOCUMENT_BYTES: usize = 256 * 1024;
+pub const MAX_DOCUMENT_BYTES: usize = 10 * 1024 * 1024;
 
 /// What the HTTP `Content-Type` charset parameter said.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

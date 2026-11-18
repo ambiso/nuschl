@@ -228,7 +228,8 @@ impl Parser {
                     }
                     match call.proceed().ok_or(Failure::Malformed)? {
                         RecvResponseResult::RecvBody(body) => {
-                            if let BodyMode::LengthDelimited(size) = body.body_mode()
+                            if self.purpose == Purpose::Image
+                                && let BodyMode::LengthDelimited(size) = body.body_mode()
                                 && size > self.purpose.body_limit() as u64
                             {
                                 return Err(Failure::TooLarge);
@@ -248,13 +249,14 @@ impl Parser {
                     let (used, written) = call
                         .read(&self.pending, &mut out)
                         .map_err(|_| Failure::Malformed)?;
-                    if self
-                        .body
-                        .len()
-                        .checked_add(written)
-                        .is_none_or(|n| n > self.purpose.body_limit())
-                    {
-                        return Err(Failure::TooLarge);
+                    let room = self.purpose.body_limit() - self.body.len();
+                    if written > room {
+                        // A document's metadata comes first: extract from what was read.
+                        if self.purpose == Purpose::Image {
+                            return Err(Failure::TooLarge);
+                        }
+                        self.body.extend_from_slice(&out[..room]);
+                        return self.complete();
                     }
                     self.body.extend_from_slice(&out[..written]);
                     self.pending.drain(..used);
@@ -387,6 +389,85 @@ mod tests {
         }
     }
     #[test]
+    fn a_long_document_ends_at_the_limit_and_a_long_image_is_rejected() {
+        let limit = Purpose::Document.body_limit();
+        let page = [b"<title>early</title>".as_slice(), &vec![b'x'; limit]].concat();
+        let chunked: Vec<u8> = page
+            .chunks(4096)
+            .flat_map(|part| [format!("{:x}\r\n", part.len()).as_bytes(), part, b"\r\n"].concat())
+            .collect();
+        for raw in [
+            [
+                format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", page.len()).as_bytes(),
+                &page,
+            ]
+            .concat(),
+            [
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".as_slice(),
+                &chunked,
+            ]
+            .concat(),
+            [b"HTTP/1.0 200 OK\r\n\r\n".as_slice(), &page].concat(),
+        ] {
+            let body = parse(&raw, Purpose::Document, wire::MAX_CHUNK_BYTES)
+                .unwrap()
+                .decode_body(Purpose::Document)
+                .unwrap();
+            assert_eq!(body, page[..limit]);
+        }
+        let image = Purpose::Image.body_limit() + 1;
+        let raw = [b"HTTP/1.0 200 OK\r\n\r\n".as_slice(), &vec![0; image]].concat();
+        assert_eq!(
+            parse(&raw, Purpose::Image, wire::MAX_CHUNK_BYTES).unwrap_err(),
+            Failure::TooLarge
+        );
+    }
+    /// The document's metadata from a chunked response read through `parse`.
+    fn metadata(html: &[u8]) -> nuschl_ipc::preview::Response {
+        let mut raw =
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nX-Fill: ".to_vec();
+        raw.extend(std::iter::repeat_n(b'a', 12 * 1024));
+        raw.extend_from_slice(b"\r\nTransfer-Encoding: chunked\r\n\r\n");
+        for part in html.chunks(8192) {
+            raw.extend_from_slice(format!("{:x}\r\n", part.len()).as_bytes());
+            raw.extend_from_slice(part);
+            raw.extend_from_slice(b"\r\n");
+        }
+        raw.extend_from_slice(b"0\r\n\r\n");
+        let response = parse(&raw, Purpose::Document, wire::MAX_CHUNK_BYTES).unwrap();
+        crate::preview::answer(nuschl_ipc::preview::Request::Document {
+            schema: nuschl_ipc::preview::SCHEMA,
+            body: response.body,
+            charset: response.charset,
+            truncated: false,
+        })
+    }
+    fn page(head: usize, body: usize) -> Vec<u8> {
+        [
+            b"<!DOCTYPE html><html><head><script>var c='".as_slice(),
+            &vec![b'x'; head],
+            b"';</script><meta property=\"og:title\" content=\"Synthetic video\"></head><body>",
+            &vec![b'y'; body],
+            b"</body></html>",
+        ]
+        .concat()
+    }
+    #[test]
+    fn metadata_after_a_long_head_script_or_before_a_long_body_is_found() {
+        use nuschl_ipc::preview::Response;
+        // Shaped like a YouTube watch page: about 1.4 MiB, metadata after 760 KiB.
+        // Then a page past the document limit with its metadata early.
+        for html in [
+            page(760 * 1024, 650 * 1024),
+            page(0, Purpose::Document.body_limit()),
+        ] {
+            let Response::Metadata { metadata, .. } = metadata(&html) else {
+                panic!("expected metadata");
+            };
+            assert_eq!(metadata.title, "Synthetic video");
+        }
+    }
+    #[test]
     fn aggregate_head_body_informational_and_chunk_limits_do_not_reset() {
         assert!(
             parse(
@@ -403,9 +484,9 @@ mod tests {
         );
         let huge = format!(
             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
-            Purpose::Document.body_limit() + 1
+            Purpose::Image.body_limit() + 1
         );
-        assert!(parse(huge.as_bytes(), Purpose::Document, 32).is_err());
+        assert!(parse(huge.as_bytes(), Purpose::Image, 32).is_err());
         let infos = [
             b"HTTP/1.1 103 Early Hints\r\n\r\n".repeat(wire::MAX_INFORMATIONAL + 1),
             b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),

@@ -337,7 +337,6 @@ async fn actual_fetch_privacy() {
         "compressed",
         "ambiguous",
         "large-head",
-        "large-body",
         "raw-overhead",
     ] {
         let before = admissions();
@@ -354,8 +353,13 @@ async fn actual_fetch_privacy() {
         );
     }
     checked!(
-        "Actual HTTP worker rejects private redirects, redirect quota, compression and raw/header/body/framing bounds"
+        "Actual HTTP worker rejects private redirects, redirect quota, compression and raw/header/framing bounds"
     );
+    let card = request(&worker, direct(), "http://93.184.215.14/large-body")
+        .await
+        .unwrap();
+    assert_eq!(card.title(), "Synthetic preview");
+    checked!("A document past its limit yields the metadata in its first part");
     let card = request(&worker, direct(), "http://93.184.215.14/private-image")
         .await
         .unwrap();

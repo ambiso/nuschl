@@ -15,7 +15,7 @@ use tokio::{
 
 use crate::{
     ContentRequest, ContentResponse, EncodedImage, Envelope, MAX_FRAME_BYTES, PreparedContent,
-    write_frame,
+    write_frame, write_frame_within,
 };
 
 pub mod preview_lifecycle;
@@ -230,7 +230,12 @@ async fn bounded_content_request(
     }
     let is_preview = matches!(&request, ContentRequest::Preview(_));
     let mut frame = Vec::new();
-    write_frame(&mut frame, &Envelope::new(1, request))?;
+    let request_limit = if is_preview {
+        crate::preview::MAX_REQUEST_FRAME_BYTES
+    } else {
+        MAX_FRAME_BYTES
+    };
+    write_frame_within(&mut frame, &Envelope::new(1, request), request_limit)?;
     let Worker {
         mut child,
         mut input,
