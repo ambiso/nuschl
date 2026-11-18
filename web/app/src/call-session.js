@@ -3,18 +3,28 @@
 // a screen wake lock while the page is visible, requested again each time it
 // becomes visible, and released on leave; a media session with the channel,
 // Mute and Hang up; and a silent looping <audio> element, the media Chrome on
-// Android needs for its notification and to keep the page playing. Its
-// handlers only mute: only the user's Unmute button opens the microphone.
+// Android needs for its notification. Mute only ever mutes: only the user's
+// Unmute button opens the microphone.
+// When the browser freezes the page or hides it for good (freeze, pagehide),
+// onEnd ends the call so the server sees the disconnect at once.
 export class CallSession {
-  constructor({onMute=()=>{},onHangUp=()=>{},window:win=globalThis}={}) {
-    this.onMute=onMute;this.onHangUp=onHangUp;this.window=win;
+  constructor({onMute=()=>{},onHangUp=()=>{},onEnd=()=>{},window:win=globalThis}={}) {
+    this.onMute=onMute;this.onHangUp=onHangUp;this.onEnd=onEnd;this.window=win;
     this.call=null;this.lock=null;this.locking=false;this.media=null;
     this.visible=()=>this.lockScreen();
+    this.end=()=>{if(this.call){this.update(null);this.onEnd();}};
     const mute=()=>{if(this.call&&!this.call.muted)this.onMute();},hangUp=()=>{if(this.call)this.onHangUp();};
     this.actions={togglemicrophone:mute,pause:mute,hangup:hangUp,stop:hangUp};
   }
-  attach() {this.window.document.addEventListener("visibilitychange",this.visible);}
-  detach() {this.window.document.removeEventListener("visibilitychange",this.visible);this.update(null);}
+  attach() {
+    this.window.document.addEventListener("visibilitychange",this.visible);
+    this.window.document.addEventListener("freeze",this.end);this.window.addEventListener("pagehide",this.end);
+  }
+  detach() {
+    this.window.document.removeEventListener("visibilitychange",this.visible);
+    this.window.document.removeEventListener("freeze",this.end);this.window.removeEventListener("pagehide",this.end);
+    this.update(null);
+  }
   // From the Join gesture: Safari plays an element later only after one play() in a gesture.
   prime() {this.play();if(!this.call)this.stopMedia();}
   // call: {channel, server, muted} while joining or in voice, otherwise null.

@@ -147,10 +147,22 @@ stop, so on Android, pause mutes and stop stops audio.
 Versions come from MDN's compatibility data. Whether a phone keeps voice
 running with the screen off is the manual check in #447.
 
+When the browser freezes the page (`freeze`, Chrome 68) or hides it for good
+(`pagehide`), the call ends at once: the client plays the native client's
+Disconnected sound unless deafened and closes the SDK worker. Closing the worker
+sends the WebSocket close frame within milliseconds, and the relay then ends the
+Mumble connection, so the server sees the user leave. The page then shows "Voice
+ended in the background. Reload to reconnect." Chrome pauses a frozen page's Web
+Audio output (Blink `BaseAudioContext`), so the sound plays when the page
+resumes. Safari has no `freeze` event; there `pagehide` and the server's timeout
+end the call.
+
 `web/app/src/call-session.test.js` covers the lock and media session state;
 `tests/web_call_session.browser.mjs <repository> <chromium> <playwright-core/index.mjs>`
 runs `CallSession` in Chromium with the production CSP and the browser's Wake
-Lock, Media Session and media element.
+Lock, Media Session and media element, then a freeze: the call ends, a terminated
+worker's WebSocket sends its close frame, and an offline render of the
+disconnect sound is audible (silent while deafened).
 Headless Chromium keeps every page visible, so that test sets the page's
 visibility itself.
 

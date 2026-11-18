@@ -66,8 +66,10 @@
   const voiceChannel = $derived(voiceServer?.channels.find(channel => channel.id === voice?.channel_id));
   const microphoneMuted = $derived(voiceServer?.muted !== false || voiceServer?.deafened === true);
   const playbackDeafened = $derived(voiceServer?.deafened !== false);
-  // The notification's Mute and Hang up; neither ever unmutes.
-  const callSession = new CallSession({onMute:() => { if (!microphoneMuted) toggleMicrophone(); }, onHangUp:() => stopAudio()});
+  // The notification's Mute and Hang up; neither ever unmutes. When the browser
+  // freezes the page, closing the SDK worker closes its connections at once.
+  const callSession = new CallSession({onMute:() => { if (!microphoneMuted) toggleMicrophone(); }, onHangUp:() => stopAudio(),
+    onEnd:() => { audio?.playDisconnected(); rpc?.close("Voice ended in the background. Reload to reconnect."); }});
   $effect(() => callSession.update(voice ? {channel:voiceChannel?.name || "Voice channel", server:voiceServer?.name || "", muted:microphoneMuted} : null));
   const voiceStatus = $derived(!voice?.joined ? "Joining…" : voice.deafened ? "Sound off"
     : microphoneMuted ? "Microphone muted" : audioState?.phase === "permission-pending" ? "Waiting for microphone permission"

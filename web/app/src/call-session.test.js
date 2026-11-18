@@ -31,7 +31,8 @@ function page() {
     pause(){this.playing=false;} load(){}
   }
   class MediaMetadata {constructor(init){Object.assign(this,init);}}
-  return {window:{document,navigator:{wakeLock,mediaSession},Audio,MediaMetadata,URL:{createObjectURL:()=>"blob:silence"}},
+  const window=Object.assign(new EventTarget(),{document,navigator:{wakeLock,mediaSession},Audio,MediaMetadata,URL:{createObjectURL:()=>"blob:silence"}});
+  return {window,
     locks,setVisibility,handlers,media,mediaSession};
 }
 const settle=()=>new Promise(resolve=>setTimeout(resolve,0));
@@ -116,4 +117,20 @@ test("the Join gesture primes the media element without playing outside a call",
   assert.equal(media[0].plays,1);assert.equal(media[0].playing,false);assert.equal(media[0].src,"");
   session.update(call);
   assert.equal(media.length,1);assert.equal(media[0].playing,true);
+});
+
+test("a frozen or hidden-for-good page ends the call once",async()=>{
+  for(const [target,type] of [["document","freeze"],["window","pagehide"]]) {
+    const {window,locks,media,mediaSession}=page(),ends=[];
+    const session=new CallSession({window,onEnd:()=>ends.push(session.call)});session.attach();
+    (target==="document"?window.document:window).dispatchEvent(new Event(type));
+    assert.deepEqual(ends,[]);
+    session.update(call);await settle();
+    (target==="document"?window.document:window).dispatchEvent(new Event(type));
+    window.document.dispatchEvent(new Event("freeze"));window.dispatchEvent(new Event("pagehide"));
+    assert.deepEqual(ends,[null]);
+    assert.equal(locks[0].released,true);assert.equal(media[0].playing,false);assert.equal(mediaSession.playbackState,"none");
+    session.detach();window.dispatchEvent(new Event("pagehide"));
+    assert.equal(ends.length,1);
+  }
 });
