@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: EUPL-1.2
+[package]
+name = "nuschl-stream-quality"
+description = "Call quality: tier ladders, quality requests, layer choice from the AV1 Dependency Descriptor, budgets and adaptation timing (docs/video-plan.md §5)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

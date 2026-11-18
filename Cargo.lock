@@ -7540,6 +7540,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nuschl-stream-quality"
+version = "0.2.0"
+
+[[package]]
 name = "nuschl-stream-sfu"
 version = "0.2.0"
 dependencies = [
