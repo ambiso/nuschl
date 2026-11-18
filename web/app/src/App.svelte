@@ -66,7 +66,8 @@
   const voiceChannel = $derived(voiceServer?.channels.find(channel => channel.id === voice?.channel_id));
   const microphoneMuted = $derived(voiceServer?.muted !== false || voiceServer?.deafened === true);
   const playbackDeafened = $derived(voiceServer?.deafened !== false);
-  const callSession = new CallSession();
+  // The notification's Mute and Hang up; neither ever unmutes.
+  const callSession = new CallSession({onMute:() => { if (!microphoneMuted) toggleMicrophone(); }, onHangUp:() => stopAudio()});
   $effect(() => callSession.update(voice ? {channel:voiceChannel?.name || "Voice channel", server:voiceServer?.name || "", muted:microphoneMuted} : null));
   const voiceStatus = $derived(!voice?.joined ? "Joining…" : voice.deafened ? "Sound off"
     : microphoneMuted ? "Microphone muted" : audioState?.phase === "permission-pending" ? "Waiting for microphone permission"
@@ -305,7 +306,7 @@
     if (!selected || selected.status !== "connected" || channel == null) return;
     // Revoke the old destination before touching an asynchronous command.
     audio?.syncVoice(null); voice = null;
-    void activateAudio({microphone:false}); void act("join", selectedIndex, channel);
+    void activateAudio({microphone:false}); callSession.prime(); void act("join", selectedIndex, channel);
   }
   function toggleMicrophone() {
     if (voiceIndex < 0 || !voice?.joined || audioActionPending) return;
