@@ -294,8 +294,11 @@ impl Client {
 mod tests {
     use super::*;
     use crate::{HistoryTicket, input::Input, model::User, platform::Platform, timeline::Page};
-    use nuschl_core::call::{CARD_DATA_ID, Card};
     use nuschl_core::{audio::Sound, bookmark::ServerBookmark, model::MetadataAuthority};
+    use nuschl_core::{
+        call::{CARD_DATA_ID, Card},
+        model::TextTarget,
+    };
     use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
@@ -761,7 +764,9 @@ mod tests {
     #[test]
     fn our_call_card_reaches_the_channel_and_whoever_enters_it() {
         let (mut client, recorder) = connected();
-        client.start_call(0, link('a')).unwrap();
+        client
+            .start_call(0, TextTarget::Channel(0), link('a'))
+            .unwrap();
         let active = Card::Active(link('a'));
         let (_, receivers, sent) = one(&recorder);
         assert_eq!((receivers, &sent), (vec![(2, 22), (3, 33)], &active));
@@ -794,7 +799,9 @@ mod tests {
         assert_eq!(receivers, [(2, 22), (3, 33), (4, 44)]);
         assert!(client.own_call().is_none());
         // Leaving the channel ends the call.
-        client.start_call(0, link('c')).unwrap();
+        client
+            .start_call(0, TextTarget::Channel(0), link('c'))
+            .unwrap();
         let moved = User {
             channel: 5,
             ..user(1, 11)
@@ -802,7 +809,16 @@ mod tests {
         client.handle(input(&client, 0, ServerEvent::User(moved)));
         client.settle();
         assert!(client.own_call().is_none());
-        assert!(client.start_call(0, link('c')).is_ok());
+        assert!(
+            client
+                .start_call(0, TextTarget::Channel(0), link('c'))
+                .is_err()
+        );
+        assert!(
+            client
+                .start_call(0, TextTarget::Channel(5), link('c'))
+                .is_ok()
+        );
     }
 
     #[test]
@@ -812,12 +828,12 @@ mod tests {
         let active = Card::Active(link.clone());
         // Delivered without opting in to generic plugin data.
         client.handle(input(&client, 0, card(2, 22, &active)));
-        let calls = client.calls_in(0, 0);
+        let calls = client.calls_in(0, &TextTarget::Channel(0));
         assert_eq!(calls.len(), 1);
         assert_eq!((calls[0].sender, &calls[0].link), (2, &link));
         assert!(client.take_plugin_data().is_empty());
         client.handle(input(&client, 0, card(2, 22, &Card::Ended)));
-        assert!(client.calls_in(0, 0).is_empty());
+        assert!(client.calls_in(0, &TextTarget::Channel(0)).is_empty());
         // A stale presence, garbage and our own card are ignored.
         client.handle(input(&client, 0, card(3, 34, &active)));
         client.handle(input(&client, 0, card(1, 11, &active)));
@@ -826,19 +842,87 @@ mod tests {
             data.payload = Payload::new(CARD_DATA_ID.into(), vec![1, 1, b'x']).unwrap();
         }
         client.handle(input(&client, 0, garbage));
-        assert!(client.calls_in(0, 0).is_empty());
+        assert!(client.calls_in(0, &TextTarget::Channel(0)).is_empty());
         // The card stays with the channel its sender announced it in.
         client.handle(input(&client, 0, card(3, 33, &active)));
-        assert_eq!(client.calls_in(0, 0).len(), 1);
+        assert_eq!(client.calls_in(0, &TextTarget::Channel(0)).len(), 1);
         let moved = User {
             channel: 7,
             ..user(3, 33)
         };
         client.handle(input(&client, 0, ServerEvent::User(moved)));
-        assert!(client.calls_in(0, 0).is_empty() && client.calls_in(0, 7).is_empty());
+        assert!(
+            client.calls_in(0, &TextTarget::Channel(0)).is_empty()
+                && client.calls_in(0, &TextTarget::Channel(7)).is_empty()
+        );
         client.handle(input(&client, 0, card(3, 33, &active)));
-        assert_eq!(client.calls_in(0, 7).len(), 1);
+        assert_eq!(client.calls_in(0, &TextTarget::Channel(7)).len(), 1);
         client.connect(0, None, false);
         assert!(client.servers[0].calls.is_empty());
+    }
+
+    #[test]
+    fn a_direct_call_card_reaches_only_the_other_person() {
+        let (mut client, recorder) = connected();
+        assert!(
+            client
+                .start_call(0, TextTarget::Direct(1), link('d'))
+                .is_err()
+        );
+        assert!(
+            client
+                .start_call(0, TextTarget::Direct(9), link('d'))
+                .is_err()
+        );
+        assert!(
+            client
+                .start_call(0, TextTarget::Channel(5), link('d'))
+                .is_err()
+        );
+        client
+            .start_call(0, TextTarget::Direct(2), link('d'))
+            .unwrap();
+        let (_, receivers, sent) = one(&recorder);
+        assert_eq!((receivers, sent), (vec![(2, 22)], Card::Direct(link('d'))));
+        // Someone entering the channel, or our own move, leaves it alone.
+        client.handle(input(&client, 0, ServerEvent::User(user(4, 44))));
+        let moved = User {
+            channel: 5,
+            ..user(1, 11)
+        };
+        client.handle(input(&client, 0, ServerEvent::User(moved)));
+        client.settle();
+        assert!(cards(&recorder).is_empty());
+        assert!(client.own_call().is_some());
+        client.end_call();
+        let (_, receivers, Card::Ended) = one(&recorder) else {
+            panic!("an ended card");
+        };
+        assert_eq!(receivers, [(2, 22)]);
+        // The other person leaving ends it.
+        client
+            .start_call(0, TextTarget::Direct(3), link('e'))
+            .unwrap();
+        one(&recorder);
+        client.handle(input(&client, 0, ServerEvent::User(user(3, 34))));
+        client.settle();
+        assert!(client.own_call().is_none());
+    }
+
+    #[test]
+    fn a_received_direct_call_belongs_to_the_conversation_with_its_sender() {
+        let (mut client, _) = connected();
+        client.handle(input(&client, 0, card(2, 22, &Card::Direct(link('a')))));
+        assert!(client.calls_in(0, &TextTarget::Channel(0)).is_empty());
+        let calls = client.calls_in(0, &TextTarget::Direct(2));
+        assert_eq!((calls.len(), &calls[0].link), (1, &link('a')));
+        let moved = User {
+            channel: 7,
+            ..user(2, 22)
+        };
+        client.handle(input(&client, 0, ServerEvent::User(moved)));
+        assert_eq!(client.calls_in(0, &TextTarget::Direct(2)).len(), 1);
+        client.handle(input(&client, 0, card(2, 22, &Card::Ended)));
+        assert!(client.calls_in(0, &TextTarget::Direct(2)).is_empty());
     }
 }
