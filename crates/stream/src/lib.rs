@@ -33,7 +33,7 @@
 //!                                              the identity layer verifies; approve
 //!                                              rekey: K_{e+1} to every viewer first
 //!                    ◄── KeyGrant{viewer_id, nonce_s, enc, Seal(epoch, K)}
-//! KeyAck{viewer_id, confirm} ──►               (sk_v is erased once the grant opens)
+//! KeyAck{viewer_id, confirm} ──►               (sk_v is dropped once the grant opens)
 //!                    ◄── Rekey{viewer_id, counter, ChaCha20-Poly1305(channel_n, epoch, K)}
 //!
 //! binding_digest = SHA-256("nuschl/stream/v2 binding" || stream_id || viewer_id
@@ -50,7 +50,7 @@
 //! The grant's AEAD tag authenticates the sharer's side: it verifies only under the
 //! HPKE context, which binds psk and the transcript. The exporter is bound to the same
 //! context, so the export alone serves as the viewer's confirmation. Each Rekey uses the
-//! next channel key, and both sides erase the one before, so a party that later learns a
+//! next channel key, and both sides drop the one before, so a party that later learns a
 //! viewer's or the sharer's state reads no earlier epoch.
 //!
 //! Every key message is one ChaCha20-Poly1305 envelope under `signal_key`, so only link
@@ -110,7 +110,6 @@ use std::fmt;
 
 use rand_core::TryCryptoRng;
 use subtle::ConstantTimeEq as _;
-use zeroize::Zeroizing;
 
 pub use credentials::{Binding, CredentialCache, Fingerprint, VerifiableBinding, fingerprint};
 pub use exchange::{
@@ -154,32 +153,30 @@ pub enum Error {
     Randomness,
 }
 
-/// 32 secret bytes: zeroized on drop, compared in constant time, redacted in `Debug`.
-pub struct Secret(Zeroizing<[u8; 32]>);
+/// 32 secret bytes: compared in constant time, redacted in `Debug`.
+pub struct Secret([u8; 32]);
 
 impl Secret {
     pub fn random<R: TryCryptoRng + ?Sized>(rng: &mut R) -> Result<Self, Error> {
-        let mut secret = Self::from_bytes([0; 32]);
-        fill(rng, &mut secret.0[..])?;
-        Ok(secret)
+        random(rng).map(Self)
     }
 
     pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(Zeroizing::new(bytes))
+        Self(bytes)
     }
 
     pub fn expose(&self) -> &[u8; 32] {
         &self.0
     }
 
-    fn into_inner(self) -> Zeroizing<[u8; 32]> {
+    fn into_inner(self) -> [u8; 32] {
         self.0
     }
 }
 
 impl PartialEq for Secret {
     fn eq(&self, other: &Self) -> bool {
-        self.0.ct_eq(&*other.0).into()
+        self.0.ct_eq(&other.0).into()
     }
 }
 
@@ -212,16 +209,16 @@ fn sha256(parts: &[&[u8]]) -> [u8; 32] {
     out
 }
 
-fn hkdf_extract(salt: &[u8], ikm: &[u8]) -> Zeroizing<[u8; 32]> {
-    let mut prk = Zeroizing::new([0; 32]);
-    libcrux_hkdf::extract(libcrux_hkdf::Algorithm::Sha256, &mut prk[..], salt, ikm)
+fn hkdf_extract(salt: &[u8], ikm: &[u8]) -> [u8; 32] {
+    let mut prk = [0; 32];
+    libcrux_hkdf::extract(libcrux_hkdf::Algorithm::Sha256, &mut prk, salt, ikm)
         .expect("inputs are far below the HKDF limits");
     prk
 }
 
-fn hkdf_expand<const N: usize>(prk: &[u8; 32], info: &[u8]) -> Zeroizing<[u8; N]> {
-    let mut okm = Zeroizing::new([0; N]);
-    libcrux_hkdf::expand(libcrux_hkdf::Algorithm::Sha256, &mut okm[..], prk, info)
+fn hkdf_expand<const N: usize>(prk: &[u8; 32], info: &[u8]) -> [u8; N] {
+    let mut okm = [0; N];
+    libcrux_hkdf::expand(libcrux_hkdf::Algorithm::Sha256, &mut okm, prk, info)
         .expect("outputs are at most 32 bytes");
     okm
 }

@@ -175,7 +175,7 @@ impl LinkKeys {
         let prk = hkdf_extract(LABEL.as_bytes(), secret.expose());
         let expand = |name: &str| Secret(hkdf_expand(&prk, label(name).as_bytes()));
         Self {
-            stream_id: *hkdf_expand(&prk, label("stream id").as_bytes()),
+            stream_id: hkdf_expand(&prk, label("stream id").as_bytes()),
             admit_key: expand("admit"),
             psk: expand("psk"),
             signal_key: expand("signal"),

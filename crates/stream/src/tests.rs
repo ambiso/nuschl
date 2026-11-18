@@ -237,7 +237,7 @@ fn seeded_exchange_known_answer() {
     let ViewerEvent::Granted { key, ack } = viewer.receive(grant, T0, &mut rng).unwrap() else {
         panic!("expected a grant");
     };
-    assert_eq!(key.expose(), rekey.key.into_parts().1.as_ref());
+    assert_eq!(key.expose(), &rekey.key.into_parts().1);
     sharer.receive(&ack, T0, &mut rng).unwrap();
     let next = sharer
         .rekey(T0 + 1000, &mut rng)
@@ -393,7 +393,7 @@ fn viewers_get_only_fresh_epochs_and_removed_viewers_are_locked_out() {
     assert_eq!(rekey.messages.len(), 1);
     assert_eq!(rekey.messages[0].0, second.id());
     let key_3 = rekeyed(&mut second, &rekey.messages[0].1, T0 + 2000).unwrap();
-    assert_eq!(key_3.expose(), rekey.key.into_parts().1.as_ref());
+    assert_eq!(key_3.expose(), &rekey.key.into_parts().1);
     assert_eq!(
         first
             .receive(&rekey.messages[0].1, T0 + 2000, &mut rng(13))
@@ -599,7 +599,7 @@ fn any_link_holder_can_act_as_sharer() {
     else {
         panic!("the forged grant is accepted");
     };
-    assert_eq!(key.expose(), forged.key.into_parts().1.as_ref());
+    assert_eq!(key.expose(), &forged.key.into_parts().1);
 }
 
 #[test]
@@ -692,7 +692,7 @@ fn resends_and_missed_rekeys() {
     let message = &next.messages[0].1;
     let key = rekeyed(&mut viewer, message, T0 + 2000).unwrap();
     assert_eq!(key.epoch(), 3);
-    assert_eq!(key.expose(), next.key.into_parts().1.as_ref());
+    assert_eq!(key.expose(), &next.key.into_parts().1);
     assert_eq!(
         rekeyed(&mut viewer, message, T0 + 2000).err(),
         Some(Error::Replay)

@@ -28,8 +28,6 @@ pub mod rfc9605;
 
 use std::fmt;
 
-use zeroize::Zeroizing;
-
 use crate::rfc9605::{Receiver, Sender};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -66,11 +64,11 @@ fn kid(epoch: u32, encoding: u8) -> u64 {
 /// One epoch's base key for sending.
 pub struct SendKey {
     epoch: u32,
-    key: Zeroizing<[u8; 32]>,
+    key: [u8; 32],
 }
 
 impl SendKey {
-    pub fn new(epoch: u32, key: Zeroizing<[u8; 32]>) -> Self {
+    pub fn new(epoch: u32, key: [u8; 32]) -> Self {
         Self { epoch, key }
     }
 
@@ -78,14 +76,14 @@ impl SendKey {
     /// consumed:
     ///
     /// ```compile_fail
-    /// let key = nuschl_sframe::SendKey::new(2, [7; 32].into());
+    /// let key = nuschl_sframe::SendKey::new(2, [7; 32]);
     /// let first = key.encryptors();
     /// let second = key.encryptors();
     /// ```
     pub fn encryptors(self) -> [FrameEncryptor; MAX_ENCODINGS as usize] {
         std::array::from_fn(|encoding| {
             let encoding = u8::try_from(encoding).expect("fewer than 256 encodings");
-            FrameEncryptor(Sender::new(&self.key[..], kid(self.epoch, encoding)))
+            FrameEncryptor(Sender::new(&self.key, kid(self.epoch, encoding)))
         })
     }
 }
@@ -179,7 +177,7 @@ pub(crate) mod tests {
     const T0: u64 = 1_800_000_000_000;
 
     fn encryptors(epoch: u32, key: u8) -> [FrameEncryptor; MAX_ENCODINGS as usize] {
-        SendKey::new(epoch, [key; 32].into()).encryptors()
+        SendKey::new(epoch, [key; 32]).encryptors()
     }
 
     #[test]

@@ -12,7 +12,6 @@ use hpke_rs_libcrux::HpkeLibcrux;
 use libcrux_kem::Algorithm::XWingKemDraft06;
 use rand_core::{TryCryptoRng, TryRng};
 use subtle::ConstantTimeEq as _;
-use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::credentials::{Binding, CredentialCache, Fingerprint, VerifiableBinding};
 use crate::link::{LinkKeys, label};
@@ -74,7 +73,7 @@ impl SendKey {
         self.epoch
     }
 
-    pub fn into_parts(self) -> (u32, Zeroizing<[u8; 32]>) {
+    pub fn into_parts(self) -> (u32, [u8; 32]) {
         (self.epoch, self.key.into_inner())
     }
 }
@@ -107,14 +106,14 @@ impl fmt::Debug for ReceiveKey {
     }
 }
 
-fn encode_epoch_key(epoch: u32, key: &Secret) -> Zeroizing<Vec<u8>> {
-    Zeroizing::new([&epoch.to_be_bytes()[..], key.expose()].concat())
+fn encode_epoch_key(epoch: u32, key: &Secret) -> Vec<u8> {
+    [&epoch.to_be_bytes()[..], key.expose()].concat()
 }
 
 fn decode_epoch_key(bytes: &[u8]) -> Result<ReceiveKey, Error> {
     let mut reader = Reader::new(bytes);
     let epoch = reader.u32()?;
-    let key = Secret(Zeroizing::new(reader.array()?));
+    let key = Secret(reader.array()?);
     reader.finish()?;
     Ok(ReceiveKey { epoch, key })
 }
@@ -286,7 +285,7 @@ pub(crate) fn hpke_sender(
     let (shared, enc) = public
         .encapsulate_derand(eseed)
         .map_err(|_| Error::InvalidPublicKey)?;
-    let shared = Zeroizing::new(shared.encode());
+    let shared = shared.encode();
     let (key, id) = psk.unwrap_or_default();
     let context = hpke(psk)
         .key_schedule(&shared, info, key, id)
@@ -300,7 +299,6 @@ pub(crate) fn hpke_receiver(
     info: &[u8],
     psk: Psk<'_>,
 ) -> Result<HpkeContext, Error> {
-    // hpke-rs zeroizes its private key type on drop.
     let private = HpkePrivateKey::new(kem_seed.to_vec());
     hpke(psk)
         .setup_receiver(
@@ -315,14 +313,10 @@ pub(crate) fn hpke_receiver(
 }
 
 fn export(context: &HpkeContext, name: &str) -> Result<Secret, Error> {
-    let bytes = Zeroizing::new(
-        context
-            .export(label(name).as_bytes(), 32)
-            .map_err(|_| Error::Authentication)?,
-    );
-    Ok(Secret(Zeroizing::new(
-        bytes[..].try_into().expect("32 bytes"),
-    )))
+    let bytes = context
+        .export(label(name).as_bytes(), 32)
+        .map_err(|_| Error::Authentication)?;
+    Ok(Secret(bytes.try_into().expect("32 bytes")))
 }
 
 /// The next channel key; the caller drops the current one.
@@ -636,7 +630,7 @@ impl Sharer {
     ) -> Result<(Vec<u8>, Granted), Error> {
         let request = Request::decode(&pending.body)?;
         let sharer_nonce: [u8; 32] = random(rng)?;
-        let eseed = Zeroizing::new(random::<64, R>(rng)?);
+        let eseed = random::<64, R>(rng)?;
         let transcript = transcript(&pending.body, &sharer_nonce);
         let psk_id = self.keys.psk_id();
         let (enc, mut context) = hpke_sender(
@@ -776,11 +770,8 @@ impl Viewer {
         let id = random(rng)?;
         let nonce = random(rng)?;
         let kem_seed = Secret::random(rng)?;
-        let (private, public) = libcrux_kem::key_gen_derand(XWingKemDraft06, kem_seed.expose())
+        let (_, public) = libcrux_kem::key_gen_derand(XWingKemDraft06, kem_seed.expose())
             .map_err(|_| Error::Randomness)?;
-        if let libcrux_kem::PrivateKey::XWingKemDraft06(mut private) = private {
-            private.seed.zeroize();
-        }
         Ok(JoinDraft {
             keys,
             id,
@@ -861,11 +852,9 @@ impl Viewer {
             &hpke_info(&transcript),
             Some((self.keys.psk.expose(), &psk_id)),
         )?;
-        let plaintext = Zeroizing::new(
-            context
-                .open(&[], sealed)
-                .map_err(|_| Error::Authentication)?,
-        );
+        let plaintext = context
+            .open(&[], sealed)
+            .map_err(|_| Error::Authentication)?;
         let key = decode_epoch_key(&plaintext)?;
         let confirm = export(&context, "confirm viewer->sharer")?;
         let ack = [&self.id[..], confirm.expose()].concat();
@@ -901,7 +890,7 @@ impl Viewer {
             skipped = Some(ratchet(skipped.as_ref().unwrap_or(channel)));
         }
         let key = skipped.as_ref().unwrap_or(channel);
-        let mut plaintext = Zeroizing::new(vec![0; EPOCH_KEY_LEN]);
+        let mut plaintext = [0; EPOCH_KEY_LEN];
         libcrux_chacha20poly1305::decrypt(
             key.expose(),
             &mut plaintext,

@@ -13,7 +13,6 @@ workspace = true
 
 [dependencies]
 # RFC 9605 suite 0x0004 AES_128_GCM_SHA256_128. libcrux's AES is pre-verification.
-aes-gcm = { version = "0.11.1", default-features = false, features = ["aes", "zeroize"] }
+aes-gcm = { version = "0.11.1", default-features = false, features = ["aes"] }
 libcrux-hkdf = "0.0.9"
 thiserror = "2.0.21"
-zeroize = "1.9.1"

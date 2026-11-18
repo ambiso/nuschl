@@ -894,12 +894,6 @@ rec {
             packageId = "cpufeatures 0.3.1";
             target = { target, features }: (("aarch64" == target."arch" or null) || ("x86_64" == target."arch" or null) || ("x86" == target."arch" or null));
           }
-          {
-            name = "zeroize";
-            packageId = "zeroize";
-            optional = true;
-            usesDefaultFeatures = false;
-          }
         ];
         devDependencies = [
           {
@@ -911,7 +905,6 @@ rec {
         features = {
           "zeroize" = [ "dep:zeroize" ];
         };
-        resolvedDefaultFeatures = [ "zeroize" ];
       };
       "aes-gcm 0.10.3" = rec {
         crateName = "aes-gcm";
@@ -1011,12 +1004,6 @@ rec {
             packageId = "ghash 0.6.0";
             usesDefaultFeatures = false;
           }
-          {
-            name = "zeroize";
-            packageId = "zeroize";
-            optional = true;
-            usesDefaultFeatures = false;
-          }
         ];
         devDependencies = [
           {
@@ -1036,7 +1023,7 @@ rec {
           "rand_core" = [ "aead/rand_core" ];
           "zeroize" = [ "dep:zeroize" "aes?/zeroize" "ghash/zeroize" ];
         };
-        resolvedDefaultFeatures = [ "aes" "alloc" "default" "getrandom" "zeroize" ];
+        resolvedDefaultFeatures = [ "aes" "alloc" "default" "getrandom" ];
       };
       "ahash" = rec {
         crateName = "ahash";
@@ -11744,17 +11731,10 @@ rec {
             packageId = "polyval 0.7.3";
             features = [ "hazmat" ];
           }
-          {
-            name = "zeroize";
-            packageId = "zeroize";
-            optional = true;
-            usesDefaultFeatures = false;
-          }
         ];
         features = {
           "zeroize" = [ "polyval/zeroize" "dep:zeroize" ];
         };
-        resolvedDefaultFeatures = [ "zeroize" ];
       };
       "gif" = rec {
         crateName = "gif";
@@ -24829,7 +24809,7 @@ rec {
             name = "aes-gcm";
             packageId = "aes-gcm 0.11.1";
             usesDefaultFeatures = false;
-            features = [ "aes" "zeroize" ];
+            features = [ "aes" ];
           }
           {
             name = "libcrux-hkdf";
@@ -24838,10 +24818,6 @@ rec {
           {
             name = "thiserror";
             packageId = "thiserror 2.0.21";
-          }
-          {
-            name = "zeroize";
-            packageId = "zeroize";
           }
         ];
 
@@ -24991,10 +24967,6 @@ rec {
           {
             name = "thiserror";
             packageId = "thiserror 2.0.21";
-          }
-          {
-            name = "zeroize";
-            packageId = "zeroize";
           }
         ];
 
@@ -32063,17 +32035,11 @@ rec {
             name = "universal-hash";
             packageId = "universal-hash 0.6.1";
           }
-          {
-            name = "zeroize";
-            packageId = "zeroize";
-            optional = true;
-            usesDefaultFeatures = false;
-          }
         ];
         features = {
           "zeroize" = [ "dep:zeroize" ];
         };
-        resolvedDefaultFeatures = [ "hazmat" "zeroize" ];
+        resolvedDefaultFeatures = [ "hazmat" ];
       };
       "portable-atomic" = rec {
         crateName = "portable-atomic";

@@ -6,7 +6,6 @@
 
 use aes_gcm::Aes128Gcm;
 use aes_gcm::aead::{AeadInOut as _, KeyInit as _, Nonce, Tag};
-use zeroize::Zeroizing;
 
 use crate::Error;
 
@@ -20,32 +19,32 @@ pub const MAX_RECEIVE_KEYS: usize = 16;
 
 struct KeyAndSalt {
     cipher: Aes128Gcm,
-    salt: Zeroizing<[u8; 12]>,
+    salt: [u8; 12],
 }
 
 impl KeyAndSalt {
     /// RFC 9605 §4.4.2.
     fn derive(base_key: &[u8], kid: u64) -> Self {
         use libcrux_hkdf::Algorithm::Sha256;
-        let mut secret = Zeroizing::new([0; 32]);
-        libcrux_hkdf::extract(Sha256, &mut secret[..], &[], base_key)
+        let mut secret = [0; 32];
+        libcrux_hkdf::extract(Sha256, &mut secret, &[], base_key)
             .expect("inputs are far below the HKDF limits");
         let expand = |name: &[u8], out: &mut [u8]| {
             let info = [name, &kid.to_be_bytes(), &CIPHER_SUITE.to_be_bytes()].concat();
-            libcrux_hkdf::expand(Sha256, out, &secret[..], &info).expect("at most 16 bytes");
+            libcrux_hkdf::expand(Sha256, out, &secret, &info).expect("at most 16 bytes");
         };
-        let mut key = Zeroizing::new([0; 16]);
-        let mut salt = Zeroizing::new([0; 12]);
-        expand(b"SFrame 1.0 Secret key ", &mut key[..]);
-        expand(b"SFrame 1.0 Secret salt ", &mut salt[..]);
+        let mut key = [0; 16];
+        let mut salt = [0; 12];
+        expand(b"SFrame 1.0 Secret key ", &mut key);
+        expand(b"SFrame 1.0 Secret salt ", &mut salt);
         Self {
-            cipher: Aes128Gcm::new(&(*key).into()),
+            cipher: Aes128Gcm::new(&key.into()),
             salt,
         }
     }
 
     fn nonce(&self, counter: u64) -> Nonce<Aes128Gcm> {
-        let mut nonce = *self.salt;
+        let mut nonce = self.salt;
         for (byte, counter) in nonce[4..].iter_mut().zip(counter.to_be_bytes()) {
             *byte ^= counter;
         }
