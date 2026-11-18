@@ -30,10 +30,10 @@ decisions (§11).
   Nuschl or opened from the link, then native Linux capture, encoding and
   viewing; end-to-end-mode servers last (§3).
 - **Codec (Owner):** royalty-free codecs only, one per call: AV1, or VP9 when
-  a participant lacks AV1 decoding.
-  The pages use the browser's own encoding and decoding; native clients use
-  hardware AV1 first, software AV1 as the fallback, and rav1d for decoding.
-  The SFU forwards encoded frames as they are.
+  a participant lacks AV1 decoding. The pages use the browser's own encoding
+  and decoding; native clients encode and decode in hardware first (VA-API on
+  Linux), with software AV1 encoding and rav1d decoding as the fallback. The
+  SFU forwards encoded frames as they are.
 
 ## 1. What exists
 
@@ -235,15 +235,25 @@ encoder offers them, spatial layers.
 - **Capture.** Linux: the xdg-desktop-portal ScreenCast and Camera interfaces
   each hand over a PipeWire FD, so one capture path serves both sources. Every
   capture needs a fresh portal grant.
+- **Hardware codecs (Owner).** Native clients encode and decode in hardware
+  first: VA-API on Linux, Media Foundation with D3D11 video acceleration
+  (DXVA) on Windows, VideoToolbox on macOS. AV1 comes first, VP9 when the call
+  negotiated VP9.
 - **Encoding.** One `nuschl-video-worker --encode` role per source: PipeWire
-  DMA-BUF into VA-API AV1 without a CPU copy, a software AV1 encoder chosen by
-  S0f otherwise (rav1e preferred), live rate control and at most 2 queued
-  frames. VA-API runs as a scoped FFI row of that worker; encoders have had
-  exploited bugs ([CVE-2023-5217](https://nvd.nist.gov/vuln/detail/CVE-2023-5217)),
-  so encoding runs isolated too.
-- **Decoding.** A `--decode` role per call with rav1d (Owner), with pixel,
-  memory and CPU caps; decoded frames reach the desktop through shared memory
-  and stay on the device.
+  DMA-BUF into the hardware encoder without a CPU copy, the software AV1
+  encoder S0f picks otherwise (rav1e preferred), live rate control and at
+  most 2 queued frames. Encoders have had exploited bugs
+  ([CVE-2023-5217](https://nvd.nist.gov/vuln/detail/CVE-2023-5217)), so
+  encoding runs isolated too.
+- **Decoding.** A `--decode` role per call: the hardware decoder first, rav1d
+  (Owner) as the AV1 software fallback, with pixel, memory and CPU caps;
+  decoded frames reach the desktop through shared memory and stay on the
+  device. Software VP9 decoding is open (§12).
+- **Workers.** Hardware encoding and decoding run in the isolated
+  `nuschl-video-worker` roles (#35, V1, N1), each with only the devices it
+  needs (the DRM render node on Linux); untrusted bitstreams are parsed only
+  there. Each platform video API needs a scoped FFI row for its role in
+  SECURITY.md, agreed with the owner.
 - **Rendering.** GPUI surfaces for the grid and the large view (#145).
 - **Lip sync.** Video frames carry RTP timestamps; the receiver holds each
   camera's frames for its talker's voice playout delay, aiming for audio
@@ -357,7 +367,9 @@ Murmur 1.4 and 1.5 with a stock Mumble client, and relay-only by packet capture.
 **Made by the owner (2026-11-13 and 2026-11-17):**
 - Video calls and screen sharing are one feature, planned and built together.
 - AV1: hardware first on every platform, software AV1 as the fallback; rav1d
-  for native software decoding. Since 2026-11-18 VP9 is allowed too:
+  for native software decoding. Since 2026-11-18 native clients also decode
+  in hardware first, through VA-API on Linux and the platform equivalents
+  (§6), and VP9 is allowed too:
   royalty-free codecs only, so H.264 and HEVC stay out, and each call
   negotiates one codec for all participants (§6).
 - Phase 1 captures in the browser, launched from Nuschl; native Linux follows.
@@ -407,5 +419,11 @@ Murmur 1.4 and 1.5 with a stock Mumble client, and relay-only by packet capture.
 libwebrtc's future handling of the AV1 envelope; spatial layers and simulcast
 with the envelope; hardware AV1 encoding per browser and per GPU vendor; the
 §5.1 figures on real content; camera SVC in hardware encoders; native 4K60
-decoding; the publisher-lease stop deadline; the SFrame envelope for VP9; VP9
-decoding in native clients for calls that switch to VP9; all effort estimates.
+decoding; the publisher-lease stop deadline; the SFrame envelope for VP9; all
+effort estimates.
+
+For the owner: native clients decode VP9 calls in hardware. The software VP9
+decoders known to us are native code outside SECURITY.md's exceptions, so for
+devices without a VP9 hardware decoder the options are hardware-only VP9
+decoding with a clear message on those devices, or a reviewed decoder in the
+isolated decode role, which needs a SECURITY.md decision.
