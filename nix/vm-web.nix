@@ -68,6 +68,9 @@ pkgs.testers.runNixOSTest {
       };
   };
   testScript = ''
+    import itertools
+    import time
+
     start_all()
     web.wait_for_unit("nuschl-web-relay.service")
     web.wait_for_file("/run/nuschl-web-relay/relay.sock")
@@ -94,9 +97,20 @@ pkgs.testers.runNixOSTest {
     web.fail("grep -r AAAAAAAAAAAAAAAAAAAAAA /var/log/nginx/")
 
     # A login to Murmur through the relay, TLS on the client: the relay pinged
-    # the server, so datagrams go over UDP too.
-    out = client.succeed("nuschl-web-relay-probe --relay ws://web/relay --origin http://web --server murmur:64738")
-    assert "connected session=" in out and "udp=true udp_answered=true" in out, out
+    # the server, so datagrams go over UDP too. The relay waits 1.5 s for that
+    # ping; on a loaded host Murmur's event loop can miss it right after
+    # starting, so the probe repeats within a 60 s hang guard (#376), printing
+    # each attempt's time.
+    deadline = time.monotonic() + 60
+    for attempt in itertools.count(1):
+        started = time.monotonic()
+        out = client.succeed("nuschl-web-relay-probe --relay ws://web/relay --origin http://web --server murmur:64738")
+        print(f"relay probe attempt {attempt}: {time.monotonic() - started:.2f} s: {out.strip()}")
+        assert "connected session=" in out, out
+        if "udp=true udp_answered=true" in out:
+            break
+        assert time.monotonic() < deadline, out
+        time.sleep(5)
     # The relay never logs payloads; its journal names no user.
     web.fail("journalctl -u nuschl-web-relay | grep -q relay-probe")
 
