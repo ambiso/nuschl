@@ -30,7 +30,8 @@ use str0m::{
     Candidate, Event, IceConnectionState, Input, Output, Rtc,
     bwe::{Bitrate, BweKind},
     change::{SdpAnswer, SdpOffer, SdpPendingOffer},
-    media::{Direction, KeyframeRequestKind, MediaKind, Mid, Rid},
+    format::{Codec, CodecConfig, FormatParams, PayloadParams},
+    media::{Direction, Frequency, KeyframeRequestKind, MediaKind, Mid, Pt, Rid},
     net::{Protocol, Receive},
     rtp::{RtpPacket, RtpWrite},
 };
@@ -39,6 +40,9 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 
+/// The payload types of the AV1 format with level-idx 9, unused by str0m's defaults.
+const PT_AV1_LEVEL_9: u8 = 47;
+const PT_AV1_LEVEL_9_RTX: u8 = 48;
 /// One keyframe request per source in this interval reaches its publisher.
 const KEYFRAME_INTERVAL: Duration = Duration::from_secs(2);
 /// Per-packet overhead counted against media budgets (IP, UDP, SRTP).
@@ -291,7 +295,7 @@ impl Core {
         if route.1 == Leg::Subscribe {
             builder = builder.enable_bwe(Some(Bitrate::bps(INITIAL_ESTIMATE)));
         }
-        let mut rtc = builder
+        let mut config = builder
             .set_crypto_provider(self.crypto.clone())
             .set_rtp_mode(true)
             .set_ice_lite(true)
@@ -300,8 +304,21 @@ impl Core {
             .enable_av1(true)
             .enable_vp9(true)
             .enable_opus(true, false)
-            .set_extension(quality::DESCRIPTOR_ID, quality::descriptor_extension())
-            .build(now);
+            .set_extension(quality::DESCRIPTOR_ID, quality::descriptor_extension());
+        // str0m pairs AV1 formats only at equal levels. Chromium states none
+        // (level-idx 5) and Firefox level-idx 9, so both are offered and accepted.
+        config.codec_config().add_config(
+            PT_AV1_LEVEL_9.into(),
+            Some(PT_AV1_LEVEL_9_RTX.into()),
+            Codec::Av1,
+            Frequency::NINETY_KHZ,
+            None,
+            FormatParams {
+                level_idx: Some(9),
+                ..FormatParams::default()
+            },
+        );
+        let mut rtc = config.build(now);
         for address in &self.local {
             if let Ok(candidate) = Candidate::host(*address, "udp") {
                 rtc.add_local_candidate(candidate);
@@ -926,14 +943,9 @@ impl Core {
                     .is_some_and(|frame| frame.end && Some(frame.layer.spatial) == view.spatial());
             let Some(pt) = peer
                 .subscribe
-                .codec_config()
-                .match_params(params)
-                .map(|p| p.pt())
-                .filter(|pt| {
-                    peer.subscribe
-                        .media(out_mid)
-                        .is_some_and(|m| m.remote_pts().contains(pt))
-                })
+                .media(out_mid)
+                .map(|media| media.remote_pts().to_vec())
+                .and_then(|pts| receiver_pt(peer.subscribe.codec_config(), &pts, params))
             else {
                 continue;
             };
@@ -1168,6 +1180,19 @@ fn rates(planned: &[Planned]) -> Vec<Vec<u64>> {
         .collect()
 }
 
+/// The receiver's payload type, among its negotiated `pts`, for packets sent in
+/// `sent`: the same format, else any AV1 format for AV1. An AV1 format's
+/// level-idx states what its side receives (AV1 RTP §7.2), so it says nothing
+/// about the stream a publisher sends.
+fn receiver_pt(config: &CodecConfig, pts: &[Pt], sent: PayloadParams) -> Option<Pt> {
+    let negotiated = |p: &&PayloadParams| pts.contains(&p.pt());
+    let exact = config.match_params(sent).filter(negotiated);
+    let av1 = || {
+        let mut params = config.params().iter().filter(negotiated);
+        params.find(|p| sent.spec().codec == Codec::Av1 && p.spec().codec == Codec::Av1)
+    };
+    exact.or_else(av1).map(|p| p.pt())
+}
 fn forward(from: PeerId, source: Mid, kind: MediaKind, label: &'static str) -> Forward {
     Forward {
         from,
@@ -1178,5 +1203,42 @@ fn forward(from: PeerId, source: Mid, kind: MediaKind, label: &'static str) -> F
         mid: None,
         open: false,
         stopping: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn av1(pt: u8, profile: u8, level_idx: u8) -> PayloadParams {
+        let format = FormatParams {
+            profile: Some(profile),
+            level_idx: Some(level_idx),
+            ..FormatParams::default()
+        };
+        let spec = str0m::format::CodecSpec {
+            codec: Codec::Av1,
+            clock_rate: Frequency::NINETY_KHZ,
+            channels: None,
+            format,
+        };
+        PayloadParams::new(pt.into(), None, spec)
+    }
+
+    #[test]
+    fn av1_goes_to_the_receivers_av1_format_at_any_level() {
+        let config = CodecConfig::new_from_payload_params(vec![av1(45, 0, 5), av1(47, 0, 9)]);
+        let (both, firefox) = ([45.into(), 47.into()], [47.into()]);
+        assert_eq!(receiver_pt(&config, &both, av1(35, 0, 5)), Some(45.into()));
+        assert_eq!(receiver_pt(&config, &both, av1(35, 0, 9)), Some(47.into()));
+        assert_eq!(
+            receiver_pt(&config, &firefox, av1(35, 0, 5)),
+            Some(47.into())
+        );
+        assert_eq!(
+            receiver_pt(&config, &[], av1(35, 0, 5)),
+            None,
+            "not negotiated"
+        );
     }
 }
