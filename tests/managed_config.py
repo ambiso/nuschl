@@ -129,7 +129,7 @@ def main():
         assert "push-to-talk" not in settings.get("shortcuts", {}), f"a managed key was saved: {settings}"
         print("Another setting changed and was saved; settings.json kept its own values under managed keys.",
               flush=True)
-        press(find(snapshot(nuschl), "push button", "Done"))
+        press(find(snapshot(nuschl), "push button", "Close dialog"))
 
         server = eventually(lambda: next((node for _, node, role, name in snapshot(nuschl)
                                           if role == "push button" and name.startswith("Managed;")), None),

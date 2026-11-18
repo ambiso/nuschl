@@ -319,10 +319,18 @@ impl Desktop {
     }
 }
 
+/// A dialog over a scrim: a title bar with the title and a close button,
+/// then `content`, which scrolls under the bar. The close button, a click
+/// outside and Escape (`Desktop::key_down`) all run `close`. `instance` keys
+/// the close button, so assistive technology's handle on one dialog's button
+/// ends with that dialog.
+#[allow(clippy::too_many_arguments)]
 pub fn modal(
     this: &Desktop,
     id: &'static str,
     label: &'static str,
+    title: impl Into<SharedString>,
+    instance: u64,
     width: f32,
     content: AnyElement,
     cx: &mut Context<Desktop>,
@@ -334,6 +342,37 @@ pub fn modal(
         this.modal_scroll.set_offset(point(px(0.), px(0.)));
         this.nested.forget_all();
     }
+    let close = Rc::new(close);
+    let outside = close.clone();
+    let header = div()
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .gap_3()
+        .px_6()
+        .pt_5()
+        .pb_3()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_xl()
+                .font_weight(FontWeight::BOLD)
+                .child(text!(title.into()).with_id(SharedString::from(format!("{id}-title")))),
+        )
+        .child(icon_button(
+            SharedString::from(format!("{id}-close-{instance}")),
+            "window-close",
+            "Close dialog",
+            TEXT_MUTED,
+            None,
+            move |this, _, cx| {
+                close(this);
+                cx.notify();
+            },
+            cx,
+        ));
     div()
         .id(SharedString::from(format!("{id}-backdrop")))
         .absolute()
@@ -347,46 +386,62 @@ pub fn modal(
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| {
-                close(this);
+                outside(this);
                 cx.notify();
             }),
         )
         .child(
-            crate::layout::scrollable(id, label, this.modal_scroll.clone())
-                .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _, _| {
-                    if event.button == MouseButton::Left {
-                        this.cancel_modal_scroll();
-                    }
-                }))
+            div()
+                .id(SharedString::from(format!("{id}-frame")))
+                // The dialog's focus spans the title bar and the content, so
+                // assistive technology may press the close button; the scroll
+                // keys work from the frame too.
                 .track_focus(&this.dialog_focus(id, cx))
+                .on_key_down(crate::layout::scroll_keys(this.modal_scroll.clone()))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .role(Role::Dialog)
                 .aria_label(label)
                 .w(px(width))
                 .max_h(relative(0.92))
-                .overflow_y_scroll()
-                .track_scroll(&this.modal_scroll)
+                .flex()
+                .flex_col()
+                .overflow_hidden()
                 .rounded(px(12.))
                 .bg(color(MAIN))
                 .border_1()
                 .border_color(color(BORDER_STRONG))
                 .shadow_lg()
+                .child(header)
                 .child(
-                    div()
-                        .id(SharedString::from(format!("{id}-content")))
-                        .child(content),
-                )
-                .child(crate::layout::scrollbar(
-                    SharedString::from(format!("{id}-scrollbar")),
-                    &this.modal_scroll,
-                    MAIN,
-                ))
-                .child(crate::layout::scroll_before_parent(
-                    this.modal_scroll.clone(),
-                    cx.listener(|this, event, window, cx| {
-                        this.scroll_modal(None, event, window, cx)
-                    }),
-                )),
+                    crate::layout::scrollable(id, label, this.modal_scroll.clone())
+                        .capture_any_mouse_down(cx.listener(
+                            |this, event: &MouseDownEvent, _, _| {
+                                if event.button == MouseButton::Left {
+                                    this.cancel_modal_scroll();
+                                }
+                            },
+                        ))
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .track_scroll(&this.modal_scroll)
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("{id}-content")))
+                                .child(content),
+                        )
+                        .child(crate::layout::scrollbar(
+                            SharedString::from(format!("{id}-scrollbar")),
+                            &this.modal_scroll,
+                            MAIN,
+                        ))
+                        .child(crate::layout::scroll_before_parent(
+                            this.modal_scroll.clone(),
+                            cx.listener(|this, event, window, cx| {
+                                this.scroll_modal(None, event, window, cx)
+                            }),
+                        )),
+                ),
         )
         .into_any_element()
 }
@@ -482,17 +537,11 @@ pub fn server_form(this: &Desktop, cx: &mut Context<Desktop>) -> AnyElement {
         .flex_col()
         .child(
             div()
-                .p_6()
+                .px_6()
                 .pb_4()
                 .flex()
                 .flex_col()
                 .gap_1()
-                .child(
-                    div()
-                        .text_xl()
-                        .font_weight(FontWeight::BOLD)
-                        .child(text!(if editing { "Server settings" } else { "Add a server" }).with_id("dialog-heading")),
-                )
                 .child(
                     div().text_sm().text_color(color(TEXT_MUTED)).child(
                         text!("Any Mumble server works. Nuschl servers add persistent chat later.")
@@ -602,6 +651,12 @@ pub fn server_form(this: &Desktop, cx: &mut Context<Desktop>) -> AnyElement {
         this,
         "server-dialog",
         "Add or connect to a Mumble server",
+        if editing {
+            "Server settings"
+        } else {
+            "Add a server"
+        },
+        0,
         520.,
         content,
         cx,

@@ -245,7 +245,7 @@ class DesktopBitrate:
         self.named("Voice bitrate")
         names = [name for _, _, _, name in self.nodes() if name]
         self.shot(f"connection-{server.lower()}")
-        self.press("push button", "Done")
+        self.press("push button", "Close dialog")
         return names[names.index("Voice bitrate") + 1]
 
     def files(self):

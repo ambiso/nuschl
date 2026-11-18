@@ -1001,52 +1001,31 @@ fn channels_sheet(
     };
     let width = f32::from(window.viewport_size().width) * 0.94;
     let sidebar_width = (width - RAIL_WIDTH - layout::SCROLLBAR_GUTTER - 2.).max(0.);
-    let content = div()
-        .flex()
-        .flex_col()
-        .child(
-            layout::row()
-                .p_2()
-                .child(
-                    layout::flexible()
-                        .child(layout::label("channels-title", "Channels and servers")),
-                )
-                .child(icon_button(
-                    "close-channels",
-                    "window-close",
-                    "Close channels",
-                    TEXT_MUTED,
-                    None,
-                    |this, _, cx| {
-                        this.close_channels();
-                        cx.notify();
-                    },
-                    cx,
-                )),
-        )
-        .child(
-            div()
-                .flex()
-                .items_start()
-                .child(
-                    div()
-                        .h(window.viewport_size().height * 0.70)
-                        .child(server_rail(this, Some(server), cx)),
-                )
-                .child(sidebar(
-                    this,
-                    (server, channel),
-                    voice_places,
-                    sidebar_width,
-                    true,
-                    window,
-                    cx,
-                )),
-        );
+    let content = div().flex().flex_col().child(
+        div()
+            .flex()
+            .items_start()
+            .child(
+                div()
+                    .h(window.viewport_size().height * 0.70)
+                    .child(server_rail(this, Some(server), cx)),
+            )
+            .child(sidebar(
+                this,
+                (server, channel),
+                voice_places,
+                sidebar_width,
+                true,
+                window,
+                cx,
+            )),
+    );
     dialogs::modal(
         this,
         "channels-sheet",
         "Channels and servers",
+        "Channels and servers",
+        0,
         width,
         content.into_any_element(),
         cx,

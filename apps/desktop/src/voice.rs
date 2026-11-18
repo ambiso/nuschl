@@ -717,24 +717,12 @@ pub fn second_server_dialog(this: &Desktop, cx: &mut Context<Desktop>) -> Option
         .flex()
         .flex_col()
         .child(
-            div()
-                .p_6()
-                .pb_4()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(
-                    div()
-                        .text_xl()
-                        .font_weight(FontWeight::BOLD)
-                        .child(text!("Speak on two servers?").with_id("speak-title")),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(color(TEXT_MUTED))
-                        .child(text!(detail).with_id("speak-detail")),
-                ),
+            div().px_6().pb_4().flex().flex_col().gap_2().child(
+                div()
+                    .text_sm()
+                    .text_color(color(TEXT_MUTED))
+                    .child(text!(detail).with_id("speak-detail")),
+            ),
         )
         .child(
             div()
@@ -781,6 +769,8 @@ pub fn second_server_dialog(this: &Desktop, cx: &mut Context<Desktop>) -> Option
         this,
         "speak-dialog",
         "Speak on two servers?",
+        "Speak on two servers?",
+        0,
         460.,
         content,
         cx,

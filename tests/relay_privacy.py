@@ -90,7 +90,7 @@ class PrivacyTest(VoiceTest):
             peer.wait(lambda event: event["kind"] == "user" and event["user"]["name"] == "Andi",
                       timeout=30)
             self.shot("relay-only")
-            self.press("push button", "Done")
+            self.press("push button", "Close dialog")
             # A fresh desktop reads the persisted opt-in and never starts the
             # revoked offer again. Managed precedence is covered by config tests.
             import signal

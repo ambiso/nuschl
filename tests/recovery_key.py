@@ -132,7 +132,7 @@ def main():
             eventually(lambda: named(key, "label") is None, "I wrote it down left the key shown")
             reveal("Show recovery key").press()
             eventually(lambda: named(key, "label"), "the key could not be shown again")
-            press("Done")
+            press("Close dialog")
             eventually(lambda: named("Settings", "dialog") is None, "Settings did not close")
             press("Settings")
             reveal("Show recovery key")

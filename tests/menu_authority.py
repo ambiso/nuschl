@@ -260,7 +260,7 @@ def actions(args, root, shell, application, bot, murmur):
     def close_details():
         current = eventually(lambda: named("Details", "dialog"), "profile did not open")
         eventually(
-            lambda: named("Done", "push button", current), "profile Done missing"
+            lambda: named("Close dialog", "push button", current), "profile Done missing"
         ).press()
         eventually(lambda: named("Details", "dialog") is None, "profile did not close")
 

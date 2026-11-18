@@ -137,7 +137,7 @@ def run(args, root, shell, registry, bots, profile, port, pin, shot):
         settings=eventually(lambda:named("push button","Settings"),"Settings action absent")
         settings.press()
         dialog=eventually(lambda:named("dialog","Settings"),"Settings dialog absent")
-        done=eventually(lambda:named("push button","Done"),"compact Done absent")
+        done=eventually(lambda:named("push button","Close dialog"),"compact Done absent")
         done.call("Component","GrabFocus")
         eventually(lambda:inside(done.extents(),dialog.extents()),"Done escaped Settings")
         assert done.extents()[2] < 130*percent/100,"short button expanded into a full-width action"
