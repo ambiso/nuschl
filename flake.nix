@@ -808,7 +808,8 @@
           install -Dm755 -t "$out/libexec/nuschl-musicbot" ${portableHeadless}/bin/nuschl-musicbot-codec-worker ${portableHeadless}/bin/nuschl-content-worker
           install -Dm644 ${./LICENSE} "$out/share/licenses/nuschl/EUPL-1.2"
           install -Dm644 ${./crates/protocol/proto/LICENSE.mumble} "$out/share/licenses/nuschl/Mumble-BSD"
-          ${installNativeNotices}
+          mkdir -p "$out/share/licenses/nuschl"
+          cp -R ${releaseNotices.serverStatic.bundle}/share/licenses/nuschl/. "$out/share/licenses/nuschl/"
         '';
       in
       {
@@ -860,6 +861,7 @@
         packages.web-content-wasm = webClient.contentWasm;
         packages.release-notices-linux = releaseNotices.linux.bundle;
         packages.release-notices-linux-portable = releaseNotices.portable.bundle;
+        packages.release-notices-server-static = releaseNotices.serverStatic.bundle;
         packages.release-notices-windows = releaseNotices.windows.bundle;
         packages.release-notices-macos = releaseNotices.macos.bundle;
         packages.release-notices-web = releaseNotices.web.bundle;
