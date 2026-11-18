@@ -7540,6 +7540,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "nuschl-stream-sfu"
+version = "0.2.0"
+dependencies = [
+ "base64 0.22.1",
+ "clap",
+ "futures-util",
+ "getrandom 0.4.3",
+ "hex",
+ "hmac 0.13.0",
+ "httparse",
+ "nuschl-testkit",
+ "serde",
+ "serde_json",
+ "sha1 0.11.0",
+ "sha2 0.11.1",
+ "str0m",
+ "tokio",
+ "tokio-tungstenite",
+ "toml 1.2.1+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "nuschl-testkit"
 version = "0.2.0"
 dependencies = [

@@ -60,7 +60,8 @@ wildcards = "deny"
 deny = [
   { name = "str0m", wrappers = [
     "nuschl-rtc",
-  ], reason = "Keep the WebRTC implementation behind the encoded-media transport boundary" },
+    "nuschl-stream-sfu",
+  ], reason = "Keep the WebRTC implementation behind the encoded-media transport boundary and in the SFU, which forwards RTP unchanged" },
   { name = "openssl", reason = "Use rustls for transport security" },
   { name = "ml-dsa", wrappers = [
     "nuschl-update-worker",
