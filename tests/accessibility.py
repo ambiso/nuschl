@@ -504,7 +504,8 @@ class AccessibilityTest:
         dialog in front. Both dialogs once tracked one focus handle, which then
         made both the focused node."""
         def named(role, name):
-            return next((node for _, node, r, n in snapshot(nuschl) if r == role and n == name), None)
+            # One call returns the whole tree; a walk takes seconds for Settings.
+            return next((node for node, r, n, _ in items(nuschl) if r == role and n == name), None)
 
         def prompt():
             nodes = snapshot(nuschl)
@@ -516,7 +517,7 @@ class AccessibilityTest:
         def in_prompt():
             return any(node.focused for _, node, _, _ in prompt())
 
-        self.find(snapshot(nuschl), "push button", "Settings").press()
+        named("push button", "Settings").press()
         eventually(lambda: named("push button", "Export…"), "Settings has no Export… button", timeout=15).press()
         eventually(lambda: named("dialog", "Input"), "the export prompt did not open over Settings", timeout=15)
         eventually(in_prompt, "the prompt's field did not take the focus", timeout=10)
