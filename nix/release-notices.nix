@@ -143,4 +143,5 @@ in
   windows = forScope "windows-x86_64";
   macos = forScope "macos-universal";
   web = forScope "web";
+  callPage = forScope "call-page";
 }

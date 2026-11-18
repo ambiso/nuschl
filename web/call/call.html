@@ -1,0 +1,41 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: EUPL-1.2 -->
+<!-- The call page (docs/video-plan.md §3). The call link's fragment stays in the
+     browser; the page loads nothing from elsewhere. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex">
+  <title>Call</title>
+  <link rel="icon" href="/nuschl.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/call.css">
+  <script type="module" src="/call.js"></script>
+</head>
+<body>
+  <div id="call">
+    <header>
+      <h1>Call</h1>
+      <span id="status" role="status">Connecting</span>
+    </header>
+    <main id="stage" aria-label="Video">
+      <div id="large" hidden></div>
+      <div id="grid"></div>
+      <p id="empty">No video yet</p>
+    </main>
+    <aside aria-labelledby="people">
+      <h2 id="people">People <span id="count"></span></h2>
+      <ul id="roster"></ul>
+    </aside>
+    <footer>
+      <div id="controls"></div>
+      <div id="host-actions" hidden>
+        <button type="button" id="end-call">End call</button>
+      </div>
+      <a href="/licenses/nuschl/THIRD-PARTY.txt">Licences</a>
+    </footer>
+  </div>
+  <section id="ending" role="alert" hidden></section>
+</body>
+</html>

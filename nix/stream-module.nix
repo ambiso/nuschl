@@ -1,6 +1,6 @@
-# The screen-share stream host (#143): the static watch and share pages with
-# the plan's isolation headers, no cookies and no access log, and the
-# companion SFU (apps/stream-sfu) behind /sfu with its media on one UDP port.
+# The call host (#143): the static call page at /call (web/call) with the
+# plan's isolation headers, no cookies and no access log, and the companion
+# SFU (apps/stream-sfu) behind /sfu with its media on one UDP port.
 # `services.nuschl-stream`.
 { self }:
 {
@@ -53,16 +53,14 @@ let
     "frame-ancestors 'none'"
     "require-trusted-types-for 'script'"
   ];
-  # No identity code runs here, so passkeys are denied too. nginx drops
-  # inherited add_header lines in a block with its own, so /share, which
-  # allows display capture, repeats the full set.
-  headers = displayCapture: ''
+  # No identity code runs here, so passkeys are denied too.
+  headers = ''
     add_header Content-Security-Policy "${csp}" always;
     add_header Cross-Origin-Opener-Policy same-origin always;
     add_header Cross-Origin-Embedder-Policy require-corp always;
     add_header Cross-Origin-Resource-Policy same-origin always;
     add_header Origin-Agent-Cluster "?1" always;
-    add_header Permissions-Policy "display-capture=${displayCapture}, camera=(), microphone=(), geolocation=(), publickey-credentials-get=(), publickey-credentials-create=()" always;
+    add_header Permissions-Policy "display-capture=(), camera=(), microphone=(), geolocation=(), publickey-credentials-get=(), publickey-credentials-create=()" always;
     add_header Referrer-Policy no-referrer always;
     add_header X-Content-Type-Options nosniff always;
     ${lib.optionalString cfg.forceSSL ''add_header Strict-Transport-Security "max-age=31536000" always;''}
@@ -70,7 +68,7 @@ let
 in
 {
   options.services.nuschl-stream = {
-    enable = lib.mkEnableOption "the Nuschl screen-share stream host";
+    enable = lib.mkEnableOption "the Nuschl call host";
     hostName = lib.mkOption {
       type = lib.types.str;
       example = "stream.nuschl.eu";
@@ -88,8 +86,9 @@ in
     };
     site = lib.mkOption {
       type = lib.types.nullOr lib.types.package;
-      default = null;
-      description = "watch.html (served at /watch), share.html (at /share) and their assets; null serves only 404s.";
+      default = self.packages.${pkgs.stdenv.hostPlatform.system}.call-site;
+      defaultText = lib.literalExpression "inputs.nuschl.packages.\${pkgs.stdenv.hostPlatform.system}.call-site";
+      description = "call.html (served at /call) and its assets; null serves only 404s.";
     };
     sfu = {
       enable = lib.mkEnableOption "the companion SFU: signalling at /sfu, media on one UDP port";
@@ -191,7 +190,7 @@ in
         root = cfg.site;
         extraConfig = ''
           access_log off;
-          ${headers "()"}
+          ${headers}
         '';
         locations =
           (
@@ -200,11 +199,7 @@ in
             else
               {
                 "/".tryFiles = "$uri =404";
-                "= /watch".tryFiles = "/watch.html =404";
-                "= /share" = {
-                  tryFiles = "/share.html =404";
-                  extraConfig = headers "(self)";
-                };
+                "= /call".tryFiles = "/call.html =404";
               }
           )
           // lib.optionalAttrs cfg.sfu.enable {

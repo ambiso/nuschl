@@ -1,0 +1,168 @@
+// SPDX-License-Identifier: EUPL-1.2
+// The call page's link handling, admission, worker messages, SFU message bounds and
+// codec support. STREAM_WASM names the wasm-bindgen build of crates/stream-wasm
+// (nix build .#web-stream-wasm); the admission tests run the real stream worker.
+import assert from "node:assert/strict";
+import { createHmac, createHash, hkdfSync, randomBytes } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { join as joinPath } from "node:path";
+import { test } from "node:test";
+import { pathToFileURL } from "node:url";
+import { unsized } from "./frames.js";
+import { MAX_MESSAGE, MAX_PEERS, join, linkOf, parse } from "./signal.js";
+import { preferences, support } from "./support.js";
+
+const directory = process.env.STREAM_WASM;
+assert.ok(directory, "STREAM_WASM must name the stream worker's wasm-bindgen build");
+const { initSync, StreamWorker } = await import(pathToFileURL(joinPath(directory, "nuschl_stream_wasm.js")).href);
+initSync({ module: await readFile(joinPath(directory, "nuschl_stream_wasm_bg.wasm")) });
+
+// The key schedule of apps/stream-sfu/src/protocol.rs, independently of the worker.
+const hkdf = (secret, label, length) =>
+  Buffer.from(hkdfSync("sha256", secret, "nuschl/stream/v2", `nuschl/stream/v2 ${label}`, length));
+const mac = (key, label, nonce) =>
+  createHmac("sha256", key).update(`nuschl/stream/v2 sfu ${label}`).update(nonce).digest("hex");
+const b64 = (bytes) => bytes.toString("base64url");
+const S = randomBytes(32), P = randomBytes(32);
+const hostKey = hkdf(P, "host", 32);
+const V = createHash("sha256").update(hostKey).digest();
+const host = "stream.example";
+const location = (href) => {
+  const url = new URL(href);
+  return { origin: url.origin, pathname: url.pathname, search: url.search, hash: url.hash, host: url.host };
+};
+const request = (worker, body) => JSON.parse(worker.handle(JSON.stringify({ v: 1, ...body }), Date.now()));
+
+test("the page hands the worker the call link and reads relay-only from the query", () => {
+  const fragment = `#v=1&k=${b64(S)}&h=${b64(V)}`;
+  assert.deepEqual(linkOf(location(`https://${host}/call${fragment}`)), {
+    link: `https://${host}/call${fragment}`, host, relay: false,
+  });
+  assert.deepEqual(linkOf(location(`https://${host}:8443/call?relay${fragment}`)), {
+    link: `https://${host}:8443/call${fragment}`, host: `${host}:8443`, relay: true,
+  });
+});
+
+test("admission: the worker's room, verifier and proofs follow the SFU's key schedule", () => {
+  const worker = new StreamWorker();
+  const { link } = linkOf(location(`https://${host}/call?relay#v=1&k=${b64(S)}&h=${b64(V)}`));
+  const opened = request(worker, { kind: "open", link, host });
+  assert.deepEqual(opened, {
+    v: 1, kind: "opened", room: hkdf(S, "stream id", 16).toString("hex"), verifier: V.toString("hex"), creator: false,
+  });
+  const nonce = randomBytes(32);
+  const admitted = request(worker, { kind: "admit", nonce: nonce.toString("hex") });
+  assert.equal(admitted.proof, mac(hkdf(S, "admit", 32), "admit", nonce));
+  assert.deepEqual(join(opened, admitted, ["av1", "vp9"]), {
+    type: "join", room: opened.room, verifier: opened.verifier, proof: admitted.proof,
+    host_proof: null, create: null, codecs: ["av1", "vp9"],
+  });
+  assert.throws(() => request(worker, { kind: "open", link, host }), /already open/);
+  worker.free();
+});
+
+test("admission: the creator's link proves P and hands over the room's keys", () => {
+  const worker = new StreamWorker();
+  const link = `https://${host}/call#v=1&k=${b64(S)}&h=${b64(V)}&p=${b64(P)}`;
+  const opened = request(worker, { kind: "open", link, host });
+  assert.equal(opened.creator, true);
+  const nonce = randomBytes(32);
+  const message = join(opened, request(worker, { kind: "admit", nonce: nonce.toString("hex") }), ["vp9"]);
+  assert.equal(message.host_proof, mac(hostKey, "host", nonce));
+  assert.deepEqual(message.create, { admit_key: hkdf(S, "admit", 32).toString("hex"), host_key: hostKey.toString("hex") });
+  worker.free();
+});
+
+test("fragment handling: the worker refuses links that are not this host's call link", () => {
+  const good = `#v=1&k=${b64(S)}&h=${b64(V)}`;
+  for (const [link, linkHost] of [
+    [`https://${host}/call#v=1&k=${b64(S)}`, host],
+    [`https://${host}/call#v=2&k=${b64(S)}&h=${b64(V)}`, host],
+    [`https://${host}/call${good}&x=1`, host],
+    [`https://${host}/call#v=1&k=${b64(S)}&h=${b64(V)}&p=${b64(S)}`, host],
+    [`http://${host}/call${good}`, host],
+    [`https://other.example/call${good}`, host],
+    [`https://${host}/watch${good}`, host],
+    [`https://${host}/call#v=1&k=${b64(S).slice(1)}&h=${b64(V)}`, host],
+  ]) {
+    const worker = new StreamWorker();
+    assert.throws(() => request(worker, { kind: "open", link, host: linkHost }), (error) => typeof error === "string", link);
+    assert.throws(() => request(worker, { kind: "admit", nonce: "00".repeat(32) }), /no call link/);
+    worker.free();
+  }
+});
+
+test("worker messages: versions, kinds and bounds are checked before use", () => {
+  const worker = new StreamWorker();
+  const handle = (text) => () => worker.handle(text, Date.now());
+  assert.throws(handle(JSON.stringify({ v: 2, kind: "tick" })), /unsupported version/);
+  assert.throws(handle(JSON.stringify({ v: 1, kind: "bogus" })), /malformed/);
+  assert.throws(handle("x".repeat(64 * 1024)), /too long/);
+  assert.throws(handle(JSON.stringify({ v: 1, kind: "subscribe", peer: 1 })), /no call link/);
+  request(worker, { kind: "open", link: `https://${host}/call#v=1&k=${b64(S)}&h=${b64(V)}`, host });
+  const subscribed = request(worker, { kind: "subscribe", peer: 7 });
+  assert.equal(subscribed.kind, "done");
+  assert.equal(subscribed.send.length, 1);
+  assert.equal(subscribed.send[0].to, 7);
+  assert.match(subscribed.send[0].data, /^([0-9a-f]{2})+$/);
+  assert.throws(() => request(worker, { kind: "key", from: 8, data: subscribed.send[0].data }), (e) => typeof e === "string");
+  assert.deepEqual(request(worker, { kind: "leave", peer: 7 }), { v: 1, kind: "done", send: [], events: [] });
+  assert.throws(() => worker.decrypt(7, new Uint8Array([0x08, 1, 2, 3]), Date.now()), /unknown peer/);
+  worker.free();
+});
+
+test("SFU messages: the page's bounds", () => {
+  const welcome = { type: "welcome", peer: 4, role: "participant", peers: [{ id: 1, role: "host" }], codec: "vp9", turn: null };
+  assert.deepEqual(parse(JSON.stringify(welcome)), welcome);
+  const turn = { urls: ["turn:turn.example:3478?transport=udp"], username: "1:ab", credential: "c" };
+  assert.deepEqual(parse(JSON.stringify({ ...welcome, turn })).turn, turn);
+  assert.equal(parse(JSON.stringify({ type: "later", x: 1 })), null, "unknown types are ignored");
+  assert.equal(parse(JSON.stringify({ type: "constructor" })), null);
+  const offer = { type: "offer", sdp: "v=0", tracks: [{ mid: "0", peer: 1, source: "1", kind: "screen" }] };
+  assert.deepEqual(parse(JSON.stringify(offer)), offer);
+  for (const bad of [
+    { ...welcome, codec: "h264" },
+    { ...welcome, peer: -1 },
+    { ...welcome, peer: 2 ** 53 },
+    { ...welcome, peers: Array.from({ length: MAX_PEERS + 1 }, (_, id) => ({ id, role: "participant" })) },
+    { ...welcome, turn: { ...turn, urls: "turn:x" } },
+    { type: "hello", nonce: "00".repeat(31) },
+    { type: "hello", nonce: "ZZ".repeat(32) },
+    { type: "key", from: 1, data: "abc" },
+    { type: "key", from: 1, data: "ab".repeat(16 * 1024 + 1) },
+    { ...offer, tracks: [{ mid: "0", peer: 1, source: "1" }] },
+    { ...offer, tracks: [{ mid: "0", peer: 1, source: "1", kind: "slides" }] },
+    { type: "error", reason: 5 },
+    [],
+    "text",
+  ]) {
+    assert.throws(() => parse(JSON.stringify(bad)), JSON.stringify(bad).slice(0, 80));
+  }
+  assert.throws(() => parse(" ".repeat(MAX_MESSAGE + 1)), /too long/);
+  assert.throws(() => parse("{"));
+});
+
+test("support: encoded transforms and AV1 or VP9, AV1 first", () => {
+  const scope = (mimeTypes, transform = class {}) => ({
+    RTCRtpScriptTransform: transform,
+    RTCRtpReceiver: { getCapabilities: () => ({ codecs: mimeTypes.map((mimeType) => ({ mimeType })) }) },
+  });
+  assert.deepEqual(support(scope(["video/VP8", "video/VP9", "video/AV1", "video/H264"])), { codecs: ["av1", "vp9"] });
+  assert.deepEqual(support(scope(["video/VP9"])), { codecs: ["vp9"] });
+  assert.deepEqual(support(scope(["video/H264", "video/VP8"])), { refusal: "codecs" });
+  assert.deepEqual(support(scope(["video/AV1"], null)), { refusal: "transforms" });
+  assert.deepEqual(support({}), { refusal: "transforms" });
+  const preferred = preferences(scope(["video/H264", "video/rtx", "video/VP9", "video/AV1", "video/VP8"]), "video");
+  assert.deepEqual(preferred.map((codec) => codec.mimeType), ["video/AV1", "video/VP9", "video/rtx"]);
+});
+
+test("frames: the AV1 depacketizer's size field comes off again", () => {
+  const sent = [0x08, ...Array.from({ length: 200 }, (_, i) => i)];
+  const sized = Uint8Array.from([0x0a, 200 | 0x80, 1, ...sent.slice(1)]);
+  assert.deepEqual([...unsized(sized)], sent);
+  assert.deepEqual([...unsized(Uint8Array.from([0x2a, 2, 7, 9]))], [0x28, 7, 9]);
+  for (const other of [[0x08, 1, 2], [0x28], [0x0a, 3, 1], [0x0a, 0x80], [0x2a]]) {
+    const frame = Uint8Array.from(other);
+    assert.deepEqual([...unsized(frame)], other, String(other));
+  }
+});
