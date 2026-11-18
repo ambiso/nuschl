@@ -71,8 +71,9 @@ jobs:
       # to private temporary files for --password-file, print test output, talk
       # TLS to their own loopback fixtures with self-signed certificates, and
       # recompute stock Mumble's SHA-1 certificate digest and Subsonic's MD5
-      # token. These rules are dropped only under the test trees below; the same
-      # rules still report everywhere else, and every other rule reports in
+      # token. These rules are dropped only under the test trees below and in
+      # Rust unit-test files named tests.rs (`#[cfg(test)] mod tests;`); the
+      # same rules still report everywhere else, and every other rule reports in
       # tests too. A result is dropped only if every rule id it names is listed
       # and it has primary locations that ALL name a canonical repository-relative
       # path inside a test tree: plain segments only (no scheme, absolute path,
@@ -87,6 +88,7 @@ jobs:
 
           TEST_TREES = re.compile(
               r"(tests|apps/[^/]+/tests|crates/[^/]+/tests|crates/identity/src/tests)/.+"
+              r"|(apps|crates)/[^/]+/src/(.+/)?tests\.rs"
           )
           SEGMENTS = re.compile(r"[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*")
           RULES = {

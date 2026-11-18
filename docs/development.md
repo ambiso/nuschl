@@ -97,7 +97,8 @@ Changes reach `main` only through pull requests from this repository's branches
 whose required checks pass. The `ci` check fails pull requests from forks
 before checking them out; a maintainer pushes a reviewed fork branch here instead.
 Every workflow has a read-only token; CodeQL's `security-events: write`, to
-upload results, is the only exception.
+upload results, is the only exception. Unit tests with test keys or passwords
+live in a `tests.rs` file, which CodeQL's SARIF filter treats as test code.
 
 Reviews check that a change is:
 
