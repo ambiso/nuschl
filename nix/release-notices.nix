@@ -139,6 +139,7 @@ in
   inherit forScope;
   linux = forScope "linux-nix";
   portable = forScope "linux-portable";
+  serverStatic = forScope "server-static";
   windows = forScope "windows-x86_64";
   macos = forScope "macos-universal";
   web = forScope "web";
