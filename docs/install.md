@@ -101,26 +101,38 @@ the `PATH`: it refuses to start a worker it cannot sandbox.
 
 ## Windows
 
-Each release publishes a portable zip, `nuschl-<version>-windows-x86_64.zip`.
-Unpack it into a folder you can write to (your user folder, not Program Files) and
-start `nuschl.exe`. There is no installer, Start menu entry or uninstaller yet: Nuschl
-updates itself in the folder it was unpacked to, and deleting the folder removes it.
-Settings and history live in `%APPDATA%\Nuschl` and `%LOCALAPPDATA%\Nuschl`
+Each release publishes an installer, `nuschl-<version>-windows-x86_64-setup.exe`,
+and a portable zip, `nuschl-<version>-windows-x86_64.zip`, with the same files.
+
+The installer needs no administrator rights. It installs for your user account into
+`%LOCALAPPDATA%\Programs\Nuschl` and adds a Start menu entry, an entry in
+**Settings → Apps → Installed apps** and handlers for `mumble://` and `nuschl://`
+links, all under `HKCU`. `setup.exe /S` installs silently, and `/D=<folder>` (the
+last argument, without quotes) picks another folder. The uninstaller removes the
+release's files, the Start menu entry, the link handlers and the autostart entry. It
+keeps settings and history unless you tick **Remove settings and history**;
+`Uninstall.exe /S` keeps them.
+
+For the zip, unpack it into a folder you can write to (your user folder, not Program
+Files) and start `nuschl.exe`; deleting the folder removes it.
+
+Both update themselves in place ([Updates](#updates)). Settings and history live in
+`%APPDATA%\Nuschl` and `%LOCALAPPDATA%\Nuschl`
 ([desktop.md](desktop.md#where-nuschl-keeps-its-files)).
 
 Releases are **not code-signed** (a decision for now: no Authenticode certificate).
 The first start of a downloaded copy therefore shows Microsoft Defender SmartScreen's
-"Windows protected your PC". Choose **More info**, check that the app is `nuschl.exe`
-from an unknown publisher, and choose **Run anyway**. Unblocking the zip before
-unpacking it (**Properties → Unblock**) avoids the prompt, and updates that Nuschl
-fetches itself never show it. With Smart App Control on, Windows blocks unsigned apps
-and offers no way to run them anyway.
+"Windows protected your PC". Choose **More info**, check that the app is the Nuschl
+installer or `nuschl.exe` from an unknown publisher, and choose **Run anyway**.
+Unblocking the installer, or the zip before unpacking it (**Properties → Unblock**),
+avoids the prompt, and updates that Nuschl fetches itself never show it. With Smart
+App Control on, Windows blocks unsigned apps and offers no way to run them anyway.
 
 The Windows build is cross-compiled on Linux (`nix build .#windows`) and runs in an
 unattended Windows 11 VM in the tests (`tests/windows_vm.py`): the GUI, connecting,
-autostart, audio devices, the microphone and echo tests, in-place updates, and the
-workers' AppContainer sandboxes ([windows-sandbox.md](windows-sandbox.md)). It has not
-been tested on real hardware.
+autostart, audio devices, the microphone and echo tests, in-place updates, the
+installer (`tests/windows_installer.py`), and the workers' AppContainer sandboxes
+([windows-sandbox.md](windows-sandbox.md)). It has not been tested on real hardware.
 
 ## macOS
 
@@ -151,7 +163,9 @@ six hours (**Settings → General → Check for updates**), and show a banner wh
 exists. They verify the manifest's signature, accept only newer versions, refuse a
 manifest released before the newest they have seen, require unexpired v2 metadata, download each file into a staging folder inside the installation and
 check its hash, and swap the files by renaming, rolling back on failure; old files are
-removed on the next start. The code is in `crates/update`.
+removed on the next start. A copy from the installer updates the same way in its
+folder; **Installed apps** keeps showing the version the installer wrote. The code is
+in `crates/update`.
 
 ## How releases are made
 
