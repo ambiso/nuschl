@@ -2009,6 +2009,36 @@ fn conversation_header(
                 ))
             },
         )
+        .when(
+            connected
+                && in_this_voice
+                && server.has_mumble_voice()
+                && !server.mls
+                && this.client.calls_in(index, channel.id).is_empty()
+                && this
+                    .client
+                    .own_call()
+                    .is_none_or(|call| call.server != server.id),
+            |controls| {
+                let start = |id, icon, label, cx: &mut Context<Desktop>| {
+                    icon_button(
+                        id,
+                        icon,
+                        label,
+                        TEXT_MUTED,
+                        None,
+                        move |this, _, cx| {
+                            this.start_call(index, cx);
+                            cx.notify();
+                        },
+                        cx,
+                    )
+                };
+                controls
+                    .child(start("start-call", "video", "Start call", cx))
+                    .child(start("share-screen", "screen", "Share screen", cx))
+            },
+        )
         .when(!connected, |controls| {
             controls.child(styled_button(
                 "connect-server",
@@ -2333,7 +2363,13 @@ fn conversation(
                 )
                 .flex_shrink_0()
                 .child(conversation_header(this, &context, cx))
-                .child(conversation_notices(this, index, window, cx)),
+                .child(conversation_notices(
+                    this,
+                    index,
+                    channel.target.clone(),
+                    window,
+                    cx,
+                )),
             )
         })
         .map(|view| match crate::search::panel(this, cx) {
@@ -3109,6 +3145,7 @@ pub(crate) fn banner(
 fn conversation_notices(
     this: &Desktop,
     index: usize,
+    target: TextTarget,
     window: &mut Window,
     cx: &mut Context<Desktop>,
 ) -> AnyElement {
@@ -3177,6 +3214,9 @@ fn conversation_notices(
             .into_any_element(),
         );
     }
+    if let TextTarget::Channel(channel) = target {
+        notices.extend(call_card(this, index, channel, cx));
+    }
     if let Some(text) = &server.suggestion {
         let ptt = text.contains("push-to-talk");
         let actions = layout::actions()
@@ -3222,6 +3262,70 @@ fn conversation_notices(
         ));
     }
     layout::notices(window, cx, notices)
+}
+
+/// The call in `channel`: ours, with the creator's actions, or the one
+/// someone announced, with Join.
+fn call_card(
+    this: &Desktop,
+    index: usize,
+    channel: u32,
+    cx: &mut Context<Desktop>,
+) -> Option<AnyElement> {
+    let server = &this.client.servers[index];
+    let join = |url: String, cx: &mut Context<Desktop>| {
+        styled_button(
+            "call-join",
+            "Join",
+            Tone::Primary,
+            move |_, _, cx| cx.open_url(&url),
+            cx,
+        )
+    };
+    let own = this
+        .client
+        .own_call()
+        .filter(|call| call.server == server.id && call.channel == channel)
+        .and(this.call.as_ref());
+    let (who, link, actions) = if let Some(call) = own {
+        let actions = layout::actions()
+            .child(join(call.link.creator_url()?, cx))
+            .child(styled_button(
+                "call-rotate",
+                "Rotate link",
+                Tone::Secondary,
+                |this, _, cx| {
+                    this.rotate_call(cx);
+                    cx.notify();
+                },
+                cx,
+            ))
+            .child(styled_button(
+                "call-end",
+                "End call",
+                Tone::Danger,
+                |this, _, cx| {
+                    this.end_call();
+                    cx.notify();
+                },
+                cx,
+            ));
+        ("You".to_owned(), call.link.host().to_owned(), actions)
+    } else {
+        let call = *this.client.calls_in(index, channel).first()?;
+        let link = crate::call::join_link(&call.link)?;
+        let actions = layout::actions().child(join(link.url(), cx));
+        let who = server.users.get(&call.sender).map(|user| user.name.clone());
+        (who.unwrap_or_default(), link.host().to_owned(), actions)
+    };
+    let text = format!("Call · {who} · {link}");
+    Some(banner(
+        "call-card",
+        ACCENT,
+        "video",
+        text,
+        Some(actions.into_any_element()),
+    ))
 }
 
 fn message_row(
@@ -3587,7 +3691,13 @@ fn composer(
         .when(pane.dense, |details| {
             details
                 .child(conversation_header(this, context, cx))
-                .child(conversation_notices(this, context.index, window, cx))
+                .child(conversation_notices(
+                    this,
+                    context.index,
+                    context.channel.target.clone(),
+                    window,
+                    cx,
+                ))
         })
         .when_some(
             crate::link_preview::composer(this, cx),

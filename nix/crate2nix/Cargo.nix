@@ -23130,6 +23130,11 @@ rec {
             packageId = "futures-util";
           }
           {
+            name = "getrandom";
+            packageId = "getrandom 0.4.3";
+            features = [ "sys_rng" ];
+          }
+          {
             name = "global-hotkey";
             packageId = "global-hotkey";
             target = { target, features }: (("windows" == target."os" or null) || ("macos" == target."os" or null));
@@ -23184,6 +23189,10 @@ rec {
           {
             name = "nuschl-session";
             packageId = "nuschl-session";
+          }
+          {
+            name = "nuschl-stream";
+            packageId = "nuschl-stream";
           }
           {
             name = "nuschl-update";

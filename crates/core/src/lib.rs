@@ -10,6 +10,7 @@ pub mod admin;
 pub mod audio;
 pub mod bitrate;
 pub mod bookmark;
+pub mod call;
 pub mod history;
 pub mod model;
 pub mod network;

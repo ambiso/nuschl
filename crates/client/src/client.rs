@@ -277,8 +277,10 @@ pub enum SendError {
     Refused(String),
 }
 
+mod call;
 mod plugin;
 mod share;
+pub use call::{Call, MAX_CALLS, OwnCall};
 pub use plugin::{
     MAX_PLUGIN_QUEUE, MAX_PLUGIN_QUEUE_BYTES, MAX_PLUGIN_RECEIVERS, PluginDataEvent,
     ReceivedPluginData,
@@ -411,6 +413,7 @@ pub struct Client {
     now_ms: u64,
     /// Received plugin data and our sends' admissions, for all servers.
     plugin_data: plugin::PluginQueue,
+    own_call: Option<OwnCall>,
 }
 
 /// "Disconnected from 14:51 to 14:52 (40 s)…", with the times worded by the
@@ -436,6 +439,8 @@ impl Client {
         preferences: Preferences,
     ) -> Self {
         let catalog = order::Catalog::new(&bookmarks);
+        // Call cards arrive as plugin data (`call`).
+        platform.accept_plugin_data(true);
         Self {
             catalog,
             servers: bookmarks.into_iter().map(ServerState::new).collect(),
@@ -455,6 +460,7 @@ impl Client {
             updates: Vec::new(),
             now_ms: 0,
             plugin_data: Default::default(),
+            own_call: None,
         }
     }
 
@@ -634,6 +640,7 @@ impl Client {
                 server.security = SessionSecurity::Unknown;
                 server.certificate = None;
                 server.dismiss_notice();
+                server.calls.clear();
                 // It joins the channel you were last in there.
                 let id = server.id.clone();
                 self.forget_plugin_data(&id);
@@ -734,6 +741,7 @@ impl Client {
             }
         }
         server.users.clear();
+        server.calls.clear();
         server.talking.clear();
         server.transport = None;
         server.audio_status = "Audio disconnected".into();
@@ -2236,6 +2244,7 @@ impl Client {
                         server.set_notice(lost);
                     }
                     server.users.clear();
+                    server.calls.clear();
                     server.talking.clear();
                     server.transport = None;
                     server.permissions.clear();
@@ -2431,6 +2440,7 @@ impl Client {
                 self.servers[index].waiting_changes = waiting;
             }
         }
+        self.sync_call();
     }
 
     /// The server `id`, if `generation` is its current connection.

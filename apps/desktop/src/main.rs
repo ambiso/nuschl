@@ -9,6 +9,7 @@ mod assets;
 mod attachments;
 mod autostart;
 mod bitrate;
+mod call;
 mod chrome;
 mod dialogs;
 mod document;

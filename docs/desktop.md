@@ -194,6 +194,31 @@ Pages you fetched are kept on your device by their sequence number for offline
 reading and search: edits overwrite them, deleted messages stay as tombstones
 without text.
 
+## Calls
+
+In the channel you are in, **Start call** and **Share screen** start a call
+(one per channel) on a stock Mumble server or a compatible `nuschld`. Nuschl opens the call page in your browser,
+where you start your camera and share your screen, and posts the call to the
+channel:
+
+- Nuschl users in the channel see a card with **Join**, which opens the page
+  for them. People who enter the channel later get the card
+  too. The card goes when its creator ends the call or leaves the channel.
+- Everyone gets a message with the link, so stock Mumble users can open the
+  page and share their camera and screen as well.
+
+The creator's card also has **Rotate link**, which ends the call for everyone
+on the old link, opens the page again on a new one and posts it, and **End
+call**. The call also ends when you leave the channel or the server, after 4
+hours, and when the call page is gone.
+
+The link (`https://stream.nuschl.eu/call#v=1&k=…&h=…`) lets anyone who has it
+join, and the Mumble server sees it. Calls use the project's call host,
+`stream.nuschl.eu`; `call_host` in `settings.json` or `managed.json` names
+another (`host` or `host:port`). The link is `nuschl-stream`'s
+(`crates/stream/src/link.rs`), the card is in `crates/core/src/call.rs`, and
+the creator's lease on the call host is in `apps/desktop/src/call.rs`.
+
 ## On a Nuschl server
 
 With Nuschl clients, `nuschld` negotiates its extension ([extension.md](extension.md)):
