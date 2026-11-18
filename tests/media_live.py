@@ -18,6 +18,8 @@
 6. Sound effects: a requested sound reaches the speakers at its loudness and
    volume, and stays out of the transmitted voice (the microphone is silent:
    what is sent stays below -60 dBFS, as while voice plays).
+7. Stop and continue: a worker stopped and continued (SIGSTOP, SIGCONT, as a
+   cgroup freeze and thaw does) keeps its devices and keeps processing audio.
 """
 import argparse
 import contextlib
@@ -475,6 +477,26 @@ def check_sounds(binary, pulse, reference, output):
     assert len(packets) > 50 and sent < 1e-3, "a sound effect reached the transmitted voice"
 
 
+def check_stop_continue(binary, pulse):
+    """A stop and continue interrupts the worker's waits (EINTR); its audio streams stay open."""
+    worker = Worker(binary, pulse)
+    worker.send({"kind": "configure", "bitrate": 40000, "packet_loss_percent": 5, "settings": {}})
+    worker.send({"kind": "preview", "capture": True, "loopback": False})
+    worker.wait(lambda e: e["kind"] == "status" and e["ready"], "audio did not start")
+    for _ in range(5):
+        os.kill(worker.process.pid, signal.SIGSTOP)
+        time.sleep(0.05)
+        os.kill(worker.process.pid, signal.SIGCONT)
+        time.sleep(0.2)
+    time.sleep(2)
+    mark = len(worker.events)
+    worker.wait(lambda _: any(e["kind"] == "level" for e in worker.events[mark:]), "no level after a stop and continue")
+    worker.stop()
+    reconnects = [e["message"] for e in worker.events if e["kind"] == "status" and not e["ready"]]
+    assert not reconnects, f"a stop and continue closed the audio streams: {reconnects}"
+    print("Stop and continue: the worker kept its audio streams and kept processing.", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binaries", type=Path)
@@ -502,6 +524,8 @@ def main():
                 check_clipping(worker, pulse, Path(temporary))
             if only in (None, "sounds"):
                 check_sounds(worker, pulse, reference, Path(temporary))
+            if only in (None, "stop_continue"):
+                check_stop_continue(worker, pulse)
         finally:
             pulse.stop()
 
