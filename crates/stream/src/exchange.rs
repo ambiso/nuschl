@@ -53,6 +53,13 @@ pub(crate) const REKEY: u8 = 4;
 
 pub type SubscriberId = [u8; 16];
 
+/// Whether a key message is for a [`Publisher`]: KeyRequest and KeyAck are, KeyGrant and
+/// Rekey are for a [`Subscriber`]. Reads the envelope's kind, which the receiver
+/// authenticates.
+pub fn for_publisher(message: &[u8]) -> bool {
+    matches!(message.get(1), Some(&(REQUEST | ACK)))
+}
+
 // -------------------------------------------------------------------------------------
 // Epoch keys
 

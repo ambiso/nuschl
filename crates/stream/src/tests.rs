@@ -549,6 +549,21 @@ fn replays_reflections_and_bad_confirmations_fail() {
     );
     publisher.receive(&ack, T0).unwrap();
     assert_eq!(publisher.receive(&ack, T0).err(), Some(Error::Replay));
+
+    let rekey = publisher
+        .rekey(T0 + 1000, &mut rng)
+        .unwrap()
+        .messages
+        .remove(0)
+        .1;
+    for (message, to_publisher) in [
+        (&request, true),
+        (&ack, true),
+        (&grant, false),
+        (&rekey, false),
+    ] {
+        assert_eq!(for_publisher(message), to_publisher);
+    }
 }
 
 /// L4: a rekey's messages may be sent twice; a subscriber that misses one catches up with
