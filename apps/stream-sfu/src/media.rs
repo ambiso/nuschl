@@ -3,8 +3,10 @@
 //! mode) and the one UDP socket. It forwards RTP packets from a publisher to
 //! each subscriber with their payload, timestamp and marker unchanged, in the
 //! codec the publisher negotiated (AV1, VP9 or Opus); it never decrypts,
-//! depacketizes or transcodes. Each subscriber gets its own sequence numbers, starting near
-//! zero, and packets a budget drops leave a gap the receiver sees.
+//! depacketizes or transcodes. A source whose packets carry the Dependency
+//! Descriptor reaches each receiver in the decode target chosen for it
+//! (`quality`). Each subscriber gets its own sequence numbers from zero: frames
+//! it skips leave no gap, and packets a budget drops leave one it sees.
 
 use crate::{
     config::Config,
@@ -91,8 +93,6 @@ struct Forward {
     mid: Option<Mid>,
     open: bool,
     stopping: bool,
-    /// The publisher's sequence number that maps to zero for this receiver.
-    base: Option<u64>,
     view: quality::View,
 }
 
@@ -779,6 +779,23 @@ impl Core {
         let Some(source) = publisher.sources.iter_mut().find(|s| s.mid == mid) else {
             return;
         };
+        let descriptor = packet
+            .header
+            .ext_vals
+            .user_values
+            .get::<quality::Descriptor>();
+        // None: no descriptor, every receiver gets every packet. Some(None): a
+        // descriptor this source's structure cannot read yet, which a key frame
+        // brings.
+        let since = now.saturating_duration_since(self.origin);
+        let frame = match (&mut source.video, descriptor) {
+            (Some(video), Some(descriptor)) => Some(video.layers.packet(
+                &descriptor.0,
+                packet.payload.len(),
+                since,
+            )),
+            _ => None,
+        };
         // Q1 hook: per-receiver layer choice (docs/video-plan.md §5.3) replaces
         // this. Today every receiver gets the first layer a source sends, and
         // all of a single stream's packets, including every temporal layer.
@@ -794,7 +811,7 @@ impl Core {
                 .filter(|p| *p != from)
                 .collect()
         });
-        let mut dropped = false;
+        let mut dropped = matches!(frame, Some(None));
         for id in receivers {
             let Some(peer) = self.peers.get_mut(&id) else {
                 continue;
@@ -809,6 +826,23 @@ impl Core {
             let Some(out_mid) = forward.mid else {
                 continue;
             };
+            let view = &mut forward.view;
+            let keep = match &frame {
+                None => true,
+                Some(None) => false,
+                Some(Some(frame)) => view.selector.forward(frame),
+            };
+            dropped |= view.selector.waiting();
+            if !keep {
+                view.rewrite.skip(*packet.seq_no);
+                continue;
+            }
+            // The last packet of the highest spatial layer forwarded ends the
+            // receiver's picture.
+            let marker = packet.header.marker
+                || frame
+                    .flatten()
+                    .is_some_and(|frame| frame.end && Some(frame.layer.spatial) == view.spatial());
             let Some(pt) = peer
                 .subscribe
                 .codec_config()
@@ -827,8 +861,7 @@ impl Core {
                 dropped = true;
                 continue;
             }
-            let base = *forward.base.get_or_insert(*packet.seq_no);
-            let Some(seq) = packet.seq_no.checked_sub(base) else {
+            let Some(seq) = forward.view.rewrite.forward(*packet.seq_no) else {
                 continue;
             };
             let mut api = peer.subscribe.direct_api();
@@ -843,7 +876,7 @@ impl Core {
                     packet.timestamp,
                     packet.payload.clone(),
                 )
-                .marker(packet.header.marker)
+                .marker(marker)
                 .ext_vals(quality::forwarded(&packet.header.ext_vals))
                 .nackable(video),
             );
@@ -854,13 +887,15 @@ impl Core {
         }
     }
 
-    /// Once a second: tells each publisher the largest tier asked of each of its
-    /// video sources, when it changed.
+    /// Once a second: gives each receiver the highest decode target of each
+    /// layered source that fits its tier, and tells each publisher the largest
+    /// tier asked of each of its video sources, when it changed.
     fn quality(&mut self, now: Instant) {
         let since = now.saturating_duration_since(self.origin);
         let mut demands: HashMap<(PeerId, Mid), usize> = HashMap::new();
-        for peer in self.peers.values() {
-            for forward in &peer.forwards {
+        let mut choices = Vec::new();
+        for (&id, peer) in &self.peers {
+            for (index, forward) in peer.forwards.iter().enumerate() {
                 let Some(video) = self.peers.get(&forward.from).and_then(|p| {
                     p.sources
                         .iter()
@@ -872,7 +907,13 @@ impl Core {
                 let tier = quality::tier(video.kind, &forward.view, peer.decode);
                 let demand = demands.entry((forward.from, forward.source)).or_default();
                 *demand = (*demand).max(tier);
+                choices.push((id, index, video.layers.choices(video.kind, tier)));
             }
+        }
+        for (id, index, choices) in choices {
+            let view = &mut self.peers.get_mut(&id).expect("listed").forwards[index].view;
+            view.selector.want(choices.last().map(|c| c.target));
+            view.choices = choices;
         }
         let mut messages = Vec::new();
         for (&id, peer) in &mut self.peers {
@@ -934,6 +975,5 @@ fn forward(from: PeerId, source: Mid, kind: MediaKind, label: &'static str) -> F
         mid: None,
         open: false,
         stopping: false,
-        base: None,
     }
 }

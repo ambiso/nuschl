@@ -232,6 +232,7 @@ struct Peer {
     /// Payloads and descriptors sent.
     sent: Vec<(Vec<u8>, Option<Descriptor>)>,
     seq: u64,
+    last_frame: Option<Instant>,
     messages: Vec<Value>,
 }
 
@@ -308,6 +309,7 @@ async fn join(url: &str, admit: &[u8; 32], host: bool, create: bool) -> (Peer, V
         received: HashMap::new(),
         sent: Vec::new(),
         seq: 0,
+        last_frame: None,
         messages: Vec::new(),
     };
     (peer, answer)
@@ -387,14 +389,20 @@ impl Peer {
         }
     }
 
-    /// Sends one synthetic encrypted frame in one packet, once connected.
+    /// Sends one synthetic encrypted frame in one packet, once connected, at 30
+    /// frames a second.
     fn send_frame(&mut self) {
         let Some((leg, None, mid, codec)) = &mut self.publish else {
             return;
         };
-        if !leg.rtc.is_connected() {
+        if !leg.rtc.is_connected()
+            || self
+                .last_frame
+                .is_some_and(|at| at.elapsed() < Duration::from_millis(33))
+        {
             return;
         }
+        self.last_frame = Some(Instant::now());
         let media = leg.rtc.media(*mid).expect("media");
         let pt = leg
             .rtc
@@ -453,6 +461,28 @@ impl Peer {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     }
+}
+
+/// The frame numbers a receiver got from `publisher`, read from the payloads.
+fn frames(receiver: &Peer, publisher: &Peer) -> Vec<u64> {
+    receiver
+        .received
+        .get(&publisher.id)
+        .map_or_else(Vec::new, |packets| {
+            packets
+                .iter()
+                .map(|p| u64::from_be_bytes(p.payload[9..17].try_into().expect("8 bytes")) - 1)
+                .collect()
+        })
+}
+
+fn quality_request(publisher: u64, tier: u8) -> Value {
+    let request = QualityRequest {
+        publisher,
+        kind: Kind::Camera,
+        tier,
+    };
+    json!({"type": "quality", "request": hex::encode(request.to_bytes())})
 }
 
 fn assert_forwarded(receiver: &Peer, publisher: &Peer, codec: Codec) {
@@ -553,16 +583,8 @@ async fn forwards_media_and_key_messages_unchanged() {
     assert!(!bob.received.contains_key(&bob.id) && !host.received.contains_key(&host.id));
 
     // The publisher hears the largest tier its receivers ask for.
-    let ask = |publisher: u64, tier: u8| {
-        let request = QualityRequest {
-            publisher,
-            kind: Kind::Camera,
-            tier,
-        };
-        json!({"type": "quality", "request": hex::encode(request.to_bytes())})
-    };
-    alice.send(ask(host.id, 0));
-    bob.send(ask(host.id, 1));
+    alice.send(quality_request(host.id, 0));
+    bob.send(quality_request(host.id, 1));
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let message = host.expect("quality").await;
@@ -601,4 +623,57 @@ async fn forwards_media_and_key_messages_unchanged() {
     assert_eq!(lease(url, "POST", ROOM, HOST), 404);
     let (_, refused) = join(url, &ADMIT, false, false).await;
     assert_eq!(refused["reason"], "ended");
+}
+
+/// One AV1 publisher with an L1T3 descriptor at 30 frames a second and two
+/// receivers. One asks for the 15 fps camera tier and gets the T0 and T1 frames;
+/// the other gets every frame. Each switches at switch points, and skipped
+/// frames leave no gaps in its sequence numbers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn each_receiver_gets_the_layers_of_its_tier() {
+    let sfu = start();
+    let url = sfu.url.as_str();
+    let (mut host, _) = join(url, &ADMIT, true, true).await;
+    let (mut low, _) = join(url, &ADMIT, false, false).await;
+    let (mut full, _) = join(url, &ADMIT, false, false).await;
+    host.start_publishing(Codec::Av1);
+    let mut asked = false;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        for peer in [&mut host, &mut low, &mut full] {
+            peer.step();
+        }
+        host.send_frame();
+        if !asked && !low.tracks.is_empty() {
+            low.send(quality_request(host.id, 0));
+            asked = true;
+        }
+        let tail = frames(&low, &host);
+        let settled = tail.iter().rev().take_while(|n| *n % 2 == 0).count();
+        if settled >= 20 && frames(&full, &host).len() >= 90 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "low {tail:?}");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    for receiver in [&low, &full] {
+        let packets = &receiver.received[&host.id];
+        assert!(
+            packets.iter().enumerate().all(|(i, p)| p.seq == i as u64),
+            "consecutive sequence numbers across skipped frames"
+        );
+    }
+    // Every frame from the first one on, all layers.
+    let all = frames(&full, &host);
+    assert!(all.windows(2).all(|w| w[1] == w[0] + 1), "{all:?}");
+    // T2 frames are the odd ones. The low receiver skips only those, and its
+    // first skip follows a T0 frame, the switch point for the 15 fps target.
+    let got = frames(&low, &host);
+    let skipped: Vec<u64> = got.windows(2).flat_map(|w| w[0] + 1..w[1]).collect();
+    assert!(
+        !skipped.is_empty() && skipped.iter().all(|n| n % 2 == 1),
+        "{got:?}"
+    );
+    let first_skip = got.windows(2).find(|w| w[1] > w[0] + 1).expect("a skip")[0];
+    assert_eq!(first_skip % 4, 0, "{got:?}");
 }
