@@ -10,6 +10,7 @@ pub mod config;
 pub mod media;
 pub mod protocol;
 pub mod rooms;
+pub mod routing;
 
 use config::{Config, Listen};
 use futures_util::{SinkExt, StreamExt};

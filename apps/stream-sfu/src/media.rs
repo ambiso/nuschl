@@ -10,6 +10,7 @@ use crate::{
     config::Config,
     protocol::{self, ClientMessage, PeerInfo, ServerMessage, Track, TurnCredentials},
     rooms::{self, Bucket, Join, Nonce, PeerId, RoomId, Rooms},
+    routing::Routing,
 };
 use std::{
     cmp::Reverse,
@@ -51,7 +52,7 @@ pub enum Command {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Leg {
     Publish,
     Subscribe,
@@ -113,7 +114,7 @@ pub struct Core {
     turn: Option<Turn>,
     rooms: Rooms,
     peers: HashMap<PeerId, Peer>,
-    routes: HashMap<SocketAddr, (PeerId, Leg)>,
+    routing: Routing<(PeerId, Leg)>,
     timers: BinaryHeap<Reverse<(Instant, PeerId, u8)>>,
     dirty: Vec<(PeerId, Leg)>,
     kicks: Vec<(PeerId, &'static str)>,
@@ -154,7 +155,7 @@ impl Core {
             crypto: Arc::new(str0m::crypto::from_feature_flags()),
             turn,
             peers: HashMap::new(),
-            routes: HashMap::new(),
+            routing: Routing::default(),
             timers: BinaryHeap::new(),
             dirty: Vec::new(),
             kicks: Vec::new(),
@@ -184,6 +185,7 @@ impl Core {
                 }
                 _ = tokio::time::sleep_until(next.into()) => self.timeouts(Instant::now()),
                 _ = expiry.tick() => {
+                    self.routing.expire(Instant::now());
                     for id in self.rooms.expire(Instant::now()) {
                         self.kicks.push((id, "expired"));
                     }
@@ -211,7 +213,8 @@ impl Core {
         }
     }
 
-    fn new_rtc(&self, now: Instant) -> Rtc {
+    /// A connection for `route`, with its ufrag in the routing map.
+    fn new_rtc(&mut self, route: (PeerId, Leg), now: Instant) -> Rtc {
         let mut rtc = Rtc::builder()
             .set_crypto_provider(self.crypto.clone())
             .set_rtp_mode(true)
@@ -222,6 +225,8 @@ impl Core {
                 rtc.add_local_candidate(candidate);
             }
         }
+        let ufrag = rtc.direct_api().local_ice_credentials().ufrag;
+        self.routing.add_ufrag(ufrag, route);
         rtc
     }
 
@@ -269,7 +274,7 @@ impl Core {
             room: join.room,
             out,
             publish: None,
-            subscribe: self.new_rtc(now),
+            subscribe: self.new_rtc((id, Leg::Subscribe), now),
             pending: None,
             sources: Vec::new(),
             forwards,
@@ -304,7 +309,7 @@ impl Core {
             ClientMessage::Offer { sdp } => {
                 let offer = SdpOffer::from_sdp_string(&sdp).map_err(|_| "sdp")?;
                 if self.peers[&id].publish.is_none() {
-                    let rtc = self.new_rtc(now);
+                    let rtc = self.new_rtc((id, Leg::Publish), now);
                     self.peers.get_mut(&id).expect("exists").publish = Some(rtc);
                 }
                 let rtc = self
@@ -442,7 +447,7 @@ impl Core {
             let _ = peer.out.try_send(ServerMessage::Error { reason });
         }
         self.rooms.leave(&peer.room, id);
-        self.routes.retain(|_, (route, _)| *route != id);
+        self.routing.remove(|(route, _)| route == id);
         let others: Vec<PeerId> = self
             .rooms
             .get(&peer.room)
@@ -460,6 +465,9 @@ impl Core {
     }
 
     fn datagram(&mut self, source: SocketAddr, data: &[u8], now: Instant) {
+        let Some((id, leg)) = self.routing.route(source, data) else {
+            return;
+        };
         let Some(&destination) = self.local.iter().find(|a| a.is_ipv4() == source.is_ipv4()) else {
             return;
         };
@@ -475,32 +483,9 @@ impl Core {
                 contents,
             },
         );
-        let accepts = |peers: &mut HashMap<PeerId, Peer>, (id, leg): (PeerId, Leg)| {
-            peers
-                .get_mut(&id)
-                .and_then(|peer| peer.rtc(leg))
-                .is_some_and(|rtc| rtc.accepts(&input))
-        };
-        let target = match self.routes.get(&source) {
-            Some(&route) if accepts(&mut self.peers, route) => Some(route),
-            // Only ICE checks with a peer's credentials claim a new address.
-            _ => self
-                .peers
-                .keys()
-                .flat_map(|&id| [(id, Leg::Subscribe), (id, Leg::Publish)])
-                .collect::<Vec<_>>()
-                .into_iter()
-                .find(|&route| accepts(&mut self.peers, route)),
-        };
-        let Some((id, leg)) = target else {
+        let Some(rtc) = self.peers.get_mut(&id).and_then(|p| p.rtc(leg)) else {
             return;
         };
-        self.routes.insert(source, (id, leg));
-        let rtc = self
-            .peers
-            .get_mut(&id)
-            .and_then(|p| p.rtc(leg))
-            .expect("accepted");
         if rtc.handle_input(input).is_err() {
             self.kicks.push((id, "media"));
             return;
@@ -576,6 +561,7 @@ impl Core {
                     return;
                 }
                 Ok(Output::Transmit(transmit)) => {
+                    self.routing.learn(transmit.destination, (id, leg), now);
                     let mut destination = transmit.destination;
                     if let (IpAddr::V4(v4), Ok(local)) =
                         (destination.ip(), self.socket.local_addr())
