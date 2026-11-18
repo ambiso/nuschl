@@ -225,6 +225,13 @@ Mumble servers can show it to other clients. RTC adapters apply
 `nuschl_core::network::PeerPolicy` before gathering or dialing and advertise only
 relay candidates in relay-only mode, on every application call path.
 
+**Companion SFU** (`nuschl-stream-sfu`, [protocol](apps/stream-sfu/src/protocol.rs)).
+A network service under its hardened systemd unit; its state lives in memory. A
+room holds the `admit_key` and `host_key` its creator hands over. Media keys stay
+with the participants, and RTP payloads and key messages pass through unread. Its
+configuration bounds every network input; key messages are at most 16 KiB and UDP
+datagrams 2 KiB. The TURN REST secret arrives through `LoadCredential`.
+
 ## Where secrets live
 
 Nuschl's folders (`crates/session/src/layout.rs`; on Linux the XDG Base Directory

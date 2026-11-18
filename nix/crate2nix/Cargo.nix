@@ -373,6 +373,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "nuschl-stream-sfu" = rec {
+      packageId = "nuschl-stream-sfu";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "nuschl-stream-sfu";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "nuschl-testkit" = rec {
       packageId = "nuschl-testkit";
       build = internal.buildRustCrateWithFeatures {
@@ -24976,6 +24986,108 @@ rec {
           {
             name = "thiserror";
             packageId = "thiserror 2.0.21";
+          }
+        ];
+
+      };
+      "nuschl-stream-sfu" = rec {
+        crateName = "nuschl-stream-sfu";
+        version = "0.2.0";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "nuschl-stream-sfu";
+            path = "src/main.rs";
+            requiredFeatures = [ ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../apps/stream-sfu; };
+        libName = "nuschl_stream_sfu";
+        dependencies = [
+          {
+            name = "base64";
+            packageId = "base64 0.22.1";
+          }
+          {
+            name = "clap";
+            packageId = "clap";
+            features = [ "derive" ];
+          }
+          {
+            name = "futures-util";
+            packageId = "futures-util";
+            usesDefaultFeatures = false;
+            features = [ "sink" "std" ];
+          }
+          {
+            name = "getrandom";
+            packageId = "getrandom 0.4.3";
+          }
+          {
+            name = "hex";
+            packageId = "hex";
+          }
+          {
+            name = "hmac";
+            packageId = "hmac 0.13.0";
+          }
+          {
+            name = "serde";
+            packageId = "serde";
+            features = [ "derive" ];
+          }
+          {
+            name = "serde_json";
+            packageId = "serde_json";
+          }
+          {
+            name = "sha1";
+            packageId = "sha1 0.11.0";
+          }
+          {
+            name = "sha2";
+            packageId = "sha2 0.11.1";
+          }
+          {
+            name = "str0m";
+            packageId = "str0m";
+            usesDefaultFeatures = false;
+            features = [ "rust-crypto" ];
+          }
+          {
+            name = "tokio";
+            packageId = "tokio";
+            features = [ "macros" "rt" "net" "signal" "sync" "time" ];
+          }
+          {
+            name = "tokio-tungstenite";
+            packageId = "tokio-tungstenite";
+          }
+          {
+            name = "toml";
+            packageId = "toml 1.2.1+spec-1.1.0";
+            usesDefaultFeatures = false;
+            features = [ "std" "parse" "serde" ];
+          }
+          {
+            name = "tracing";
+            packageId = "tracing";
+          }
+          {
+            name = "tracing-subscriber";
+            packageId = "tracing-subscriber";
+            features = [ "env-filter" ];
+          }
+        ];
+        devDependencies = [
+          {
+            name = "nuschl-testkit";
+            packageId = "nuschl-testkit";
+          }
+          {
+            name = "tokio";
+            packageId = "tokio";
+            features = [ "rt-multi-thread" ];
           }
         ];
 
