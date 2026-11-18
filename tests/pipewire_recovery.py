@@ -129,6 +129,11 @@ NO_HARDWARE = """wireplumber.profiles = {
   }
 }
 """
+# The session has no X11 display. Without one, module-x11-bell stops its
+# freshly started thread at once, and PipeWire 1.6 can deadlock there: the
+# stop request runs on the main thread while the new thread already waits in
+# epoll, so the join never returns and the daemon stops serving.
+NO_X11_BELL = "context.properties = { module.x11.bell = false }\n"
 
 
 class PipeWire:
@@ -139,6 +144,7 @@ class PipeWire:
         self.runtime.mkdir(mode=0o700, parents=True)
         self.config = root / "config"
         (self.config / "pipewire/pipewire.conf.d").mkdir(parents=True)
+        (self.config / "pipewire/pipewire.conf.d/05-no-x11-bell.conf").write_text(NO_X11_BELL)
         (self.config / "pipewire/pipewire.conf.d/10-nodes.conf").write_text(VIRTUAL_NODES)
         (self.config / "wireplumber/wireplumber.conf.d").mkdir(parents=True)
         (self.config / "wireplumber/wireplumber.conf.d/10-no-hardware.conf").write_text(NO_HARDWARE)
@@ -210,10 +216,14 @@ class PipeWire:
             nodes = sorted(name for name in self.nodes() if name)
         except (json.JSONDecodeError, subprocess.TimeoutExpired) as error:
             nodes = f"unavailable ({error})"
+        try:
+            session_defaults = defaults(self)
+        except subprocess.TimeoutExpired as error:
+            session_defaults = f"unavailable ({error})"
         logs = "\n".join(f"--- {name}.log\n" + (self.root / f"{name}.log").read_text()[-2000:]
                          for name in ("pipewire", "wireplumber", "pipewire-pulse") if (self.root / f"{name}.log").exists())
         raise AssertionError(f"private PipeWire did not come up: nodes {nodes}, expected {sorted(expected)}, "
-                             f"pulse socket {(self.runtime / 'pulse/native').exists()}, defaults {defaults(self)}\n{logs}")
+                             f"pulse socket {(self.runtime / 'pulse/native').exists()}, defaults {session_defaults}\n{logs}")
 
     def down(self):
         for name in ("pipewire-pulse", "wireplumber", "pipewire"):
