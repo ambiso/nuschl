@@ -1,115 +1,142 @@
-# Pure public builder entrypoint. The coordinator owns flake output registration.
+# Debian and Arch packages of the Linux desktop. Versions come from the
+# workspace version; packages are published from release tags.
 {
   pkgs,
-  toolchain,
-  craneLib,
-  sourceInfo,
-  versionMetadata ? null,
+  # lib/nuschl/ with the desktop executable and its eight helpers.
+  binaries,
+  projectRoot,
   nativeNotices,
   desktopFiles,
   appstreamXML,
-  maintainer ? "Local package validation <nobody@example.invalid>",
+  revision ? "1",
+  maintainer ? "Nuschl <packages@nuschl.eu>",
 }:
 let
-  inherit (pkgs) lib;
-  projectRoot = sourceInfo.outPath;
-  baseVersion =
+  version =
     (builtins.fromTOML (builtins.readFile (projectRoot + "/Cargo.toml"))).workspace.package.version;
-  versions = import ./version.nix {
-    inherit baseVersion sourceInfo;
-    metadata = versionMetadata;
-  };
-  expectedNotices =
-    (import (projectRoot + "/nix/release-notices.nix") {
+  programs = [
+    "nuschl"
+    "nuschl-content-worker"
+    "nuschl-crypto-worker"
+    "nuschl-math-worker"
+    "nuschl-media-worker"
+    "nuschl-storage-worker"
+    "nuschl-transfer-worker"
+    "nuschl-update-verify-ed25519"
+    "nuschl-update-verify-mldsa44"
+  ];
+  # Helper discovery looks next to the executable, so all nine share a directory.
+  stage = pkgs.runCommand "nuschl-stage-${version}" { } ''
+    for program in ${pkgs.lib.escapeShellArgs programs}; do
+      install -Dm755 ${binaries}/lib/nuschl/$program "$out/usr/lib/nuschl/$program"
+    done
+    mkdir -p "$out/usr/bin"
+    ln -s ../lib/nuschl/nuschl "$out/usr/bin/nuschl"
+    cp -R --no-preserve=mode ${desktopFiles}/share "$out/usr/"
+    cp -R --no-preserve=mode ${nativeNotices}/share/licenses "$out/usr/share/"
+    install -Dm644 ${projectRoot + "/LICENSE"} "$out/usr/share/licenses/nuschl/EUPL-1.2"
+    install -Dm644 ${
+      projectRoot + "/crates/protocol/proto/LICENSE.mumble"
+    } "$out/usr/share/licenses/nuschl/Mumble-BSD"
+    install -Dm644 ${appstreamXML} "$out/usr/share/metainfo/org.nuschl.Nuschl.metainfo.xml"
+  '';
+  # Debian packages of the libraries the programs link and open, and of the
+  # sandbox tools; bubblewrap 0.8 has --clearenv, PipeWire 0.3.53 has
+  # pw_stream_get_time_n.
+  depends = [
+    "libxcb1"
+    "libxkbcommon0"
+    "libxkbcommon-x11-0"
+    "libvulkan1"
+    "libpipewire-0.3-0t64 | libpipewire-0.3-0 (>= 0.3.53)"
+    "pipewire-bin"
+    "libpipewire-0.3-modules"
+    "libspa-0.2-modules"
+    "libasound2t64 | libasound2"
+    "bubblewrap (>= 0.8)"
+    "util-linux"
+    "desktop-file-utils"
+    "hicolor-icon-theme"
+  ];
+  # Opened for Wayland sessions.
+  recommends = [
+    "libwayland-client0"
+    "libegl1"
+  ];
+  debWith =
+    revision:
+    import ../debian/package.nix {
       inherit
         pkgs
-        toolchain
-        craneLib
-        projectRoot
+        stage
+        maintainer
+        depends
+        recommends
         ;
-      webRuntimeNotices = null;
-    }).linux.bundle;
-  expectedDesktop = (import (projectRoot + "/nix/desktop-files.nix") { inherit pkgs; }).linux;
-  assetBinding =
-    pkgs.runCommand "nuschl-native-source-assets" { nativeBuildInputs = [ pkgs.python3 ]; }
-      ''
-        python3 ${./bind-assets.py} --source ${projectRoot} --notices ${nativeNotices} \
-          --expected-notices ${expectedNotices} --desktop ${desktopFiles} --expected-desktop ${expectedDesktop} \
-          --source-nar-hash ${lib.escapeShellArg versions.sourceNarHash} \
-          ${
-            lib.optionalString (
-              versions.sourceRevision != null
-            ) "--revision ${lib.escapeShellArg versions.sourceRevision}"
-          } \
-          ${lib.optionalString (appstreamXML != null) "--appstream ${appstreamXML}"} --output "$out"
-      '';
-  portable = import ../../nix/portable-linux.nix {
-    inherit
-      pkgs
-      toolchain
-      projectRoot
-      nativeNotices
-      desktopFiles
-      appstreamXML
-      assetBinding
-      ;
-    revision = versions.sourceRevision;
-    sourceNarHash = versions.sourceNarHash;
-    version = versions.debianUpstream;
-  };
-  deb = import ../debian/package.nix {
-    inherit pkgs projectRoot maintainer;
-    stage = portable.stage;
-    version = versions.debianVersion;
-    sourceDateEpoch = versions.sourceDateEpoch;
-  };
-  archBin = import ../arch/package.nix {
+      version = "${version}-${revision}";
+    };
+  deb = debWith revision;
+  # The owner's repository command, and a test repository with this package
+  # and its next revision for the upgrade test.
+  aptRepository = import ../debian/apt-repository.nix {
     inherit pkgs;
-    stage = portable.stage;
-    version = versions.archPkgver;
-    packageRevision = versions.archPkgrel;
-    sourceDateEpoch = versions.sourceDateEpoch;
+    packages = [
+      deb
+      (debWith (toString (pkgs.lib.toInt revision + 1)))
+    ];
   };
-  debSource = import ../debian/source.nix {
-    inherit
-      pkgs
-      craneLib
-      projectRoot
-      nativeNotices
-      desktopFiles
-      appstreamXML
-      maintainer
-      assetBinding
-      ;
-    version = versions.debianUpstream;
-    sourceRevision = versions.sourceRevision;
-    sourceNarHash = versions.sourceNarHash;
-    sourceDateEpoch = versions.sourceDateEpoch;
-    debianRevision = versions.packageRevision;
-  };
+  archDepends = [
+    "glibc"
+    "libxcb"
+    "libxkbcommon"
+    "libxkbcommon-x11"
+    "vulkan-icd-loader"
+    "pipewire"
+    "alsa-lib"
+    "bubblewrap"
+    "util-linux"
+    "desktop-file-utils"
+    "hicolor-icon-theme"
+  ];
+  aurWith =
+    key: signature:
+    import ../arch/package.nix {
+      depends = archDepends;
+      inherit
+        pkgs
+        version
+        deb
+        key
+        signature
+        maintainer
+        ;
+      debianRevision = revision;
+    };
+  # nuschl-bin built from the test repository's signed .deb; building it checks
+  # that makepkg refuses a missing or wrong signature.
+  aurTest = aurWith "${aptRepository.test}/key.asc" "${aptRepository.test}/pool/main/n/nuschl/nuschl_${version}-${revision}_amd64.deb.sig";
+  archiveKey = ../nuschl-archive-keyring.asc;
 in
 {
   inherit
-    versions
+    stage
     deb
-    archBin
-    debSource
-    assetBinding
+    aptRepository
+    aurTest
     ;
-  nativeStage = portable.stage;
-  debSourceCheck = import ../debian/check-source.nix {
-    inherit pkgs toolchain;
-    sourcePackage = debSource;
-    version = versions.debianUpstream;
-    debianRevision = versions.packageRevision;
+  tests = import ./tests.nix {
+    aur = aurTest;
+    inherit archDepends;
+    inherit
+      pkgs
+      aptRepository
+      version
+      revision
+      depends
+      ;
   };
-  metadataTests = import ./metadata-tests.nix { inherit pkgs; };
 }
-// lib.optionalAttrs versions.officialVersion {
-  aptRepository = import ../debian/apt-repository.nix {
-    inherit pkgs;
-    packages = [ (deb + "/nuschl_${versions.debianVersion}_amd64.deb") ];
-    suite = "trixie";
-    publicationEpoch = versions.sourceDateEpoch;
-  };
+// pkgs.lib.optionalAttrs (builtins.pathExists archiveKey) {
+  # The PKGBUILD and .SRCINFO to publish, for the archive key in the repository.
+  aur = aurWith archiveKey null;
 }

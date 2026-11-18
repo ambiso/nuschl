@@ -1,35 +1,40 @@
-# Assemble exact Nix-built FHS bytes. This performs no signing or publication.
+# The .deb: the stage plus a control file. It has no maintainer scripts; the
+# dpkg triggers of desktop-file-utils and hicolor-icon-theme refresh the caches.
+# The portable build checks each program's libraries, interpreter and glibc
+# symbols; libc6 comes from the newest glibc symbol.
 {
   pkgs,
   stage,
-  projectRoot,
   version,
   maintainer,
-  sourceDateEpoch,
-  architecture ? "amd64",
-  maximumGlibc ? "2.41",
+  depends,
+  recommends,
 }:
-assert pkgs.lib.assertMsg (
-  architecture == "amd64"
-) "Only the measured amd64 native stage is currently supported";
-pkgs.runCommand (pkgs.lib.strings.sanitizeDerivationName "nuschl-debian-${version}-${architecture}")
+pkgs.runCommand "nuschl_${version}_amd64.deb"
   {
     nativeBuildInputs = [
-      pkgs.python3
       pkgs.dpkg
       pkgs.binutils
     ];
   }
   ''
-    mkdir -p "$out"
-    python3 ${./build-deb.py} --stage ${stage} --project-root ${projectRoot} \
-      --architecture ${pkgs.lib.escapeShellArg architecture} \
-      --maximum-glibc ${pkgs.lib.escapeShellArg maximumGlibc} \
-      --version ${pkgs.lib.escapeShellArg version} --maintainer ${pkgs.lib.escapeShellArg maintainer} \
-      --epoch ${toString sourceDateEpoch} --output "$out/nuschl_${version}_${architecture}.deb" \
-      --readelf ${pkgs.binutils}/bin/readelf --dpkg-deb ${pkgs.dpkg}/bin/dpkg-deb \
-      > "$out/validation.json"
-    ${pkgs.dpkg}/bin/dpkg-deb --info "$out/nuschl_${version}_${architecture}.deb" > "$out/control.txt"
-    cd "$out"
-    sha256sum *.deb > SHA256SUMS
+    cp -R ${stage} root
+    chmod -R u+w root
+    glibc=$(readelf -VW root/usr/lib/nuschl/* | grep -o 'GLIBC_2\.[0-9.]*' | sort -uV | tail -n 1)
+    mkdir root/DEBIAN
+    cat > root/DEBIAN/control <<EOF
+    Package: nuschl
+    Version: ${version}
+    Architecture: amd64
+    Maintainer: ${maintainer}
+    Installed-Size: $(du -sk root | cut -f1)
+    Depends: libc6 (>= ''${glibc#GLIBC_}), ${pkgs.lib.concatStringsSep ", " depends}
+    Recommends: ${pkgs.lib.concatStringsSep ", " recommends}
+    Section: net
+    Priority: optional
+    Homepage: https://github.com/nuschl-eu/nuschl
+    Description: Voice and text chat for Mumble servers
+     Desktop client with sandboxed helpers for content, cryptography, storage and media.
+    EOF
+    dpkg-deb --root-owner-group -Zxz --build root "$out"
   ''

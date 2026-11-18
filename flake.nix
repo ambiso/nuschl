@@ -38,10 +38,6 @@
       ...
     }:
     {
-      lib.distroLinux = {
-        mkVersion = import ./packaging/linux/version.nix;
-        mkPackages = import ./packaging/linux/default.nix;
-      };
       nixosModules.default = import ./nix/module.nix { inherit self; };
       # The web host: web client, share links and the tunnel relay (docs/web.md).
       nixosModules.web = import ./nix/web-module.nix { inherit self; };
@@ -239,9 +235,10 @@
         # Omit unsupported artifact names without evaluating a Linux builder
         # (or forcing pkgs for platforms that nixpkgs no longer supports).
         distroOutput = name: if system == "x86_64-linux" then name else null;
-        linuxDistro = self.lib.distroLinux.mkPackages {
-          inherit pkgs toolchain craneLib;
-          sourceInfo = self.sourceInfo;
+        linuxDistro = import ./packaging/linux/default.nix {
+          inherit pkgs;
+          binaries = linuxPortable;
+          projectRoot = ./.;
           nativeNotices = releaseNotices.linux.bundle;
           desktopFiles = (import ./nix/desktop-files.nix { inherit pkgs; }).linux;
           appstreamXML = ./packaging/flatpak/org.nuschl.Nuschl.metainfo.xml;
@@ -250,11 +247,13 @@
           mkdir -p "$out/share/licenses/nuschl"
           cp -R ${nativeNoticeBundle}/share/licenses/nuschl/. "$out/share/licenses/nuschl/"
         '';
-        witnessPackage = pkgs.runCommand "nuschl-witness-${version}" { meta.mainProgram = "nuschl-witness"; } ''
-          install -Dm755 ${crates.project.workspaceMembers.nuschl-witness.build}/bin/nuschl-witness "$out/bin/nuschl-witness"
-          install -Dm644 ${./LICENSE} "$out/share/licenses/nuschl/EUPL-1.2"
-          ${installNativeNotices}
-        '';
+        witnessPackage =
+          pkgs.runCommand "nuschl-witness-${version}" { meta.mainProgram = "nuschl-witness"; }
+            ''
+              install -Dm755 ${crates.project.workspaceMembers.nuschl-witness.build}/bin/nuschl-witness "$out/bin/nuschl-witness"
+              install -Dm644 ${./LICENSE} "$out/share/licenses/nuschl/EUPL-1.2"
+              ${installNativeNotices}
+            '';
         musicbotNoticeScope = "musicbot-${pkgs.stdenv.hostPlatform.rust.rustcTarget}";
         musicbotNotices = releaseNotices.forScope musicbotNoticeScope;
         musicbotPackage =
@@ -318,37 +317,39 @@
         '';
         # Licences, and on Linux the desktop binary under libexec (screen readers
         # announce the executable's name, not ".nuschl-wrapped") with wrappers.
-        packageLayout = licenseLayout + lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
-          runtimeFlags=(--prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath buildInputs}"
-            --prefix PATH : "${
+        packageLayout =
+          licenseLayout
+          + lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+            runtimeFlags=(--prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath buildInputs}"
+              --prefix PATH : "${
+                lib.makeBinPath [
+                  pkgs.bubblewrap
+                  pkgs.util-linux
+                ]
+              }")
+            mkdir -p "$out/libexec/nuschl"
+            mv "$out/bin/nuschl" "$out/libexec/nuschl/nuschl"
+            for worker in nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-media-worker nuschl-storage-worker nuschl-transfer-worker nuschl-update-verify-ed25519 nuschl-update-verify-mldsa44; do
+              test -f "$out/bin/$worker"
+              ln -s "../../bin/$worker" "$out/libexec/nuschl/$worker"
+            done
+            makeWrapper "$out/libexec/nuschl/nuschl" "$out/bin/nuschl" "''${runtimeFlags[@]}"
+            wrapProgram "$out/bin/nuschl-cli" "''${runtimeFlags[@]}"
+            # The terminal client finds the workers beside it in bin; the
+            # wrapper gives their sandbox bubblewrap and the media worker its
+            # audio libraries.
+            wrapProgram "$out/bin/nuschl-tui" "''${runtimeFlags[@]}" --prefix PATH : "${
               lib.makeBinPath [
-                pkgs.bubblewrap
-                pkgs.util-linux
+                pkgs.wl-clipboard-rs
+                pkgs.xclip
+                pkgs.wayland-utils
               ]
-            }")
-          mkdir -p "$out/libexec/nuschl"
-          mv "$out/bin/nuschl" "$out/libexec/nuschl/nuschl"
-          for worker in nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-media-worker nuschl-storage-worker nuschl-transfer-worker nuschl-update-verify-ed25519 nuschl-update-verify-mldsa44; do
-            test -f "$out/bin/$worker"
-            ln -s "../../bin/$worker" "$out/libexec/nuschl/$worker"
-          done
-          makeWrapper "$out/libexec/nuschl/nuschl" "$out/bin/nuschl" "''${runtimeFlags[@]}"
-          wrapProgram "$out/bin/nuschl-cli" "''${runtimeFlags[@]}"
-          # The terminal client finds the workers beside it in bin; the
-          # wrapper gives their sandbox bubblewrap and the media worker its
-          # audio libraries.
-          wrapProgram "$out/bin/nuschl-tui" "''${runtimeFlags[@]}" --prefix PATH : "${
-            lib.makeBinPath [
-              pkgs.wl-clipboard-rs
-              pkgs.xclip
-              pkgs.wayland-utils
-            ]
-          }"
-          # Desktop entry and hicolor icons; shells match the window by its app id.
-          cp -R --no-preserve=mode ${
-            (import ./nix/desktop-files.nix { inherit pkgs; }).linux
-          }/share/. "$out/share/"
-        '';
+            }"
+            # Desktop entry and hicolor icons; shells match the window by its app id.
+            cp -R --no-preserve=mode ${
+              (import ./nix/desktop-files.nix { inherit pkgs; }).linux
+            }/share/. "$out/share/"
+          '';
         # Whole-workspace build (crane): kept for comparison and as a fallback.
         cranePackage = craneLib.buildPackage (
           common
@@ -372,15 +373,36 @@
         # `ci`. unitExtras gives a member's leaf the test inputs it needs;
         # unitOptOut moves a member's tests to where they run.
         unitExtras = {
-          nuschl-sandbox.testInputs = [ pkgs.bubblewrap pkgs.util-linux ];
-          nuschl-ipc.testInputs = [ pkgs.bubblewrap pkgs.util-linux ];
-          nuschl-content-worker.testInputs = [ pkgs.bubblewrap pkgs.util-linux ];
-          nuschl-musicbot-codec-worker.testInputs = [ pkgs.bubblewrap pkgs.util-linux ];
+          nuschl-sandbox.testInputs = [
+            pkgs.bubblewrap
+            pkgs.util-linux
+          ];
+          nuschl-ipc.testInputs = [
+            pkgs.bubblewrap
+            pkgs.util-linux
+          ];
+          nuschl-content-worker.testInputs = [
+            pkgs.bubblewrap
+            pkgs.util-linux
+          ];
+          nuschl-musicbot-codec-worker.testInputs = [
+            pkgs.bubblewrap
+            pkgs.util-linux
+          ];
           # The math worker's confinement tests spawn sandboxed workers, and
           # the CLI's e2ee tests run the crypto worker through the sandbox.
-          nuschl-math-worker.testInputs = [ pkgs.bubblewrap pkgs.util-linux ];
-          nuschl-cli.testInputs = [ pkgs.bubblewrap pkgs.util-linux ];
-          nuschl-crypto-worker.testInputs = [ pkgs.bubblewrap pkgs.util-linux ];
+          nuschl-math-worker.testInputs = [
+            pkgs.bubblewrap
+            pkgs.util-linux
+          ];
+          nuschl-cli.testInputs = [
+            pkgs.bubblewrap
+            pkgs.util-linux
+          ];
+          nuschl-crypto-worker.testInputs = [
+            pkgs.bubblewrap
+            pkgs.util-linux
+          ];
           # The signer's tests need its feature; the default build has none.
           nuschl-update-worker.features = [ "signer" ];
           nuschl-link-preview.testInputs = [ pkgs.python3 ];
@@ -413,11 +435,12 @@
           # These run on another platform or target.
           nuschl-sandbox-windows = "Windows adapter; the tests run under Miri (`just miri`)";
         };
-        unitChecks = lib.mapAttrs'
-          (name: member:
-            lib.nameValuePair "${name}-unit"
-              (member.build.override ({ runTests = true; } // unitExtras.${name} or { })))
-          (removeAttrs crates.project.workspaceMembers (lib.attrNames unitOptOut));
+        unitChecks = lib.mapAttrs' (
+          name: member:
+          lib.nameValuePair "${name}-unit" (
+            member.build.override ({ runTests = true; } // unitExtras.${name} or { })
+          )
+        ) (removeAttrs crates.project.workspaceMembers (lib.attrNames unitOptOut));
         # Explicit operator/CI tool; never included in client worker payloads.
         updateSigner = crates.project.workspaceMembers."nuschl-update-worker".build.override {
           features = [ "signer" ];
@@ -790,14 +813,15 @@
       in
       {
         packages.default = package;
-        packages.${distroOutput "linux-native-stage"} = linuxDistro.nativeStage;
+        packages.${distroOutput "linux-native-stage"} = linuxDistro.stage;
         packages.${distroOutput "deb"} = linuxDistro.deb;
         packages.${distroOutput "linux-portable"} = linuxPortable;
         packages.${distroOutput "server-static"} = serverStatic;
-        packages.${distroOutput "arch-bin"} = linuxDistro.archBin;
-        packages.${distroOutput "deb-source"} = linuxDistro.debSource;
-        packages.${distroOutput "deb-source-check"} = linuxDistro.debSourceCheck;
+        packages.${if linuxDistro ? aur then distroOutput "aur" else null} = linuxDistro.aur;
+        packages.${distroOutput "apt-repository"} = linuxDistro.aptRepository.command;
         legacyPackages.crate2nixInputs = crate2nixInputs;
+        # The clean-system package tests, including the Ubuntu AppArmor test.
+        legacyPackages.${distroOutput "distroTests"} = linuxDistro.tests;
         packages.default-crane = cranePackage;
         packages.emojiAssets = emojiAssets;
         packages.server = serverPackage;
@@ -878,8 +902,10 @@
             meta.description = "Nuschl in a terminal";
           };
         checks = {
-          ${distroOutput "distro-metadata"} = linuxDistro.metadataTests;
-          ${distroOutput "distro-source-assets"} = linuxDistro.assetBinding;
+          ${distroOutput "distro-debian"} = linuxDistro.tests.debian;
+          ${distroOutput "distro-ubuntu"} = linuxDistro.tests.ubuntu;
+          ${distroOutput "distro-arch"} = linuxDistro.tests.arch;
+          ${distroOutput "distro-aur"} = linuxDistro.aurTest;
           build = package;
           server-build = serverPackage;
           rtc-build = rtcPackage;
@@ -920,14 +946,22 @@
           '';
           # Unit tests of the repository's Python tools; cases that need private
           # release artifacts skip themselves.
-          python-unit = pkgs.runCommand "nuschl-python-unit" { nativeBuildInputs = [ pkgs.python3 pkgs.git ]; } ''
-            cd ${./.}
-            python3 tests/cross_distributions_test.py
-            python3 tests/ios_installer_test.py
-            python3 tests/ios_xip_test.py
-            python3 tests/windows_update_test.py
-            touch $out
-          '';
+          python-unit =
+            pkgs.runCommand "nuschl-python-unit"
+              {
+                nativeBuildInputs = [
+                  pkgs.python3
+                  pkgs.git
+                ];
+              }
+              ''
+                cd ${./.}
+                python3 tests/cross_distributions_test.py
+                python3 tests/ios_installer_test.py
+                python3 tests/ios_xip_test.py
+                python3 tests/windows_update_test.py
+                touch $out
+              '';
           # Every file under tests/ runs in a check or is listed in tests/local-only.txt (#313).
           tests-wired = pkgs.runCommand "nuschl-tests-wired" { } ''
             cd ${./.}
@@ -975,7 +1009,8 @@
               cp ${pkgs.writeText "nuschl-sandbox-audit.toml" "[yanked]\nenabled = false\n"} .cargo/audit.toml
             '';
           };
-        } // unitChecks
+        }
+        // unitChecks
         // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
           let
             homeManagerChecks = import ./nix/home-manager-test.nix {
