@@ -101,7 +101,10 @@ long-call validation (#147).
 session, and that session is the call. **Start camera** and **Share screen**
 add camera and screen tracks to it directly, and the channel's keys cover them
 (M1). The explicit call with link secret and card is the stock-Mumble path
-only (#141, #142, M1).
+only (#141, #142, M1). On stock servers every participant shares one link, so
+room slots apply per call (per-person links would post one message per
+participant); on Nuschl servers admission runs per participant through the
+session and identity, which allows per-person limits and removal.
 
 ## 4. Keys on stock servers
 
@@ -439,7 +442,8 @@ Murmur 1.4 and 1.5 with a stock Mumble client, and relay-only by packet capture.
   frames (§6). The only `unsafe` is the one `memmap2` mapping of the `memfd`,
   plus one reviewed bulk copy if atomic copies measure too slow.
 - On Nuschl servers, later: the voice channel's WebRTC session is the call,
-  and Start camera and Share screen add tracks to it (§3).
+  and Start camera and Share screen add tracks to it, with per-participant
+  admission, limits and removal (§3).
 - Camera quality and screen quality are user-selectable (§5).
 - Call model: one call per channel with camera and screen as sources (§2).
 - Call keys: per-publisher sender keys over the K1 exchange (§4); a call-wide
