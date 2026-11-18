@@ -111,7 +111,7 @@ def peers(args):
         thread.start()
     (directory / "ready.json").write_text(json.dumps({"pid": os.getpid(), "routes": routes}) + "\n")
     try:
-        assert state.stop.wait(720), "peer service exceeded its bounded VM lifetime"
+        assert state.stop.wait(args.lifetime), "peer service exceeded its bounded VM lifetime"
     finally:
         state.stop.set()
         state.release_dns.set()
@@ -995,6 +995,7 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     server = commands.add_parser("peers")
     server.add_argument("--directory", type=Path, required=True)
+    server.add_argument("--lifetime", type=int, required=True)
     native = commands.add_parser("native-peers")
     native.add_argument("--directory", type=Path, required=True)
     gui = commands.add_parser("desktop")
