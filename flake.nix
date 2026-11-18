@@ -305,9 +305,7 @@
               install -Dm644 ${./crates/protocol/proto/LICENSE.mumble} "$out/share/licenses/nuschl/Mumble-BSD"
               ${installNativeNotices}
             '';
-        # Licences, and on Linux the desktop binary under libexec (screen readers
-        # announce the executable's name, not ".nuschl-wrapped") with wrappers.
-        packageLayout = ''
+        licenseLayout = ''
           install -Dm644 ${./LICENSE} "$out/share/licenses/nuschl/EUPL-1.2"
           install -Dm644 ${./crates/protocol/proto/LICENSE.mumble} "$out/share/licenses/nuschl/Mumble-BSD"
           install -Dm644 ${./vendor/pulseaudio/LICENSE.md} "$out/share/licenses/nuschl/pulseaudio-MIT"
@@ -317,8 +315,10 @@
           install -Dm644 ${./vendor/ratatui-image/NOTICE} "$out/share/licenses/nuschl/ratatui-image-NOTICE"
           install -Dm644 ${./crates/math/fonts/GUST-FONT-LICENSE.txt} "$out/share/licenses/nuschl/NewCMMath-GUST-Font-License"
           ${installNativeNotices}
-        ''
-        + lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+        '';
+        # Licences, and on Linux the desktop binary under libexec (screen readers
+        # announce the executable's name, not ".nuschl-wrapped") with wrappers.
+        packageLayout = licenseLayout + lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
           runtimeFlags=(--prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath buildInputs}"
             --prefix PATH : "${
               lib.makeBinPath [
@@ -654,11 +654,146 @@
               } "$app/Contents/Resources/Nuschl.icns"
               rcodesign sign "$app"
             '';
+        # Portable Linux builds (#151, docs/distro-packaging.md): cargo-zigbuild
+        # links every crate and C dependency statically. The desktop and the
+        # media worker link glibc dynamically at the symbol floor below and the
+        # host's X11, xkbcommon, PipeWire and ALSA libraries by soname; GPUI
+        # opens Vulkan and Wayland at runtime. Everything else is static musl.
+        portableGlibc = "2.17";
+        portableBuilder = (crane.mkLib pkgs).overrideToolchain (
+          pkgs.rust-bin.stable.latest.default.override { targets = [ "x86_64-unknown-linux-musl" ]; }
+        );
+        portableBuild =
+          target: pname: args:
+          let
+            triple = lib.head (lib.splitString "." target);
+            vendor = portableBuilder.vendorCargoDeps { inherit src; };
+          in
+          buildCrossPackage portableBuilder (
+            crossCommon
+            // {
+              inherit pname;
+              cargoVendorDir = vendor;
+              nativeBuildInputs =
+                crossCommon.nativeBuildInputs
+                ++ [
+                  cargoZigbuild
+                  pkgs.zig
+                ]
+                ++ args.nativeBuildInputs or [ ];
+              CARGO_BUILD_TARGET = triple;
+              cargoBuildCommand = "cargoWithProfile zigbuild --target ${target}";
+              cargoCheckCommand = "true";
+              # Source paths in panic messages name no store path.
+              "CARGO_TARGET_${lib.toUpper (builtins.replaceStrings [ "-" ] [ "_" ] triple)}_RUSTFLAGS" =
+                "--remap-path-prefix=${vendor}=/cargo --remap-path-prefix=/nix/store=/store ${args.rustflags or ""}";
+              preBuild = ''
+                export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
+                export CARGO_ZIGBUILD_CACHE_DIR="$TMPDIR/zigbuild-cache"
+              '';
+              postInstall = ''
+                for program in "$out"/bin/*; do
+                  if grep -qaE '/nix/store/[0-9a-z]{32}-' "$program"; then
+                    echo "$program names a store path" >&2
+                    exit 1
+                  fi
+                done
+              ''
+              + args.postInstall;
+            }
+            // removeAttrs args [
+              "nativeBuildInputs"
+              "postInstall"
+              "rustflags"
+            ]
+          );
+        portableGnu = portableBuild "x86_64-unknown-linux-gnu.${portableGlibc}" "nuschl-linux-gnu" {
+          cargoExtraArgs = "--locked -p nuschl -p nuschl-media-worker";
+          # Link inputs by soname only. Their own glibc references resolve
+          # against the host's glibc at runtime.
+          rustflags = "-C link-arg=-Wl,--allow-shlib-undefined -L native=${pkgs.libxcb}/lib -L native=${pkgs.libxkbcommon}/lib";
+          # Build scripts query fontconfig and freetype; --as-needed drops them.
+          buildInputs = [
+            pkgs.alsa-lib
+            pkgs.pipewire
+            pkgs.libxkbcommon
+            pkgs.libxcb
+            pkgs.fontconfig
+            pkgs.freetype
+          ];
+          nativeBuildInputs = [ pkgs.clang ];
+          LIBCLANG_PATH = common.LIBCLANG_PATH;
+          postInstall = ''
+            for program in "$out"/bin/*; do
+              for library in $(${pkgs.binutils}/bin/readelf -d "$program" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p'); do
+                case "$library" in
+                  libc.so.6 | libm.so.6 | libdl.so.2 | libpthread.so.0 | librt.so.1 | ld-linux-x86-64.so.2) ;;
+                  libxcb.so.1 | libxkbcommon.so.0 | libxkbcommon-x11.so.0 | libpipewire-0.3.so.0 | libasound.so.2) ;;
+                  *) echo "$program needs $library" >&2; exit 1 ;;
+                esac
+              done
+              if ! ${pkgs.binutils}/bin/readelf -l "$program" | grep -q 'interpreter: /lib64/ld-linux-x86-64.so.2]'; then
+                echo "$program has another interpreter" >&2
+                exit 1
+              fi
+              newest=$(${pkgs.binutils}/bin/objdump -T "$program" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+              if [ "$(printf '%s\n' "$newest" GLIBC_${portableGlibc} | sort -V | tail -1)" != GLIBC_${portableGlibc} ]; then
+                echo "$program needs $newest" >&2
+                exit 1
+              fi
+            done
+          '';
+        };
+        portableMusl =
+          pname: cargoExtraArgs:
+          portableBuild "x86_64-unknown-linux-musl" pname {
+            inherit cargoExtraArgs;
+            postInstall = ''
+              for program in "$out"/bin/*; do
+                if ${pkgs.binutils}/bin/readelf -ld "$program" | grep -qE 'INTERP|NEEDED'; then
+                  echo "$program is not static" >&2
+                  exit 1
+                fi
+              done
+            '';
+          };
+        portableHeadless = portableMusl "nuschl-linux-musl" (
+          "--locked -p nuschld -p nuschl-cli -p nuschl-tui -p nuschl-musicbot -p nuschl-musicbot-codec-worker"
+          + " -p nuschl-content-worker -p nuschl-crypto-worker -p nuschl-math-worker -p nuschl-storage-worker -p nuschl-transfer-worker"
+        );
+        portableVerifier =
+          feature:
+          portableMusl "nuschl-linux-musl-verify-${feature}" "--locked -p nuschl-update-worker --no-default-features --features nuschl-update-worker/${feature} --bin nuschl-update-verify-${feature}";
+        # The desktop's layout from docs/distro-packaging.md: the programs
+        # side by side in lib/nuschl, with the clients linked from bin.
+        linuxPortable = pkgs.runCommand "nuschl-linux-portable-${version}" { } ''
+          mkdir -p "$out/lib/nuschl" "$out/bin"
+          cp ${portableGnu}/bin/nuschl ${portableGnu}/bin/nuschl-media-worker "$out/lib/nuschl/"
+          for program in nuschl-cli nuschl-tui nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-storage-worker nuschl-transfer-worker; do
+            cp ${portableHeadless}/bin/$program "$out/lib/nuschl/"
+          done
+          cp ${portableVerifier "ed25519"}/bin/* ${portableVerifier "mldsa44"}/bin/* "$out/lib/nuschl/"
+          for program in nuschl nuschl-cli nuschl-tui; do
+            ln -s ../lib/nuschl/$program "$out/bin/$program"
+          done
+          cp -R --no-preserve=mode ${(import ./nix/desktop-files.nix { inherit pkgs; }).linux}/share "$out/"
+          ${licenseLayout}
+        '';
+        serverStatic = pkgs.runCommand "nuschld-static-${version}" { } ''
+          install -Dm755 -t "$out/bin" ${portableHeadless}/bin/nuschld ${portableHeadless}/bin/nuschl-storage-worker
+          install -Dm755 ${portableHeadless}/bin/nuschl-musicbot "$out/bin/nuschl-musicbot"
+          install -Dm755 -t "$out/libexec/nuschl-musicbot" ${portableHeadless}/bin/nuschl-musicbot-codec-worker ${portableHeadless}/bin/nuschl-content-worker
+          install -Dm644 ${./LICENSE} "$out/share/licenses/nuschl/EUPL-1.2"
+          install -Dm644 ${./crates/protocol/proto/LICENSE.mumble} "$out/share/licenses/nuschl/Mumble-BSD"
+          ${installNativeNotices}
+        '';
       in
       {
         packages.default = package;
         packages.${distroOutput "linux-native-stage"} = linuxDistro.nativeStage;
         packages.${distroOutput "deb"} = linuxDistro.deb;
+        packages.${distroOutput "linux-portable"} = linuxPortable;
+        packages.${distroOutput "server-static"} = serverStatic;
         packages.${distroOutput "arch-bin"} = linuxDistro.archBin;
         packages.${distroOutput "deb-source"} = linuxDistro.debSource;
         packages.${distroOutput "deb-source-check"} = linuxDistro.debSourceCheck;
