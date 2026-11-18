@@ -138,6 +138,7 @@ in
             creations_per_hour = limit 20 "Room creations per client address (IPv6 per /64) and hour.";
             receiver_bitrate = limit 25000000 "Forwarded media per receiver, bits per second.";
             room_bitrate = limit 150000000 "Forwarded media per room, bits per second.";
+            upload_bitrate = limit 1000000000 "The host's upload, bits per second; forwarding uses at most 70 % of it.";
             max_connections = limit 4096 "Signalling connections at once.";
             connections_per_address = limit 32 "Signalling connections at once per client address (IPv6 per /64).";
           };

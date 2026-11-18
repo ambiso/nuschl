@@ -48,7 +48,8 @@ impl Drop for Sfu {
     }
 }
 
-fn start() -> Sfu {
+/// The SFU with `settings` added to its configuration.
+fn start(settings: &str) -> Sfu {
     let directory = nuschl_testkit::temp_dir();
     let secret = directory.path().join("turn-secret");
     std::fs::write(&secret, "test-secret\n").expect("secret");
@@ -61,6 +62,7 @@ fn start() -> Sfu {
             media_listen = "127.0.0.1:0"
             media_addresses = ["127.0.0.1"]
             max_peers_per_room = 6
+            {settings}
             [turn]
             urls = ["turn:turn.test:3478?transport=udp"]
             secret_file = "{}"
@@ -514,7 +516,7 @@ fn assert_forwarded(receiver: &Peer, publisher: &Peer, codec: Codec) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forwards_media_and_key_messages_unchanged() {
-    let sfu = start();
+    let sfu = start("");
     let url = sfu.url.as_str();
 
     // Refusals before the room exists, and creating it without P.
@@ -631,7 +633,7 @@ async fn forwards_media_and_key_messages_unchanged() {
 /// frames leave no gaps in its sequence numbers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn each_receiver_gets_the_layers_of_its_tier() {
-    let sfu = start();
+    let sfu = start("");
     let url = sfu.url.as_str();
     let (mut host, _) = join(url, &ADMIT, true, true).await;
     let (mut low, _) = join(url, &ADMIT, false, false).await;
@@ -676,4 +678,38 @@ async fn each_receiver_gets_the_layers_of_its_tier() {
     );
     let first_skip = got.windows(2).find(|w| w[1] > w[0] + 1).expect("a skip")[0];
     assert_eq!(first_skip % 4, 0, "{got:?}");
+}
+
+/// A receiver whose budget covers the T0 and T1 frames but not the T2 frames
+/// steps down to the 15 fps decode target.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_receiver_budget_limits_its_layers() {
+    // T0 and T1 together: 15 frames of 617 bytes a second, 74 kbit/s; with
+    // the step-up allowance 96 kbit/s. All three: 148 kbit/s.
+    let sfu = start("receiver_bitrate = 110000");
+    let url = sfu.url.as_str();
+    let (mut host, _) = join(url, &ADMIT, true, true).await;
+    let (mut receiver, _) = join(url, &ADMIT, false, false).await;
+    host.start_publishing(Codec::Av1);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        for peer in [&mut host, &mut receiver] {
+            peer.step();
+        }
+        host.send_frame();
+        let got = frames(&receiver, &host);
+        let settled: Vec<u64> = got
+            .iter()
+            .rev()
+            .take_while(|n| *n % 2 == 0)
+            .copied()
+            .collect();
+        if settled.len() >= 20 {
+            // The T0 and T1 frames, each one.
+            assert!(settled.windows(2).all(|w| w[0] == w[1] + 2), "{got:?}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "{got:?}");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
 }
