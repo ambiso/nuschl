@@ -1,13 +1,13 @@
 {
-  "measured": "claude/benchmarks 7a316792 (on ci/check-trial a866cf2d), 5 one-core runs per test",
+  "measured": "instructions: claude/benchmarks on main 5a4a600f (opus-rs 1666bbc5); one_core: claude/benchmarks 7a316792 (on a866cf2d, opus-pure), 5 runs per test",
   "instructions": {
     "cpu": "AMD Ryzen 9 5900X 12-Core Processor",
     "per_audio_second": {
-      "capture_chain": 204741519,
-      "opus_encode": 41837266,
-      "total": 246578786
+      "capture_chain": 202481953,
+      "opus_encode": 113501224,
+      "total": 315983177
     },
-    "echo_reduction_db": 29.2
+    "echo_reduction_db": 26.03
   },
   "one_core": {
     "desktop-recovery": {
