@@ -171,8 +171,9 @@ deny = [
     "nuschl-update-worker",
   ], reason = "The one first-party crate with unsafe code (Win32 AppContainer launch) runs only as the workers' own launch stage" },
   { name = "nuschl-stream", wrappers = [
+    "nuschl",
     "nuschl-crypto-worker",
-  ], reason = "Call key agreement belongs to the crypto worker; driver, desktop and browser callers wait for their SECURITY.md rows (docs/video-plan.md §4)" },
+  ], reason = "Call key agreement belongs to the crypto worker; the desktop parses call links and derives the lease keys (SECURITY.md); driver and browser callers wait for their SECURITY.md rows (docs/video-plan.md §4)" },
   { name = "aes-gcm", wrappers = [
     "dimpl",
     "noise-rust-crypto",
