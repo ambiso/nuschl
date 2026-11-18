@@ -9,7 +9,9 @@ use nnnoiseless::DenoiseState;
 use nuschl_core::audio::{AudioSettings, TransmitMode};
 use sonora::{
     AudioProcessing, Config, StreamConfig,
-    config::{AdaptiveDigital, EchoCanceller, GainController2, HighPassFilter},
+    config::{
+        AdaptiveDigital, EchoCanceller, EchoCanceller3Config, GainController2, HighPassFilter,
+    },
 };
 use sonora_agc2::vad_wrapper::VoiceActivityDetectorWrapper;
 
@@ -57,6 +59,25 @@ pub struct CapturePipeline {
     render_split: [[f32; FRAME]; 2],
 }
 
+/// AEC3 models each speaker from the first frame in which the reference
+/// channels differ. Upstream waits for 2 s of differing frames and until then
+/// restarts its linear filter on every differing frame, so sound whose
+/// channels fall silent together now and then (music, games) only ever reaches
+/// the suppressor. With two speaker models the delay is estimated on the
+/// channels' downmix, which holds the echo of both speakers.
+///
+/// The delay is the matched filter's highest peak. AEC3's pre-echo search
+/// moves the estimate ahead of that peak on harmonic sound such as music, and
+/// each move restarts the linear filter.
+fn canceller_config() -> EchoCanceller3Config {
+    let mut config = EchoCanceller3Config::default();
+    config.multi_channel.stereo_detection_hysteresis_seconds = 0.;
+    config.delay.render_alignment_mixing.downmix = true;
+    config.delay.render_alignment_mixing.adaptive_selection = false;
+    config.delay.detect_pre_echo = false;
+    config
+}
+
 fn stream() -> StreamConfig {
     StreamConfig::new(RATE, 1)
 }
@@ -82,8 +103,8 @@ impl CapturePipeline {
     }
 
     /// `reference_channels` (1 or 2): the speakers' channels as recorded.
-    /// AEC3 treats them as mono until they actually differ (stereo music,
-    /// games), then models each speaker's path separately.
+    /// AEC3 treats them as mono until they differ (stereo music, games), then
+    /// models each speaker's path separately.
     pub fn with_reference(
         settings: &AudioSettings,
         echo_cancellation: bool,
@@ -98,6 +119,7 @@ impl CapturePipeline {
             })
             .capture_config(stream())
             .render_config(StreamConfig::new(RATE, reference_channels as u16))
+            .echo_canceller3_config(canceller_config())
             .echo_detector(echo_cancellation)
             .build();
         Self {
@@ -693,6 +715,50 @@ mod tests {
         assert!(
             attenuation > 15.,
             "AEC3 attenuated echo by only {attenuation:.1} dB"
+        );
+    }
+
+    /// Stereo music whose channels take turns, each a melody of harmonic
+    /// notes, heard by one microphone 10 ms later at about -36 dB.
+    #[test]
+    fn the_echo_of_music_whose_channels_take_turns_is_modelled() {
+        let settings = AudioSettings {
+            noise_suppression: false,
+            automatic_gain: false,
+            transmit: TransmitMode::Continuous,
+            ..Default::default()
+        };
+        let mut chain = CapturePipeline::with_reference(&settings, true, 2);
+        let tau = std::f32::consts::TAU;
+        let channels = |t: f32| {
+            let note = |seed: u32| {
+                let step = (t / 0.12) as u32;
+                let pitch = 110. * 2_f32.powf((step.wrapping_mul(seed) % 24) as f32 / 12.);
+                (1..=3)
+                    .map(|k| (tau * k as f32 * pitch * t).sin() / k as f32)
+                    .sum::<f32>()
+            };
+            (
+                0.17 * note(7) * (tau * 2.3 * t).sin().max(0.),
+                0.17 * note(11) * (tau * 1.7 * t + 1.).sin().max(0.),
+            )
+        };
+        for index in 0..1000 {
+            let mut reference = [0.; 2 * FRAME];
+            let mut mic = [0.; FRAME];
+            for sample in 0..FRAME {
+                let t = (index * FRAME + sample) as f32 / RATE as f32;
+                (reference[2 * sample], reference[2 * sample + 1]) = channels(t);
+                let (left, right) = channels((t - 0.01).max(0.));
+                mic[sample] = 0.015 * (left + right);
+            }
+            chain.render(&reference);
+            chain.process(&mut mic, false, false);
+        }
+        let erle = chain.echo_metrics().erle_db.unwrap_or(0.);
+        assert!(
+            erle >= 10.,
+            "the canceller modelled {erle:.1} dB of the echo"
         );
     }
 
