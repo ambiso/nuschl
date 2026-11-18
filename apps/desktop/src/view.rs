@@ -2020,27 +2020,23 @@ fn conversation_header(
                     .own_call()
                     .is_none_or(|call| call.server != server.id),
             |controls| {
+                let start = |id, icon, label, cx: &mut Context<Desktop>| {
+                    icon_button(
+                        id,
+                        icon,
+                        label,
+                        TEXT_MUTED,
+                        None,
+                        move |this, _, cx| {
+                            this.start_call(index, cx);
+                            cx.notify();
+                        },
+                        cx,
+                    )
+                };
                 controls
-                    .child(styled_button(
-                        "start-call",
-                        "Start call",
-                        Tone::Secondary,
-                        move |this, _, cx| {
-                            this.start_call(index, cx);
-                            cx.notify();
-                        },
-                        cx,
-                    ))
-                    .child(styled_button(
-                        "share-screen",
-                        "Share screen",
-                        Tone::Secondary,
-                        move |this, _, cx| {
-                            this.start_call(index, cx);
-                            cx.notify();
-                        },
-                        cx,
-                    ))
+                    .child(start("start-call", "video", "Start call", cx))
+                    .child(start("share-screen", "screen", "Share screen", cx))
             },
         )
         .when(!connected, |controls| {
@@ -3326,7 +3322,7 @@ fn call_card(
     Some(banner(
         "call-card",
         ACCENT,
-        "link",
+        "video",
         text,
         Some(actions.into_any_element()),
     ))
