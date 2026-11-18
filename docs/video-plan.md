@@ -207,8 +207,17 @@ encoder offers them, spatial layers.
 - Key-frame requests: one per receiver and source per 2 s, coalesced per
   source; native senders repair loss with intra refresh.
 - Per room: ≤150 Mbit/s egress, ≤25 Mbit/s per receiver, ≤70 % of the host's
-  upload. A full budget is shared max-min by dropping layers; a join fails only
-  when the base layers do not fit.
+  upload, all lowered by the traffic budget below. A full budget is shared
+  max-min by dropping layers; a join fails only when the base layers do not
+  fit.
+- Traffic budget (Owner, #443): each SFU has a configurable egress budget per
+  period (module options `trafficBudget` and `period`; the project uses
+  Hetzner's 20 TB a month). The paced share is the budget times the elapsed
+  fraction of the period. Below it the normal caps apply, so long bursts run
+  at full quality; above it the SFU lowers the room and receiver caps step
+  by step, tiers down, then base layers only; at the budget it refuses new
+  video. The counter lives in the SFU's state directory and survives
+  restarts.
 
 ### 5.3 Adaptation
 
@@ -388,8 +397,8 @@ encoder offers them, spatial layers.
 
 ## 10. Slices
 
-Phase 1: S0f, K1 → K2 → W1 → B1 → T1, with E1 (the long pole), Q1, D1, D2 and
-I1 alongside.
+Phase 1: S0f, K1 → K2 → W1 → B1 → T1, with E1 (the long pole), E2, Q1, D1,
+D2 and I1 alongside.
 
 | ID | Goal | Depends on | Size | Issue |
 | --- | --- | --- | --- | --- |
@@ -399,6 +408,7 @@ I1 alongside.
 | K2 | `crates/stream-wasm` for the browser stream worker | K1 | S | #413 |
 | Q1 | `crates/stream-quality`: requests, reports, tier ladders, layer choice, budgets | S0 | M | #414 |
 | E1 | Companion SFU: rooms with many publishers, admission, per-receiver layers, key relay, TURN credentials, NixOS unit | S0 | L | #422 |
+| E2 | Traffic budget per period with paced throttling (§5.2) | E1, Q1 | S–M | #443 |
 | W1 | Call page: subscribe, decrypt, grid and large view, roster | K2, E1 | M | #416 |
 | B1 | Publishing from the page for everyone with the link: camera and screen, key grants and rekeys, Stop | W1 | M | #417 |
 | D1 | Desktop: Start call and Share screen, S and P, the card, the lease, Rotate link | K1, #93 | S–M | #423 |
