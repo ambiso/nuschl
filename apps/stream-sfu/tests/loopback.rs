@@ -217,6 +217,7 @@ async fn join(url: &str, admit: &[u8; 32], host: bool, create: bool) -> (Peer, V
     let mut message = json!({
         "type": "join",
         "room": hex::encode(ROOM),
+        "verifier": hex::encode(<sha2::Sha256 as sha2::Digest>::digest(HOST)),
         "proof": prove(admit, b"nuschl/stream/v2 sfu admit", &nonce),
     });
     if host {

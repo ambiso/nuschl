@@ -9,7 +9,7 @@
 //!
 //! ```text
 //! SFU → peer  hello {nonce}
-//! peer → SFU  join {room, proof, host_proof?, create?: {admit_key, host_key}}
+//! peer → SFU  join {room, verifier, proof, host_proof?, create?: {admit_key, host_key}}
 //! SFU → peer  welcome {peer, role, peers: [{id, role}], turn?: {urls, username, credential}}
 //!             | error {reason}
 //! peer → SFU  offer {sdp}                  publish connection
@@ -19,6 +19,30 @@
 //! peer → SFU  key {to, data}               relayed as key {from, data}
 //! peer → SFU  remove {peer} | end          hosts only
 //! SFU → peer  joined {peer, role} | left {peer}
+//! ```
+//!
+//! **Keys and proofs.** S and P are the link's two 32-byte secrets (`crates/stream`):
+//!
+//! ```text
+//! room       = HKDF-Expand(HKDF-Extract("nuschl/stream/v2", S), "nuschl/stream/v2 stream id", 16)
+//! admit_key  = HKDF-Expand(HKDF-Extract("nuschl/stream/v2", S), "nuschl/stream/v2 admit", 32)
+//! host_key   = HKDF-Expand(HKDF-Extract("nuschl/stream/v2", P), "nuschl/stream/v2 host", 32)
+//! verifier   = SHA-256(host_key)                                      // V
+//! proof      = HMAC-SHA256(admit_key, "nuschl/stream/v2 sfu admit" || nonce)
+//! host_proof = HMAC-SHA256(host_key,  "nuschl/stream/v2 sfu host"  || nonce)
+//! ```
+//!
+//! HKDF-Extract's first argument is the salt; `nonce` is the 32 bytes of `hello`.
+//! Every link carries V, in the same unpadded base64url as S and P:
+//! `/watch#v=1&k=<S>&h=<V>` and `/call#v=1&k=<S>&h=<V>&p=<P>`. A room is named
+//! by `(room, verifier)`. `create` succeeds only with a `host_key` that hashes
+//! to `verifier`, so a holder of S alone cannot create the room a link names.
+//!
+//! ```text
+//! P        = 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+//! host_key = 714cce84239301bcc3f4fcaaf0d59ca0d242f7b0bc9cf276ab9a3568bf9a873f
+//! V        = 078384c474855fcaa97ecbb155d67f03add025efa0c126d8a23c30e71d6c4c37
+//! h=         B4OExHSFX8qpfsuxVdZ_A63QJe-gwSbYojww5x1sTDc
 //! ```
 
 use crate::rooms::{PeerId, Role};
@@ -34,6 +58,7 @@ pub const MAX_KEY_MESSAGE: usize = 16 * 1024;
 pub enum ClientMessage {
     Join {
         room: String,
+        verifier: String,
         proof: String,
         #[serde(default)]
         host_proof: Option<String>,
@@ -141,7 +166,7 @@ mod tests {
     #[test]
     fn wire_format() {
         let join: ClientMessage = serde_json::from_str(
-            r#"{"type":"join","room":"00","proof":"11","create":{"admit_key":"22","host_key":"33"}}"#,
+            r#"{"type":"join","room":"00","verifier":"44","proof":"11","create":{"admit_key":"22","host_key":"33"}}"#,
         )
         .expect("join");
         assert!(matches!(

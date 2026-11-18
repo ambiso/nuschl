@@ -134,6 +134,7 @@ fn spawn<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
 fn join(message: ClientMessage) -> Option<Join> {
     let ClientMessage::Join {
         room,
+        verifier,
         proof,
         host_proof,
         create,
@@ -142,7 +143,7 @@ fn join(message: ClientMessage) -> Option<Join> {
         return None;
     };
     Some(Join {
-        room: from_hex(&room)?,
+        room: (from_hex(&room)?, from_hex(&verifier)?),
         proof: from_hex(&proof)?,
         host_proof: match host_proof {
             Some(proof) => Some(from_hex(&proof)?),

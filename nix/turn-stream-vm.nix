@@ -227,7 +227,8 @@ pkgs.testers.runNixOSTest {
           with connect("ws://stream.test/sfu") as ws:
               nonce = bytes.fromhex(json.loads(ws.recv())["nonce"])
               mac = lambda key, label: hmac.new(key, label + nonce, hashlib.sha256).hexdigest()
-              message = {"type": "join", "room": "03" * 16, "proof": mac(admit, b"nuschl/stream/v2 sfu admit")}
+              message = {"type": "join", "room": "03" * 16, "verifier": hashlib.sha256(bytes([2]) * 32).hexdigest(),
+                         "proof": mac(admit, b"nuschl/stream/v2 sfu admit")}
               if host:
                   message["host_proof"] = mac(host, b"nuschl/stream/v2 sfu host")
               if create:

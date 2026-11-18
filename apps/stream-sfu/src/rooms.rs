@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 //! Rooms and admission (docs/video-plan.md §4). A room is named by the link's
-//! `stream_id` and holds two keys its creator hands over: `admit_key`, which
-//! every link holder can derive from S, and `host_key`, which only holders of P
-//! can derive. A proof of `admit_key` lets a peer publish its own sources and
+//! `stream_id` and its host verifier `V = SHA-256(host_key)`, and holds two keys
+//! its creator hands over: `admit_key`, which every link holder can derive from
+//! S, and `host_key`, which only holders of P can derive. Creating a room needs
+//! a `host_key` that hashes to V, so a link names exactly one room. A proof of `admit_key` lets a peer publish its own sources and
 //! subscribe; a proof of `host_key` also lets it create the room, remove peers
 //! and end the room. A peer proves a key with an HMAC over the nonce the SFU
 //! sent on its connection, so a proof cannot be replayed on another connection.
@@ -19,7 +20,8 @@ use std::{
 };
 
 pub type PeerId = u64;
-pub type RoomId = [u8; 16];
+/// `(stream_id, V)`.
+pub type RoomId = ([u8; 16], [u8; 32]);
 pub type Key = [u8; 32];
 pub type Nonce = [u8; 32];
 
@@ -79,6 +81,12 @@ fn mac(key: &Key, label: &[u8], nonce: &Nonce) -> hmac::Hmac<sha2::Sha256> {
     mac.update(label);
     mac.update(nonce);
     mac
+}
+
+/// The host verifier the link carries: `V = SHA-256(host_key)`.
+pub fn verifier(host_key: &Key) -> [u8; 32] {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(host_key).into()
 }
 
 fn verify(key: &Key, label: &[u8], nonce: &Nonce, proof: &[u8; 32]) -> bool {
@@ -191,7 +199,8 @@ impl Rooms {
                 return Err(Refusal::Proof);
             }
             (Some(room), _) => (room.admit_key, room.host_key),
-            (None, Some(keys)) => keys,
+            (None, Some(keys)) if verifier(&keys.1) == join.room.1 => keys,
+            (None, Some(_)) => return Err(Refusal::Proof),
             (None, None) => return Err(Refusal::NoRoom),
         };
         if !verify(&admit_key, ADMIT_LABEL, nonce, &join.proof) {
@@ -320,7 +329,8 @@ mod tests {
 
     const ADMIT: Key = [1; 32];
     const HOST: Key = [2; 32];
-    const ROOM: RoomId = [7; 16];
+    static ROOM: std::sync::LazyLock<RoomId> =
+        std::sync::LazyLock::new(|| ([7; 16], verifier(&HOST)));
 
     fn rooms() -> Rooms {
         Rooms::new(Limits {
@@ -334,7 +344,7 @@ mod tests {
 
     fn join(nonce: &Nonce, host: bool, create: bool) -> Join {
         Join {
-            room: ROOM,
+            room: *ROOM,
             proof: prove(&ADMIT, ADMIT_LABEL, nonce),
             host_proof: host.then(|| prove(&HOST, HOST_LABEL, nonce)),
             create: create.then_some((ADMIT, HOST)),
@@ -391,6 +401,30 @@ mod tests {
         assert_eq!(
             rooms.join(4, &squat, &n, client(), now),
             Err(Refusal::Proof)
+        );
+        // Keys of its own make another room: the link's V names the first one.
+        squat.room.1 = verifier(&[4; 32]);
+        assert_eq!(rooms.join(4, &squat, &n, client(), now), Ok(Role::Host));
+        assert_eq!(rooms.get(&ROOM).expect("room").peers.len(), 3);
+        // Creating needs a host_key that hashes to V.
+        let mut empty = self::rooms();
+        let mut wrong_v = join(&n, true, true);
+        wrong_v.room.1 = verifier(&[5; 32]);
+        assert_eq!(
+            empty.join(5, &wrong_v, &n, client(), now),
+            Err(Refusal::Proof)
+        );
+    }
+
+    #[test]
+    fn verifier_matches_the_link_vector() {
+        // host_key from P = 00 01 … 1f (protocol.rs).
+        let host_key =
+            hex::decode("714cce84239301bcc3f4fcaaf0d59ca0d242f7b0bc9cf276ab9a3568bf9a873f")
+                .expect("hex");
+        assert_eq!(
+            hex::encode(verifier(&host_key.try_into().expect("32 bytes"))),
+            "078384c474855fcaa97ecbb155d67f03add025efa0c126d8a23c30e71d6c4c37"
         );
     }
 
@@ -461,7 +495,7 @@ mod tests {
         });
         let n = [9; 32];
         let create = |room: u8| Join {
-            room: [room; 16],
+            room: ([room; 16], verifier(&HOST)),
             ..join(&n, true, true)
         };
         let ip = |text: &str| text.parse::<IpAddr>().expect("ip");
