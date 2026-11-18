@@ -11,10 +11,16 @@
 //! waits and exits with the worker's exit code, so the supervisor's process
 //! handle, pipes and kill-on-close job keep working as before.
 //!
+//! The launch stage starts outside the supervisor's job, which can assign it
+//! only once it runs. It therefore reads [`IN_JOB`] from its standard input
+//! ([`await_job`]) before it sets anything up: the supervisor writes that
+//! byte after the assignment, so the AppContainer setup and the worker run
+//! inside the supervisor's job.
+//!
 //! Everything here is platform-neutral (the policy's encoding and Windows
 //! command-line quoting) so that it is tested on every platform.
 
-use std::{ffi::OsString, path::PathBuf};
+use std::{ffi::OsString, io, path::PathBuf};
 
 /// First argument of a worker started through its launch stage.
 pub const LAUNCH_FLAG: &str = "--nuschl-sandbox";
@@ -22,6 +28,25 @@ pub const LAUNCH_FLAG: &str = "--nuschl-sandbox";
 /// Appended to the worker's arguments when [`Policy::file`] is set: the
 /// inherited handle of that file, opened read-only by the launch stage.
 pub const FILE_HANDLE_FLAG: &str = "--file-handle";
+
+/// The byte the supervisor writes to a launch stage's standard input once it
+/// has assigned the launch stage to its job.
+pub const IN_JOB: u8 = 0x4a;
+
+/// Read exactly one byte from `input`, the launch stage's standard input, and
+/// accept only [`IN_JOB`]. Everything after it belongs to the worker.
+pub fn await_job(mut input: impl io::Read) -> io::Result<()> {
+    let mut byte = [0];
+    input.read_exact(&mut byte)?;
+    if byte == [IN_JOB] {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the supervisor did not confirm its job",
+        ))
+    }
+}
 
 /// A worker's AppContainer and job limits.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -221,6 +246,15 @@ mod tests {
         assert_eq!(parsed, policy);
         // The worker's own arguments, even a second `--`, are passed on as they are.
         assert_eq!(worker, ["--file", "x", "--"]);
+    }
+
+    #[test]
+    fn the_launch_stage_takes_only_the_job_byte_from_the_input() {
+        let mut input = &[IN_JOB, 1, 2][..];
+        await_job(&mut input).unwrap();
+        assert_eq!(input, [1, 2]);
+        assert!(await_job(&[][..]).is_err());
+        assert!(await_job(&[0, IN_JOB][..]).is_err());
     }
 
     #[test]

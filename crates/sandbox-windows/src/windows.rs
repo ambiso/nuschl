@@ -12,11 +12,11 @@ use std::{
     os::windows::{
         ffi::OsStrExt as _,
         fs::OpenOptionsExt as _,
-        io::{AsRawHandle as _, FromRawHandle as _},
+        io::{AsHandle as _, AsRawHandle as _, FromRawHandle as _},
     },
 };
 
-use nuschl_sandbox::windows_policy::Policy;
+use nuschl_sandbox::windows_policy::{self, Policy};
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
 
 use crate::{
@@ -65,11 +65,23 @@ pub fn launch_if_requested() {
         Ok(Some(parsed)) => parsed,
         Err(error) => fail(&error),
     };
+    // Only once the supervisor has put this process in its job; the worker
+    // created below then starts in that job too.
+    if let Err(error) = await_supervisor_job() {
+        fail(&format!("standard input: {error}"));
+    }
     match run(&policy, &arguments) {
         // Exit codes are 32 bits on Windows; `exit` passes the bits on.
         Ok(code) => std::process::exit(code.cast_signed()),
         Err(error) => fail(&error.to_string()),
     }
+}
+
+/// A non-inheritable duplicate of standard input, read unbuffered, so the
+/// worker receives every byte after [`windows_policy::IN_JOB`].
+fn await_supervisor_job() -> io::Result<()> {
+    let input = File::from(io::stdin().as_handle().try_clone_to_owned()?);
+    windows_policy::await_job(input)
 }
 
 fn fail(message: &str) -> ! {

@@ -17,19 +17,23 @@ console window, and inside the supervisor's kill-on-close job (`nuschl_sandbox::
 before). The first thing every worker's `main` does is
 `nuschl_sandbox_windows::launch_if_requested()`. With the flag, that code:
 
-1. creates the AppContainer profile `NAME`, or derives its SID if it exists;
-2. grants the container read and execute on its own executable, and on each
+1. reads one byte from standard input, through an unbuffered duplicate of the
+   handle, and goes on only if it is `IN_JOB`. The supervisor writes it once it
+   has assigned the launch stage to its job, so everything below, the worker
+   included, runs inside that job;
+2. creates the AppContainer profile `NAME`, or derives its SID if it exists;
+3. grants the container read and execute on its own executable, and on each
    `--writable` directory the right to list it and add and delete entries in it
    plus Modify (inherit-only) on everything inside, leaving every other entry
    alone and writing nothing if the access is already there. Each path is opened
    once, without following junctions or links, and refused if it is one; the
    DACL is read and written through that handle, and checked after writing;
-3. opens `--read-file` read-only, if given, and appends `--file-handle N`; the
+4. opens `--read-file` read-only, if given, and appends `--file-handle N`; the
    worker takes over a duplicate of that handle (`inherited_file`);
-4. creates a job: kill on close, one active process, die on unhandled exception,
+5. creates a job: kill on close, one active process, die on unhandled exception,
    the committed-memory limit (`--memory`), the CPU-time limit (`--cpu`) and the UI
    restrictions listed below;
-5. creates the same executable, suspended, with only the worker arguments, in the
+6. creates the same executable, suspended, with only the worker arguments, in the
    AppContainer with the policy's capabilities, through an attribute list with
    `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`, `PROC_THREAD_ATTRIBUTE_JOB_LIST`
    (so it is created inside its job, never outside it),
@@ -39,7 +43,7 @@ before). The first thing every worker's `main` does is
    `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY` and, for a less privileged
    AppContainer (`--less-privileged`),
    `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY`; resumes it;
-6. waits, and exits with the worker's exit code.
+7. waits, and exits with the worker's exit code.
 
 The launch stage reads no untrusted input: the worker's pipes go straight to the
 confined process. When the supervisor kills it (a timeout, a mute change, Nuschl

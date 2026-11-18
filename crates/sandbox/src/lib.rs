@@ -15,7 +15,10 @@
 
 use std::{ffi::OsString, io, path::Path, process::Stdio};
 
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::{
+    io::AsyncWriteExt as _,
+    process::{Child, ChildStdin, ChildStdout, Command},
+};
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -191,6 +194,8 @@ pub struct Containment {
 
 /// Contain a worker started from [`command`] by other means than [`spawn`]
 /// (the Windows confinement check, which keeps the worker's standard error).
+/// The caller then writes [`windows_policy::IN_JOB`] to a Windows launch
+/// stage's standard input.
 pub fn contain(child: &Child) -> io::Result<Containment> {
     #[cfg(windows)]
     {
@@ -241,6 +246,11 @@ pub async fn spawn_receipted(executable: &Path, role: Role<'_>) -> Result<Worker
 }
 
 async fn spawn_with_stderr(mut command: Command, stderr: Stdio) -> Result<Worker, Error> {
+    // A Windows launch stage waits for this confirmation before it sets up
+    // its worker, so the worker starts inside the job `contain` assigns.
+    let launch_stage = cfg!(windows)
+        && command.as_std().get_args().next()
+            == Some(std::ffi::OsStr::new(windows_policy::LAUNCH_FLAG));
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -254,6 +264,13 @@ async fn spawn_with_stderr(mut command: Command, stderr: Stdio) -> Result<Worker
                 _ => Err(io::Error::other("the worker's pipes are missing")),
             },
         );
+    let parts = match parts {
+        Ok((mut input, output, containment)) if launch_stage => input
+            .write_all(&[windows_policy::IN_JOB])
+            .await
+            .map(|()| (input, output, containment)),
+        parts => parts,
+    };
     match parts {
         Ok((input, output, containment)) => Ok(Worker {
             child,
