@@ -202,8 +202,9 @@ tokens are not logged, logs in to a stock Murmur through the relay with the prob
 headless Chromium (`tests/web_channel_dblclick.browser.mjs`: a mouse or pen
 double-click on a channel joins its voice with the microphone closed, and a touch
 double-tap opens the channel's chat), reloads it with two saved servers
-(`tests/web_autoconnect.browser.mjs`: Murmur connects without a click, the refusing
-service is tried once, no microphone is requested), and checks that other origins,
+(`tests/web_autoconnect.browser.mjs`: Murmur connects without a click and rejoins
+the channel last joined, the refusing service is tried once, no microphone is
+requested), and checks that other origins,
 other ports, loopback and private addresses and a service that is not Mumble are
 refused.
 
@@ -293,7 +294,9 @@ DOM, so a Web Worker can host it.
   "Join in the browser" fills in the server; with a name (`u=`) it connects at once.
   Without a share link, the page connects every saved server when it loads, as the
   desktop does on startup: self-muted and deafened, without opening voice or the
-  microphone. A server that fails shows its notice and waits for Connect.
+  microphone. A server that fails shows its notice and waits for Connect. Every
+  connection moves you back to the channel you last joined, if the server still has
+  it.
   Certificate pins are preserved. Invites requiring `policy=nuschl` are refused
   with an app-opening explanation until the browser implements that negotiation;
   they must never silently fall back to legacy Mumble. Malformed or ambiguous

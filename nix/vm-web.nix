@@ -85,7 +85,7 @@ pkgs.testers.runNixOSTest {
     web.wait_for_unit("nginx.service")
     web.wait_for_open_port(80)
     murmur.wait_for_unit("murmur.service")
-    # Channels for the web app's double-click test, added to the database Murmur created.
+    # Channels for the web app's tests, added to the database Murmur created.
     murmur.wait_for_open_port(64738)
     murmur.succeed(
         "systemctl stop murmur",
@@ -130,7 +130,8 @@ pkgs.testers.runNixOSTest {
     # The packaged app: a mouse or pen double-click joins voice, touch opens chat.
     client.succeed("node ${../tests/web_channel_dblclick.browser.mjs} http://web/app/ murmur 64738")
 
-    # The packaged app connects saved servers on load; the service on 64740 refuses.
+    # The packaged app connects saved servers on load and rejoins Lobby; the
+    # service on 64740 refuses.
     client.succeed("node ${../tests/web_autoconnect.browser.mjs} http://web/app/ murmur 64738 64740")
 
     # The relay never logs payloads; its journal names no user.

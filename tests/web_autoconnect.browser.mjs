@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
-// The packaged web app connects its saved servers when the page loads: after a
-// reload while connected, the working server connects without a click and a
-// server that refuses ends disconnected with its notice. No microphone is
-// requested. Run by nix/vm-web.nix.
+// The packaged web app connects its saved servers when the page loads, on a
+// Mumble server with a channel named Lobby: when the page is opened again and
+// reloaded while connected, the working server connects without a click and
+// rejoins Lobby, the channel last joined, with voice and the microphone closed;
+// a server that refuses ends disconnected with its notice. Run by nix/vm-web.nix.
 //   node tests/web_autoconnect.browser.mjs APP_URL SERVER_HOST SERVER_PORT REFUSING_PORT
 import assert from "node:assert/strict";
 import {pathToFileURL} from "node:url";
@@ -17,6 +18,9 @@ try {
   page.on("pageerror",error=>errors.push(error.message));
   await page.addInitScript(()=>{
     const proof=window.__proof={servers:[],voice:null,commands:[],attempts:{},microphoneCalls:0};
+    // Playback goes to no device; a microphone request is counted and refused.
+    const Context=window.AudioContext;
+    if(Context)window.AudioContext=class extends Context{constructor(options){super({...options,sinkId:{type:"none"}});}};
     if(navigator.mediaDevices)navigator.mediaDevices.getUserMedia=()=>{proof.microphoneCalls++;return Promise.reject(new DOMException("refused","NotAllowedError"));};
     const Worker=window.Worker;
     window.Worker=class extends Worker{
@@ -35,6 +39,11 @@ try {
   await page.goto(`${app}#s=${host}:${port}&u=autoconnect`);
   await page.getByRole("button",{name:"Trust this certificate",exact:true}).click({timeout:30000});
   await connected(port);
+  // Join Lobby's voice once, with the Join voice control.
+  await page.getByRole("button",{name:"Lobby",exact:true}).click();
+  await page.getByRole("button",{name:"Join voice",exact:true}).click();
+  await page.waitForFunction(()=>__proof.voice?.joined);
+  await page.waitForTimeout(1000);
   await page.goto("about:blank");
   await page.goto(`${app}#s=${host}:${refusing}&u=autoconnect`);
   await disconnected(refusing);
@@ -49,8 +58,10 @@ try {
     assert.ok(proof.attempts[refusing]<=1,`${step}: the refusing server was tried ${proof.attempts[refusing]} times`);
     assert.deepEqual(proof.commands.filter(method=>method.startsWith("connect")),[],`${step}: the page sent a connect command`);
     assert.ok(!proof.voice?.joined,`${step}: connecting joined voice`);
+    await page.waitForFunction(port=>{const server=__proof.servers.find(server=>server.port===Number(port));
+      return server.users.find(user=>user.session===server.own_session)?.channel===server.channels.find(channel=>channel.name==="Lobby").id;},port,{timeout:10000});
     assert.equal(proof.microphoneCalls,0,`${step}: connecting requested the microphone`);
   }
   assert.deepEqual(errors,[]);
-  console.log("auto-connect: saved servers connect on open and reload; the refusing one is tried once; microphone closed");
+  console.log("auto-connect: saved servers connect on open and reload and rejoin Lobby; the refusing one is tried once; microphone closed");
 } finally { await browser.close(); }
