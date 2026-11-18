@@ -85,6 +85,8 @@ pub struct Config {
     pub receiver_bitrate: u64,
     /// Forwarded media per room, in bits per second.
     pub room_bitrate: u64,
+    /// The host's upload, in bits per second; forwarding uses at most 70 % of it.
+    pub upload_bitrate: u64,
     /// WebSocket connections at once, joined or not.
     pub max_connections: usize,
     /// WebSocket connections at once per client address (IPv6 per /64).
@@ -108,6 +110,7 @@ impl Default for Config {
             creations_per_hour: 20,
             receiver_bitrate: 25_000_000,
             room_bitrate: 150_000_000,
+            upload_bitrate: 1_000_000_000,
             max_connections: 4096,
             connections_per_address: 32,
         }
@@ -140,6 +143,7 @@ impl Config {
             || self.messages_per_second == 0
             || self.receiver_bitrate == 0
             || self.room_bitrate == 0
+            || self.upload_bitrate == 0
             || self.max_connections == 0
             || self.connections_per_address == 0
         {

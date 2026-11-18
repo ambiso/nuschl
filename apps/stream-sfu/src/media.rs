@@ -15,7 +15,9 @@ use crate::{
     rooms::{self, Bucket, Join, Nonce, PeerId, Refusal, RoomId, Rooms},
     routing::Routing,
 };
-use nuschl_stream_quality::{DecodeCapacity, Kind, QualityRequest, Throttle};
+use nuschl_stream_quality::{
+    DecodeCapacity, Kind, QualityRequest, Throttle, adapt::Stepper, budget, dd::Choice,
+};
 use std::{
     cmp::Reverse,
     collections::{BinaryHeap, HashMap},
@@ -25,6 +27,7 @@ use std::{
 };
 use str0m::{
     Candidate, Event, IceConnectionState, Input, Output, Rtc,
+    bwe::{Bitrate, BweKind},
     change::{SdpAnswer, SdpOffer, SdpPendingOffer},
     media::{Direction, KeyframeRequestKind, MediaKind, Mid, Rid},
     net::{Protocol, Receive},
@@ -41,6 +44,8 @@ const KEYFRAME_INTERVAL: Duration = Duration::from_secs(2);
 const PACKET_OVERHEAD: usize = 48;
 /// The largest UDP datagram read; longer ones are dropped.
 pub const MAX_DATAGRAM: usize = 2048;
+/// A subscribe connection's bandwidth estimate before its first measurement.
+const INITIAL_ESTIMATE: u64 = 2_000_000;
 
 pub enum Command {
     Join {
@@ -108,6 +113,8 @@ struct Peer {
     deadlines: [Option<Instant>; 2],
     /// The video mids of its publish connection that carry a screen.
     screens: Vec<Mid>,
+    /// The subscribe connection's bandwidth estimate, bits per second.
+    estimate: u64,
     decode: DecodeCapacity,
     decode_throttle: Throttle,
 }
@@ -272,7 +279,11 @@ impl Core {
 
     /// A connection for `route`, with its ufrag in the routing map.
     fn new_rtc(&mut self, route: (PeerId, Leg), now: Instant) -> Rtc {
-        let mut rtc = Rtc::builder()
+        let mut builder = Rtc::builder();
+        if route.1 == Leg::Subscribe {
+            builder = builder.enable_bwe(Some(Bitrate::bps(INITIAL_ESTIMATE)));
+        }
+        let mut rtc = builder
             .set_crypto_provider(self.crypto.clone())
             .set_rtp_mode(true)
             .set_ice_lite(true)
@@ -344,10 +355,24 @@ impl Core {
             budget: rooms::media_budget(self.config.receiver_bitrate, now),
             deadlines: [None; 2],
             screens: Vec::new(),
+            estimate: INITIAL_ESTIMATE,
             decode: quality::full_capacity(),
             decode_throttle: Throttle::default(),
         };
         self.peers.insert(id, peer);
+        // A join fails when some stream's base layer no longer fits.
+        let planned = self.plan().0;
+        let rates = rates(&planned);
+        let (receivers, streams) = self.streams(&planned, &rates);
+        if !budget::admits(&self.limits(), &receivers, &streams) {
+            let peer = self.peers.remove(&id).expect("inserted");
+            self.rooms.leave(&peer.room, id);
+            self.routing.remove(|(route, _)| route == id);
+            let _ = peer.out.try_send(ServerMessage::Error {
+                reason: "bandwidth",
+            });
+            return;
+        }
         self.send(
             id,
             ServerMessage::Welcome {
@@ -697,6 +722,11 @@ impl Core {
                 self.add_source(id, added.mid, added.kind);
             }
             (Leg::Publish, Event::RtpPacket(packet)) => self.forward(id, packet, now),
+            (Leg::Subscribe, Event::EgressBitrateEstimate(BweKind::Twcc { estimate, .. })) => {
+                if let Some(peer) = self.peers.get_mut(&id) {
+                    peer.estimate = estimate.as_u64();
+                }
+            }
             (Leg::Subscribe, Event::KeyframeRequest(request)) => {
                 let Some(peer) = self.peers.get(&id) else {
                     return;
@@ -887,13 +917,11 @@ impl Core {
         }
     }
 
-    /// Once a second: gives each receiver the highest decode target of each
-    /// layered source that fits its tier, and tells each publisher the largest
-    /// tier asked of each of its video sources, when it changed.
-    fn quality(&mut self, now: Instant) {
-        let since = now.saturating_duration_since(self.origin);
+    /// The decode targets each receiver's tier allows of each layered source,
+    /// and the largest tier asked of each video source.
+    fn plan(&self) -> (Vec<Planned>, HashMap<(PeerId, Mid), usize>) {
         let mut demands: HashMap<(PeerId, Mid), usize> = HashMap::new();
-        let mut choices = Vec::new();
+        let mut planned = Vec::new();
         for (&id, peer) in &self.peers {
             for (index, forward) in peer.forwards.iter().enumerate() {
                 let Some(video) = self.peers.get(&forward.from).and_then(|p| {
@@ -907,13 +935,98 @@ impl Core {
                 let tier = quality::tier(video.kind, &forward.view, peer.decode);
                 let demand = demands.entry((forward.from, forward.source)).or_default();
                 *demand = (*demand).max(tier);
-                choices.push((id, index, video.layers.choices(video.kind, tier)));
+                planned.push(Planned {
+                    receiver: id,
+                    forward: index,
+                    choices: video.layers.choices(video.kind, tier),
+                    ceiling: video.kind.ladder()[tier].ceiling,
+                });
             }
         }
-        for (id, index, choices) in choices {
-            let view = &mut self.peers.get_mut(&id).expect("listed").forwards[index].view;
-            view.selector.want(choices.last().map(|c| c.target));
-            view.choices = choices;
+        (planned, demands)
+    }
+
+    fn limits(&self) -> budget::Limits {
+        budget::Limits {
+            host: self.config.upload_bitrate / 10 * 7,
+            room: self.config.room_bitrate,
+            receiver: self.config.receiver_bitrate,
+        }
+    }
+
+    /// Q1's budget inputs for `planned`: each receiver's bandwidth estimate and
+    /// one stream per receiver and source.
+    fn streams<'a>(
+        &self,
+        planned: &[Planned],
+        rates: &'a [Vec<u64>],
+    ) -> (Vec<u64>, Vec<budget::Stream<'a>>) {
+        let mut rooms = HashMap::new();
+        let mut receivers = HashMap::new();
+        let mut estimates = Vec::new();
+        let mut streams = Vec::new();
+        for (planned, rates) in planned.iter().zip(rates) {
+            let peer = &self.peers[&planned.receiver];
+            let next = rooms.len();
+            let room = *rooms.entry(peer.room).or_insert(next);
+            let receiver = *receivers.entry(planned.receiver).or_insert_with(|| {
+                estimates.push(peer.estimate);
+                estimates.len() - 1
+            });
+            let stepper = peer.forwards[planned.forward].view.stepper;
+            streams.push(budget::Stream {
+                room,
+                receiver,
+                rates,
+                current: stepper.map_or(0, |s| s.current() + 1),
+            });
+        }
+        (estimates, streams)
+    }
+
+    /// Once a second: shares the budgets (Q1's `allocate`) over every
+    /// receiver's layered sources, moves each receiver's decode target toward
+    /// its share at Q1's `Stepper` pace, asks each subscribe connection's
+    /// bandwidth estimator to probe for the receiver's tiers, and tells each
+    /// publisher the largest tier asked of each of its video sources, when it
+    /// changed.
+    fn quality(&mut self, now: Instant) {
+        let since = now.saturating_duration_since(self.origin);
+        let (planned, demands) = self.plan();
+        let rates = rates(&planned);
+        let (receivers, streams) = self.streams(&planned, &rates);
+        let shares = budget::allocate(&self.limits(), &receivers, &streams);
+        let mut desired: HashMap<PeerId, u64> = HashMap::new();
+        for (planned, share) in planned.into_iter().zip(shares) {
+            *desired.entry(planned.receiver).or_default() += planned.ceiling;
+            let view = &mut self
+                .peers
+                .get_mut(&planned.receiver)
+                .expect("listed")
+                .forwards[planned.forward]
+                .view;
+            let target = share.checked_sub(1).map(|ceiling| {
+                let resolutions: Vec<u32> = planned
+                    .choices
+                    .iter()
+                    .map(|c| u32::from(c.layer.spatial))
+                    .collect();
+                let point = view
+                    .stepper
+                    .get_or_insert_with(|| Stepper::new(ceiling))
+                    .update(&resolutions, ceiling, since);
+                planned.choices[point].target
+            });
+            view.selector.want(target);
+            view.choices = planned.choices;
+        }
+        for (id, desired) in desired {
+            let peer = self.peers.get_mut(&id).expect("listed");
+            let desired = desired.min(self.config.receiver_bitrate);
+            peer.subscribe
+                .bwe()
+                .set_bitrate(Bitrate::bps(0), Bitrate::bps(desired));
+            self.dirty.push((id, Leg::Subscribe));
         }
         let mut messages = Vec::new();
         for (&id, peer) in &mut self.peers {
@@ -963,6 +1076,24 @@ impl Core {
             self.dirty.push((from, Leg::Publish));
         }
     }
+}
+
+/// One receiver's stream of one video source, for the budgets.
+struct Planned {
+    receiver: PeerId,
+    /// An index into the receiver's forwards.
+    forward: usize,
+    /// The decode targets its tier allows, lowest first; none without a descriptor.
+    choices: Vec<Choice>,
+    /// The most its tier needs, bits per second.
+    ceiling: u64,
+}
+
+fn rates(planned: &[Planned]) -> Vec<Vec<u64>> {
+    planned
+        .iter()
+        .map(|p| p.choices.iter().map(|c| c.rate).collect())
+        .collect()
 }
 
 fn forward(from: PeerId, source: Mid, kind: MediaKind, label: &'static str) -> Forward {

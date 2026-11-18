@@ -16,6 +16,7 @@
 
 use nuschl_stream_quality::{
     DecodeCapacity, Kind, Throttle,
+    adapt::Stepper,
     dd::{Choice, Layers, Selector},
     receive,
 };
@@ -48,6 +49,8 @@ pub struct View {
     pub request: Option<usize>,
     pub throttle: Throttle,
     pub selector: Selector,
+    /// Paces moves toward the receiver's share of the budgets.
+    pub stepper: Option<Stepper>,
     /// The decode targets that fit the receiver's tier, lowest first.
     pub choices: Vec<Choice>,
     pub rewrite: Rewrite,
