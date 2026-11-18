@@ -373,6 +373,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "nuschl-stream-quality" = rec {
+      packageId = "nuschl-stream-quality";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "nuschl-stream-quality";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "nuschl-stream-sfu" = rec {
       packageId = "nuschl-stream-sfu";
       build = internal.buildRustCrateWithFeatures {
@@ -24988,6 +24998,14 @@ rec {
             packageId = "thiserror 2.0.21";
           }
         ];
+
+      };
+      "nuschl-stream-quality" = rec {
+        crateName = "nuschl-stream-quality";
+        version = "0.2.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/stream-quality; };
+        libName = "nuschl_stream_quality";
 
       };
       "nuschl-stream-sfu" = rec {
