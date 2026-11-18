@@ -110,6 +110,25 @@ class Worker:
             time.sleep(0.05)
         raise AssertionError(f"{message}; events: {[e['kind'] for e in self.events][-10:]}")
 
+    def echo_test(self, levels=300, stall=15):
+        """Run the Settings echo test and return its result. The test plays 7.25 s, and the worker
+        reports a level for each 100 ms of microphone audio it processes: the result is due within
+        `levels` levels, four times the test, and each level within `stall` seconds of the last."""
+        start = len(self.events)
+        self.send({"kind": "echo_test"})
+        processed, deadline = 0, time.monotonic() + stall
+        while time.monotonic() < deadline:
+            events = self.events[start:]
+            if result := next((e for e in events if e["kind"] == "echo_test"), None):
+                return result
+            if (count := sum(e["kind"] == "level" for e in events)) > processed:
+                processed, deadline = count, time.monotonic() + stall
+            if processed > levels:
+                break
+            time.sleep(0.05)
+        raise AssertionError(f"no echo test result after {processed} levels; "
+                             f"events: {[e['kind'] for e in self.events][-10:]}")
+
     def stop(self):
         try:
             self.send({"kind": "shutdown"})
@@ -309,8 +328,7 @@ def check_echo_test(binary, pulse, delay_plugin):
             devices = worker.wait(lambda e: e["kind"] == "devices", "no device report")
             # The canceller's reference is the recorded monitor of the speakers.
             assert mode == "off" or (devices["echo"]["kind"] == "nuschl" and devices["reference"]), devices
-            worker.send({"kind": "echo_test"})
-            result = worker.wait(lambda e: e["kind"] == "echo_test", "no echo test result", timeout=20)
+            result = worker.echo_test()
             assert not any(e["kind"] == "packet" for e in worker.events), "a preview sent audio"
             worker.stop()
             print(f"Echo test attempt, canceller {mode}: removed {result['reduction_db']:.1f} dB, sent "
@@ -373,9 +391,8 @@ def check_double_talk(binary, pulse, root, delay_plugin):
             mark = len(worker.events)
             time.sleep(3)
             alone = peaks([e for e in worker.events[mark:] if e["kind"] == "level"])
-            worker.send({"kind": "echo_test"})  # the far end talks for six seconds
             start = len(worker.events)
-            worker.wait(lambda e: e["kind"] == "echo_test", "no echo test result", timeout=20)
+            worker.echo_test()  # the far end talks for six seconds
             # Far end playing, after the canceller's first two seconds.
             together = peaks([e for e in worker.events[start:] if e["kind"] == "level"][28:66])
             worker.stop()
