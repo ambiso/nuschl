@@ -31,7 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PROGRAMS = ('nuschl', 'nuschl-content-worker', 'nuschl-crypto-worker', 'nuschl-math-worker',
             'nuschl-media-worker', 'nuschl-storage-worker', 'nuschl-transfer-worker',
             'nuschl-update-verify-ed25519', 'nuschl-update-verify-mldsa44')
-PRODUCTS = ('windows', 'macos-app', 'default', 'server', 'web-relay', 'web-site')
+PRODUCTS = ('windows', 'windows-installer', 'macos-app', 'default', 'server', 'web-relay', 'web-site')
 
 
 def module(path):
@@ -279,6 +279,9 @@ def check_products(stage, ledger, repository):
     archive_tree(stage / f'dist/nuschl-{version}-macos-universal.zip', mac, 'Nuschl.app', zipped=True,
                  source_root=stage / 'install/Nuschl.app')
     archive_tree(stage / f'dist/nuschl-{version}-windows-x86_64.zip', mapped, zipped=True, source_root=stage / 'install/windows')
+    setup = f'nuschl-{version}-windows-x86_64-setup.exe'
+    require(sha(stage / 'dist' / setup) == sha(Path(expected['windows-installer']['output']) / setup),
+            'Windows installer differs from selected Nix product')
     archive_tree(stage / f'dist/nuschl-{version}-web-site.tar',
                  tree(Path(expected['web-site']['output']), size=512 * 1024**2),
                  source_root=Path(expected['web-site']['output']))
@@ -610,6 +613,8 @@ def prepare(args):
     canonical_tar(install / 'Nuschl.app', stage / 'macos-install.tar', 'Nuschl.app')
     canonical_tar(web, dist / f'nuschl-{version}-web-site.tar')
     canonical_zip(windows, dist / f'nuschl-{version}-windows-x86_64.zip')
+    setup = f'nuschl-{version}-windows-x86_64-setup.exe'
+    shutil.copyfile(Path(products['windows-installer']['output']) / setup, dist / setup)
     canonical_zip(install / 'Nuschl.app', dist / f'nuschl-{version}-macos-universal.zip', 'Nuschl.app')
     write(dist / f'nuschl-{version}-linux-nix.json', products)
     shutil.copyfile(source / 'flake.lock', dist / 'flake.lock')
@@ -671,7 +676,7 @@ def validate(stage):
                                        'size': path.stat().st_size, 'sha256': sha(path)})
             require(sha(stage / 'dist' / asset) == sha(path), 'updater asset differs from installation')
     allowed = updater_assets | {f'nuschl-{ledger["version"]}-{suffix}' for suffix in
-        ('windows-x86_64.zip', 'macos-universal.zip', 'web-site.tar', 'linux-nix.json')} | {'flake.lock', 'INSTALL-NIX.txt'}
+        ('windows-x86_64.zip', 'windows-x86_64-setup.exe', 'macos-universal.zip', 'web-site.tar', 'linux-nix.json')} | {'flake.lock', 'INSTALL-NIX.txt'}
     require(set(actual) == allowed, 'unexpected/missing release asset outside source-selected product set')
     require(manifest['platforms'] == expected, 'manifest file set/hash/URLs changed')
     check_installs(stage, stage / 'source')

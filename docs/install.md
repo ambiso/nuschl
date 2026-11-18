@@ -172,9 +172,10 @@ in `crates/update`.
 Tagging `vX.Y.Z` (matching the workspace version) runs
 `.github/workflows/release.yml`, which calls three independent read-only platform
 build jobs before a separate publication job. The flake cross-compiles the
-Windows build (MinGW) and a universal `Nuschl.app` (zig and a pinned SDK, ad-hoc
-signed with `rcodesign`), so no Windows or macOS runner is needed. The workflow
-zips both, publishes every file of each installation as its own release asset, and
+Windows build (MinGW), its installer (NSIS, `nix build .#windows-installer`) and a
+universal `Nuschl.app` (zig and a pinned SDK, ad-hoc signed with `rcodesign`), so no
+Windows or macOS runner is needed. The release zips both, publishes the Windows
+installer, publishes every file of each installation as its own release asset, and
 writes `update.json`, which lists every Windows/macOS installation file with its
 size and SHA-256. It also publishes the validated deployable static web bundle,
 Linux Nix installation references, source lock file and build evidence. These

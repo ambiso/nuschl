@@ -70,6 +70,8 @@ class LocalRelease(unittest.TestCase):
             (win / 'bin' / (name + '.exe')).write_bytes(b'MZ synthetic never executed ' + name.encode())
         (win / 'share/licenses/nuschl').mkdir(parents=True)
         (win / 'share/licenses/nuschl/NOTICE').write_text('Synthetic gate fixture only.\n')
+        setup = Path(self.products['windows-installer']['output']) / 'nuschl-0.1.0-windows-x86_64-setup.exe'
+        setup.write_bytes(b'MZ synthetic installer never executed')
         mac = Path(self.products['macos-app']['output']) / 'Nuschl.app/Contents'
         (mac / 'MacOS').mkdir(parents=True)
         for name in local.PROGRAMS:
@@ -171,6 +173,11 @@ class LocalRelease(unittest.TestCase):
         ledger['installations'] = local.tree(self.stage / 'install')
         with self.assertRaisesRegex(ValueError, 'selected Nix product'):
             local.check_products(self.stage, ledger, self.repo)
+
+    def test_installer_must_be_the_selected_nix_product(self):
+        (self.stage / 'dist/nuschl-0.1.0-windows-x86_64-setup.exe').write_bytes(b'MZ changed')
+        with self.assertRaisesRegex(ValueError, 'installer differs'):
+            local.check_products(self.stage, local.load(self.stage / 'ledger.json'), self.repo)
 
     def test_rehashed_derivation_or_nar_receipt_is_not_authority(self):
         ledger = local.load(self.stage / 'ledger.json')
