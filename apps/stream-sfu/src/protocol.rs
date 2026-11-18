@@ -5,7 +5,9 @@
 //! Each peer has up to two WebRTC connections. On its publish connection the
 //! peer offers and the SFU answers (`offer` → `answer`); on its subscribe
 //! connection the SFU offers and the peer answers. Each side is always the
-//! offerer on its own connection, so offers never cross.
+//! offerer on its own connection, so offers never cross. The subscribe
+//! connection also carries an unused data channel, `sfu`, which keeps its
+//! transport up while no source is forwarded.
 //!
 //! ```text
 //! SFU → peer  hello {nonce}

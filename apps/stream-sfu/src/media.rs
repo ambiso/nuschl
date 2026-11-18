@@ -113,6 +113,10 @@ struct Peer {
     publish: Option<Rtc>,
     subscribe: Rtc,
     pending: Option<SdpPendingOffer>,
+    /// Whether the subscribe connection has offered its data channel, which keeps
+    /// the transport up while no source is forwarded: a browser closes it when
+    /// every media section is stopped.
+    channel: bool,
     sources: Vec<Source>,
     forwards: Vec<Forward>,
     budget: Bucket,
@@ -398,6 +402,7 @@ impl Core {
             publish: None,
             subscribe: self.new_rtc((id, Leg::Subscribe), now),
             pending: None,
+            channel: false,
             sources: Vec::new(),
             forwards,
             budget: rooms::media_budget(self.config.receiver_bitrate, now),
@@ -578,6 +583,9 @@ impl Core {
         }
         // Without a pending offer, every forward with a mid is open.
         let mut api = peer.subscribe.sdp_api();
+        if !std::mem::replace(&mut peer.channel, true) {
+            api.add_channel("sfu".into());
+        }
         peer.forwards
             .retain_mut(|forward| match (forward.mid, forward.stopping) {
                 (None, true) => false,
