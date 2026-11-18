@@ -170,6 +170,16 @@ deny = [
     "nuschl-transfer-worker",
     "nuschl-update-worker",
   ], reason = "The one first-party crate with unsafe code (Win32 AppContainer launch) runs only as the workers' own launch stage" },
+  { name = "nuschl-stream", wrappers = [
+    "nuschl-crypto-worker",
+  ], reason = "Call key agreement belongs to the crypto worker; driver, desktop and browser callers wait for their SECURITY.md rows (docs/video-plan.md §4)" },
+  { name = "aes-gcm", wrappers = [
+    "dimpl",
+    "noise-rust-crypto",
+    "nuschl-sframe",
+    "pkcs5",
+    "str0m-rust-crypto",
+  ], reason = "RustCrypto AES-GCM (AES-NI intrinsics) only through its current users and nuschl-sframe, so nuschl-stream and the crypto worker that links it carry none (docs/video-plan.md §4)" },
   { name = "nuschl-identity", wrappers = [
     "nuschl-kt",
     "nuschl-e2ee",

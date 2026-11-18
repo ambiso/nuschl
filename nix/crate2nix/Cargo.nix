@@ -333,6 +333,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "nuschl-sframe" = rec {
+      packageId = "nuschl-sframe";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "nuschl-sframe";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "nuschl-storage" = rec {
       packageId = "nuschl-storage";
       build = internal.buildRustCrateWithFeatures {
@@ -347,6 +357,16 @@ rec {
       packageId = "nuschl-storage-worker";
       build = internal.buildRustCrateWithFeatures {
         packageId = "nuschl-storage-worker";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
+    "nuschl-stream" = rec {
+      packageId = "nuschl-stream";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "nuschl-stream";
       };
 
       # Debug support which might change between releases.
@@ -24778,6 +24798,30 @@ rec {
         ];
 
       };
+      "nuschl-sframe" = rec {
+        crateName = "nuschl-sframe";
+        version = "0.2.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/sframe; };
+        libName = "nuschl_sframe";
+        dependencies = [
+          {
+            name = "aes-gcm";
+            packageId = "aes-gcm 0.11.1";
+            usesDefaultFeatures = false;
+            features = [ "aes" ];
+          }
+          {
+            name = "libcrux-hkdf";
+            packageId = "libcrux-hkdf 0.0.9";
+          }
+          {
+            name = "thiserror";
+            packageId = "thiserror 2.0.21";
+          }
+        ];
+
+      };
       "nuschl-storage" = rec {
         crateName = "nuschl-storage";
         version = "0.2.0";
@@ -24871,6 +24915,58 @@ rec {
           {
             name = "tempfile";
             packageId = "tempfile";
+          }
+        ];
+
+      };
+      "nuschl-stream" = rec {
+        crateName = "nuschl-stream";
+        version = "0.2.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/stream; };
+        libName = "nuschl_stream";
+        dependencies = [
+          {
+            name = "base64ct";
+            packageId = "base64ct";
+          }
+          {
+            name = "hpke-rs";
+            packageId = "hpke-rs 0.8.0";
+          }
+          {
+            name = "hpke-rs-libcrux";
+            packageId = "hpke-rs-libcrux 0.8.0";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "libcrux-chacha20poly1305";
+            packageId = "libcrux-chacha20poly1305 0.0.10";
+          }
+          {
+            name = "libcrux-hkdf";
+            packageId = "libcrux-hkdf 0.0.9";
+          }
+          {
+            name = "libcrux-kem";
+            packageId = "libcrux-kem";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "libcrux-sha2";
+            packageId = "libcrux-sha2 0.0.9";
+          }
+          {
+            name = "rand_core";
+            packageId = "rand_core 0.10.1";
+          }
+          {
+            name = "subtle";
+            packageId = "subtle";
+          }
+          {
+            name = "thiserror";
+            packageId = "thiserror 2.0.21";
           }
         ];
 
