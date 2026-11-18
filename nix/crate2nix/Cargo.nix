@@ -24264,6 +24264,7 @@ rec {
           {
             name = "opus-rs";
             packageId = "opus-rs";
+            features = [ "deep-plc" ];
           }
           {
             name = "pipewire";
@@ -29533,7 +29534,7 @@ rec {
           "osce" = [ "deep-plc" ];
           "std" = [ "fearless_simd/std" ];
         };
-        resolvedDefaultFeatures = [ "default" "heap" "std" ];
+        resolvedDefaultFeatures = [ "deep-plc" "default" "dnn" "heap" "std" ];
       };
       "ordered-float 4.6.0" = rec {
         crateName = "ordered-float";

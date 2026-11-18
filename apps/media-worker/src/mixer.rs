@@ -27,6 +27,32 @@ const MAX_PER_STREAM: usize = 64;
 const MAX_DECODED: usize = 20 * FRAME;
 /// Larger than any Opus packet a client sends (Mumble limits them too).
 const MAX_OPUS_BYTES: usize = 1024;
+/// The decoder complexity from which opus-rs conceals lost frames with Deep
+/// PLC, its neural vocoder (libopus's threshold).
+const NEURAL_COMPLEXITY: i32 = 5;
+/// The time all speakers' neural concealment may take while one 10 ms frame
+/// is mixed. Past it, lost frames get the classic concealment.
+const NEURAL_BUDGET: Duration = Duration::from_millis(4);
+
+/// Neural concealment time in the frame being mixed.
+struct Budget {
+    limit: Duration,
+    until: Instant,
+    /// How long the last neural concealment took: the estimate for the next.
+    /// It shrinks with every concealment it turns down, so one slow call
+    /// does not rule out Deep PLC for good.
+    cost: Duration,
+}
+
+impl Budget {
+    fn new(limit: Duration) -> Self {
+        Self {
+            limit,
+            until: Instant::now(),
+            cost: Duration::ZERO,
+        }
+    }
+}
 
 /// Gain is frozen with decoded audio, but applied only in the wide accumulator.
 /// Finite f32 PCM × gain≤4 × 128 speakers cannot overflow f64.
@@ -60,6 +86,7 @@ impl Speaker {
         let mut decoder = OpusDecoder::new(48_000, 2)?;
         // Match Mumble: retain intensity-stereo energy when folded to mono.
         decoder.set_phase_inversion_disabled(true);
+        decoder.set_complexity(NEURAL_COMPLEXITY)?;
         Ok(Self {
             decoder,
             jitter: JitterBuffer::default(),
@@ -70,8 +97,28 @@ impl Speaker {
         })
     }
 
+    /// Conceal lost audio with Deep PLC while the frame's budget lasts, and
+    /// with the classic concealment past it.
+    fn conceal(
+        &mut self,
+        budget: &mut Budget,
+        decode: impl FnOnce(&mut OpusDecoder) -> Result<usize, &'static str>,
+    ) -> Result<usize, &'static str> {
+        let start = Instant::now();
+        if start + budget.cost > budget.until {
+            budget.cost = budget.cost * 3 / 4;
+            self.decoder.set_complexity(0)?;
+            let decoded = decode(&mut self.decoder);
+            self.decoder.set_complexity(NEURAL_COMPLEXITY)?;
+            return decoded;
+        }
+        let decoded = decode(&mut self.decoder);
+        budget.cost = start.elapsed();
+        decoded
+    }
+
     /// Top up decoded audio for one output frame.
-    fn fill(&mut self, scratch: &mut [f32]) {
+    fn fill(&mut self, scratch: &mut [f32], budget: &mut Budget) {
         while self.pcm.len() < FRAME {
             let was_playing = self.jitter.is_playing();
             match self.jitter.pull() {
@@ -92,10 +139,10 @@ impl Speaker {
                 }
                 Pull::Lost { fec, frames } => {
                     let size = (frames as usize * FRAME).min(MAX_PACKET_SAMPLES);
-                    let decoded = match fec {
-                        Some(next) => self.decoder.decode_fec(&next.opus, size, scratch),
-                        None => self.decoder.decode(&[], size, scratch),
-                    };
+                    let decoded = self.conceal(budget, |decoder| match fec {
+                        Some(next) => decoder.decode_fec(&next.opus, size, scratch),
+                        None => decoder.decode(&[], size, scratch),
+                    });
                     if let Ok(count) = decoded {
                         self.fade.play(&mut scratch[..2 * count]);
                         self.extend(&scratch[..2 * count]);
@@ -105,7 +152,8 @@ impl Speaker {
                 }
                 Pull::Idle => {
                     if self.fade.ran_dry(was_playing)
-                        && let Ok(count) = self.decoder.decode(&[], FRAME, scratch)
+                        && let Ok(count) =
+                            self.conceal(budget, |decoder| decoder.decode(&[], FRAME, scratch))
                     {
                         self.fade.fade_out(&mut scratch[..2 * count]);
                         self.extend(&scratch[..2 * count]);
@@ -146,6 +194,7 @@ pub struct Mixer {
     /// By (stream, sender).
     speakers: BTreeMap<(u32, u32), Speaker>,
     scratch: Vec<f32>,
+    budget: Budget,
 }
 
 impl Default for Mixer {
@@ -153,6 +202,7 @@ impl Default for Mixer {
         Self {
             speakers: BTreeMap::new(),
             scratch: vec![0.; 2 * MAX_PACKET_SAMPLES],
+            budget: Budget::new(NEURAL_BUDGET),
         }
     }
 }
@@ -231,8 +281,9 @@ impl Mixer {
 
     /// Add one frame of every speaker's audio to `mix`.
     pub fn mix(&mut self, mix: &mut [[f64; 2]; FRAME]) {
+        self.budget.until = Instant::now() + self.budget.limit;
         for speaker in self.speakers.values_mut() {
-            speaker.fill(&mut self.scratch);
+            speaker.fill(&mut self.scratch, &mut self.budget);
             for (out, sample) in mix
                 .iter_mut()
                 .zip(speaker.pcm.drain(..speaker.pcm.len().min(FRAME)))
@@ -290,6 +341,9 @@ pub fn finish(
         }
     }
 }
+
+#[cfg(test)]
+mod concealment;
 
 #[cfg(test)]
 mod tests {
@@ -446,6 +500,47 @@ mod tests {
         assert!(speaker.decoder.phase_inversion_disabled());
         speaker.decoder.reset();
         assert!(speaker.decoder.phase_inversion_disabled());
+        assert_eq!(speaker.decoder.complexity(), NEURAL_COMPLEXITY);
+    }
+
+    #[test]
+    fn lost_frames_get_deep_plc_within_the_budget_and_classic_concealment_past_it() {
+        let packets = tone(6, 0.5);
+        // What each concealment gives after the same received packets.
+        let conceal = |complexity| {
+            let mut decoder = OpusDecoder::new(48_000, 2).unwrap();
+            decoder.set_phase_inversion_disabled(true);
+            decoder.set_complexity(complexity).unwrap();
+            let mut pcm = vec![0.; 4 * FRAME];
+            for opus in &packets {
+                decoder.decode(opus, 2 * FRAME, &mut pcm).unwrap();
+            }
+            decoder.decode(&[], 2 * FRAME, &mut pcm).unwrap();
+            pcm
+        };
+        let (neural, classic) = (conceal(NEURAL_COMPLEXITY), conceal(0));
+        assert_ne!(neural, classic);
+        for (cost, expected) in [
+            (Duration::ZERO, &neural),
+            (Duration::from_secs(1), &classic),
+        ] {
+            let mut speaker = Speaker::new(Instant::now()).unwrap();
+            let mut pcm = vec![0.; 4 * FRAME];
+            for opus in &packets {
+                speaker.decoder.decode(opus, 2 * FRAME, &mut pcm).unwrap();
+            }
+            let mut budget = Budget::new(NEURAL_BUDGET);
+            budget.until = Instant::now() + NEURAL_BUDGET;
+            budget.cost = cost;
+            let count = speaker
+                .conceal(&mut budget, |decoder| {
+                    decoder.decode(&[], 2 * FRAME, &mut pcm)
+                })
+                .unwrap();
+            assert_eq!(count, 2 * FRAME);
+            assert_eq!(&pcm, expected);
+            assert_eq!(speaker.decoder.complexity(), NEURAL_COMPLEXITY);
+        }
     }
 
     #[test]

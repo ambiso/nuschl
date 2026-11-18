@@ -146,6 +146,12 @@ safety or correct Opus output. Codec and
 DSP SIMD remains confined to the media worker. Native PipeWire or platform processing
 can be reused when it is already working well on the active route.
 
+The media worker conceals lost voice frames with opus-rs's Deep PLC, libopus's neural
+vocoder: every speaker's decoder runs at complexity 5. All speakers' neural concealment
+may take 4 ms of each 10 ms mixed frame. A concealment the budget cannot fit, judged by
+how long the last one took, gets the classic concealment. The browser keeps the classic
+concealment. Quality, instructions and real-time margin: `apps/media-worker/src/mixer/concealment.rs`.
+
 When Nuschl's own canceller runs, its reference is a recording of the output device,
 not Nuschl's playback buffer (`reference.rs`): PipeWire captures the sink, PulseAudio
 records its monitor (on a connection of its own; see TODO.md), WASAPI and Core Audio
