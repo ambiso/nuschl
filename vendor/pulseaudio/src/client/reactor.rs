@@ -327,7 +327,12 @@ impl Reactor {
         let mut events = mio::Events::with_capacity(1024);
 
         loop {
-            self.poll.poll(&mut events, None)?;
+            // A signal, including a stop and continue, interrupts the wait (EINTR).
+            if let Err(err) = self.poll.poll(&mut events, None)
+                && err.kind() != io::ErrorKind::Interrupted
+            {
+                return Err(err.into());
+            }
             self.recv()?;
 
             // Handle any requested writes.
