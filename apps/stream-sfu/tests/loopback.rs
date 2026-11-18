@@ -9,9 +9,10 @@
 
 use futures_util::{SinkExt, StreamExt};
 use hmac::{KeyInit, Mac};
+use nuschl_stream_sfu::quality::{DESCRIPTOR_ID, Descriptor, descriptor_extension};
 use serde_json::{Value, json};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     io::{BufRead, BufReader},
     net::UdpSocket,
     process::{Child, Command, Stdio},
@@ -24,7 +25,7 @@ use str0m::{
     format::Codec,
     media::{Direction, MediaKind, Mid},
     net::{Protocol, Receive},
-    rtp::RtpWrite,
+    rtp::{ExtensionValues, RtpWrite},
 };
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -129,6 +130,7 @@ impl Leg {
         let mut rtc = Rtc::builder()
             .set_crypto_provider(Arc::new(str0m::crypto::from_feature_flags()))
             .set_rtp_mode(true)
+            .set_extension(DESCRIPTOR_ID, descriptor_extension())
             .build(Instant::now());
         rtc.add_local_candidate(
             Candidate::host(socket.local_addr().expect("address"), "udp").expect("candidate"),
@@ -176,6 +178,48 @@ impl Leg {
     }
 }
 
+/// A packet a subscriber received from one publisher.
+struct Received {
+    seq: u64,
+    pt: u8,
+    payload: Vec<u8>,
+    descriptor: Option<Descriptor>,
+}
+
+/// An L1T3 Dependency Descriptor with libwebrtc's decode target indications:
+/// templates T0, T1, T2 and decode targets for a quarter, half and all of the
+/// frame rate. T0 frames are switch points for all three, T1 frames for the
+/// full rate.
+fn l1t3(template: u32, number: u16, structure: bool) -> Vec<u8> {
+    let mut bits = Vec::new();
+    let mut put = |value: u32, n: u32| {
+        for i in (0..n).rev() {
+            bits.push((value >> i) & 1 == 1);
+        }
+    };
+    put(0b11, 2); // start and end of frame
+    put(template, 6);
+    put(u32::from(number), 16);
+    if structure {
+        put(0b10000, 5);
+        put(0, 6); // template id offset
+        put(2, 5); // three decode targets
+        put(0b01_01_11, 6); // templates T0, T1, T2
+        put(0b10_10_10, 6); // T0: switch for all
+        put(0b00_01_10, 6); // T1: discardable for half, switch for full
+        put(0b00_00_01, 6); // T2: discardable for full
+        put(0, 3); // no frame diffs
+        put(0, 2); // no chains
+        put(0, 1); // no resolutions
+    }
+    while bits.len() % 8 != 0 {
+        bits.push(false);
+    }
+    bits.chunks(8)
+        .map(|byte| byte.iter().fold(0, |a, &b| (a << 1) | u8::from(b)))
+        .collect()
+}
+
 struct Peer {
     to_sfu: mpsc::UnboundedSender<String>,
     from_sfu: mpsc::UnboundedReceiver<Value>,
@@ -183,9 +227,9 @@ struct Peer {
     publish: Option<(Leg, Option<SdpPendingOffer>, Mid, Codec)>,
     subscribe: Option<Leg>,
     tracks: HashMap<String, u64>,
-    /// Per publisher: received (sequence number, payload type, payload).
-    received: HashMap<u64, Vec<(u64, u8, Vec<u8>)>>,
-    sent: Vec<Vec<u8>>,
+    received: HashMap<u64, Vec<Received>>,
+    /// Payloads and descriptors sent.
+    sent: Vec<(Vec<u8>, Option<Descriptor>)>,
     seq: u64,
     messages: Vec<Value>,
 }
@@ -322,11 +366,17 @@ impl Peer {
                         .map(|s| s.mid().to_string())
                         .expect("a stream");
                     let from = self.tracks[&mid];
-                    self.received.entry(from).or_default().push((
-                        *packet.seq_no,
-                        *packet.header.payload_type,
-                        packet.payload.to_vec(),
-                    ));
+                    self.received.entry(from).or_default().push(Received {
+                        seq: *packet.seq_no,
+                        pt: *packet.header.payload_type,
+                        payload: packet.payload.to_vec(),
+                        descriptor: packet
+                            .header
+                            .ext_vals
+                            .user_values
+                            .get::<Descriptor>()
+                            .cloned(),
+                    });
                 }
             }
         }
@@ -359,6 +409,16 @@ impl Peer {
         payload.extend_from_slice(&self.id.to_be_bytes());
         payload.extend_from_slice(&self.seq.to_be_bytes());
         payload.extend((0..600).map(|i| (i as u64 * 31 + self.seq) as u8));
+        // AV1 frames carry an L1T3 Dependency Descriptor: T0 T2 T1 T2, with the
+        // template structure on every T0 frame.
+        let number = (self.seq - 1) as u16;
+        let template = [0, 2, 1, 2][usize::from(number) % 4];
+        let descriptor =
+            (*codec == Codec::Av1).then(|| Descriptor(l1t3(template, number, template == 0)));
+        let mut values = ExtensionValues::default();
+        if let Some(descriptor) = &descriptor {
+            values.user_values.set(descriptor.clone());
+        }
         let mut api = leg.rtc.direct_api();
         let stream = api.stream_tx_by_mid(*mid, None).expect("stream");
         stream.write_rtp(
@@ -370,9 +430,10 @@ impl Peer {
                 payload.clone(),
             )
             .marker(true)
+            .ext_vals(values)
             .nackable(true),
         );
-        self.sent.push(payload);
+        self.sent.push((payload, descriptor));
     }
 
     fn count(&self, from: u64) -> usize {
@@ -394,18 +455,28 @@ impl Peer {
 }
 
 fn assert_forwarded(receiver: &Peer, publisher: &Peer, codec: Codec) {
-    let sent: HashSet<&Vec<u8>> = publisher.sent.iter().collect();
+    let sent: HashMap<&Vec<u8>, &Option<Descriptor>> =
+        publisher.sent.iter().map(|(p, d)| (p, d)).collect();
     let received = &receiver.received[&publisher.id];
     let leg = receiver.subscribe.as_ref().expect("subscribed");
-    for (index, (seq, pt, payload)) in received.iter().enumerate() {
-        assert!(sent.contains(payload), "payload changed or invented");
-        assert_eq!(*seq, index as u64, "consecutive sequence numbers from zero");
+    for (index, packet) in received.iter().enumerate() {
+        let descriptor = sent
+            .get(&packet.payload)
+            .expect("payload changed or invented");
+        assert_eq!(
+            **descriptor, packet.descriptor,
+            "the descriptor arrives as sent"
+        );
+        assert_eq!(
+            packet.seq, index as u64,
+            "consecutive sequence numbers from zero"
+        );
         let params = leg
             .rtc
             .codec_config()
             .params()
             .iter()
-            .find(|p| *p.pt() == *pt);
+            .find(|p| *p.pt() == packet.pt);
         assert_eq!(params.map(|p| p.spec().codec), Some(codec));
     }
 }

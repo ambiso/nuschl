@@ -25054,6 +25054,10 @@ rec {
             packageId = "httparse";
           }
           {
+            name = "nuschl-stream-quality";
+            packageId = "nuschl-stream-quality";
+          }
+          {
             name = "serde";
             packageId = "serde";
             features = [ "derive" ];

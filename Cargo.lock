@@ -7554,6 +7554,7 @@ dependencies = [
  "hex",
  "hmac 0.13.0",
  "httparse",
+ "nuschl-stream-quality",
  "nuschl-testkit",
  "serde",
  "serde_json",
