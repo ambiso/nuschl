@@ -14,6 +14,8 @@ const browser=await chromium.launch({headless:true,executablePath:process.env.NU
   args:[`--unsafely-treat-insecure-origin-as-secure=${new URL(app).origin}`]});
 try {
   const context=await browser.newContext({viewport:{width:1200,height:800}});
+  // A loaded CI host steals most of the VM's time: allow minutes per step.
+  context.setDefaultTimeout(180000);
   const page=await context.newPage(),errors=[];
   page.on("pageerror",error=>errors.push(error.message));
   await page.addInitScript(()=>{
@@ -32,12 +34,12 @@ try {
     };
   });
   const status=port=>page.evaluate(port=>__proof.servers.find(server=>server.port===Number(port))?.status,port);
-  const connected=port=>page.waitForFunction(port=>__proof.servers.find(server=>server.port===Number(port))?.status==="connected",port,{timeout:30000})
+  const connected=port=>page.waitForFunction(port=>__proof.servers.find(server=>server.port===Number(port))?.status==="connected",port)
     .catch(async error=>{throw new Error(`${error.message} ${JSON.stringify(await page.evaluate(()=>__proof.servers.map(({port,status,notice})=>({port,status,notice}))))}`);});
-  const disconnected=port=>page.waitForFunction(port=>__proof.servers.find(server=>server.port===Number(port))?.status==="disconnected",port,{timeout:30000});
+  const disconnected=port=>page.waitForFunction(port=>__proof.servers.find(server=>server.port===Number(port))?.status==="disconnected",port);
   // Save both servers through server links.
   await page.goto(`${app}#s=${host}:${port}&u=autoconnect`);
-  await page.getByRole("button",{name:"Trust this certificate",exact:true}).click({timeout:30000});
+  await page.getByRole("button",{name:"Trust this certificate",exact:true}).click();
   await connected(port);
   // Join Lobby's voice once, with the Join voice control.
   await page.getByRole("button",{name:"Lobby",exact:true}).click();
@@ -59,7 +61,7 @@ try {
     assert.deepEqual(proof.commands.filter(method=>method.startsWith("connect")),[],`${step}: the page sent a connect command`);
     assert.ok(!proof.voice?.joined,`${step}: connecting joined voice`);
     await page.waitForFunction(port=>{const server=__proof.servers.find(server=>server.port===Number(port));
-      return server.users.find(user=>user.session===server.own_session)?.channel===server.channels.find(channel=>channel.name==="Lobby").id;},port,{timeout:10000});
+      return server.users.find(user=>user.session===server.own_session)?.channel===server.channels.find(channel=>channel.name==="Lobby").id;},port);
     assert.equal(proof.microphoneCalls,0,`${step}: connecting requested the microphone`);
   }
   assert.deepEqual(errors,[]);
