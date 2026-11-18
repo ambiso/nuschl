@@ -19,7 +19,7 @@ use crate::{
     voice::{self, Route},
 };
 use nuschl_client::{
-    Client, HistoryTicket, Update,
+    Client, Conversation, HistoryTicket, Update, finder,
     input::Input,
     names::Preferences,
     platform::{CacheKey, ChangeRequest, Platform, RenderKey, Request},
@@ -565,6 +565,8 @@ pub struct WebClient {
     /// The selected lifetime whose rows were last recovered and rebound.
     rekeyed: Option<(String, u64, u32, u64)>,
     catalog: Catalog,
+    /// Conversations opened lately, for the quick switcher's ranking.
+    recent: finder::Recent,
 }
 
 #[wasm_bindgen]
@@ -615,6 +617,7 @@ impl WebClient {
             recovery_until: 0,
             rekeyed: None,
             catalog: Catalog::default(),
+            recent: finder::Recent::default(),
         })
     }
 
@@ -918,9 +921,26 @@ impl WebClient {
         self.shared.images.borrow_mut().invalidate();
         let result = self.client.open(index, channel);
         if matches!(result, Ok(true)) {
+            self.visited(index, channel);
             self.recover_selected_content();
         }
         result
+    }
+
+    /// The quick switcher's results for `query` as JSON, best first
+    /// (`nuschl_client::finder` decides, as on the desktop).
+    pub fn find(&self, query: String) -> String {
+        let items = finder::items(
+            &self.client,
+            &self.recent,
+            &query.chars().take(256).collect::<String>(),
+        );
+        serde_json::to_string(&snapshot::finder(items, 50)).unwrap_or_else(|_| "[]".into())
+    }
+
+    fn visited(&mut self, index: usize, channel: u32) {
+        let server = self.client.servers[index].id.clone();
+        self.recent.visited(&Conversation { server, channel });
     }
 
     pub fn browse_server(&mut self, index: usize) -> Result<bool, String> {
@@ -950,6 +970,7 @@ impl WebClient {
         };
         let result = self.client.open(index, channel);
         if matches!(result, Ok(true)) {
+            self.visited(index, channel);
             self.recover_selected_content();
         }
         result

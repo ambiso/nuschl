@@ -4,6 +4,7 @@
 
 use nuschl_client::{
     Update,
+    finder::{Item, Target},
     model::TextTarget,
     server::{ServerState, Status},
 };
@@ -249,9 +250,74 @@ pub fn bookmark(
     })
 }
 
+/// One quick switcher result; `highlights` are UTF-16 offsets of `name`.
+#[derive(Serialize)]
+pub struct FinderView {
+    pub server: String,
+    /// `channel`, `person` or `direct conversation`.
+    pub kind: &'static str,
+    /// The channel id, the person's session, or the direct conversation's id.
+    pub id: u32,
+    pub name: String,
+    pub path: String,
+    pub highlights: Vec<[usize; 2]>,
+    pub unread: usize,
+}
+
+/// The switcher's best `limit` results, in the SDK's order.
+pub fn finder(items: Vec<Item>, limit: usize) -> Vec<FinderView> {
+    let utf16 = |name: &str, at: usize| name[..at].encode_utf16().count();
+    items
+        .into_iter()
+        .take(limit)
+        .map(|item| FinderView {
+            kind: item.target.kind(),
+            id: match item.target {
+                Target::Channel(id) | Target::Person(id) | Target::Direct(id) => id,
+            },
+            highlights: item
+                .highlights
+                .iter()
+                .map(|range| [utf16(&item.name, range.start), utf16(&item.name, range.end)])
+                .collect(),
+            server: item.server,
+            name: item.name,
+            path: item.path,
+            unread: item.unread,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finder_results_keep_the_sdk_order_and_highlight_utf16_offsets() {
+        let query: Vec<char> = "wde".chars().collect();
+        let (score, highlights) = nuschl_client::finder::fuzzy(&query, "Wö Development").unwrap();
+        let item = |target, name: &str, highlights, score| Item {
+            server: "s".into(),
+            target,
+            name: name.into(),
+            path: String::new(),
+            alias: String::new(),
+            highlights,
+            score,
+            unread: 0,
+        };
+        let items = vec![
+            item(Target::Channel(4), "Wö Development", highlights, score),
+            item(Target::Person(9), "Ada", Vec::new(), 0),
+            item(Target::Direct(11), "Lin", Vec::new(), 0),
+        ];
+        let views = finder(items, 2);
+        assert_eq!(views.len(), 2);
+        // "ö" is two bytes and one UTF-16 unit: bytes 4..6 are units 3..5.
+        assert_eq!(views[0].highlights, [[0, 1], [3, 5]]);
+        assert_eq!((views[0].kind, views[0].id), ("channel", 4));
+        assert_eq!((views[1].kind, views[1].id), ("person", 9));
+    }
 
     #[test]
     fn lifetime_metadata_never_rounds_u64_through_javascript_numbers() {

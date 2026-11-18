@@ -3,9 +3,9 @@
 # A client without a browser logs in to a stock Murmur through the relay (TLS on
 # the client, as the web client will do in WebAssembly), the packaged web app in
 # headless Chromium joins voice by double-click, connects its saved servers on
-# load, counts the people inside a collapsed channel and mutes when the browser
-# stops its microphone, and what the relay must refuse is refused. No ACME in the
-# VM: plain HTTP.
+# load, counts the people inside a collapsed channel, mutes when the browser
+# stops its microphone and answers Ctrl+K and Ctrl+F, and what the relay must
+# refuse is refused. No ACME in the VM: plain HTTP.
 {
   pkgs,
   relay,
@@ -164,5 +164,8 @@ pkgs.testers.runNixOSTest {
 
     # When the browser ends or mutes capture, the app mutes and opens nothing (#447).
     print(client.succeed("node ${../tests/web_mic_stopped.browser.mjs} ${pkgs.chromium}/bin/chromium ${pkgs.playwright-driver}"))
+
+    # The packaged app: Ctrl+K switches channels, Ctrl+F finds a sent message.
+    client.succeed("node ${../tests/web_shortcuts.browser.mjs} http://web/app/ murmur 64738")
   '';
 }
