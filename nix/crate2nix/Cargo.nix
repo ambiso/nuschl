@@ -383,6 +383,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "nuschl-stream-wasm" = rec {
+      packageId = "nuschl-stream-wasm";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "nuschl-stream-wasm";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "nuschl-testkit" = rec {
       packageId = "nuschl-testkit";
       build = internal.buildRustCrateWithFeatures {
@@ -25092,6 +25102,50 @@ rec {
             name = "tokio";
             packageId = "tokio";
             features = [ "rt-multi-thread" ];
+          }
+        ];
+
+      };
+      "nuschl-stream-wasm" = rec {
+        crateName = "nuschl-stream-wasm";
+        version = "0.2.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/stream-wasm; };
+        libName = "nuschl_stream_wasm";type = [ "cdylib" "rlib" ];
+        dependencies = [
+          {
+            name = "hex";
+            packageId = "hex";
+          }
+          {
+            name = "libcrux-hmac";
+            packageId = "libcrux-hmac 0.0.9";
+          }
+          {
+            name = "nuschl-sframe";
+            packageId = "nuschl-sframe";
+          }
+          {
+            name = "nuschl-stream";
+            packageId = "nuschl-stream";
+          }
+          {
+            name = "rand_core";
+            packageId = "rand_core 0.10.1";
+          }
+          {
+            name = "serde";
+            packageId = "serde";
+            features = [ "derive" ];
+          }
+          {
+            name = "serde_json";
+            packageId = "serde_json";
+          }
+          {
+            name = "wasm-bindgen";
+            packageId = "wasm-bindgen";
+            target = { target, features }: (("wasm32" == target."arch" or null) && ("unknown" == target."os" or null));
           }
         ];
 

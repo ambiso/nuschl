@@ -7564,6 +7564,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nuschl-stream-wasm"
+version = "0.2.0"
+dependencies = [
+ "hex",
+ "libcrux-hmac 0.0.9",
+ "nuschl-sframe",
+ "nuschl-stream",
+ "rand_core 0.10.1",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "nuschl-testkit"
 version = "0.2.0"
 dependencies = [
