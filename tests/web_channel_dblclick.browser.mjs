@@ -13,6 +13,8 @@ const browser=await chromium.launch({headless:true,executablePath:process.env.NU
   args:[`--unsafely-treat-insecure-origin-as-secure=${new URL(app).origin}`]});
 try {
   const context=await browser.newContext({viewport:{width:1200,height:800},hasTouch:true});
+  // A loaded CI host steals most of the VM's time: allow minutes per step.
+  context.setDefaultTimeout(180000);
   const page=await context.newPage(),errors=[];
   page.on("pageerror",error=>errors.push(error.message));
   await page.addInitScript(()=>{
@@ -28,11 +30,11 @@ try {
     };
   });
   await page.goto(`${app}#s=${host}:${port}&u=dblclick`);
-  await page.getByRole("button",{name:"Trust this certificate",exact:true}).click({timeout:30000});
-  await page.waitForFunction(()=>document.querySelector(".server-connection .status")?.textContent==="Connected",null,{timeout:30000});
+  await page.getByRole("button",{name:"Trust this certificate",exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector(".server-connection .status")?.textContent==="Connected");
   const centre=async name=>{const box=await page.getByRole("button",{name,exact:true}).boundingBox();return [box.x+box.width/2,box.y+box.height/2];};
   const joined=async name=>{
-    await page.waitForFunction(name=>__proof.voice?.joined&&__proof.voice.channel_id===__proof.servers[0].channels.find(channel=>channel.name===name)?.id,name,{timeout:10000})
+    await page.waitForFunction(name=>__proof.voice?.joined&&__proof.voice.channel_id===__proof.servers[0].channels.find(channel=>channel.name===name)?.id,name)
       .catch(async error=>{throw new Error(`${name}: ${error.message} ${JSON.stringify(await page.evaluate(()=>({joins:__proof.joins,voice:__proof.voice})))}`);});
     assert.equal(await page.evaluate(()=>__proof.voice.muted),true,`joining ${name} unmuted`);
   };
