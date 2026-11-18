@@ -38,7 +38,7 @@ const ROOM: [u8; 16] = [3; 16];
 struct Sfu {
     child: Child,
     url: String,
-    _directory: nuschl_testkit::TempDir,
+    directory: nuschl_testkit::TempDir,
 }
 
 impl Drop for Sfu {
@@ -48,7 +48,8 @@ impl Drop for Sfu {
     }
 }
 
-/// The SFU with `settings` added to its configuration.
+/// The SFU with `settings` added to its configuration; `{directory}` in them
+/// names its temporary directory.
 fn start(settings: &str) -> Sfu {
     let directory = nuschl_testkit::temp_dir();
     let secret = directory.path().join("turn-secret");
@@ -62,11 +63,12 @@ fn start(settings: &str) -> Sfu {
             media_listen = "127.0.0.1:0"
             media_addresses = ["127.0.0.1"]
             max_peers_per_room = 6
-            {settings}
+            {}
             [turn]
             urls = ["turn:turn.test:3478?transport=udp"]
             secret_file = "{}"
             "#,
+            settings.replace("{directory}", &directory.path().display().to_string()),
             secret.display()
         ),
     )
@@ -85,7 +87,7 @@ fn start(settings: &str) -> Sfu {
     Sfu {
         child,
         url: format!("ws://{signalling}/sfu"),
-        _directory: directory,
+        directory,
     }
 }
 
@@ -712,4 +714,33 @@ async fn a_receiver_budget_limits_its_layers() {
         assert!(Instant::now() < deadline, "{got:?}");
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
+}
+
+/// At its traffic budget the SFU refuses new peers, and the count is on disk.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_traffic_budget_refuses_new_video() {
+    let sfu = start("traffic_budget = 30000\nperiod = \"day\"\nstate_directory = \"{directory}\"");
+    let url = sfu.url.as_str();
+    let (mut host, _) = join(url, &ADMIT, true, true).await;
+    let (mut receiver, _) = join(url, &ADMIT, false, false).await;
+    host.start_publishing(Codec::Av1);
+    // About 20 kB a second reach the receiver; the count is saved each second.
+    let count = sfu.directory.path().join("traffic");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        for peer in [&mut host, &mut receiver] {
+            peer.step();
+        }
+        host.send_frame();
+        let sent = std::fs::read_to_string(&count)
+            .ok()
+            .and_then(|text| text.split_whitespace().nth(1)?.parse::<u64>().ok());
+        if sent.is_some_and(|sent| sent >= 30_000) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{sent:?}");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let (_, refused) = join(url, &ADMIT, false, false).await;
+    assert_eq!(refused, json!({"type": "error", "reason": "traffic"}));
 }

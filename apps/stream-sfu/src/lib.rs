@@ -13,6 +13,7 @@ pub mod protocol;
 pub mod quality;
 pub mod rooms;
 pub mod routing;
+pub mod traffic;
 
 use config::{Config, Listen};
 use futures_util::{SinkExt, StreamExt};
@@ -61,7 +62,19 @@ pub async fn serve(config: Config) -> std::io::Result<()> {
         }),
         None => None,
     };
-    let core = Core::new(config.clone(), socket.clone(), turn)?;
+    let traffic = match (config.traffic_budget, &config.state_directory) {
+        (Some(budget), Some(directory)) => Some(
+            traffic::Traffic::load(
+                directory.join("traffic"),
+                budget,
+                config.period,
+                media::unix_seconds(),
+            )
+            .map_err(std::io::Error::other)?,
+        ),
+        _ => None,
+    };
+    let core = Core::new(config.clone(), socket.clone(), turn, traffic)?;
     let (commands, receiver) = mpsc::channel(1024);
     tokio::spawn(core.run(receiver));
     let connections = Arc::default();

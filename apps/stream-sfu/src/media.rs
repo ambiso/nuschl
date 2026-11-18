@@ -14,6 +14,7 @@ use crate::{
     quality,
     rooms::{self, Bucket, Join, Nonce, PeerId, Refusal, RoomId, Rooms},
     routing::Routing,
+    traffic::Traffic,
 };
 use nuschl_stream_quality::{
     DecodeCapacity, Kind, QualityRequest, Throttle, adapt::Stepper, budget, dd::Choice,
@@ -159,6 +160,9 @@ pub struct Core {
     kicks: Vec<(PeerId, &'static str)>,
     /// The origin of the quality logic's time.
     origin: Instant,
+    traffic: Option<Traffic>,
+    /// How many tiers the traffic budget lowers every receiver's caps.
+    step: u64,
 }
 
 fn canonical(address: SocketAddr) -> SocketAddr {
@@ -175,6 +179,7 @@ impl Core {
         config: Arc<Config>,
         socket: Arc<UdpSocket>,
         turn: Option<Turn>,
+        traffic: Option<Traffic>,
     ) -> std::io::Result<Self> {
         let port = socket.local_addr()?.port();
         let local = config
@@ -202,6 +207,8 @@ impl Core {
             dirty: Vec::new(),
             kicks: Vec::new(),
             origin: Instant::now(),
+            traffic,
+            step: 0,
         })
     }
 
@@ -313,6 +320,10 @@ impl Core {
         out: mpsc::Sender<ServerMessage>,
         now: Instant,
     ) {
+        if self.traffic.as_ref().is_some_and(Traffic::exhausted) {
+            let _ = out.try_send(ServerMessage::Error { reason: "traffic" });
+            return;
+        }
         let role = match self.rooms.join(id, &join, nonce, client, now) {
             Ok(role) => role,
             Err(refusal) => {
@@ -397,6 +408,11 @@ impl Core {
         let room = self.peers.get(&id).ok_or("unknown")?.room;
         match message {
             ClientMessage::Join { .. } => return Err("joined"),
+            ClientMessage::Offer { .. }
+                if self.traffic.as_ref().is_some_and(Traffic::exhausted) =>
+            {
+                return Err("traffic");
+            }
             ClientMessage::Offer { sdp, screens } => {
                 let offer = SdpOffer::from_sdp_string(&sdp).map_err(|_| "sdp")?;
                 let limit = self.config.max_sources_per_peer;
@@ -697,6 +713,10 @@ impl Core {
                 }
                 Ok(Output::Transmit(transmit)) => {
                     self.routing.learn(transmit.destination, (id, leg), now);
+                    if let Some(traffic) = &mut self.traffic {
+                        // With the IPv4 and UDP headers.
+                        traffic.add(transmit.contents.len() + 28);
+                    }
                     let mut destination = transmit.destination;
                     if let (IpAddr::V4(v4), Ok(local)) =
                         (destination.ip(), self.socket.local_addr())
@@ -932,13 +952,18 @@ impl Core {
                 }) else {
                     continue;
                 };
-                let tier = quality::tier(video.kind, &forward.view, peer.decode);
+                let tier = quality::tier(video.kind, &forward.view, peer.decode, self.step);
+                let mut choices = video.layers.choices(video.kind, tier);
+                // Past the lowest tier the traffic budget leaves base layers only.
+                if self.step > video.kind.top() as u64 {
+                    choices.truncate(1);
+                }
                 let demand = demands.entry((forward.from, forward.source)).or_default();
                 *demand = (*demand).max(tier);
                 planned.push(Planned {
                     receiver: id,
                     forward: index,
-                    choices: video.layers.choices(video.kind, tier),
+                    choices,
                     ceiling: video.kind.ladder()[tier].ceiling,
                 });
             }
@@ -992,6 +1017,16 @@ impl Core {
     /// changed.
     fn quality(&mut self, now: Instant) {
         let since = now.saturating_duration_since(self.origin);
+        if let Some(traffic) = &mut self.traffic {
+            let step = traffic.step(unix_seconds());
+            if step != self.step {
+                tracing::info!(step, sent = traffic.sent(), "traffic budget step");
+                self.step = step;
+            }
+            if let Err(error) = traffic.save() {
+                tracing::warn!("saving the traffic count: {error}");
+            }
+        }
         let (planned, demands) = self.plan();
         let rates = rates(&planned);
         let (receivers, streams) = self.streams(&planned, &rates);
@@ -1076,6 +1111,12 @@ impl Core {
             self.dirty.push((from, Leg::Publish));
         }
     }
+}
+
+pub fn unix_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 /// One receiver's stream of one video source, for the budgets.
