@@ -12,12 +12,15 @@ const {chromium}=await import(pathToFileURL(join(playwright,"index.mjs")).href);
 const browser=await chromium.launch({headless:true,executablePath:chromiumPath,
   args:["--unsafely-treat-insecure-origin-as-secure=http://web","--disable-audio-output"]});
 const errors=[];
+// Hang guards sized for a loaded host: within them, slowness is timing (#376).
+const HANG=180000;
 async function open(name) {
   const page=await browser.newPage({viewport:{width:1280,height:800}});
+  page.setDefaultTimeout(HANG);page.setDefaultNavigationTimeout(HANG);
   page.on("pageerror",error=>errors.push(`${name}: ${error.message}`));
   await page.goto(`http://web/app/#s=murmur:64738&u=${name}`);
-  await page.getByRole("button",{name:"Trust this certificate",exact:true}).click({timeout:60000});
-  await page.waitForFunction(()=>document.querySelector(".server-connection .status")?.textContent==="Connected",null,{timeout:60000});
+  await page.getByRole("button",{name:"Trust this certificate",exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector(".server-connection .status")?.textContent==="Connected",null);
   return page;
 }
 try {
@@ -30,7 +33,7 @@ try {
   await bob.getByRole("button",{name:"Expand Lobby",exact:true}).click();
   await bob.getByRole("button",{name:"Games",exact:true}).click();
   await bob.getByRole("button",{name:"Join voice",exact:true}).click();
-  await count.waitFor({timeout:30000});
+  await count.waitFor();
   assert.equal(await count.getAttribute("title"),"1 person in collapsed channels");
   assert.equal((await count.textContent()).trim(),"1");
   // Expanded, Lobby shows Games and bob in it instead of the count.
@@ -44,7 +47,7 @@ try {
   // bob leaves voice for the root: the count goes.
   await bob.getByRole("button",{name:"Root",exact:true}).click();
   await bob.getByRole("button",{name:"Join voice",exact:true}).click();
-  await count.waitFor({state:"detached",timeout:30000});
+  await count.waitFor({state:"detached"});
   assert.deepEqual(errors,[]);
   console.log("collapsed Lobby: \"1 person inside\" while bob is in Games, gone after he leaves");
 } finally {
