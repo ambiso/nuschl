@@ -368,6 +368,9 @@ mod tests {
         let packets = tone(3, 0.2);
         let mut clean = Mixer::default();
         for mixer in [&mut injected, &mut clean] {
+            // Deep PLC for every concealment, however long a decode takes:
+            // each mixer's budget follows its own clock.
+            mixer.budget.limit = Duration::from_secs(3600);
             feed(mixer, 1, 1, &packets, 0.25);
         }
         let before = injected.speakers[&(1, 1)].last_packet;
