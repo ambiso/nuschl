@@ -15,8 +15,8 @@ Every shipped binary set carries its third-party notices in
 `release/notice-roots.json` names each scope's targets, packaged root crates
 (desktop with its workers, server, music bot, RTC probe, web WASM), features and
 components outside Cargo. `nix/release-notices.nix` builds one bundle per scope;
-`nix build .#release-notices-linux` (also `-windows`, `-macos`, `-web`,
-`-musicbot`, `-rtc`) builds them on their own.
+`nix build .#release-notices-linux` (also `-linux-portable`, `-windows`, `-macos`,
+`-web`, `-musicbot`, `-rtc`) builds them on their own.
 
 ## Rust crates
 
@@ -53,6 +53,9 @@ text; they ship the Mozilla text and the source locations in
 | `syntect-default-assets` | `release/licenses/syntect-assets/` (syntax and theme grants) | desktop, web, music bot |
 | `emoji-assets` | Twemoji (CC-BY 4.0) attribution, emojibase-data and CLDR licenses from `nix/emoji.nix` ([emoji](emoji.md)) | desktop, web |
 | `gcc-runtime`, `mingw-w64-runtime` | `COPYING.RUNTIME`, `COPYING3`, the MinGW runtime and winpthreads licenses, from the pinned source archives | Windows |
+| `musl` | musl's `COPYRIGHT` (MIT), from the zig package's bundled musl | portable Linux |
+| `zig-runtime` | Zig's `LICENSE` (MIT, its compiler-rt) and LLVM libunwind's `LICENSE.TXT` (Apache-2.0 WITH LLVM-exception), from the zig package | portable Linux |
+| `glibc-startup` | glibc's `LICENSES` from the zig package and the LGPL-2.1 text (`COPYING.LESSERv2`) from the glibc source: the start-up objects and `libc_nonshared.a` zig builds for the glibc-linked programs (LGPL-2.1 with the linking exception; `csu/init.c`, which only defines `_IO_stdin_used`, without it) | portable Linux |
 | `web-runtime-assets` | The web app's `licenses/`: npm notices of the modules Vite emits, and Temml's | web |
 | `musicbot-web-runtime-assets` | The music bot page's npm notices | music bot |
 
@@ -62,7 +65,7 @@ build and stops it when an emitted package has no license file.
 ## Checks
 
 The notice derivation fails on a crate without license text, a clarification
-whose file hash differs, or a component missing from the scope.
+whose file hash differs, or a component missing from the scope or without its notice files.
 `release/check-notices.py --scope <scope> <directory>` and the release tools
 (`release/prepare-artifacts.py`, `release/local-release.py`) check a bundle's
 scope, policy entry and text hash against `release/notice-roots.json` before

@@ -5,6 +5,12 @@
     "features": ["nuschl-update-worker/ed25519", "nuschl-update-worker/mldsa44"],
     "components": ["rust-standard-library", "mumble-protocol", "newcm-math-font", "syntect-default-assets", "emoji-assets"]
   },
+  "linux-portable": {
+    "targets": ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"],
+    "packages": ["nuschl", "nuschl-cli", "nuschl-tui", "nuschl-content-worker", "nuschl-crypto-worker", "nuschl-math-worker", "nuschl-media-worker", "nuschl-storage-worker", "nuschl-transfer-worker", "nuschl-update-worker"],
+    "features": ["nuschl-update-worker/ed25519", "nuschl-update-worker/mldsa44"],
+    "components": ["rust-standard-library", "mumble-protocol", "newcm-math-font", "syntect-default-assets", "emoji-assets", "musl", "zig-runtime", "glibc-startup"]
+  },
   "linux-aarch64-nix": {
     "targets": ["aarch64-unknown-linux-gnu"],
     "packages": ["nuschl", "nuschl-cli", "nuschl-tui", "nuschld", "nuschl-witness", "nuschl-web-relay", "nuschl-content-worker", "nuschl-crypto-worker", "nuschl-math-worker", "nuschl-media-worker", "nuschl-storage-worker", "nuschl-transfer-worker", "nuschl-update-worker"],

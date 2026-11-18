@@ -47,6 +47,8 @@ for item in args.component:
     name, _, path = item.partition("=")
     path = Path(path)
     files = sorted(p for p in path.rglob("*") if p.is_file()) if path.is_dir() else [path]
+    if not all(file.is_file() for file in files) or not files:
+        raise SystemExit(f"notice component {name}: no notice file at {path}")
     for file in files:
         if file.suffix != ".json":
             relative = file.relative_to(path).as_posix() if path.is_dir() else file.name

@@ -696,6 +696,7 @@
         packages.web-audio-wasm = webClient.audioWasm;
         packages.web-content-wasm = webClient.contentWasm;
         packages.release-notices-linux = releaseNotices.linux.bundle;
+        packages.release-notices-linux-portable = releaseNotices.portable.bundle;
         packages.release-notices-windows = releaseNotices.windows.bundle;
         packages.release-notices-macos = releaseNotices.macos.bundle;
         packages.release-notices-web = releaseNotices.web.bundle;

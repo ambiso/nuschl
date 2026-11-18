@@ -64,6 +64,19 @@ let
         "mingw-w64-libraries/winpthreads/COPYING"
       ])
     ];
+    # The C runtime zig links into the portable build, from the zig package
+    # that builds it: musl in the static programs, compiler-rt (zig's own, MIT)
+    # and libunwind in all of them, and glibc's start-up objects and
+    # libc_nonshared in the glibc-linked desktop and media worker.
+    musl = [ "${pkgs.zig}/lib/zig/libc/musl/COPYRIGHT" ];
+    zig-runtime = [
+      "${pkgs.zig.src}/LICENSE"
+      "${pkgs.zig}/lib/zig/libunwind/LICENSE.TXT"
+    ];
+    glibc-startup = [
+      "${pkgs.zig}/lib/zig/libc/glibc/LICENSES"
+      (fromArchive "glibc" pkgs.glibc.src [ "COPYING.LESSERv2" ])
+    ];
     web-runtime-assets = [ webRuntimeNotices ];
     musicbot-web-runtime-assets = [ musicbotRuntimeNotices ];
   };
@@ -125,6 +138,7 @@ in
 {
   inherit forScope;
   linux = forScope "linux-nix";
+  portable = forScope "linux-portable";
   windows = forScope "windows-x86_64";
   macos = forScope "macos-universal";
   web = forScope "web";
