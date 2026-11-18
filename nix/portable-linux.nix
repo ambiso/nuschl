@@ -5,10 +5,6 @@
   pkgs,
   toolchain,
   projectRoot ? ../.,
-  nativeNotices ? null,
-  desktopFiles ? (import ./desktop-files.nix { inherit pkgs; }).linux,
-  appstreamXML ? null,
-  version ? "0.1.0",
 }:
 assert pkgs.lib.assertMsg (
   pkgs.stdenv.hostPlatform.system == "x86_64-linux"
@@ -126,24 +122,11 @@ let
     nuschl-update-verify-ed25519 = leafWith "nuschl-update-worker" { features = [ "ed25519" ]; };
     nuschl-update-verify-mldsa44 = leafWith "nuschl-update-worker" { features = [ "mldsa44" ]; };
   };
-  stage =
-    assert nativeNotices != null;
-    pkgs.runCommand (lib.strings.sanitizeDerivationName "nuschl-native-fhs-${version}") { } ''
-      mkdir -p "$out/usr/lib/nuschl" "$out/usr/bin" "$out/usr/share/licenses/nuschl"
-      ${lib.concatStringsSep "\n" (
-        lib.mapAttrsToList (name: program: ''
-          install -Dm755 ${program}/bin/${name} "$out/usr/lib/nuschl/${name}"
-        '') programs
-      )}
-      ln -s ../lib/nuschl/nuschl "$out/usr/bin/nuschl"
-      cp -R ${desktopFiles}/share/. "$out/usr/share/"
-      cp -R ${nativeNotices}/share/licenses/nuschl/. "$out/usr/share/licenses/nuschl/"
-      install -Dm644 ${projectRoot}/LICENSE "$out/usr/share/licenses/nuschl/EUPL-1.2"
-      install -Dm644 ${projectRoot}/crates/protocol/proto/LICENSE.mumble "$out/usr/share/licenses/nuschl/Mumble-BSD"
-      ${lib.optionalString (appstreamXML != null) ''
-        install -Dm644 ${appstreamXML} "$out/usr/share/metainfo/org.nuschl.Nuschl.metainfo.xml"
-      ''}
-    '';
+  # bin/ holds the nine programs.
+  binaries = pkgs.symlinkJoin {
+    name = "nuschl-linux-binaries";
+    paths = lib.attrValues programs;
+  };
 
 in
 {
@@ -152,7 +135,7 @@ in
     sysroot
     linker
     programs
-    stage
+    binaries
     ;
   content = programs.nuschl-content-worker;
   desktop = programs.nuschl;
