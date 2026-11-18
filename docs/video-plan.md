@@ -246,9 +246,34 @@ encoder offers them, spatial layers.
   ([CVE-2023-5217](https://nvd.nist.gov/vuln/detail/CVE-2023-5217)), so
   encoding runs isolated too.
 - **Decoding.** A `--decode` role per call: the hardware decoder first, rav1d
-  (Owner) as the AV1 software fallback, with pixel, memory and CPU caps;
-  decoded frames reach the desktop through shared memory and stay on the
-  device. Software VP9 decoding is open (§12).
+  (Owner) as the AV1 software fallback, with pixel, memory and CPU caps.
+  Decoded frames stay on the device.
+- **Software VP9 (Owner).** The fallback for VP9 calls without a hardware
+  codec: a libvpx encoder and decoder, or FFmpeg's VP9 decoder, in its own
+  video-worker role, one process per incoming stream (or per call), with
+  access to its pipes only and the existing sandboxes' memory and CPU
+  limits. That native code
+  needs a narrow SECURITY.md exception for that role, agreed with the owner
+  when the slice starts.
+- **Frame transport (Owner).** In three steps:
+  1. The existing bounded framed pipes (`F_SETPIPE_SZ` 1 MiB) with copies;
+     1080p30 I420 is about 93 MB/s. Measure `instructions:u` per frame before
+     optimising.
+  2. If copying dominates (4K60 is about 750 MB/s): slots in one `memfd`,
+     created once and passed with `SCM_RIGHTS`, carry pixel payloads only.
+     Bounded pipe messages ("frame seq in slot k, length, format, size") hand
+     a slot over; the trusted side checks slot and length against its own
+     table, uploads the pixels and returns "slot k free". Ordering,
+     backpressure and crash handling stay on the pipe, so a hostile worker
+     can at most produce wrong pixels. Mapping the `memfd` needs one narrow
+     SECURITY.md exception.
+  3. Hardware frames go zero-copy: VA-API exports decoded surfaces as dmabuf
+     fds, passed over the Unix socket in the same ordered protocol and
+     imported by the GPU; shared D3D11 textures on Windows and IOSurface on
+     macOS.
+
+  `vmsplice` is set aside: it is Linux only, its gift semantics fall outside
+  Rust's types, and the reader still copies.
 - **Workers.** Hardware encoding and decoding run in the isolated
   `nuschl-video-worker` roles (#35, V1, N1), each with only the devices it
   needs (the DRM render node on Linux); untrusted bitstreams are parsed only
@@ -391,6 +416,11 @@ Murmur 1.4 and 1.5 with a stock Mumble client, and relay-only by packet capture.
   neither AV1 nor VP9 gets a clear message.
 - One codec per call: AV1 when every participant decodes it, VP9 otherwise;
   publishers encode each source once.
+- Native software VP9: libvpx or FFmpeg's VP9 decoder in its own isolated
+  video-worker role, as the fallback to hardware codecs (§6).
+- Frame transport: framed pipes first, then `memfd` slots for pixels with
+  control on the pipe, and dmabuf (or the platform equivalent) for hardware
+  frames (§6).
 - On Nuschl servers, later: the voice channel's WebRTC session is the call,
   and Start camera and Share screen add tracks to it (§3).
 - Camera quality and screen quality are user-selectable (§5).
@@ -421,9 +451,3 @@ with the envelope; hardware AV1 encoding per browser and per GPU vendor; the
 §5.1 figures on real content; camera SVC in hardware encoders; native 4K60
 decoding; the publisher-lease stop deadline; the SFrame envelope for VP9; all
 effort estimates.
-
-For the owner: native clients decode VP9 calls in hardware. The software VP9
-decoders known to us are native code outside SECURITY.md's exceptions, so for
-devices without a VP9 hardware decoder the options are hardware-only VP9
-decoding with a clear message on those devices, or a reviewed decoder in the
-isolated decode role, which needs a SECURITY.md decision.
