@@ -189,7 +189,6 @@ impl Client {
         let CryptoResponse::Bundle(bundle) = self.ask(CryptoRequest::PublishBundle {
             server: self.server.into(),
             device_name: "laptop".into(),
-            recovery: nuschl_ipc::crypto::RecoveryPolicy::Never,
         }) else {
             panic!("no bundle")
         };

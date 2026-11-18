@@ -5,9 +5,7 @@
 mod common;
 
 use common::*;
-use nuschl_ipc::crypto::{
-    ContactState, CryptoRequest, CryptoResponse, HeadOutcome, IdentityView, RecoveryPolicy,
-};
+use nuschl_ipc::crypto::{ContactState, CryptoRequest, CryptoResponse, HeadOutcome, IdentityView};
 use nuschl_kt::Directory;
 
 fn identity(client: &mut Client, request: CryptoRequest) -> IdentityView {
@@ -17,68 +15,41 @@ fn identity(client: &mut Client, request: CryptoRequest) -> IdentityView {
     }
 }
 
-fn create(client: &mut Client, recovery: RecoveryPolicy) -> IdentityView {
+fn create(client: &mut Client) -> IdentityView {
     identity(
         client,
         CryptoRequest::CreateIdentity {
             device_name: "desk".into(),
-            recovery,
         },
     )
 }
 
 #[test]
-fn the_recovery_key_is_offered_once_and_skipping_deletes_the_root() {
-    // Offered: shown until saved, and the root stays recoverable.
-    let mut saved = Client::new();
-    let view = create(&mut saved, RecoveryPolicy::Offer);
-    assert!(view.created && view.recovery_pending && view.recoverable && view.can_link);
+fn every_identity_gets_a_recovery_key_the_device_keeps() {
+    let mut client = Client::new();
+    let view = create(&mut client);
+    assert!(view.created && view.recovery_key_kept && view.recoverable && view.can_link);
     assert_eq!(view.device_name, "desk");
-    let CryptoResponse::RecoveryKey(key) = saved.ask(CryptoRequest::ShowRecoveryKey) else {
+    let CryptoResponse::RecoveryKey(key) = client.ask(CryptoRequest::ShowRecoveryKey) else {
         panic!()
     };
     assert_eq!(key.len(), 56 + 13, "14 groups of 4");
     // Creating again changes nothing.
-    let again = create(&mut saved, RecoveryPolicy::Offer);
-    assert!(!again.created);
+    let again = create(&mut client);
+    assert!(!again.created && again.recovery_key_kept);
     assert_eq!(again.fingerprint, view.fingerprint);
-    // The pending key survives a restart, until it is saved.
-    saved = saved.restart();
-    assert!(
-        matches!(saved.ask(CryptoRequest::ShowRecoveryKey), CryptoResponse::RecoveryKey(k) if k == key)
-    );
-    let view = identity(&mut saved, CryptoRequest::RecoveryKeySaved);
-    assert!(!view.recovery_pending && view.recoverable);
-    assert!(matches!(
-        saved.ask(CryptoRequest::ShowRecoveryKey),
-        CryptoResponse::Rejected(_)
-    ));
-    // Nothing secret is left readable in the worker's directory.
-    for entry in std::fs::read_dir(saved.directory.path()).unwrap() {
+    // The key survives restarts and can be shown again any time.
+    for _ in 0..2 {
+        client = client.restart();
+        assert!(
+            matches!(client.ask(CryptoRequest::ShowRecoveryKey), CryptoResponse::RecoveryKey(k) if k == key)
+        );
+    }
+    // It is kept sealed: nothing secret is readable in the worker's directory.
+    for entry in std::fs::read_dir(client.directory.path()).unwrap() {
         let bytes = std::fs::read(entry.unwrap().path()).unwrap();
         assert!(!bytes.windows(19).any(|w| w == &key.as_bytes()[..19]));
     }
-
-    // Skipped: the recovery blob (and with it the root) is gone.
-    let mut skipped = Client::new();
-    create(&mut skipped, RecoveryPolicy::Offer);
-    let view = identity(&mut skipped, CryptoRequest::SkipRecoveryKey);
-    assert!(!view.recovery_pending && !view.recoverable);
-    skipped = skipped.restart();
-    let view = identity(&mut skipped, CryptoRequest::Identity);
-    assert!(!view.recoverable && view.fingerprint.is_some());
-
-    // Required: skipping is refused.
-    let mut required = Client::new();
-    create(&mut required, RecoveryPolicy::Require);
-    assert!(matches!(
-        required.ask(CryptoRequest::SkipRecoveryKey),
-        CryptoResponse::Rejected(reason) if reason.contains("required")
-    ));
-    // Never: no recovery key at all.
-    let mut never = Client::new();
-    let view = create(&mut never, RecoveryPolicy::Never);
-    assert!(!view.recovery_pending && !view.recoverable);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -231,7 +202,6 @@ async fn guests_and_strangers_are_refused_and_bounds_hold() {
         guest.ask(CryptoRequest::PublishBundle {
             server: SERVER.into(),
             device_name: "x".into(),
-            recovery: RecoveryPolicy::Never,
         }),
         CryptoResponse::Rejected(reason) if reason.contains("guest")
     ));

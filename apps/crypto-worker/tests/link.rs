@@ -6,7 +6,7 @@
 mod common;
 
 use common::*;
-use nuschl_ipc::crypto::{CryptoRequest, CryptoResponse, IdentityView, RecoveryPolicy};
+use nuschl_ipc::crypto::{CryptoRequest, CryptoResponse, IdentityView};
 
 fn view(response: CryptoResponse) -> IdentityView {
     match response {
@@ -34,7 +34,6 @@ fn a_linked_phone_links_the_next_device() {
     let mut laptop = Client::new();
     let own = view(laptop.ask(CryptoRequest::CreateIdentity {
         device_name: "laptop".into(),
-        recovery: RecoveryPolicy::Never,
     }));
     let mut phone = Client::new();
     let phone_view = link(&mut laptop, &mut phone);
@@ -70,7 +69,6 @@ fn a_linked_device_holds_the_same_identity() {
     let mut laptop = Client::new();
     let own = view(laptop.ask(CryptoRequest::CreateIdentity {
         device_name: "laptop".into(),
-        recovery: RecoveryPolicy::Never,
     }));
     let mut phone = Client::new();
     let (code, pake) = offer(&mut laptop);
@@ -104,7 +102,6 @@ fn a_wrong_code_and_out_of_order_steps_are_refused() {
     let mut laptop = Client::new();
     view(laptop.ask(CryptoRequest::CreateIdentity {
         device_name: "laptop".into(),
-        recovery: RecoveryPolicy::Never,
     }));
     // No identity yet: nothing to link.
     let mut phone = Client::new();

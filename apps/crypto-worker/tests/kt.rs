@@ -8,7 +8,7 @@
 //! registration.
 use nuschl_ipc::crypto::{
     ContactState, ContactView, HeadOutcome, KeyTransparencySettings, MonitorOutcome,
-    RecoveryPolicy, WitnessSetting, WitnessStatus,
+    WitnessSetting, WitnessStatus,
 };
 use nuschl_protocol::nuschl::v1;
 use nuschl_session::{
@@ -185,7 +185,6 @@ impl User {
                 witnessing: self.witnessing.clone(),
                 crypto: self.crypto.clone(),
                 device_name: format!("{}'s laptop", self.name),
-                recovery: RecoveryPolicy::Offer,
             }),
         }
     }
@@ -354,7 +353,7 @@ async fn publish_look_up_trust_on_first_use_and_verify() {
     else {
         unreachable!()
     };
-    assert!(own.recovery_pending && own.recoverable && own.can_link);
+    assert!(own.recovery_key_kept && own.recoverable && own.can_link);
     let alice_fingerprint = own.fingerprint.clone().unwrap();
     a.published().await;
 
@@ -629,7 +628,6 @@ async fn forged_publication(server: &Server, user_id: u32, directory: &Path) -> 
         worker.handle(nuschl_ipc::crypto::CryptoRequest::PublishBundle {
             server: "operator".into(),
             device_name: "mallory".into(),
-            recovery: RecoveryPolicy::Never,
         })
     else {
         panic!("no bundle")

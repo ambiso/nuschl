@@ -56,7 +56,7 @@ mod windows {
     use nuschl_ipc::{
         ContentRequest, ContentResponse, Envelope, LiveMediaEvent, LiveMediaRequest,
         StorageRequest, StorageResponse, TransferEvent, TransferRequest, WormholeServers,
-        crypto::{CryptoRequest, CryptoResponse, RecoveryPolicy},
+        crypto::{CryptoRequest, CryptoResponse},
         host,
         math::{MathRequest, MathResponse},
         write_frame,
@@ -813,7 +813,6 @@ mod windows {
                 1,
                 CryptoRequest::CreateIdentity {
                     device_name: "vm".into(),
-                    recovery: RecoveryPolicy::Never,
                 },
             )
             .await?;

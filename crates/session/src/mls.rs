@@ -291,7 +291,6 @@ impl Context {
         if let Ok(CryptoResponse::Identity(view)) = self
             .mls_worker(CryptoRequest::CreateIdentity {
                 device_name: self.device_name.clone(),
-                recovery: self.recovery,
             })
             .await
             && view.created

@@ -116,21 +116,6 @@ pub struct CryptoServer {
     pub label: String,
 }
 
-/// Whether a recovery key is offered at creation (docs/e2ee.md §10, question 1;
-/// the user has not decided yet, so it is a setting).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RecoveryPolicy {
-    /// Created with the identity and shown to the user, who may skip it (then the
-    /// identity root is deleted).
-    #[default]
-    Offer,
-    /// The same, but skipping is refused.
-    Require,
-    /// No recovery key: the identity root exists only during creation.
-    Never,
-}
-
 /// Which witnesses the client requires of every server's key-transparency log
 /// (docs/e2ee.md §5.9, `key_transparency` in settings.json and managed.json).
 /// The crypto worker combines it with the built-in witnesses
@@ -244,18 +229,10 @@ pub enum CryptoRequest {
     /// The identity, if any: `Identity`.
     Identity,
     /// Creates the identity unless there is one: `Identity`.
-    CreateIdentity {
-        device_name: String,
-        recovery: RecoveryPolicy,
-    },
-    /// The recovery key made at creation, while the user has not saved or skipped
-    /// it: `RecoveryKey`.
+    CreateIdentity { device_name: String },
+    /// The recovery key made with the identity, which this device keeps:
+    /// `RecoveryKey`.
     ShowRecoveryKey,
-    /// The user wrote the recovery key down: forget it here (`Identity`).
-    RecoveryKeySaved,
-    /// The user declined a recovery key: forget it and the identity root
-    /// (`Identity`). Refused under [`RecoveryPolicy::Require`].
-    SkipRecoveryKey,
     /// Connected to a `kt/1` server: pin its log (or check the pin), and check its
     /// newest head. `account` is ours there (empty for guests): `Head`.
     Connect {
@@ -288,11 +265,7 @@ pub enum CryptoRequest {
     },
     /// What to publish for our account on this server (creating the identity on
     /// first need): `Bundle`.
-    PublishBundle {
-        server: String,
-        device_name: String,
-        recovery: RecoveryPolicy,
-    },
+    PublishBundle { server: String, device_name: String },
     /// The server accepted our publication (`KtPublished`): `Done`.
     Published {
         server: String,
@@ -644,10 +617,7 @@ impl CryptoRequest {
                 .try_for_each(|bytes| at_most(bytes.len(), MAX_MLS_KEY_PACKAGE, "key package"))
         };
         match self {
-            Self::Identity
-            | Self::ShowRecoveryKey
-            | Self::RecoveryKeySaved
-            | Self::SkipRecoveryKey => Ok(()),
+            Self::Identity | Self::ShowRecoveryKey => Ok(()),
             Self::CreateIdentity { device_name, .. } => {
                 at_most(device_name.len(), MAX_DEVICE_NAME, "device name")
             }
@@ -967,8 +937,8 @@ pub struct IdentityView {
     pub device_name: String,
     /// Created by the request this answers.
     pub created: bool,
-    /// A recovery key is waiting to be saved or skipped.
-    pub recovery_pending: bool,
+    /// This device keeps the recovery key (`ShowRecoveryKey` shows it).
+    pub recovery_key_kept: bool,
     /// A recovery blob exists (the root can be restored with the recovery key).
     pub recoverable: bool,
     /// This device holds the device-signing key (it can link others).

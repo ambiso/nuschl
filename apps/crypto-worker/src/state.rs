@@ -4,7 +4,7 @@
 //! self-monitoring checkpoint, and trust on first use per contact; per identity,
 //! where it was verified out of band. Sealed under the store key as JSON.
 use nuschl_ipc::crypto::{
-    ContactState, KeyTransparencySettings, KtRecordBytes, RecoveryPolicy, base64_bytes, base64_list,
+    ContactState, KeyTransparencySettings, KtRecordBytes, base64_bytes, base64_list,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -22,7 +22,9 @@ pub const MAX_SERVERS: usize = 1024;
 pub struct State {
     pub version: u32,
     pub device_name: String,
-    pub recovery: RecoveryPolicy,
+    /// The recovery policy earlier versions kept: read and dropped.
+    #[serde(default, skip_serializing)]
+    pub recovery: Option<serde_json::Value>,
     pub servers: BTreeMap<String, ServerState>,
     /// Identities compared out of band, by fingerprint (hex): verification belongs to
     /// the identity and holds on every server (docs/e2ee.md §4).
@@ -168,5 +170,24 @@ impl Default for Contact {
             roster: None,
             roster_ms: 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::State;
+
+    #[test]
+    fn a_state_from_before_kept_recovery_keys_still_loads() {
+        let mut earlier = serde_json::to_value(State::default()).unwrap();
+        earlier["recovery"] = "offer".into();
+        let state: State = serde_json::from_value(earlier).unwrap();
+        // Dropped on the next save.
+        assert!(
+            serde_json::to_value(&state)
+                .unwrap()
+                .get("recovery")
+                .is_none()
+        );
     }
 }

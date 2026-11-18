@@ -16,7 +16,7 @@ use nuschl_ipc::{
     Envelope, MAX_FRAME_BYTES,
     crypto::{
         ContactView, CryptoRequest, CryptoResponse, CryptoServer, HeadOutcome, IdentityView,
-        KeyTransparencySettings, KtRecordBytes, MonitorOutcome, RecoveryPolicy,
+        KeyTransparencySettings, KtRecordBytes, MonitorOutcome,
     },
     read_frame_async, write_frame,
 };
@@ -165,7 +165,6 @@ pub struct IdentitySetup {
     pub crypto: CryptoHandle,
     /// This device's name in its certificate, if the identity is created now.
     pub device_name: String,
-    pub recovery: RecoveryPolicy,
     /// Required key-transparency witnesses (docs/e2ee.md §5.9).
     pub witnessing: KeyTransparencySettings,
 }
@@ -196,11 +195,9 @@ pub enum IdentityCommand {
     AcceptKeyChange {
         account: [u8; 16],
     },
-    /// Our own identity (to show it, or the recovery key that waits).
+    /// Our own identity (to show it).
     Own,
     ShowRecoveryKey,
-    RecoveryKeySaved,
-    SkipRecoveryKey,
     AcknowledgeAlarm,
 }
 
@@ -209,7 +206,7 @@ pub enum IdentityCommand {
 pub enum IdentityEvent {
     /// Our identity; `created` once, when it was made for this server.
     Own(IdentityView),
-    /// The recovery key made at creation, to show once.
+    /// The recovery key this device keeps, when asked for it.
     RecoveryKey(String),
     /// The server's log: an accepted head, a failure (retried), misbehaviour.
     Log(HeadOutcome),
@@ -234,7 +231,6 @@ pub struct Driver {
     /// The log descriptor from the server's hello.
     pub descriptor: Vec<u8>,
     pub device_name: String,
-    pub recovery: RecoveryPolicy,
     /// Frames to send (`kind`, encoded body), on the connection's writer.
     pub frames: mpsc::Sender<(u16, Vec<u8>)>,
     /// Replies to the driver's requests (`KT_REQUEST` ids), from the reader.
@@ -259,7 +255,6 @@ pub(crate) struct Context {
     pub(crate) crypto: CryptoHandle,
     pub(crate) server: CryptoServer,
     pub(crate) device_name: String,
-    pub(crate) recovery: RecoveryPolicy,
     frames: mpsc::Sender<(u16, Vec<u8>)>,
     replies: mpsc::Receiver<(u16, bytes::Bytes)>,
     pub(crate) events: mpsc::Sender<crate::connection::SessionEvent>,
@@ -487,7 +482,6 @@ impl Context {
             .worker(CryptoRequest::PublishBundle {
                 server: self.server.key.clone(),
                 device_name: self.device_name.clone(),
-                recovery: self.recovery,
             })
             .await?
         {
@@ -697,7 +691,6 @@ impl Context {
             && let Ok(CryptoResponse::Identity(view)) = self
                 .worker(CryptoRequest::CreateIdentity {
                     device_name: self.device_name.clone(),
-                    recovery: self.recovery,
                 })
                 .await
         {
@@ -870,8 +863,6 @@ impl Context {
             }
             IdentityCommand::Own => self.worker(CryptoRequest::Identity).await,
             IdentityCommand::ShowRecoveryKey => self.worker(CryptoRequest::ShowRecoveryKey).await,
-            IdentityCommand::RecoveryKeySaved => self.worker(CryptoRequest::RecoveryKeySaved).await,
-            IdentityCommand::SkipRecoveryKey => self.worker(CryptoRequest::SkipRecoveryKey).await,
             IdentityCommand::AcknowledgeAlarm => {
                 self.worker(CryptoRequest::AcknowledgeAlarm { server })
                     .await
@@ -922,7 +913,6 @@ pub async fn drive(driver: Driver) {
         server,
         descriptor,
         device_name,
-        recovery,
         frames,
         replies,
         mut commands,
@@ -939,7 +929,6 @@ pub async fn drive(driver: Driver) {
         crypto,
         server,
         device_name,
-        recovery,
         frames,
         replies,
         events,

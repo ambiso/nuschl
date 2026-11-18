@@ -290,9 +290,11 @@ pub struct ClientSettings {
     pub wormhole_relay: String,
     /// Theme, fonts, text size and zoom.
     pub appearance: AppearanceSettings,
-    /// Whether a recovery key is offered when the Nuschl identity is created
-    /// (docs/e2ee.md §10, question 1: offered and skippable by default).
-    pub recovery_key: nuschl_ipc::crypto::RecoveryPolicy,
+    /// No longer used: every Nuschl identity gets a recovery key, which the
+    /// device keeps (docs/e2ee.md §3.5). Still read, so settings files that
+    /// carry it keep loading; never written.
+    #[serde(skip_serializing)]
+    pub recovery_key: Option<serde_json::Value>,
     /// No longer used: end-to-end encryption is a server-level switch (`e2ee/1`,
     /// docs/e2ee.md §10), not a client setting. Still read, so settings files that
     /// carry it keep loading; never written.
@@ -3280,7 +3282,8 @@ mod tests {
         // What the released version reads: only keys it knows, privacy kept.
         let written = read(&profile, "settings.json");
         assert!(!written.contains("voice_bitrate"), "{written}");
-        assert_eq!(settings_keys(&profile), released_keys());
+        // Only keys the released version knows; it fills in the missing ones.
+        assert!(settings_keys(&profile).is_subset(&released_keys()));
         let old: Map<String, Value> = serde_json::from_str(&written).unwrap();
         assert_eq!(old["relay_only"], Value::Bool(true));
         assert_eq!(
@@ -3734,7 +3737,8 @@ mod tests {
         profile
             .save_settings(&settings, &ManagedSettings::default())
             .unwrap();
-        assert_eq!(settings_keys(&profile), released_keys());
+        // Only keys the released version knows; it fills in the missing ones.
+        assert!(settings_keys(&profile).is_subset(&released_keys()));
         assert_eq!(profile.load().settings.link_previews.mode, Mode::Direct);
         let obsolete = ["link-previews.json", "managed-link-previews.json"];
         for name in obsolete {
