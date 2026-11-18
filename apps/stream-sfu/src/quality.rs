@@ -121,10 +121,12 @@ pub fn full_capacity() -> DecodeCapacity {
     }
 }
 
-/// The tier a receiver gets of a source of `kind`.
-pub fn tier(kind: Kind, view: &View, decode: DecodeCapacity) -> usize {
+/// The tier a receiver gets of a source of `kind`, with the caps lowered by
+/// `step` tiers (`traffic`).
+pub fn tier(kind: Kind, view: &View, decode: DecodeCapacity, step: u64) -> usize {
     let top = kind.top();
-    receive(view.request.unwrap_or(top), decode.get(kind), top, top)
+    let policy = top.saturating_sub(usize::try_from(step).unwrap_or(usize::MAX));
+    receive(view.request.unwrap_or(top), decode.get(kind), top, policy)
 }
 
 /// The descriptor's extension id in the SFU's offers; an offer from a peer
@@ -186,6 +188,21 @@ pub fn forwarded(received: &ExtensionValues) -> ExtensionValues {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn traffic_steps_lower_the_tier() {
+        let view = View::default();
+        let full = full_capacity();
+        let tiers: Vec<usize> = (0..5)
+            .map(|step| tier(Kind::Camera, &view, full, step))
+            .collect();
+        assert_eq!(tiers, [3, 2, 1, 0, 0]);
+        let asked = View {
+            request: Some(1),
+            ..View::default()
+        };
+        assert_eq!(tier(Kind::Screen, &asked, full, 1), 1, "the least of both");
+    }
 
     #[test]
     fn skipped_packets_leave_no_gap() {

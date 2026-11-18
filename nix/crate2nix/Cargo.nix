@@ -25054,6 +25054,12 @@ rec {
             packageId = "httparse";
           }
           {
+            name = "jiff";
+            packageId = "jiff";
+            usesDefaultFeatures = false;
+            features = [ "std" ];
+          }
+          {
             name = "nuschl-stream-quality";
             packageId = "nuschl-stream-quality";
           }

@@ -226,7 +226,8 @@ Mumble servers can show it to other clients. RTC adapters apply
 relay candidates in relay-only mode, on every application call path.
 
 **Companion SFU** (`nuschl-stream-sfu`, [protocol](apps/stream-sfu/src/protocol.rs)).
-A network service under its hardened systemd unit; its state lives in memory. A
+A network service under its hardened systemd unit; its state lives in memory,
+except its traffic count per billing period, kept in its state directory. A
 room holds the `admit_key` and `host_key` its creator hands over. Media keys stay
 with the participants, and RTP payloads and key messages pass through unread. Its
 configuration bounds every network input; key messages are at most 16 KiB and UDP

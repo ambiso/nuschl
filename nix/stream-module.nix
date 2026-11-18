@@ -21,6 +21,11 @@ let
       media_listen = "[::]:${toString cfg.sfu.port}";
       media_addresses = cfg.sfu.addresses;
     }
+    // lib.optionalAttrs (cfg.sfu.trafficBudget != null) {
+      traffic_budget = cfg.sfu.trafficBudget;
+      inherit (cfg.sfu) period;
+      state_directory = "/var/lib/nuschl-stream-sfu";
+    }
     // lib.optionalAttrs (cfg.sfu.turn.secretFile != null) {
       turn = {
         inherit (cfg.sfu.turn) urls;
@@ -107,6 +112,25 @@ in
         description = "Public addresses peers reach the media port at, one host candidate each.";
       };
       openFirewall = lib.mkEnableOption "the media port";
+      trafficBudget = mkOption {
+        type = types.nullOr types.ints.positive;
+        default = null;
+        example = 20000000000000;
+        description = ''
+          Bytes the SFU sends per period at most, null for no budget. Above the
+          paced share (the budget times the elapsed fraction of the period) it
+          lowers every receiver's quality step by step; at the budget it refuses
+          new video. The count survives restarts in the state directory.
+        '';
+      };
+      period = mkOption {
+        type = types.enum [
+          "day"
+          "month"
+        ];
+        default = "month";
+        description = "The traffic budget's period, in UTC.";
+      };
       turn = {
         urls = mkOption {
           type = types.listOf types.str;
@@ -232,6 +256,8 @@ in
         User = "nuschl-stream-sfu";
         Group = "nuschl-stream-sfu";
         RuntimeDirectory = "nuschl-stream-sfu";
+        StateDirectory = "nuschl-stream-sfu";
+        StateDirectoryMode = "0700";
         RuntimeDirectoryMode = "0750";
         UMask = "0007";
         Restart = "on-failure";
