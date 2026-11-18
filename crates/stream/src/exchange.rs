@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 //! The sharer's and the viewers' key-exchange state machines (wire format in the crate
 //! documentation). The sharer grants only fresh epochs: [`Sharer::rekey`] moves every
-//! viewer to K_{e+1} and grants K_{e+1} to the approved requests, so a newcomer receives
+//! viewer to K_{e+1} and grants K_{e+1} to the pending requests, so a newcomer receives
 //! only keys created after it joined.
 
 use std::fmt;
@@ -191,24 +191,6 @@ impl<'a> Request<'a> {
     }
 }
 
-/// Names one request, so that an approval applies to it alone.
-fn request_digest(
-    keys: &LinkKeys,
-    viewer: &ViewerId,
-    nonce: &[u8; 32],
-    not_after: u64,
-    public_key: &[u8],
-) -> [u8; 32] {
-    sha256(&[
-        label("request").as_bytes(),
-        keys.stream_id(),
-        viewer,
-        nonce,
-        &not_after.to_be_bytes(),
-        public_key,
-    ])
-}
-
 pub(crate) fn transcript(request: &[u8], sharer_nonce: &[u8; 32]) -> [u8; 32] {
     sha256(&[
         label("transcript").as_bytes(),
@@ -328,24 +310,11 @@ fn rekey_header(viewer: &ViewerId, counter: u64) -> Vec<u8> {
 // -------------------------------------------------------------------------------------
 // Sharer
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ViewerState {
-    /// Waiting for [`Sharer::approve`].
-    Requested,
-    /// Waiting for the next rekey.
-    Approved,
-    /// Holds the current epoch; its key confirmation has not arrived.
-    Granted,
-    Confirmed,
-}
-
 #[derive(Debug)]
 pub enum SharerEvent {
-    /// A viewer asked to join; [`Sharer::approve`] it with this digest.
-    Requested {
-        viewer: ViewerId,
-        digest: [u8; 32],
-    },
+    /// A viewer asked to join. The next [`Sharer::rekey`] grants it, unless
+    /// [`Sharer::remove`] turns it down first.
+    Requested(ViewerId),
     Confirmed(ViewerId),
 }
 
@@ -359,10 +328,8 @@ pub struct Rekey {
 
 struct Pending {
     viewer: ViewerId,
-    digest: [u8; 32],
     body: Vec<u8>,
     not_after: u64,
-    approved: bool,
 }
 
 struct Granted {
@@ -399,26 +366,6 @@ impl Sharer {
         }
     }
 
-    pub fn viewers(&self) -> impl Iterator<Item = (ViewerId, ViewerState)> + '_ {
-        let pending = self.pending.iter().map(|p| {
-            let state = if p.approved {
-                ViewerState::Approved
-            } else {
-                ViewerState::Requested
-            };
-            (p.viewer, state)
-        });
-        let granted = self.viewers.iter().map(|v| {
-            let state = if v.confirmed {
-                ViewerState::Confirmed
-            } else {
-                ViewerState::Granted
-            };
-            (v.viewer, state)
-        });
-        pending.chain(granted)
-    }
-
     /// Handles a KeyRequest or KeyAck.
     pub fn receive(&mut self, message: &[u8], now: u64) -> Result<SharerEvent, Error> {
         let (kind, body) = open_message(&self.keys, message)?;
@@ -438,7 +385,8 @@ impl Sharer {
             .map_err(|_| Error::InvalidPublicKey)?;
         self.seen.retain(|(_, not_after)| *not_after >= now);
         if self.seen.iter().any(|(nonce, _)| *nonce == request.nonce)
-            || self.viewers().any(|(viewer, _)| viewer == request.viewer)
+            || self.pending.iter().any(|p| p.viewer == request.viewer)
+            || self.viewers.iter().any(|v| v.viewer == request.viewer)
         {
             return Err(Error::Replay);
         }
@@ -450,22 +398,13 @@ impl Sharer {
         }
         self.seen.push((request.nonce, request.not_after));
         let viewer = request.viewer;
-        let digest = request_digest(
-            &self.keys,
-            &viewer,
-            &request.nonce,
-            request.not_after,
-            request.public_key,
-        );
         let not_after = request.not_after;
         self.pending.push(Pending {
             viewer,
-            digest,
             body,
             not_after,
-            approved: false,
         });
-        Ok(SharerEvent::Requested { viewer, digest })
+        Ok(SharerEvent::Requested(viewer))
     }
 
     fn ack(&mut self, body: &[u8]) -> Result<SharerEvent, Error> {
@@ -488,19 +427,6 @@ impl Sharer {
         Ok(SharerEvent::Confirmed(viewer))
     }
 
-    /// Lets the next [`Sharer::rekey`] grant the request `Requested` reported with
-    /// this viewer id and digest. A later request that reuses the viewer id has another
-    /// digest and stays unapproved.
-    pub fn approve(&mut self, viewer: &ViewerId, digest: &[u8; 32]) -> Result<(), Error> {
-        let pending = self
-            .pending
-            .iter_mut()
-            .find(|pending| pending.viewer == *viewer && pending.digest == *digest)
-            .ok_or(Error::UnknownViewer)?;
-        pending.approved = true;
-        Ok(())
-    }
-
     /// Turns down a request or removes a viewer; the next [`Sharer::rekey`] locks it
     /// out. Returns whether it was known.
     pub fn remove(&mut self, viewer: &ViewerId) -> bool {
@@ -511,8 +437,8 @@ impl Sharer {
     }
 
     /// Starts the next epoch: a Rekey for every viewer, then a KeyGrant for every
-    /// approved request. Viewers whose confirmation is overdue and expired requests are
-    /// dropped first; unapproved requests wait. Refused within
+    /// pending request. Viewers whose confirmation is overdue and expired requests are
+    /// dropped first. Refused within
     /// [`MIN_EPOCH_INTERVAL_MS`] of the last rekey, unless the clock stepped back.
     pub fn rekey<R: TryCryptoRng + ?Sized>(
         &mut self,
@@ -540,7 +466,7 @@ impl Sharer {
         let plaintext = encode_epoch_key(epoch, &key);
         let mut grants = Vec::new();
         let mut granted = Vec::new();
-        for pending in self.pending.iter().filter(|pending| pending.approved) {
+        for pending in &self.pending {
             let (message, viewer) = self.grant(pending, &plaintext, rng)?;
             grants.push((pending.viewer, message));
             granted.push(viewer);
@@ -563,7 +489,7 @@ impl Sharer {
             messages.push((viewer.viewer, seal_message(&self.keys, REKEY, &body, rng)?));
         }
         messages.extend(grants);
-        self.pending.retain(|pending| !pending.approved);
+        self.pending.clear();
         self.viewers.extend(granted);
         self.epoch = epoch;
         self.last_rekey = Some(now);

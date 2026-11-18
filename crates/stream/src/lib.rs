@@ -30,14 +30,11 @@
 //! viewer                                       sharer
 //! fresh X-Wing (sk_v, pk_v)
 //! KeyRequest{viewer_id, nonce_v, not_after, pk_v} ──►
-//!                                              approve
 //!                                              rekey: K_{e+1} to every viewer first
 //!                    ◄── KeyGrant{viewer_id, nonce_s, enc, Seal(epoch, K)}
 //! KeyAck{viewer_id, confirm} ──►               (sk_v is dropped once the grant opens)
 //!                    ◄── Rekey{viewer_id, counter, ChaCha20-Poly1305(channel_n, epoch, K)}
 //!
-//! digest     = SHA-256("nuschl/stream/v2 request" || stream_id || viewer_id
-//!                      || nonce_v || not_after || pk_v)
 //! transcript = SHA-256("nuschl/stream/v2 transcript" || version || suite
 //!                      || KeyRequest body || nonce_s)
 //! HPKE       = X-Wing / HKDF-SHA256 / ChaCha20-Poly1305, PSK mode (psk, psk_id),
@@ -108,7 +105,7 @@ use subtle::ConstantTimeEq as _;
 
 pub use exchange::{
     MAX_MISSED_REKEYS, RESEND_AFTER_MS, ReceiveKey, Rekey, SWITCH_AFTER_MS, SendKey, Sharer,
-    SharerEvent, Viewer, ViewerEvent, ViewerId, ViewerState,
+    SharerEvent, Viewer, ViewerEvent, ViewerId,
 };
 pub use link::{Link, LinkKeys};
 
