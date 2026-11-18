@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 //! The core: one task owns every room, every peer's WebRTC state (str0m in RTP
 //! mode) and the one UDP socket. It forwards RTP packets from a publisher to
-//! each subscriber with their payload, timestamp and marker unchanged, in
-//! whatever codec the publisher negotiated; it never decrypts, depacketizes or
-//! transcodes. Each subscriber gets its own sequence numbers, starting near
+//! each subscriber with their payload, timestamp and marker unchanged, in the
+//! codec the publisher negotiated (AV1, VP9 or Opus); it never decrypts,
+//! depacketizes or transcodes. Each subscriber gets its own sequence numbers, starting near
 //! zero, and packets a budget drops leave a gap the receiver sees.
 
 use crate::{
@@ -250,6 +250,11 @@ impl Core {
             .set_crypto_provider(self.crypto.clone())
             .set_rtp_mode(true)
             .set_ice_lite(true)
+            // Royalty-free codecs only: a call uses AV1 or VP9, and Opus for audio.
+            .clear_codecs()
+            .enable_av1(true)
+            .enable_vp9(true)
+            .enable_opus(true, false)
             .build(now);
         for address in &self.local {
             if let Ok(candidate) = Candidate::host(*address, "udp") {

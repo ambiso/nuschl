@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 //! The SFU binary on loopback with three str0m peers standing in for browsers.
 //! A host creates the room; two participants join with the link key alone. The
-//! host publishes AV1 and one participant VP8; every peer receives the others'
+//! host publishes AV1 and one participant VP9; every peer receives the others'
 //! RTP payloads byte for byte with consecutive sequence numbers. Key messages
 //! reach the named peer only. Wrong proofs, unknown rooms, oversized key
 //! messages and host actions by participants are refused. The creator's lease
@@ -444,9 +444,9 @@ async fn forwards_media_and_key_messages_unchanged() {
     assert_eq!(refused["reason"], "proof", "a wrong link key");
     assert_eq!(host.expect("joined").await["peer"], alice.id);
 
-    // The host publishes AV1, a participant VP8.
+    // The host publishes AV1, a participant VP9.
     host.start_publishing(Codec::Av1);
-    alice.start_publishing(Codec::Vp8);
+    alice.start_publishing(Codec::Vp9);
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         for peer in [&mut host, &mut alice, &mut bob] {
@@ -475,9 +475,9 @@ async fn forwards_media_and_key_messages_unchanged() {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     assert_forwarded(&bob, &host, Codec::Av1);
-    assert_forwarded(&bob, &alice, Codec::Vp8);
+    assert_forwarded(&bob, &alice, Codec::Vp9);
     assert_forwarded(&alice, &host, Codec::Av1);
-    assert_forwarded(&host, &alice, Codec::Vp8);
+    assert_forwarded(&host, &alice, Codec::Vp9);
     assert!(!bob.received.contains_key(&bob.id) && !host.received.contains_key(&host.id));
 
     // Key messages reach the named peer, unchanged, with the sender's id.
