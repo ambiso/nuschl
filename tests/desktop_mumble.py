@@ -115,7 +115,7 @@ class DesktopTest:
     def pulse_json(self, resource):
         result = subprocess.run([str(self.args.pulse_bin / "pactl"), "--server=unix:" + str(self.socket),
                                  "--format=json", "list", resource], capture_output=True, text=True,
-                                check=True, timeout=5)
+                                check=True, timeout=30)
         return json.loads(result.stdout)
 
     def spawn(self, command, env, log):
@@ -289,7 +289,7 @@ class DesktopTest:
             str(self.args.pulse_bin / "pacat"), "--server=unix:" + str(self.socket),
             "--playback", "--device=nuschl_microphone", "--raw", "--format=float32le", "--rate=48000",
             "--channels=2", "--latency-msec=20", "--process-time-msec=10",
-        ], input=data, capture_output=True, check=True, timeout=10)
+        ], input=data, capture_output=True, check=True, timeout=60)  # A hang guard; a loaded host plays late.
 
     def captured_audio(self, session):
         # A source-output appears as soon as the microphone opens, before
