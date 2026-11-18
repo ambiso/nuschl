@@ -1,8 +1,9 @@
 # The web host under its NixOS module (docs/web.md): nginx serving the site, the
 # share-link landing page and the app-link files, and the tunnel relay behind it.
 # A client without a browser logs in to a stock Murmur through the relay (TLS on
-# the client, as the web client will do in WebAssembly), and what the relay must
-# refuse is refused. No ACME in the VM: plain HTTP.
+# the client, as the web client will do in WebAssembly), the packaged web app in
+# headless Chromium joins voice by double-click, and what the relay must refuse
+# is refused. No ACME in the VM: plain HTTP.
 {
   pkgs,
   relay,
@@ -48,6 +49,7 @@ pkgs.testers.runNixOSTest {
           openFirewall = true;
           welcometext = "Welcome through the relay";
         };
+        environment.systemPackages = [ pkgs.sqlite ];
         # Another TCP service on a port the relay would forward to: not Mumble.
         networking.firewall.allowedTCPPorts = [ 64740 ];
         systemd.services.not-mumble = {
@@ -64,7 +66,13 @@ pkgs.testers.runNixOSTest {
           relay
           pkgs.curl
           pkgs.jq
+          pkgs.nodejs
         ];
+        environment.variables = {
+          NUSCHL_PLAYWRIGHT = "${pkgs.playwright-driver}/index.mjs";
+          NUSCHL_CHROMIUM = "${pkgs.chromium}/bin/chromium";
+        };
+        virtualisation.memorySize = 2048;
       };
   };
   testScript = ''
@@ -77,6 +85,14 @@ pkgs.testers.runNixOSTest {
     web.wait_for_unit("nginx.service")
     web.wait_for_open_port(80)
     murmur.wait_for_unit("murmur.service")
+    # Channels for the web app's double-click test, added to the database Murmur created.
+    murmur.wait_for_open_port(64738)
+    murmur.succeed(
+        "systemctl stop murmur",
+        "sqlite3 /var/lib/murmur/murmur.sqlite \"INSERT INTO channels (server_id, channel_id, parent_id, name, inheritacl)"
+        " VALUES (1, 1, 0, 'Lobby', 1), (1, 2, 0, 'Music', 1), (1, 3, 0, 'AFK', 1)\"",
+        "systemctl start murmur",
+    )
     murmur.wait_for_open_port(64738)
     murmur.wait_for_open_port(64740)
     client.wait_for_unit("multi-user.target")
@@ -111,6 +127,9 @@ pkgs.testers.runNixOSTest {
             break
         assert time.monotonic() < deadline, out
         time.sleep(5)
+    # The packaged app: a mouse or pen double-click joins voice, touch opens chat.
+    client.succeed("node ${../tests/web_channel_dblclick.browser.mjs} http://web/app/ murmur 64738")
+
     # The relay never logs payloads; its journal names no user.
     web.fail("journalctl -u nuschl-web-relay | grep -q relay-probe")
 

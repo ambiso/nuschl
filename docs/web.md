@@ -197,7 +197,10 @@ or unsupported-kernel eBPF guarantee is claimed.
 `nix build .#checks.x86_64-linux.vm-web` boots the module (plain HTTP, no ACME in a
 VM), checks the site, the landing page, its headers, the app-link files and that
 tokens are not logged, logs in to a stock Murmur through the relay with the probe
-(TLS on the client, a ping datagram answered over UDP), and checks that other origins,
+(TLS on the client, a ping datagram answered over UDP), drives the packaged app in
+headless Chromium (`tests/web_channel_dblclick.browser.mjs`: a mouse or pen
+double-click on a channel joins its voice with the microphone closed, and a touch
+double-tap opens the channel's chat), and checks that other origins,
 other ports, loopback and private addresses and a service that is not Mumble are
 refused.
 
