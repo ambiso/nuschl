@@ -18,9 +18,9 @@ decisions (§11).
   the existing voice path, so stock Mumble users hear the call. Video playout
   follows the voice playout delay for lip sync (§6).
 - **Topology:** a forward-only companion SFU, stream.nuschl.eu by default
-  (§9), relays every source. Direct paths come later, natively, between
-  verified Nuschl identities (§5.4). TURN at turn.nuschl.eu relays only to
-  the SFU.
+  (§9), relays every source. Direct paths come later, chosen by upload
+  bandwidth outside relay-only mode (§5.4). TURN at turn.nuschl.eu relays
+  only to the SFU.
 - **Keys on stock servers:** a call link secret S admits participants; every
   publisher hands its SFrame keys to every subscriber over a fresh X-Wing
   HPKE-PSK exchange (§4). S travels through the Mumble server, which can read
@@ -235,16 +235,21 @@ encoder offers them, spatial layers.
 
 ### 5.4 Direct or relayed
 
-- Relayed is the default for every source. Direct paths are for verified Nuschl
-  identities (`CallBinding` checked) that both allow them, starting with
-  two-person calls; relay-only users and browser participants stay relayed,
-  since a direct path reveals IP addresses.
-- Candidates travel to the verified peer only, sealed under its channel key.
-- A native publisher goes direct when 80 % of its probed upload covers the
-  direct receivers, and moves receivers back to the SFU when its legs back off.
-  "When my upload is too slow: relay automatically (default) / lower the
-  quality" (Owner). Path switches keep the keys and run both paths for at most
-  2 s.
+Owner rule (2026-11-18):
+- A direct path reveals IP addresses, as WebRTC usually does; that is
+  acceptable outside relay-only mode. Relay-only users always relay.
+- Outside relay-only mode, the path depends solely on upload bandwidth: a
+  publisher goes direct when 80 % of its probed upload sustains the desired
+  quality for the direct receivers, and moves receivers to the SFU when its
+  legs back off. "When my upload is too slow: relay automatically (default) /
+  lower the quality" (Owner).
+- Path choice is independent of identity verification; `CallBinding`
+  authenticates keys (§7). A Friends Direct mode, direct only with friends or
+  verified contacts, is a proposal (#444).
+- Candidates travel to the peer sealed under the pairwise channel key.
+- Phase 1 relays every source through the SFU; X1 adds direct paths, starting
+  with two-person calls.
+- Path switches keep the keys and run both paths for at most 2 s.
 
 ## 6. Capture, codecs and rendering
 
@@ -419,7 +424,7 @@ D2 and I1 alongside.
 | R1 | SDK driver RTC: UDP in the network process, `PeerPolicy`, SFrame, bitrate | K1, E1, V1 | L | #424 |
 | U1 | Native call controls: camera and screen pickers, indicators, curtain | V1, R1 | M | #419 |
 | N1 | Native call view: `--decode` role, GPUI grid, lip sync, `CallBinding` | R1, #93 | L | #145, #35 |
-| X1 | Direct paths (§5.4), two-person calls first | R1, N1, Q1 | L | #420 |
+| X1 | Direct paths by upload bandwidth (§5.4), two-person calls first | R1, N1, Q1 | L | #420 |
 | M1 | End-to-end servers: S in an MLS `Signal` envelope, then exporter keys | N1 | M–L | #135 |
 
 Tests belong in the slice issues; each slice ships with its unit, testkit or
@@ -477,8 +482,9 @@ Murmur 1.4 and 1.5 with a stock Mumble client, and relay-only by packet capture.
 - Audio: talking stays on Mumble voice; video follows its playout delay.
 - SFrame: our RFC 9605 layer on the locked RustCrypto crates (K1).
 - Key code stays plain and easy to review; zeroizing secrets is optional.
-- Direct paths: "Allow direct connections with verified people" on by
-  default, two-person calls first.
+- Direct paths: outside relay-only mode the path depends solely on upload
+  bandwidth, and IP disclosure there is acceptable; relay-only users always
+  relay; two-person calls first (§5.4).
 - Sharers without layers (Firefox today): one stream for the slowest
   receiver, with a hint to use Chromium or the app for 4K.
 - Hosting: coturn limited to SFU peers now, a Rust TURN server later
