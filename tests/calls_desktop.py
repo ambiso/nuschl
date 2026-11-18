@@ -15,7 +15,10 @@ Checks:
 - Rotate link opens a new creator page and Bea's Join follows the new S;
 - the call ends when the call host reports the room gone; Share screen starts
   a new one, and End call ends it and releases the lease; Bea's card goes away
-  both times.
+  both times;
+- a direct call from Andi to Bea shows Bea's card in her conversation with
+  Andi, Join opens its link, and the Witness sees neither; a direct call to
+  the Witness reaches it as a private message.
 
     python3 tests/calls_desktop.py <binaries> --murmur <mumble-server> \\
         --at-spi <at-spi2-core> --pulse-bin <pulseaudio>/bin --opus-library <libopus.so> \\
@@ -109,6 +112,12 @@ class CallTest(VoiceTest):
         return next((node for node, node_role, node_name, _ in items(app) if role in (None, node_role)
                      and (node_name.startswith(name) if prefix else node_name == name)), None)
 
+    def direct(self, app, name):
+        """Open the direct conversation with `name` from the channel tree."""
+        eventually(lambda: self.find(app, "tree item", name, prefix=True), f"no user {name!r}").press()
+        eventually(lambda: any(role == "list" and label.startswith("Messages with") and label.endswith(name)
+                               for _, role, label, _ in items(app)), f"no conversation with {name}")
+
     def press(self, app, name):
         eventually(lambda: self.find(app, "push button", name), f"no button {name!r}").press()
 
@@ -198,7 +207,34 @@ class CallTest(VoiceTest):
                        "End call kept the lease")
             eventually(lambda: not self.find(bea, "push button", "Join"), "Bea kept an ended call")
             self.witness.wait(lambda event: event["kind"] == "text" and "Call ended" in event["body"], timeout=15)
-            print("Calls: Start call, card, Join, Rotate link, lease end and End call passed.", flush=True)
+
+            # A direct call: Andi and Bea alone. The Witness gets neither the
+            # link nor a card; Bea's card is in her conversation with Andi.
+            self.direct(andi, "Bea")
+            self.press(andi, "Start call")
+            secret, check, _ = re.fullmatch(creator, self.opened(andi_opened, 4)).groups()
+            self.direct(bea, "Andi")
+            eventually(lambda: self.find(bea, None, f"Call · Andi · 127.0.0.1:{self.host.server_port}"),
+                       "Bea has no card for the direct call")
+            self.press(bea, "Join")
+            eventually(lambda: bea_opened.read_text().split()[-1] == f"{origin}/call#v=1&k={secret}&h={check}",
+                       "Join did not open the direct call")
+            self.shot("direct-card")
+            assert not any(secret in event.get("body", "") for event in list(self.witness.events)), \
+                "the Witness saw the direct call"
+            self.press(andi, "End call")
+            eventually(lambda: not self.find(bea, "push button", "Join"), "Bea kept an ended direct call")
+
+            # A direct call with a stock client: the link arrives as a private message.
+            self.direct(andi, "Witness")
+            self.press(andi, "Share screen")
+            secret = re.fullmatch(creator, self.opened(andi_opened, 5)).group(1)
+            private = self.witness.wait(lambda event: event["kind"] == "text" and secret in event["body"],
+                                        timeout=15)
+            andi_session = next(user["session"] for user in self.witness.users.values() if user["name"] == "Andi")
+            assert private["target"] == {"kind": "direct", "id": andi_session}, private
+            print("Calls: Start call, card, Join, Rotate link, lease end, End call and direct calls passed.",
+                  flush=True)
         finally:
             self.host.shutdown()
 
