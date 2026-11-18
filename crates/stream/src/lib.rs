@@ -70,7 +70,7 @@
 //! struct { uint32 epoch; opaque key[32]; } EpochKey;
 //! ```
 //!
-//! **Delivery.** [`Sharer::rekey`] returns the messages and the new [`SendKey`]. Send the
+//! **Delivery.** [`Sharer::rekey`] returns the messages and the new [`EpochKey`]. Send the
 //! messages, send them again after [`RESEND_AFTER_MS`] (viewers drop duplicates as
 //! replays), and switch the encryptors to the new key [`SWITCH_AFTER_MS`] after the
 //! first send. A viewer that missed Rekeys catches up with the next one, up to
@@ -98,14 +98,11 @@ mod wire;
 #[cfg(test)]
 mod tests;
 
-use std::fmt;
-
 use rand_core::TryCryptoRng;
-use subtle::ConstantTimeEq as _;
 
 pub use exchange::{
-    MAX_MISSED_REKEYS, RESEND_AFTER_MS, ReceiveKey, Rekey, SWITCH_AFTER_MS, SendKey, Sharer,
-    SharerEvent, Viewer, ViewerEvent, ViewerId,
+    EpochKey, MAX_MISSED_REKEYS, RESEND_AFTER_MS, Rekey, SWITCH_AFTER_MS, Sharer, SharerEvent,
+    Viewer, ViewerEvent, ViewerId,
 };
 pub use link::{Link, LinkKeys};
 
@@ -144,48 +141,10 @@ pub enum Error {
     Randomness,
 }
 
-/// 32 secret bytes: compared in constant time, redacted in `Debug`.
-pub struct Secret([u8; 32]);
-
-impl Secret {
-    pub fn random<R: TryCryptoRng + ?Sized>(rng: &mut R) -> Result<Self, Error> {
-        random(rng).map(Self)
-    }
-
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    pub fn expose(&self) -> &[u8; 32] {
-        &self.0
-    }
-
-    fn into_inner(self) -> [u8; 32] {
-        self.0
-    }
-}
-
-impl PartialEq for Secret {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.ct_eq(&other.0).into()
-    }
-}
-
-impl Eq for Secret {}
-
-impl fmt::Debug for Secret {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("Secret(..)")
-    }
-}
-
-fn fill<R: TryCryptoRng + ?Sized>(rng: &mut R, out: &mut [u8]) -> Result<(), Error> {
-    rng.try_fill_bytes(out).map_err(|_| Error::Randomness)
-}
-
 fn random<const N: usize, R: TryCryptoRng + ?Sized>(rng: &mut R) -> Result<[u8; N], Error> {
     let mut out = [0; N];
-    fill(rng, &mut out)?;
+    rng.try_fill_bytes(&mut out)
+        .map_err(|_| Error::Randomness)?;
     Ok(out)
 }
 

@@ -17,17 +17,16 @@ use std::fmt;
 use base64ct::{Base64UrlUnpadded, Encoding as _};
 use rand_core::TryCryptoRng;
 
-use crate::{Error, Secret, hkdf_expand, hkdf_extract};
+use crate::{Error, hkdf_expand, hkdf_extract, random};
 
 pub(crate) const LABEL: &str = "nuschl/stream/v2";
 const ENCODED_SECRET_LEN: usize = 43;
 
 /// A parsed watch or share link. `Debug` leaves out the secrets.
-#[derive(PartialEq, Eq)]
 pub struct Link {
     host: String,
-    secret: Secret,
-    publisher: Option<Secret>,
+    secret: [u8; 32],
+    publisher: Option<[u8; 32]>,
 }
 
 impl Link {
@@ -38,8 +37,8 @@ impl Link {
         check_host(host)?;
         Ok(Self {
             host: host.to_owned(),
-            secret: Secret::random(rng)?,
-            publisher: Some(Secret::random(rng)?),
+            secret: random(rng)?,
+            publisher: Some(random(rng)?),
         })
     }
 
@@ -86,12 +85,12 @@ impl Link {
         &self.host
     }
 
-    pub fn secret(&self) -> &Secret {
+    pub fn secret(&self) -> &[u8; 32] {
         &self.secret
     }
 
     /// P, for share links only.
-    pub fn publisher(&self) -> Option<&Secret> {
+    pub fn publisher(&self) -> Option<&[u8; 32]> {
         self.publisher.as_ref()
     }
 
@@ -141,7 +140,7 @@ fn check_host(host: &str) -> Result<(), Error> {
     }
 }
 
-fn decode_param(param: Option<&str>, name: &str) -> Result<Secret, Error> {
+fn decode_param(param: Option<&str>, name: &str) -> Result<[u8; 32], Error> {
     let value = param
         .and_then(|param| param.strip_prefix(name))
         .ok_or(Error::Malformed("link parameters"))?;
@@ -151,12 +150,12 @@ fn decode_param(param: Option<&str>, name: &str) -> Result<Secret, Error> {
     {
         return Err(Error::Malformed("link secret"));
     }
-    Ok(Secret::from_bytes(bytes))
+    Ok(bytes)
 }
 
-fn encode(secret: &Secret) -> String {
+fn encode(secret: &[u8; 32]) -> String {
     let mut out = [0; ENCODED_SECRET_LEN];
-    Base64UrlUnpadded::encode(secret.expose(), &mut out)
+    Base64UrlUnpadded::encode(secret, &mut out)
         .expect("43 characters encode 32 bytes")
         .to_owned()
 }
@@ -165,15 +164,15 @@ fn encode(secret: &Secret) -> String {
 /// only.
 pub struct LinkKeys {
     stream_id: [u8; 16],
-    admit_key: Secret,
-    pub(crate) psk: Secret,
-    pub(crate) signal_key: Secret,
+    admit_key: [u8; 32],
+    pub(crate) psk: [u8; 32],
+    pub(crate) signal_key: [u8; 32],
 }
 
 impl LinkKeys {
-    pub fn derive(secret: &Secret) -> Self {
-        let prk = hkdf_extract(LABEL.as_bytes(), secret.expose());
-        let expand = |name: &str| Secret(hkdf_expand(&prk, label(name).as_bytes()));
+    pub fn derive(secret: &[u8; 32]) -> Self {
+        let prk = hkdf_extract(LABEL.as_bytes(), secret);
+        let expand = |name: &str| hkdf_expand(&prk, label(name).as_bytes());
         Self {
             stream_id: hkdf_expand(&prk, label("stream id").as_bytes()),
             admit_key: expand("admit"),
@@ -188,7 +187,7 @@ impl LinkKeys {
     }
 
     /// What the SFU checks viewer admission with.
-    pub fn admit_key(&self) -> &Secret {
+    pub fn admit_key(&self) -> &[u8; 32] {
         &self.admit_key
     }
 

@@ -81,10 +81,6 @@ impl Sender {
         }
     }
 
-    pub fn kid(&self) -> u64 {
-        self.kid
-    }
-
     /// `header || AES-GCM(plaintext)`, with `header || metadata` authenticated.
     pub fn encrypt(&mut self, metadata: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
         if plaintext.len() > MAX_FRAME_LEN {

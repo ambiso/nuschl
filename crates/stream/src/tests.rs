@@ -57,7 +57,7 @@ pub(crate) fn join(
     sharer: &mut Sharer,
     now: u64,
     seed: u8,
-) -> (Viewer, ReceiveKey, Vec<(ViewerId, Vec<u8>)>) {
+) -> (Viewer, EpochKey, Vec<(ViewerId, Vec<u8>)>) {
     let mut rng = rng(seed);
     let (mut viewer, request) = request(link, now, &mut rng);
     admit(sharer, &request, now);
@@ -80,7 +80,7 @@ pub(crate) fn join(
     (viewer, key.expect("a grant for the new viewer"), others)
 }
 
-fn rekeyed(viewer: &mut Viewer, message: &[u8], now: u64) -> Result<ReceiveKey, Error> {
+fn rekeyed(viewer: &mut Viewer, message: &[u8], now: u64) -> Result<EpochKey, Error> {
     match viewer.receive(message, now, &mut rng(99))? {
         ViewerEvent::Rekeyed(key) => Ok(key),
         other => panic!("expected a rekey, got {other:?}"),
@@ -211,7 +211,7 @@ fn stream_id_known_answer() {
         HOST,
     )
     .unwrap();
-    assert_eq!(link.secret().expose(), &core::array::from_fn(|i| i as u8));
+    assert_eq!(link.secret(), &core::array::from_fn(|i| i as u8));
     assert_eq!(
         link.keys().stream_id().to_vec(),
         hex("6e97e9849dc0269b159081f2dcfb96dc")
@@ -225,7 +225,7 @@ fn stream_id_known_answer() {
 fn links_round_trip_and_keep_secrets_out_of_debug() {
     let share = link(3);
     let parsed = Link::parse(&share.share_url().unwrap(), HOST).unwrap();
-    assert_eq!(parsed, share);
+    assert_eq!(parsed.share_url(), share.share_url());
     let watch = Link::parse(&share.watch_url(), HOST).unwrap();
     assert_eq!(watch.secret(), share.secret());
     assert_eq!(watch.publisher(), None);
@@ -311,7 +311,7 @@ fn links_reject_every_other_form() {
             Error::TooLong,
         ),
     ] {
-        assert_eq!(Link::parse(&link, HOST), Err(error), "{link}");
+        assert_eq!(Link::parse(&link, HOST).err(), Some(error), "{link}");
     }
     for host in [
         "Stream.nuschl.eu",
@@ -324,8 +324,8 @@ fn links_reject_every_other_form() {
         "a/b",
     ] {
         assert_eq!(
-            Link::parse(&good, host),
-            Err(Error::Malformed("link host")),
+            Link::parse(&good, host).err(),
+            Some(Error::Malformed("link host")),
             "{host}"
         );
         assert!(Link::generate(host, &mut rng(1)).is_err(), "{host}");
@@ -340,26 +340,26 @@ fn viewers_get_only_fresh_epochs_and_removed_viewers_are_locked_out() {
     let link = link(5);
     let mut sharer = sharer(&link);
     let (mut first, key_1, _) = join(&link, &mut sharer, T0, 10);
-    assert_eq!(key_1.epoch(), 1);
+    assert_eq!(key_1.epoch, 1);
 
     // A second join moves the first viewer to epoch 2 in the same rekey.
     let (mut second, key_2, others) = join(&link, &mut sharer, T0 + 1000, 11);
-    assert_eq!(key_2.epoch(), 2);
+    assert_eq!(key_2.epoch, 2);
     assert_eq!(others.len(), 1);
     assert_eq!(others[0].0, first.id());
     let first_2 = rekeyed(&mut first, &others[0].1, T0 + 1000).unwrap();
-    assert_eq!(first_2.expose(), key_2.expose());
-    assert_ne!(key_1.expose(), key_2.expose());
+    assert_eq!(&first_2.key, &key_2.key);
+    assert_ne!(&key_1.key, &key_2.key);
 
     // Removing the first viewer: the next epoch goes to the second only, and the first
     // cannot open the second's Rekey.
     assert!(sharer.remove(&first.id()));
     let rekey = sharer.rekey(T0 + 2000, &mut rng(12)).unwrap();
-    assert_eq!(rekey.key.epoch(), 3);
+    assert_eq!(rekey.key.epoch, 3);
     assert_eq!(rekey.messages.len(), 1);
     assert_eq!(rekey.messages[0].0, second.id());
     let key_3 = rekeyed(&mut second, &rekey.messages[0].1, T0 + 2000).unwrap();
-    assert_eq!(key_3.expose(), &rekey.key.into_parts().1);
+    assert_eq!(&key_3.key, &rekey.key.key);
     assert_eq!(
         first
             .receive(&rekey.messages[0].1, T0 + 2000, &mut rng(13))
@@ -402,7 +402,7 @@ fn passive_link_holder_cannot_decrypt() {
     for message in recordings.clone() {
         recordings.push(open_message(&keys, &message).unwrap().1);
     }
-    for epoch_key in [key.expose(), next.expose()] {
+    for epoch_key in [&key.key, &next.key] {
         for recording in &recordings {
             assert!(!recording.windows(32).any(|window| window == epoch_key));
         }
@@ -414,13 +414,8 @@ fn passive_link_holder_cannot_decrypt() {
     let enc = &grant_body[48..48 + 1120];
     let sealed = &grant_body[48 + 1120..];
     let psk_id = [b"nuschl/stream/v2".as_slice(), keys.stream_id()].concat();
-    let psk = Some((keys.psk.expose().as_slice(), psk_id.as_slice()));
-    for guess in [
-        [0u8; 32],
-        [0xff; 32],
-        *link.secret().expose(),
-        *keys.psk.expose(),
-    ] {
+    let psk = Some((keys.psk.as_slice(), psk_id.as_slice()));
+    for guess in [[0u8; 32], [0xff; 32], *link.secret(), keys.psk] {
         let opened = hpke_receiver(&guess, enc, &info, psk)
             .and_then(|mut context| context.open(&[], sealed).map_err(|_| Error::Authentication));
         assert!(opened.is_err());
@@ -445,7 +440,7 @@ fn any_link_holder_can_act_as_sharer() {
     else {
         panic!("the forged grant is accepted");
     };
-    assert_eq!(key.expose(), &forged.key.into_parts().1);
+    assert_eq!(&key.key, &forged.key.key);
 }
 
 #[test]
@@ -524,8 +519,8 @@ fn resends_and_missed_rekeys() {
     let next = sharer.rekey(T0 + 2000, &mut rng).unwrap();
     let message = &next.messages[0].1;
     let key = rekeyed(&mut viewer, message, T0 + 2000).unwrap();
-    assert_eq!(key.epoch(), 3);
-    assert_eq!(key.expose(), &next.key.into_parts().1);
+    assert_eq!(key.epoch, 3);
+    assert_eq!(&key.key, &next.key.key);
     assert_eq!(
         rekeyed(&mut viewer, message, T0 + 2000).err(),
         Some(Error::Replay)

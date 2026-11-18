@@ -15,18 +15,16 @@
 //! Browser packetizers parse the payload as OBUs, and receivers without the Dependency
 //! Descriptor find key frames by the 0x08 byte (S0b results on #139).
 //!
-//! AES-GCM nonces stay unique while each (epoch, encoding) has exactly one encryptor.
-//! [`SendKey::encryptors`] consumes the epoch's key and returns one encryptor per
-//! encoding. Restarting a sender (an encoder restart, a new track, a new worker process)
-//! requires a rekey: counters start at zero again only under a new epoch.
+//! AES-GCM nonces stay unique while each (epoch, encoding) has exactly one encryptor:
+//! call [`encryptors`] once per epoch. Restarting a sender (an encoder restart, a new
+//! track, a new worker process) requires a rekey: counters start at zero again only
+//! under a new epoch.
 //!
 //! This crate is the AES code of screen sharing, kept apart from the key agreement so
 //! the crypto worker links no AES. Its callers, the SDK driver and the browser stream
 //! worker, are held until their SECURITY.md rows are reviewed.
 
 pub mod rfc9605;
-
-use std::fmt;
 
 use crate::rfc9605::{Receiver, Sender};
 
@@ -61,39 +59,13 @@ fn kid(epoch: u32, encoding: u8) -> u64 {
     u64::from(epoch) << 8 | u64::from(encoding)
 }
 
-/// One epoch's base key for sending.
-pub struct SendKey {
-    epoch: u32,
-    key: [u8; 32],
-}
-
-impl SendKey {
-    pub fn new(epoch: u32, key: [u8; 32]) -> Self {
-        Self { epoch, key }
-    }
-
-    /// The epoch's only encryptors, one per encoding, each counting from 0. The key is
-    /// consumed:
-    ///
-    /// ```compile_fail
-    /// let key = nuschl_sframe::SendKey::new(2, [7; 32]);
-    /// let first = key.encryptors();
-    /// let second = key.encryptors();
-    /// ```
-    pub fn encryptors(self) -> [FrameEncryptor; MAX_ENCODINGS as usize] {
-        std::array::from_fn(|encoding| {
-            let encoding = u8::try_from(encoding).expect("fewer than 256 encodings");
-            FrameEncryptor(Sender::new(&self.key, kid(self.epoch, encoding)))
-        })
-    }
-}
-
-impl fmt::Debug for SendKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SendKey")
-            .field("epoch", &self.epoch)
-            .finish_non_exhaustive()
-    }
+/// The epoch's encryptors, one per encoding, each counting from 0. Call it once per
+/// epoch: a second set repeats AES-GCM nonces.
+pub fn encryptors(epoch: u32, key: &[u8; 32]) -> [FrameEncryptor; MAX_ENCODINGS as usize] {
+    std::array::from_fn(|encoding| {
+        let encoding = u8::try_from(encoding).expect("fewer than 256 encodings");
+        FrameEncryptor(Sender::new(key, kid(epoch, encoding)))
+    })
 }
 
 /// Encrypts one encoding's AV1 frames under one epoch.
@@ -176,13 +148,9 @@ pub(crate) mod tests {
 
     const T0: u64 = 1_800_000_000_000;
 
-    fn encryptors(epoch: u32, key: u8) -> [FrameEncryptor; MAX_ENCODINGS as usize] {
-        SendKey::new(epoch, [key; 32]).encryptors()
-    }
-
     #[test]
     fn encodings_get_their_own_keys_and_the_envelope_is_authenticated() {
-        let [mut first, mut second, ..] = encryptors(2, 7);
+        let [mut first, mut second, ..] = encryptors(2, &[7; 32]);
         let mut decryptor = FrameDecryptor::new();
         decryptor.install(2, &[7; 32], T0).unwrap();
 
@@ -224,9 +192,9 @@ pub(crate) mod tests {
 
     #[test]
     fn previous_epoch_window() {
-        let [mut e2, ..] = encryptors(2, 2);
-        let [mut e3, ..] = encryptors(3, 3);
-        let [mut e4, ..] = encryptors(4, 4);
+        let [mut e2, ..] = encryptors(2, &[2; 32]);
+        let [mut e3, ..] = encryptors(3, &[3; 32]);
+        let [mut e4, ..] = encryptors(4, &[4; 32]);
         let mut decryptor = FrameDecryptor::new();
         decryptor.install(2, &[2; 32], T0).unwrap();
         decryptor.install(3, &[3; 32], T0 + 1000).unwrap();

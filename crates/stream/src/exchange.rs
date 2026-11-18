@@ -15,7 +15,7 @@ use subtle::ConstantTimeEq as _;
 
 use crate::link::{LinkKeys, label};
 use crate::wire::Reader;
-use crate::{Error, MAX_KEY_MESSAGE, Secret, hkdf_expand, random, sha256};
+use crate::{Error, MAX_KEY_MESSAGE, hkdf_expand, random, sha256};
 
 const VERSION: u8 = 1;
 /// KEM X-Wing, KDF HKDF-SHA256, AEAD ChaCha20-Poly1305, SFrame AES_128_GCM_SHA256_128.
@@ -56,64 +56,32 @@ pub type ViewerId = [u8; 16];
 // -------------------------------------------------------------------------------------
 // Epoch keys
 
-/// The sharer's key for one epoch; [`Sharer::rekey`] returns it once. Hand it to one
-/// `nuschl_sframe::SendKey`: a second set of encryptors for the same epoch repeats
-/// AES-GCM nonces. The key authority never sends an epoch's key to a restarted sender
-/// (a new encoder, track or worker process); it rekeys, and the new sender gets the new
-/// epoch's key.
-pub struct SendKey {
-    epoch: u32,
-    key: Secret,
+/// One epoch's media key. `Debug` leaves out the key.
+///
+/// The sharer gets each epoch's key once from [`Sharer::rekey`] and gives it to one
+/// sender: a second sender under the same epoch repeats AES-GCM nonces. A restarted
+/// sender (a new encoder, track or worker process) waits for the next rekey.
+pub struct EpochKey {
+    pub epoch: u32,
+    pub key: [u8; 32],
 }
 
-impl SendKey {
-    pub fn epoch(&self) -> u32 {
-        self.epoch
-    }
-
-    pub fn into_parts(self) -> (u32, [u8; 32]) {
-        (self.epoch, self.key.into_inner())
-    }
-}
-
-/// A viewer's key for one epoch, for decryption.
-pub struct ReceiveKey {
-    epoch: u32,
-    key: Secret,
-}
-
-impl ReceiveKey {
-    pub fn epoch(&self) -> u32 {
-        self.epoch
-    }
-
-    pub fn expose(&self) -> &[u8; 32] {
-        self.key.expose()
-    }
-}
-
-impl fmt::Debug for SendKey {
+impl fmt::Debug for EpochKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "SendKey(epoch {})", self.epoch)
+        write!(f, "EpochKey(epoch {})", self.epoch)
     }
 }
 
-impl fmt::Debug for ReceiveKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ReceiveKey(epoch {})", self.epoch)
-    }
+fn encode_epoch_key(key: &EpochKey) -> Vec<u8> {
+    [&key.epoch.to_be_bytes()[..], &key.key].concat()
 }
 
-fn encode_epoch_key(epoch: u32, key: &Secret) -> Vec<u8> {
-    [&epoch.to_be_bytes()[..], key.expose()].concat()
-}
-
-fn decode_epoch_key(bytes: &[u8]) -> Result<ReceiveKey, Error> {
+fn decode_epoch_key(bytes: &[u8]) -> Result<EpochKey, Error> {
     let mut reader = Reader::new(bytes);
     let epoch = reader.u32()?;
-    let key = Secret(reader.array()?);
+    let key = reader.array()?;
     reader.finish()?;
-    Ok(ReceiveKey { epoch, key })
+    Ok(EpochKey { epoch, key })
 }
 
 // -------------------------------------------------------------------------------------
@@ -134,7 +102,7 @@ pub(crate) fn seal_message<R: TryCryptoRng + ?Sized>(
     let start = out.len();
     out.resize(start + body.len() + AEAD_TAG_LEN, 0);
     libcrux_chacha20poly1305::encrypt(
-        keys.signal_key.expose(),
+        &keys.signal_key,
         body,
         &mut out[start..],
         &[VERSION, kind],
@@ -157,7 +125,7 @@ pub(crate) fn open_message(keys: &LinkKeys, message: &[u8]) -> Result<(u8, Vec<u
     let sealed = reader.take(message.len() - 14)?;
     let mut body = vec![0; sealed.len().saturating_sub(AEAD_TAG_LEN)];
     libcrux_chacha20poly1305::decrypt(
-        keys.signal_key.expose(),
+        &keys.signal_key,
         &mut body,
         sealed,
         &[version, kind],
@@ -282,19 +250,16 @@ pub(crate) fn hpke_receiver(
         .map_err(|_| Error::Authentication)
 }
 
-fn export(context: &HpkeContext, name: &str) -> Result<Secret, Error> {
+fn export(context: &HpkeContext, name: &str) -> Result<[u8; 32], Error> {
     let bytes = context
         .export(label(name).as_bytes(), 32)
         .map_err(|_| Error::Authentication)?;
-    Ok(Secret(bytes.try_into().expect("32 bytes")))
+    Ok(bytes.try_into().expect("32 bytes"))
 }
 
 /// The next channel key; the caller drops the current one.
-fn ratchet(channel: &Secret) -> Secret {
-    Secret(hkdf_expand(
-        channel.expose(),
-        label("channel ratchet").as_bytes(),
-    ))
+fn ratchet(channel: &[u8; 32]) -> [u8; 32] {
+    hkdf_expand(channel, label("channel ratchet").as_bytes())
 }
 
 fn channel_nonce(counter: u64) -> [u8; 12] {
@@ -322,7 +287,7 @@ pub enum SharerEvent {
 /// `key` as the crate documentation describes.
 #[derive(Debug)]
 pub struct Rekey {
-    pub key: SendKey,
+    pub key: EpochKey,
     pub messages: Vec<(ViewerId, Vec<u8>)>,
 }
 
@@ -335,9 +300,9 @@ struct Pending {
 struct Granted {
     viewer: ViewerId,
     /// The key for Rekey number `counter + 1`.
-    channel: Secret,
+    channel: [u8; 32],
     counter: u64,
-    confirm: Secret,
+    confirm: [u8; 32],
     confirmed: bool,
     /// The request's `not_after`: an unconfirmed viewer is dropped at the next rekey
     /// after it.
@@ -420,7 +385,7 @@ impl Sharer {
         if granted.confirmed {
             return Err(Error::Replay);
         }
-        if !bool::from(granted.confirm.expose().ct_eq(&confirm)) {
+        if !bool::from(granted.confirm.ct_eq(&confirm)) {
             return Err(Error::Authentication);
         }
         granted.confirmed = true;
@@ -451,7 +416,10 @@ impl Sharer {
             return Err(Error::TooSoon);
         }
         let epoch = self.epoch.checked_add(1).ok_or(Error::Exhausted)?;
-        let key = Secret::random(rng)?;
+        let key = EpochKey {
+            epoch,
+            key: random(rng)?,
+        };
         self.viewers
             .retain(|granted| granted.confirmed || granted.not_after >= now);
         self.pending.retain(|pending| pending.not_after >= now);
@@ -463,7 +431,7 @@ impl Sharer {
             return Err(Error::Exhausted);
         }
 
-        let plaintext = encode_epoch_key(epoch, &key);
+        let plaintext = encode_epoch_key(&key);
         let mut grants = Vec::new();
         let mut granted = Vec::new();
         for pending in &self.pending {
@@ -477,7 +445,7 @@ impl Sharer {
             let header = rekey_header(&viewer.viewer, viewer.counter);
             let mut sealed = [0; SEALED_KEY_LEN];
             libcrux_chacha20poly1305::encrypt(
-                viewer.channel.expose(),
+                &viewer.channel,
                 &plaintext,
                 &mut sealed,
                 &header,
@@ -493,10 +461,7 @@ impl Sharer {
         self.viewers.extend(granted);
         self.epoch = epoch;
         self.last_rekey = Some(now);
-        Ok(Rekey {
-            key: SendKey { epoch, key },
-            messages,
-        })
+        Ok(Rekey { key, messages })
     }
 
     fn grant<R: TryCryptoRng + ?Sized>(
@@ -514,7 +479,7 @@ impl Sharer {
             request.public_key,
             &eseed,
             &hpke_info(&transcript),
-            Some((self.keys.psk.expose(), &psk_id)),
+            Some((&self.keys.psk, &psk_id)),
         )?;
         let sealed = context
             .seal(&[], epoch_key)
@@ -549,21 +514,21 @@ impl fmt::Debug for Sharer {
 pub enum ViewerEvent {
     /// The first key; send `ack` to the sharer.
     Granted {
-        key: ReceiveKey,
+        key: EpochKey,
         ack: Vec<u8>,
     },
-    Rekeyed(ReceiveKey),
+    Rekeyed(EpochKey),
 }
 
 enum State {
     Joining {
         request: Vec<u8>,
         not_after: u64,
-        kem_seed: Secret,
+        kem_seed: [u8; 32],
     },
     /// Holds the key for Rekey number `counter + 1`, and nothing that opens the grant.
     Granted {
-        channel: Secret,
+        channel: [u8; 32],
         counter: u64,
         epoch: u32,
     },
@@ -586,8 +551,8 @@ impl Viewer {
     ) -> Result<(Self, Vec<u8>), Error> {
         let id: ViewerId = random(rng)?;
         let nonce: [u8; 32] = random(rng)?;
-        let kem_seed = Secret::random(rng)?;
-        let (_, public) = libcrux_kem::key_gen_derand(XWingKemDraft06, kem_seed.expose())
+        let kem_seed: [u8; 32] = random(rng)?;
+        let (_, public) = libcrux_kem::key_gen_derand(XWingKemDraft06, &kem_seed)
             .map_err(|_| Error::Randomness)?;
         let not_after = now.saturating_add(REQUEST_LIFETIME_MS);
         let request = [&id[..], &nonce, &not_after.to_be_bytes(), &public.encode()].concat();
@@ -652,17 +617,17 @@ impl Viewer {
         let transcript = transcript(request, &sharer_nonce);
         let psk_id = self.keys.psk_id();
         let mut context = hpke_receiver(
-            kem_seed.expose(),
+            kem_seed,
             enc,
             &hpke_info(&transcript),
-            Some((self.keys.psk.expose(), &psk_id)),
+            Some((&self.keys.psk, &psk_id)),
         )?;
         let plaintext = context
             .open(&[], sealed)
             .map_err(|_| Error::Authentication)?;
         let key = decode_epoch_key(&plaintext)?;
         let confirm = export(&context, "confirm viewer->sharer")?;
-        let ack = [&self.id[..], confirm.expose()].concat();
+        let ack = [&self.id[..], &confirm].concat();
         let ack = seal_message(&self.keys, ACK, &ack, rng)?;
         self.state = State::Granted {
             channel: export(&context, "channel sharer->viewer")?,
@@ -697,7 +662,7 @@ impl Viewer {
         let key = skipped.as_ref().unwrap_or(channel);
         let mut plaintext = [0; EPOCH_KEY_LEN];
         libcrux_chacha20poly1305::decrypt(
-            key.expose(),
+            key,
             &mut plaintext,
             sealed,
             &rekey_header(&self.id, counter),
@@ -767,11 +732,11 @@ mod tests {
         let State::Granted { channel, .. } = &viewer.state else {
             panic!("granted");
         };
-        assert_eq!(channel.expose(), sharer.viewers[0].channel.expose());
+        assert_eq!(channel, &sharer.viewers[0].channel);
         for (counter, sealed) in &sealed {
             let mut plaintext = [0; EPOCH_KEY_LEN];
             let opened = libcrux_chacha20poly1305::decrypt(
-                channel.expose(),
+                channel,
                 &mut plaintext,
                 sealed,
                 &rekey_header(&viewer.id, *counter),
