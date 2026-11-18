@@ -16,6 +16,8 @@ pub struct Stats {
     enabled: bool,
     /// Capture time of the end of the newest processed microphone frame.
     newest: Option<u64>,
+    /// The index of the frame that follows it.
+    next: u64,
     capture_gaps: u64,
     underruns: u64,
     late_packets: u64,
@@ -28,6 +30,7 @@ impl Stats {
         Self {
             enabled,
             newest: None,
+            next: 0,
             capture_gaps: 0,
             underruns: 0,
             late_packets: 0,
@@ -39,11 +42,13 @@ impl Stats {
     /// Microphone frame `index` (since the devices opened) captured at `start`.
     /// A capture gap: a frame stamped 10 ms or more after the previous one
     /// ended, from a late or missing callback interval. The first second is
-    /// not counted.
+    /// not counted. A frame after a reopened microphone or after frames the
+    /// worker skipped (a new destination) starts the comparison over.
     pub fn capture(&mut self, index: u64, start: Option<u64>) {
-        if index == 0 {
+        if index != self.next {
             self.newest = None;
         }
+        self.next = index + crate::dsp::FRAME as u64;
         if let Some(start) = start {
             if index >= SETTLE && self.newest.is_some_and(|end| start >= end + FRAME_NS) {
                 self.capture_gaps += 1;
@@ -105,9 +110,12 @@ mod tests {
         // 10 ms of samples were lost before this frame.
         stats.capture(SETTLE + 480, Some(5 * FRAME_NS));
         assert_eq!(stats.capture_gaps, 1);
-        // The newest frame ends at 60 ms; one frame waits behind the packet,
-        // whose last sample ends at 50 ms. Sent at 70 ms: 20 ms.
-        stats.send(7 * FRAME_NS, 1, 0);
+        // Frames the worker skipped start the comparison over.
+        stats.capture(SETTLE + 1440, Some(7 * FRAME_NS));
+        assert_eq!(stats.capture_gaps, 1);
+        // The newest frame ends at 80 ms; one frame waits behind the packet,
+        // whose last sample ends at 70 ms. Sent at 90 ms: 20 ms.
+        stats.send(9 * FRAME_NS, 1, 0);
         assert_eq!(stats.send_ms[20], 1);
     }
 }
