@@ -298,6 +298,38 @@ DOM, so a Web Worker can host it.
   browser's WebSocket and Web Crypto) through the relay to a loopback Murmur, trusting
   the certificate it is shown.
 
+## The call page (`web/call`)
+
+The stream host (`services.nuschl-stream`, `nix/stream-module.nix`) serves the
+call page at `/call` next to the SFU's `/sfu` (`nix build .#call-site`: the page,
+the stream worker's wasm and their notices under `/licenses/nuschl/`). Everyone
+with a call link opens it ([desktop](desktop.md#calls)); the creator's link adds P.
+
+- **Joining:** the page hands the link to the stream worker (`stream.worker.js`
+  over `nuschl-stream-wasm`), which alone holds S, P and every key. The worker
+  derives the room, V and the admission proofs; the page joins at `/sfu` with
+  them and the codecs it decodes.
+- **Support:** the page needs encoded transforms (`RTCRtpScriptTransform`) and
+  AV1 or VP9 decoding in WebRTC; otherwise it shows "Browser not supported".
+  The call codec is the SFU's choice (`apps/stream-sfu/src/protocol.rs`).
+- **Watching:** the page subscribes to every source; each receiver's frames
+  decrypt in the stream worker, which asks for a key frame once a publisher's
+  keys arrive. Camera tiles fill a grid; a shared screen or a pinned camera
+  takes the large view. The roster lists everyone in the call, and a host
+  (P) gets End call and Remove.
+- **Relay only:** `/call?relay#…` connects with `iceTransportPolicy: 'relay'`
+  through the TURN server the SFU names, and fails closed without one.
+- **Bounds:** SFU messages are checked against the page's limits before use
+  (`signal.js`: 256 KiB, 256 peers, three tracks per peer, 16 KiB key
+  messages); the stream worker bounds its own requests.
+- **Next:** publishing (B1) adds Start camera and Share screen to `#controls`
+  and a publish connection beside `Call`'s subscribe connection. Every track's
+  quality is Auto, what the SFU forwards; Q1's per-source menu sets
+  `track.quality` and sends its quality requests from `Call`. Embedding the
+  call view in the web client is a follow-up.
+- **Tests:** `checks.call-page` runs `web/call/call.test.js` against the
+  stream worker's wasm.
+
 ## SDK and browser capability status
 
 The Svelte frontend uses the shared Rust `Client` for selected conversations,

@@ -14,8 +14,7 @@
 let
   site = pkgs.runCommand "nuschl-stream-test-site" { } ''
     mkdir -p "$out"
-    echo '<!doctype html><title>watch page</title>' > "$out/watch.html"
-    echo '<!doctype html><title>share page</title>' > "$out/share.html"
+    echo '<!doctype html><title>call page</title>' > "$out/call.html"
     echo 'console.log("asset")' > "$out/app.js"
   '';
   restSecret = "turn-test-rest-secret";
@@ -210,13 +209,12 @@ pkgs.testers.runNixOSTest {
               assert "set-cookie" not in out, (path, out)
               return out
 
-          watch = head("/watch")
-          assert watch.startswith("http/1.1 200") and "display-capture=()" in watch
-          assert "display-capture=(self)" in head("/share")
+          call = head("/call")
+          assert call.startswith("http/1.1 200") and "display-capture=()" in call
           assert head("/app.js").startswith("http/1.1 200")
           for missing in ["/", "/missing"]:
               assert head(missing).startswith("http/1.1 404"), missing
-          sfu.fail("grep -rqE '/watch|/share|/sfu' /var/log/nginx/")
+          sfu.fail("grep -rqE '/call|/sfu' /var/log/nginx/")
 
       with subtest("SFU: admission at /sfu, TURN credentials coturn accepts"):
           client.succeed("cat > /tmp/sfu.py <<'EOF'\n" + """
