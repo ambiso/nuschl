@@ -2,7 +2,7 @@
 # workspace version; packages are published from release tags.
 {
   pkgs,
-  # bin/ with the desktop executable and its eight helpers.
+  # lib/nuschl/ with the desktop executable and its eight helpers.
   binaries,
   projectRoot,
   nativeNotices,
@@ -28,7 +28,7 @@ let
   # Helper discovery looks next to the executable, so all nine share a directory.
   stage = pkgs.runCommand "nuschl-stage-${version}" { } ''
     for program in ${pkgs.lib.escapeShellArgs programs}; do
-      install -Dm755 ${binaries}/bin/$program "$out/usr/lib/nuschl/$program"
+      install -Dm755 ${binaries}/lib/nuschl/$program "$out/usr/lib/nuschl/$program"
     done
     mkdir -p "$out/usr/bin"
     ln -s ../lib/nuschl/nuschl "$out/usr/bin/nuschl"
@@ -40,34 +40,28 @@ let
     } "$out/usr/share/licenses/nuschl/Mumble-BSD"
     install -Dm644 ${appstreamXML} "$out/usr/share/metainfo/org.nuschl.Nuschl.metainfo.xml"
   '';
+  # Debian packages of the libraries the programs link and open, and of the
+  # sandbox tools; bubblewrap 0.8 has --clearenv, PipeWire 0.3.53 has
+  # pw_stream_get_time_n.
   depends = [
-    "bubblewrap"
-    "util-linux"
-    "desktop-file-utils"
-    "hicolor-icon-theme"
-    "libgcc-s1"
-    "libstdc++6"
-    "libsqlite3-0"
-    "libfontconfig1"
-    "libfreetype6"
+    "libxcb1"
     "libxkbcommon0"
     "libxkbcommon-x11-0"
-    "libwayland-client0"
-    "libwayland-cursor0"
     "libvulkan1"
-    "libgl1"
-    "libegl1"
-    "libx11-6"
-    "libxcursor1"
-    "libxi6"
-    "libxrandr2"
-    "libxcb1"
-    "libasound2t64 | libasound2"
-    "libpipewire-0.3-0t64 | libpipewire-0.3-0"
+    "libpipewire-0.3-0t64 | libpipewire-0.3-0 (>= 0.3.53)"
     "pipewire-bin"
     "libpipewire-0.3-modules"
     "libspa-0.2-modules"
-    "libpulse0"
+    "libasound2t64 | libasound2"
+    "bubblewrap (>= 0.8)"
+    "util-linux"
+    "desktop-file-utils"
+    "hicolor-icon-theme"
+  ];
+  # Opened for Wayland sessions.
+  recommends = [
+    "libwayland-client0"
+    "libegl1"
   ];
   debWith =
     revision:
@@ -77,6 +71,7 @@ let
         stage
         maintainer
         depends
+        recommends
         ;
       version = "${version}-${revision}";
     };
@@ -92,27 +87,16 @@ let
   };
   archDepends = [
     "glibc"
-    "gcc-libs"
+    "libxcb"
+    "libxkbcommon"
+    "libxkbcommon-x11"
+    "vulkan-icd-loader"
+    "pipewire"
+    "alsa-lib"
     "bubblewrap"
     "util-linux"
     "desktop-file-utils"
     "hicolor-icon-theme"
-    "sqlite"
-    "fontconfig"
-    "freetype2"
-    "libxkbcommon"
-    "libxkbcommon-x11"
-    "wayland"
-    "vulkan-icd-loader"
-    "libglvnd"
-    "libx11"
-    "libxcursor"
-    "libxi"
-    "libxrandr"
-    "libxcb"
-    "alsa-lib"
-    "pipewire"
-    "libpulse"
   ];
   aurWith =
     key: signature:

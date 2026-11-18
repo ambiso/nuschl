@@ -21,7 +21,7 @@ let
       # The package's dependencies come preinstalled, the test repository holds only Nuschl.
       extraPackages =
         lib.optionals (distro == "ubuntu2404x86_64") ubuntuKernel
-        ++ map (dependency: lib.head (lib.splitString " | " dependency)) depends
+        ++ map (dependency: lib.head (lib.splitString " " dependency)) depends
         ++ [
           "apt"
           "xdg-utils"
@@ -89,7 +89,7 @@ let
         ];
         NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
         outputHashMode = "recursive";
-        outputHash = "sha256-1+BKw8Pj/5VwtoJOohtvq9z6M2I06HB8zM2J94NYz8Y=";
+        outputHash = "sha256-40L+RLLTi1N11KhVMy2vwhPj424jtf/iKTTEwy3c4XM=";
       }
       ''
         cat > pacman.conf <<'EOF'

@@ -237,7 +237,7 @@
         distroOutput = name: if system == "x86_64-linux" then name else null;
         linuxDistro = import ./packaging/linux/default.nix {
           inherit pkgs;
-          binaries = (import ./nix/portable-linux.nix { inherit pkgs toolchain; }).binaries;
+          binaries = linuxPortable;
           projectRoot = ./.;
           nativeNotices = releaseNotices.linux.bundle;
           desktopFiles = (import ./nix/desktop-files.nix { inherit pkgs; }).linux;
@@ -317,37 +317,39 @@
         '';
         # Licences, and on Linux the desktop binary under libexec (screen readers
         # announce the executable's name, not ".nuschl-wrapped") with wrappers.
-        packageLayout = licenseLayout + lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
-          runtimeFlags=(--prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath buildInputs}"
-            --prefix PATH : "${
+        packageLayout =
+          licenseLayout
+          + lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+            runtimeFlags=(--prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath buildInputs}"
+              --prefix PATH : "${
+                lib.makeBinPath [
+                  pkgs.bubblewrap
+                  pkgs.util-linux
+                ]
+              }")
+            mkdir -p "$out/libexec/nuschl"
+            mv "$out/bin/nuschl" "$out/libexec/nuschl/nuschl"
+            for worker in nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-media-worker nuschl-storage-worker nuschl-transfer-worker nuschl-update-verify-ed25519 nuschl-update-verify-mldsa44; do
+              test -f "$out/bin/$worker"
+              ln -s "../../bin/$worker" "$out/libexec/nuschl/$worker"
+            done
+            makeWrapper "$out/libexec/nuschl/nuschl" "$out/bin/nuschl" "''${runtimeFlags[@]}"
+            wrapProgram "$out/bin/nuschl-cli" "''${runtimeFlags[@]}"
+            # The terminal client finds the workers beside it in bin; the
+            # wrapper gives their sandbox bubblewrap and the media worker its
+            # audio libraries.
+            wrapProgram "$out/bin/nuschl-tui" "''${runtimeFlags[@]}" --prefix PATH : "${
               lib.makeBinPath [
-                pkgs.bubblewrap
-                pkgs.util-linux
+                pkgs.wl-clipboard-rs
+                pkgs.xclip
+                pkgs.wayland-utils
               ]
-            }")
-          mkdir -p "$out/libexec/nuschl"
-          mv "$out/bin/nuschl" "$out/libexec/nuschl/nuschl"
-          for worker in nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-media-worker nuschl-storage-worker nuschl-transfer-worker nuschl-update-verify-ed25519 nuschl-update-verify-mldsa44; do
-            test -f "$out/bin/$worker"
-            ln -s "../../bin/$worker" "$out/libexec/nuschl/$worker"
-          done
-          makeWrapper "$out/libexec/nuschl/nuschl" "$out/bin/nuschl" "''${runtimeFlags[@]}"
-          wrapProgram "$out/bin/nuschl-cli" "''${runtimeFlags[@]}"
-          # The terminal client finds the workers beside it in bin; the
-          # wrapper gives their sandbox bubblewrap and the media worker its
-          # audio libraries.
-          wrapProgram "$out/bin/nuschl-tui" "''${runtimeFlags[@]}" --prefix PATH : "${
-            lib.makeBinPath [
-              pkgs.wl-clipboard-rs
-              pkgs.xclip
-              pkgs.wayland-utils
-            ]
-          }"
-          # Desktop entry and hicolor icons; shells match the window by its app id.
-          cp -R --no-preserve=mode ${
-            (import ./nix/desktop-files.nix { inherit pkgs; }).linux
-          }/share/. "$out/share/"
-        '';
+            }"
+            # Desktop entry and hicolor icons; shells match the window by its app id.
+            cp -R --no-preserve=mode ${
+              (import ./nix/desktop-files.nix { inherit pkgs; }).linux
+            }/share/. "$out/share/"
+          '';
         # Whole-workspace build (crane): kept for comparison and as a fallback.
         cranePackage = craneLib.buildPackage (
           common
