@@ -39,9 +39,12 @@ where
     move |control, window, cx| {
         entity
             .update(cx, |this, cx| {
+                // Between frames, `modal_shown` is the dialog in front of the
+                // frame assistive technology saw; `modal_seen` is the frame
+                // before, which lacks a dialog that frame opened.
                 if !this.dialog_open()
                     || this
-                        .modal_seen
+                        .modal_shown
                         .get()
                         .is_some_and(|front| this.dialog_focus(front, cx).contains(control, window))
                 {
