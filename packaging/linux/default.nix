@@ -140,6 +140,17 @@ in
     aptRepository
     aurTest
     ;
+  tests = import ./tests.nix {
+    aur = aurTest;
+    inherit archDepends;
+    inherit
+      pkgs
+      aptRepository
+      version
+      revision
+      depends
+      ;
+  };
 }
 // pkgs.lib.optionalAttrs (builtins.pathExists archiveKey) {
   # The PKGBUILD and .SRCINFO to publish, for the archive key in the repository.
