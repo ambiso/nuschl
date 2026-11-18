@@ -10,7 +10,7 @@ import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { unsized } from "./frames.js";
 import { MAX_MESSAGE, MAX_PEERS, join, linkOf, parse } from "./signal.js";
-import { preferences, support } from "./support.js";
+import { preferences, sendCodecs, support } from "./support.js";
 
 const directory = process.env.STREAM_WASM;
 assert.ok(directory, "STREAM_WASM must name the stream worker's wasm-bindgen build");
@@ -153,6 +153,17 @@ test("support: encoded transforms and AV1 or VP9, AV1 first", () => {
   assert.deepEqual(support({}), { refusal: "transforms" });
   const preferred = preferences(scope(["video/H264", "video/rtx", "video/VP9", "video/AV1", "video/VP8"]), "video");
   assert.deepEqual(preferred.map((codec) => codec.mimeType), ["video/AV1", "video/VP9", "video/rtx"]);
+});
+
+test("publishing: the call codec only, with retransmission, or nothing", () => {
+  const scope = (mimeTypes) => ({
+    RTCRtpSender: { getCapabilities: () => ({ codecs: mimeTypes.map((mimeType) => ({ mimeType })) }) },
+  });
+  const sender = scope(["video/VP8", "video/rtx", "video/AV1", "video/VP9", "video/VP9", "video/H264"]);
+  assert.deepEqual(sendCodecs(sender, "av1").map((codec) => codec.mimeType), ["video/AV1", "video/rtx"]);
+  assert.deepEqual(sendCodecs(sender, "vp9").map((codec) => codec.mimeType), ["video/VP9", "video/VP9", "video/rtx"]);
+  assert.deepEqual(sendCodecs(scope(["video/VP8", "video/rtx"]), "av1"), [], "no fallback to another codec");
+  assert.deepEqual(sendCodecs({}, "vp9"), []);
 });
 
 test("frames: the AV1 depacketizer's size field comes off again", () => {

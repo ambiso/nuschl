@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: EUPL-1.2
 // One call on the page (docs/video-plan.md §2, §4): admission at the SFU, the
 // subscribe connection with each publisher's frames decrypted in the stream worker,
-// and who is in the call. Publishing (B1) adds a publish connection with
-// `configuration`, sends its `offer`, takes the SFU's `answer` from the "message"
-// event and passes the stream worker's `publish` and `tick` replies to `deliver`.
+// who is in the call, and this page's own camera and screen on the publish
+// connection, encrypted in the stream worker and encoded in the call codec.
 import { MAX_PEERS, join, parse } from "./signal.js";
-import { preferences } from "./support.js";
+import { preferences, sendCodecs } from "./support.js";
 
 /** A publisher whose keys have not arrived is asked again after this. */
 const RESUBSCRIBE_MS = 5000;
+/** The stream worker's rekey clock while publishing (crates/stream-wasm). */
+const TICK_MS = 250;
+/** Each source's SFrame encoding (crates/sframe, below MAX_ENCODINGS). */
+const ENCODINGS = { camera: 0, screen: 1 };
 
 export class Call extends EventTarget {
   /** The other peers: id → role. */
@@ -19,6 +22,9 @@ export class Call extends EventTarget {
   tracks = new Map();
   /** Publishers asked for their keys: id → {keyed, asked}. */
   keys = new Map();
+  /** This page's sources: "camera" or "screen" → {track, transceiver, stream, quality}.
+   * `quality` is "auto"; Q1 (#414) adds the tier ladder and caps the encoding here. */
+  sources = new Map();
   self = null;
   role = null;
   codec = null;
@@ -103,6 +109,13 @@ export class Call extends EventTarget {
         break;
       case "codec":
         this.codec = message.codec;
+        if (this.sources.size) await this.recodec();
+        break;
+      case "answer":
+        if (!this.publisher) throw new Error("answer without an offer");
+        await this.publisher.setRemoteDescription({ type: "answer", sdp: message.sdp });
+        this.offering = false;
+        if (this.again) await this.offer();
         break;
       case "offer":
         await this.answer(message);
@@ -173,6 +186,83 @@ export class Call extends EventTarget {
     }
   }
 
+  /** Whether this browser encodes the call codec. */
+  get canPublish() {
+    return this.codec !== null && sendCodecs(globalThis, this.codec).length > 0;
+  }
+
+  /** Publishes `track`, from the user's own Start camera or Share screen, as this
+   * page's `kind` source ("camera" or "screen"). */
+  async publish(kind, track) {
+    if (this.ended || this.sources.has(kind)) return track.stop();
+    if (!this.publisher) {
+      this.deliver(await this.stream.request({ kind: "publish" }));
+      this.publisher = new RTCPeerConnection(this.configuration);
+      // An unused data channel, offered first, holds the transport: stopping a source's
+      // media section, also its first, leaves it up.
+      this.publisher.createDataChannel("sfu");
+      await this.offer();
+      this.ticker = setInterval(() => {
+        this.stream.request({ kind: "tick" }).then((reply) => this.deliver(reply), () => {});
+      }, TICK_MS);
+    }
+    const transceiver = this.sender(kind, track);
+    this.sources.set(kind, { track, transceiver, stream: new MediaStream([track]), quality: "auto" });
+    // The browser's own Stop sharing, or an unplugged camera.
+    track.addEventListener("ended", () => this.unpublish(kind));
+    this.changed();
+    await this.offer();
+  }
+
+  /** A send transceiver for `track`, encrypted in the stream worker. */
+  sender(kind, track) {
+    const transceiver = this.publisher.addTransceiver(track, { direction: "sendonly" });
+    transceiver.sender.transform = new RTCRtpScriptTransform(this.stream.worker, {
+      side: "send",
+      encoding: ENCODINGS[kind],
+    });
+    transceiver.codec = this.codec;
+    return transceiver;
+  }
+
+  /** Restarts each source's encoder in the new call codec on a new transceiver: the
+   * SFU keeps a media section's first codec. The first frame is a key frame, and
+   * the encryptors continue, so no SFrame nonce repeats. */
+  async recodec() {
+    for (const [kind, source] of this.sources) {
+      if (source.transceiver.codec === this.codec) continue;
+      source.transceiver.stop();
+      source.transceiver = this.sender(kind, source.track);
+    }
+    await this.offer();
+  }
+
+  /** Stops this page's `kind` source: the capture ends and the SFU drops its tracks. */
+  async unpublish(kind) {
+    const source = this.sources.get(kind);
+    if (!source) return;
+    this.sources.delete(kind);
+    source.track.stop();
+    source.transceiver.stop();
+    this.changed();
+    await this.offer();
+  }
+
+  /** Offers the publish connection in the call codec, one offer at a time. */
+  async offer() {
+    if (this.offering) {
+      this.again = true;
+      return;
+    }
+    this.offering = true;
+    this.again = false;
+    const codecs = sendCodecs(globalThis, this.codec);
+    for (const { transceiver } of this.sources.values()) transceiver.setCodecPreferences(codecs);
+    await this.publisher.setLocalDescription();
+    const screen = this.sources.get("screen")?.transceiver.mid;
+    this.send({ type: "offer", sdp: this.publisher.localDescription.sdp, screens: screen ? [screen] : [] });
+  }
+
   /** Host actions (P): end the call for everyone, or remove one peer. */
   endForEveryone() {
     this.send({ type: "end" });
@@ -187,8 +277,12 @@ export class Call extends EventTarget {
     if (this.ended) return;
     this.ended = reason;
     clearInterval(this.timer);
+    clearInterval(this.ticker);
+    for (const { track } of this.sources.values()) track.stop();
+    this.sources.clear();
     this.socket?.close();
     this.subscriber?.close();
+    this.publisher?.close();
     this.changed();
   }
 

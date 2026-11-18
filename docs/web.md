@@ -322,16 +322,26 @@ with a call link opens it ([desktop](desktop.md#calls)); the creator's link adds
 - **Bounds:** SFU messages are checked against the page's limits before use
   (`signal.js`: 256 KiB, 256 peers, three tracks per peer, 16 KiB key
   messages); the stream worker bounds its own requests.
-- **Next:** publishing (B1) adds Start camera and Share screen to `#controls`
-  and a publish connection beside `Call`'s subscribe connection. Every track's
-  quality is Auto, what the SFU forwards; Q1's per-source menu sets
-  `track.quality` and sends its quality requests from `Call`. Embedding the
-  call view in the web client is a follow-up.
+- **Publishing:** Start camera opens the camera (`getUserMedia`, video only)
+  and Share screen asks the browser's picker each time (`getDisplayMedia`,
+  window sharing preselected, no audio); a whole-monitor share shows "Sharing
+  your whole screen". This page never opens the microphone. Each source is
+  encrypted in the stream worker (its own SFrame encoding) and encoded in the
+  call codec only; on the SFU's `codec` message every source restarts its
+  encoder on a new media section, since the SFU keeps a section's first codec.
+  Stop, the browser's own stop and the end of the call end the capture and the
+  source. `/call` alone may ask for camera and display capture
+  (Permissions-Policy). A browser that cannot encode the call codec shows
+  "Can't send AV1" (or VP9).
+- **Quality:** Auto for watching and for each own source; Q1 adds its tiers
+  to `QUALITIES` (`controls.js`) and applies `source.quality` and
+  `track.quality` from `Call`. Embedding the call view in the web client is a
+  follow-up.
 - **Tests:** `checks.call-page` runs `web/call/call.test.js` against the
   stream worker's wasm; `checks.vm-call-page` (`nix/call-page-vm.nix`,
   `tests/call_page.py`) runs headless Chromium and Firefox against the SFU and
-  coturn with synthetic publishers and leaves screenshots in
-  `result/screenshots`.
+  coturn with synthetic publishers and a page user who publishes Chromium's
+  fake camera and screen, and leaves screenshots in `result/screenshots`.
 
 ## SDK and browser capability status
 
