@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
-//! The sharer's and the viewers' key-exchange state machines (wire format in the crate
-//! documentation). The sharer grants only fresh epochs: [`Sharer::rekey`] moves every
-//! viewer to K_{e+1} and grants K_{e+1} to the pending requests, so a newcomer receives
-//! only keys created after it joined.
+//! The publisher's and the subscribers' key-exchange state machines (wire format in the
+//! crate documentation). The publisher grants only fresh epochs: [`Publisher::rekey`]
+//! moves every subscriber to K_{e+1} and grants K_{e+1} to the pending requests, so a
+//! newcomer receives only keys created after it joined.
 
 use std::fmt;
 
@@ -27,7 +27,7 @@ const EPOCH_KEY_LEN: usize = 4 + 32;
 const SEALED_KEY_LEN: usize = EPOCH_KEY_LEN + AEAD_TAG_LEN;
 
 /// How far ahead a request's `not_after` may be: its lifetime plus a minute of clock
-/// difference between viewer and sharer.
+/// difference between subscriber and publisher.
 pub const REQUEST_LIFETIME_MS: u64 = 60_000;
 const MAX_NOT_AFTER_MS: u64 = 2 * REQUEST_LIFETIME_MS;
 /// The shortest time between two epochs, unless the clock stepped back.
@@ -38,12 +38,12 @@ pub const RESEND_AFTER_MS: u64 = 500;
 pub const SWITCH_AFTER_MS: u64 = 1_000;
 /// Requests waiting for the next rekey.
 pub const MAX_PENDING: usize = 32;
-/// Viewers holding keys, plus pending requests.
-pub const MAX_VIEWERS: usize = 256;
+/// Subscribers holding keys, plus pending requests.
+pub const MAX_SUBSCRIBERS: usize = 256;
 /// Request nonces remembered until their `not_after`.
 pub const MAX_SEEN: usize = 256;
-/// Rekeys a viewer may have missed and still catch up. Further behind, every Rekey
-/// fails with [`Error::LimitReached`] and the viewer has to join again.
+/// Rekeys a subscriber may have missed and still catch up. Further behind, every Rekey
+/// fails with [`Error::LimitReached`] and the subscriber has to join again.
 pub const MAX_MISSED_REKEYS: u64 = 64;
 
 pub(crate) const REQUEST: u8 = 1;
@@ -51,14 +51,14 @@ pub(crate) const GRANT: u8 = 2;
 pub(crate) const ACK: u8 = 3;
 pub(crate) const REKEY: u8 = 4;
 
-pub type ViewerId = [u8; 16];
+pub type SubscriberId = [u8; 16];
 
 // -------------------------------------------------------------------------------------
 // Epoch keys
 
 /// One epoch's media key. `Debug` leaves out the key.
 ///
-/// The sharer gets each epoch's key once from [`Sharer::rekey`] and gives it to one
+/// The publisher gets each epoch's key once from [`Publisher::rekey`] and gives it to one
 /// sender: a second sender under the same epoch repeats AES-GCM nonces. A restarted
 /// sender (a new encoder, track or worker process) waits for the next rekey.
 pub struct EpochKey {
@@ -136,7 +136,7 @@ pub(crate) fn open_message(keys: &LinkKeys, message: &[u8]) -> Result<(u8, Vec<u
 }
 
 struct Request<'a> {
-    viewer: ViewerId,
+    subscriber: SubscriberId,
     nonce: [u8; 32],
     not_after: u64,
     public_key: &'a [u8; PUBLIC_KEY_LEN],
@@ -145,13 +145,13 @@ struct Request<'a> {
 impl<'a> Request<'a> {
     fn decode(body: &'a [u8]) -> Result<Self, Error> {
         let mut reader = Reader::new(body);
-        let viewer = reader.array()?;
+        let subscriber = reader.array()?;
         let nonce = reader.array()?;
         let not_after = reader.u64()?;
         let public_key = reader.take(PUBLIC_KEY_LEN)?.try_into().expect("taken");
         reader.finish()?;
         Ok(Self {
-            viewer,
+            subscriber,
             nonce,
             not_after,
             public_key,
@@ -159,13 +159,13 @@ impl<'a> Request<'a> {
     }
 }
 
-pub(crate) fn transcript(request: &[u8], sharer_nonce: &[u8; 32]) -> [u8; 32] {
+pub(crate) fn transcript(request: &[u8], publisher_nonce: &[u8; 32]) -> [u8; 32] {
     sha256(&[
         label("transcript").as_bytes(),
         &[VERSION],
         &SUITE,
         request,
-        sharer_nonce,
+        publisher_nonce,
     ])
 }
 
@@ -268,71 +268,71 @@ fn channel_nonce(counter: u64) -> [u8; 12] {
     nonce
 }
 
-fn rekey_header(viewer: &ViewerId, counter: u64) -> Vec<u8> {
-    [&viewer[..], &counter.to_be_bytes()].concat()
+fn rekey_header(subscriber: &SubscriberId, counter: u64) -> Vec<u8> {
+    [&subscriber[..], &counter.to_be_bytes()].concat()
 }
 
 // -------------------------------------------------------------------------------------
-// Sharer
+// Publisher
 
 #[derive(Debug)]
-pub enum SharerEvent {
-    /// A viewer asked to join. The next [`Sharer::rekey`] grants it, unless
-    /// [`Sharer::remove`] turns it down first.
-    Requested(ViewerId),
-    Confirmed(ViewerId),
+pub enum PublisherEvent {
+    /// A subscriber asked to join. The next [`Publisher::rekey`] grants it, unless
+    /// [`Publisher::remove`] turns it down first.
+    Requested(SubscriberId),
+    Confirmed(SubscriberId),
 }
 
-/// What [`Sharer::rekey`] produces: send `messages`, each to its viewer, then switch to
-/// `key` as the crate documentation describes.
+/// What [`Publisher::rekey`] produces: send `messages`, each to its subscriber, then
+/// switch to `key` as the crate documentation describes.
 #[derive(Debug)]
 pub struct Rekey {
     pub key: EpochKey,
-    pub messages: Vec<(ViewerId, Vec<u8>)>,
+    pub messages: Vec<(SubscriberId, Vec<u8>)>,
 }
 
 struct Pending {
-    viewer: ViewerId,
+    subscriber: SubscriberId,
     body: Vec<u8>,
     not_after: u64,
 }
 
 struct Granted {
-    viewer: ViewerId,
+    subscriber: SubscriberId,
     /// The key for Rekey number `counter + 1`.
     channel: [u8; 32],
     counter: u64,
     confirm: [u8; 32],
     confirmed: bool,
-    /// The request's `not_after`: an unconfirmed viewer is dropped at the next rekey
+    /// The request's `not_after`: an unconfirmed subscriber is dropped at the next rekey
     /// after it.
     not_after: u64,
 }
 
-pub struct Sharer {
+pub struct Publisher {
     keys: LinkKeys,
     epoch: u32,
     last_rekey: Option<u64>,
     pending: Vec<Pending>,
-    viewers: Vec<Granted>,
+    subscribers: Vec<Granted>,
     seen: Vec<([u8; 32], u64)>,
 }
 
-impl Sharer {
-    /// A sharer without an epoch; the first [`Sharer::rekey`] creates epoch 1.
+impl Publisher {
+    /// A publisher without an epoch; the first [`Publisher::rekey`] creates epoch 1.
     pub fn new(keys: LinkKeys) -> Self {
         Self {
             keys,
             epoch: 0,
             last_rekey: None,
             pending: Vec::new(),
-            viewers: Vec::new(),
+            subscribers: Vec::new(),
             seen: Vec::new(),
         }
     }
 
     /// Handles a KeyRequest or KeyAck.
-    pub fn receive(&mut self, message: &[u8], now: u64) -> Result<SharerEvent, Error> {
+    pub fn receive(&mut self, message: &[u8], now: u64) -> Result<PublisherEvent, Error> {
         let (kind, body) = open_message(&self.keys, message)?;
         match kind {
             REQUEST => self.request(body, now),
@@ -341,7 +341,7 @@ impl Sharer {
         }
     }
 
-    fn request(&mut self, body: Vec<u8>, now: u64) -> Result<SharerEvent, Error> {
+    fn request(&mut self, body: Vec<u8>, now: u64) -> Result<PublisherEvent, Error> {
         let request = Request::decode(&body)?;
         if request.not_after < now || request.not_after > now.saturating_add(MAX_NOT_AFTER_MS) {
             return Err(Error::Expired);
@@ -350,38 +350,44 @@ impl Sharer {
             .map_err(|_| Error::InvalidPublicKey)?;
         self.seen.retain(|(_, not_after)| *not_after >= now);
         if self.seen.iter().any(|(nonce, _)| *nonce == request.nonce)
-            || self.pending.iter().any(|p| p.viewer == request.viewer)
-            || self.viewers.iter().any(|v| v.viewer == request.viewer)
+            || self
+                .pending
+                .iter()
+                .any(|p| p.subscriber == request.subscriber)
+            || self
+                .subscribers
+                .iter()
+                .any(|v| v.subscriber == request.subscriber)
         {
             return Err(Error::Replay);
         }
         if self.seen.len() >= MAX_SEEN
             || self.pending.len() >= MAX_PENDING
-            || self.pending.len() + self.viewers.len() >= MAX_VIEWERS
+            || self.pending.len() + self.subscribers.len() >= MAX_SUBSCRIBERS
         {
             return Err(Error::LimitReached);
         }
         self.seen.push((request.nonce, request.not_after));
-        let viewer = request.viewer;
+        let subscriber = request.subscriber;
         let not_after = request.not_after;
         self.pending.push(Pending {
-            viewer,
+            subscriber,
             body,
             not_after,
         });
-        Ok(SharerEvent::Requested(viewer))
+        Ok(PublisherEvent::Requested(subscriber))
     }
 
-    fn ack(&mut self, body: &[u8]) -> Result<SharerEvent, Error> {
+    fn ack(&mut self, body: &[u8]) -> Result<PublisherEvent, Error> {
         let mut reader = Reader::new(body);
-        let viewer: ViewerId = reader.array()?;
+        let subscriber: SubscriberId = reader.array()?;
         let confirm: [u8; 32] = reader.array()?;
         reader.finish()?;
         let granted = self
-            .viewers
+            .subscribers
             .iter_mut()
-            .find(|granted| granted.viewer == viewer)
-            .ok_or(Error::UnknownViewer)?;
+            .find(|granted| granted.subscriber == subscriber)
+            .ok_or(Error::UnknownSubscriber)?;
         if granted.confirmed {
             return Err(Error::Replay);
         }
@@ -389,22 +395,24 @@ impl Sharer {
             return Err(Error::Authentication);
         }
         granted.confirmed = true;
-        Ok(SharerEvent::Confirmed(viewer))
+        Ok(PublisherEvent::Confirmed(subscriber))
     }
 
-    /// Turns down a request or removes a viewer; the next [`Sharer::rekey`] locks it
-    /// out. Returns whether it was known.
-    pub fn remove(&mut self, viewer: &ViewerId) -> bool {
-        let before = self.pending.len() + self.viewers.len();
-        self.pending.retain(|pending| pending.viewer != *viewer);
-        self.viewers.retain(|granted| granted.viewer != *viewer);
-        before != self.pending.len() + self.viewers.len()
+    /// Turns down a request or removes a subscriber; the next [`Publisher::rekey`] locks
+    /// it out. Returns whether it was known.
+    pub fn remove(&mut self, subscriber: &SubscriberId) -> bool {
+        let before = self.pending.len() + self.subscribers.len();
+        self.pending
+            .retain(|pending| pending.subscriber != *subscriber);
+        self.subscribers
+            .retain(|granted| granted.subscriber != *subscriber);
+        before != self.pending.len() + self.subscribers.len()
     }
 
-    /// Starts the next epoch: a Rekey for every viewer, then a KeyGrant for every
-    /// pending request. Viewers whose confirmation is overdue and expired requests are
-    /// dropped first. Refused within
-    /// [`MIN_EPOCH_INTERVAL_MS`] of the last rekey, unless the clock stepped back.
+    /// Starts the next epoch: a Rekey for every subscriber, then a KeyGrant for every
+    /// pending request. Subscribers whose confirmation is overdue and expired requests
+    /// are dropped first. Refused within [`MIN_EPOCH_INTERVAL_MS`] of the last rekey,
+    /// unless the clock stepped back.
     pub fn rekey<R: TryCryptoRng + ?Sized>(
         &mut self,
         now: u64,
@@ -420,11 +428,11 @@ impl Sharer {
             epoch,
             key: random(rng)?,
         };
-        self.viewers
+        self.subscribers
             .retain(|granted| granted.confirmed || granted.not_after >= now);
         self.pending.retain(|pending| pending.not_after >= now);
         if self
-            .viewers
+            .subscribers
             .iter()
             .any(|granted| granted.counter == u64::MAX)
         {
@@ -435,30 +443,33 @@ impl Sharer {
         let mut grants = Vec::new();
         let mut granted = Vec::new();
         for pending in &self.pending {
-            let (message, viewer) = self.grant(pending, &plaintext, rng)?;
-            grants.push((pending.viewer, message));
-            granted.push(viewer);
+            let (message, subscriber) = self.grant(pending, &plaintext, rng)?;
+            grants.push((pending.subscriber, message));
+            granted.push(subscriber);
         }
-        let mut messages = Vec::with_capacity(self.viewers.len() + grants.len());
-        for viewer in &mut self.viewers {
-            viewer.counter += 1;
-            let header = rekey_header(&viewer.viewer, viewer.counter);
+        let mut messages = Vec::with_capacity(self.subscribers.len() + grants.len());
+        for subscriber in &mut self.subscribers {
+            subscriber.counter += 1;
+            let header = rekey_header(&subscriber.subscriber, subscriber.counter);
             let mut sealed = [0; SEALED_KEY_LEN];
             libcrux_chacha20poly1305::encrypt(
-                &viewer.channel,
+                &subscriber.channel,
                 &plaintext,
                 &mut sealed,
                 &header,
-                &channel_nonce(viewer.counter),
+                &channel_nonce(subscriber.counter),
             )
             .expect("buffer sized for key and tag");
-            viewer.channel = ratchet(&viewer.channel);
+            subscriber.channel = ratchet(&subscriber.channel);
             let body = [&header[..], &sealed].concat();
-            messages.push((viewer.viewer, seal_message(&self.keys, REKEY, &body, rng)?));
+            messages.push((
+                subscriber.subscriber,
+                seal_message(&self.keys, REKEY, &body, rng)?,
+            ));
         }
         messages.extend(grants);
         self.pending.clear();
-        self.viewers.extend(granted);
+        self.subscribers.extend(granted);
         self.epoch = epoch;
         self.last_rekey = Some(now);
         Ok(Rekey { key, messages })
@@ -471,9 +482,9 @@ impl Sharer {
         rng: &mut R,
     ) -> Result<(Vec<u8>, Granted), Error> {
         let request = Request::decode(&pending.body)?;
-        let sharer_nonce: [u8; 32] = random(rng)?;
+        let publisher_nonce: [u8; 32] = random(rng)?;
         let eseed = random::<64, R>(rng)?;
-        let transcript = transcript(&pending.body, &sharer_nonce);
+        let transcript = transcript(&pending.body, &publisher_nonce);
         let psk_id = self.keys.psk_id();
         let (enc, mut context) = hpke_sender(
             request.public_key,
@@ -484,12 +495,12 @@ impl Sharer {
         let sealed = context
             .seal(&[], epoch_key)
             .map_err(|_| Error::Authentication)?;
-        let body = [&pending.viewer[..], &sharer_nonce, &enc, &sealed].concat();
+        let body = [&pending.subscriber[..], &publisher_nonce, &enc, &sealed].concat();
         let granted = Granted {
-            viewer: pending.viewer,
-            channel: export(&context, "channel sharer->viewer")?,
+            subscriber: pending.subscriber,
+            channel: export(&context, "channel publisher->subscriber")?,
             counter: 0,
-            confirm: export(&context, "confirm viewer->sharer")?,
+            confirm: export(&context, "confirm subscriber->publisher")?,
             confirmed: false,
             not_after: pending.not_after,
         };
@@ -497,22 +508,22 @@ impl Sharer {
     }
 }
 
-impl fmt::Debug for Sharer {
+impl fmt::Debug for Publisher {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Sharer")
+        f.debug_struct("Publisher")
             .field("epoch", &self.epoch)
             .field("pending", &self.pending.len())
-            .field("viewers", &self.viewers.len())
+            .field("subscribers", &self.subscribers.len())
             .finish_non_exhaustive()
     }
 }
 
 // -------------------------------------------------------------------------------------
-// Viewer
+// Subscriber
 
 #[derive(Debug)]
-pub enum ViewerEvent {
-    /// The first key; send `ack` to the sharer.
+pub enum SubscriberEvent {
+    /// The first key; send `ack` to the publisher.
     Granted {
         key: EpochKey,
         ack: Vec<u8>,
@@ -535,21 +546,21 @@ enum State {
 }
 
 /// One join: a fresh X-Wing key pair, used for this request only.
-pub struct Viewer {
+pub struct Subscriber {
     keys: LinkKeys,
-    id: ViewerId,
+    id: SubscriberId,
     state: State,
 }
 
-impl Viewer {
-    /// Draws the viewer id, nonce and X-Wing key pair, and seals the KeyRequest, valid
-    /// for [`REQUEST_LIFETIME_MS`].
+impl Subscriber {
+    /// Draws the subscriber id, nonce and X-Wing key pair, and seals the KeyRequest,
+    /// valid for [`REQUEST_LIFETIME_MS`].
     pub fn join<R: TryCryptoRng + ?Sized>(
         keys: LinkKeys,
         now: u64,
         rng: &mut R,
     ) -> Result<(Self, Vec<u8>), Error> {
-        let id: ViewerId = random(rng)?;
+        let id: SubscriberId = random(rng)?;
         let nonce: [u8; 32] = random(rng)?;
         let kem_seed: [u8; 32] = random(rng)?;
         let (_, public) = libcrux_kem::key_gen_derand(XWingKemDraft06, &kem_seed)
@@ -557,7 +568,7 @@ impl Viewer {
         let not_after = now.saturating_add(REQUEST_LIFETIME_MS);
         let request = [&id[..], &nonce, &not_after.to_be_bytes(), &public.encode()].concat();
         let message = seal_message(&keys, REQUEST, &request, rng)?;
-        let viewer = Self {
+        let subscriber = Self {
             keys,
             id,
             state: State::Joining {
@@ -566,25 +577,25 @@ impl Viewer {
                 kem_seed,
             },
         };
-        Ok((viewer, message))
+        Ok((subscriber, message))
     }
 
-    pub fn id(&self) -> ViewerId {
+    pub fn id(&self) -> SubscriberId {
         self.id
     }
 
-    /// Handles a KeyGrant or Rekey. Messages for other viewers fail
-    /// with [`Error::UnknownViewer`].
+    /// Handles a KeyGrant or Rekey. Messages for other subscribers fail with
+    /// [`Error::UnknownSubscriber`].
     pub fn receive<R: TryCryptoRng + ?Sized>(
         &mut self,
         message: &[u8],
         now: u64,
         rng: &mut R,
-    ) -> Result<ViewerEvent, Error> {
+    ) -> Result<SubscriberEvent, Error> {
         let (kind, body) = open_message(&self.keys, message)?;
         let mut reader = Reader::new(&body);
         if reader.array::<16>()? != self.id {
-            return Err(Error::UnknownViewer);
+            return Err(Error::UnknownSubscriber);
         }
         match (kind, &self.state) {
             (GRANT, State::Joining { .. }) => self.grant(reader, now, rng),
@@ -598,7 +609,7 @@ impl Viewer {
         mut reader: Reader<'_>,
         now: u64,
         rng: &mut R,
-    ) -> Result<ViewerEvent, Error> {
+    ) -> Result<SubscriberEvent, Error> {
         let State::Joining {
             request,
             not_after,
@@ -607,14 +618,14 @@ impl Viewer {
         else {
             return Err(Error::Unexpected);
         };
-        let sharer_nonce = reader.array()?;
+        let publisher_nonce = reader.array()?;
         let enc = reader.take(ENC_LEN)?;
         let sealed = reader.take(SEALED_KEY_LEN)?;
         reader.finish()?;
         if now > *not_after {
             return Err(Error::Expired);
         }
-        let transcript = transcript(request, &sharer_nonce);
+        let transcript = transcript(request, &publisher_nonce);
         let psk_id = self.keys.psk_id();
         let mut context = hpke_receiver(
             kem_seed,
@@ -626,18 +637,18 @@ impl Viewer {
             .open(&[], sealed)
             .map_err(|_| Error::Authentication)?;
         let key = decode_epoch_key(&plaintext)?;
-        let confirm = export(&context, "confirm viewer->sharer")?;
+        let confirm = export(&context, "confirm subscriber->publisher")?;
         let ack = [&self.id[..], &confirm].concat();
         let ack = seal_message(&self.keys, ACK, &ack, rng)?;
         self.state = State::Granted {
-            channel: export(&context, "channel sharer->viewer")?,
+            channel: export(&context, "channel publisher->subscriber")?,
             counter: 0,
             epoch: key.epoch,
         };
-        Ok(ViewerEvent::Granted { key, ack })
+        Ok(SubscriberEvent::Granted { key, ack })
     }
 
-    fn rekey(&mut self, mut reader: Reader<'_>) -> Result<ViewerEvent, Error> {
+    fn rekey(&mut self, mut reader: Reader<'_>) -> Result<SubscriberEvent, Error> {
         let State::Granted {
             channel,
             counter: last,
@@ -677,13 +688,13 @@ impl Viewer {
         *channel = next;
         *last = counter;
         *epoch = received.epoch;
-        Ok(ViewerEvent::Rekeyed(received))
+        Ok(SubscriberEvent::Rekeyed(received))
     }
 }
 
-impl fmt::Debug for Viewer {
+impl fmt::Debug for Subscriber {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Viewer")
+        f.debug_struct("Subscriber")
             .field("id", &self.id)
             .finish_non_exhaustive()
     }
@@ -692,54 +703,57 @@ impl fmt::Debug for Viewer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::{T0, join, link, rng, sharer};
+    use crate::tests::{T0, join, link, publisher, rng};
 
     #[test]
     fn epochs_and_counters_are_bounded() {
         let link = link(40);
-        let mut sharer = sharer(&link);
-        sharer.epoch = u32::MAX;
-        assert_eq!(sharer.rekey(T0, &mut rng(1)).err(), Some(Error::Exhausted));
-
-        let mut sharer = self::sharer(&link);
-        join(&link, &mut sharer, T0, 41);
-        sharer.viewers[0].counter = u64::MAX;
+        let mut publisher = publisher(&link);
+        publisher.epoch = u32::MAX;
         assert_eq!(
-            sharer.rekey(T0 + 1000, &mut rng(2)).err(),
+            publisher.rekey(T0, &mut rng(1)).err(),
+            Some(Error::Exhausted)
+        );
+
+        let mut publisher = self::publisher(&link);
+        join(&link, &mut publisher, T0, 41);
+        publisher.subscribers[0].counter = u64::MAX;
+        assert_eq!(
+            publisher.rekey(T0 + 1000, &mut rng(2)).err(),
             Some(Error::Exhausted)
         );
     }
 
     /// L2: after a Rekey both sides hold only the next channel key, which opens no
-    /// earlier Rekey, and the viewer keeps nothing that opens its grant.
+    /// earlier Rekey, and the subscriber keeps nothing that opens its grant.
     #[test]
     fn channel_keys_ratchet_forward() {
         let link = link(42);
         let keys = link.keys();
-        let mut sharer = sharer(&link);
-        let (mut viewer, _, _) = join(&link, &mut sharer, T0, 43);
+        let mut publisher = publisher(&link);
+        let (mut subscriber, _, _) = join(&link, &mut publisher, T0, 43);
         let mut rng = rng(44);
         let mut sealed = Vec::new();
         for now in [T0 + 1000, T0 + 2000] {
-            let message = sharer.rekey(now, &mut rng).unwrap().messages.remove(0).1;
-            assert!(viewer.receive(&message, now, &mut rng).is_ok());
+            let message = publisher.rekey(now, &mut rng).unwrap().messages.remove(0).1;
+            assert!(subscriber.receive(&message, now, &mut rng).is_ok());
             let (_, body) = open_message(&keys, &message).unwrap();
             sealed.push((
                 u64::from_be_bytes(body[16..24].try_into().unwrap()),
                 body[24..].to_vec(),
             ));
         }
-        let State::Granted { channel, .. } = &viewer.state else {
+        let State::Granted { channel, .. } = &subscriber.state else {
             panic!("granted");
         };
-        assert_eq!(channel, &sharer.viewers[0].channel);
+        assert_eq!(channel, &publisher.subscribers[0].channel);
         for (counter, sealed) in &sealed {
             let mut plaintext = [0; EPOCH_KEY_LEN];
             let opened = libcrux_chacha20poly1305::decrypt(
                 channel,
                 &mut plaintext,
                 sealed,
-                &rekey_header(&viewer.id, *counter),
+                &rekey_header(&subscriber.id, *counter),
                 &channel_nonce(*counter),
             );
             assert!(opened.is_err(), "counter {counter}");

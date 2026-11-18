@@ -1,25 +1,15 @@
 // SPDX-License-Identifier: EUPL-1.2
-//! Screen-share key agreement on stock and compatible servers (docs/screen-share-plan.md
-//! §3): the watch link, the keys derived from its secret, the X-Wing HPKE-PSK exchange
-//! between the sharer and each viewer, and rekeying. The epoch keys it agrees encrypt
-//! media through `nuschl-sframe`, a separate crate, so this one links no AES.
+//! Call keys on stock and compatible Mumble servers (docs/video-plan.md §4): links, the
+//! keys derived from the link secret S, the X-Wing HPKE-PSK exchange between a publisher
+//! and each subscriber, and rekeying. The epoch keys encrypt media through
+//! `nuschl-sframe`, so this crate links no AES.
 //!
-//! The crate is portable protocol and key state only. Callers pass the time (Unix
-//! milliseconds) and a cryptographic RNG, and carry the messages over the SFU; the crate
-//! does no I/O and keeps no global state.
-//!
-//! Key authority stays with the designated crypto worker, the one caller cargo-deny
-//! allows. It holds the link secret and the exchange state, and
-//! hands out only what a later, reviewed caller needs. That integration is future work
-//! and held until its SECURITY.md row is approved:
-//! - the SDK driver encrypting media with SFrame (R1), given epoch keys only;
-//! - the desktop handoff creating links (D1);
-//! - the browser's dedicated stream worker (K2), a WASM realm that is no OS sandbox.
-//!
-//! Codec and content workers receive no key material.
+//! The crate holds protocol and key state only: callers pass the time (Unix
+//! milliseconds) and a cryptographic RNG, and carry the messages over the SFU. cargo-deny
+//! admits the crypto worker as its one caller; the SDK driver (R1), the desktop (D1) and
+//! the browser stream worker (K2) wait for their SECURITY.md rows.
 //!
 //! ```text
-//! S          = 32 random bytes from the link
 //! prk        = HKDF-Extract(salt = "nuschl/stream/v2", S)
 //! stream_id  = HKDF-Expand(prk, "nuschl/stream/v2 stream id", 16)   // the SFU room
 //! admit_key  = HKDF-Expand(prk, "nuschl/stream/v2 admit", 32)       // given to the SFU
@@ -27,69 +17,54 @@
 //! signal_key = HKDF-Expand(prk, "nuschl/stream/v2 signal", 32)
 //! psk_id     = "nuschl/stream/v2" || stream_id
 //!
-//! viewer                                       sharer
-//! fresh X-Wing (sk_v, pk_v)
-//! KeyRequest{viewer_id, nonce_v, not_after, pk_v} ──►
-//!                                              rekey: K_{e+1} to every viewer first
-//!                    ◄── KeyGrant{viewer_id, nonce_s, enc, Seal(epoch, K)}
-//! KeyAck{viewer_id, confirm} ──►               (sk_v is dropped once the grant opens)
-//!                    ◄── Rekey{viewer_id, counter, ChaCha20-Poly1305(channel_n, epoch, K)}
+//! subscriber: fresh X-Wing (sk_v, pk_v)
+//!   KeyRequest{subscriber_id, nonce_v, not_after, pk_v}             ──► publisher
+//!   ◄── KeyGrant{subscriber_id, nonce_s, enc, Seal(epoch, K)}      at the next rekey
+//!   KeyAck{subscriber_id, confirm}                                  ──►
+//!   ◄── Rekey{subscriber_id, counter, ChaCha20-Poly1305(channel_n, epoch, K)}
 //!
-//! transcript = SHA-256("nuschl/stream/v2 transcript" || version || suite
-//!                      || KeyRequest body || nonce_s)
-//! HPKE       = X-Wing / HKDF-SHA256 / ChaCha20-Poly1305, PSK mode (psk, psk_id),
-//!              info = "nuschl/stream/v2 grant" || transcript, aad = ""
-//! confirm    = Export("nuschl/stream/v2 confirm viewer->sharer", 32)
-//! channel_1  = Export("nuschl/stream/v2 channel sharer->viewer", 32)
+//! transcript  = SHA-256("nuschl/stream/v2 transcript" || version || suite
+//!                       || KeyRequest body || nonce_s)
+//! HPKE        = X-Wing / HKDF-SHA256 / ChaCha20-Poly1305, PSK mode (psk, psk_id),
+//!               info = "nuschl/stream/v2 grant" || transcript, aad = ""
+//! confirm     = Export("nuschl/stream/v2 confirm subscriber->publisher", 32)
+//! channel_1   = Export("nuschl/stream/v2 channel publisher->subscriber", 32)
 //! channel_n+1 = HKDF-Expand(channel_n, "nuschl/stream/v2 channel ratchet", 32)
 //! ```
 //!
-//! The grant's AEAD tag authenticates the sharer's side: it verifies only under the
-//! HPKE context, which binds psk and the transcript. The exporter is bound to the same
-//! context, so the export alone serves as the viewer's confirmation. Each Rekey uses the
-//! next channel key, and both sides drop the one before, so a party that later learns a
-//! viewer's or the sharer's state reads no earlier epoch.
+//! The grant's AEAD tag verifies only under the HPKE context, which binds psk and the
+//! transcript; the exported confirmation proves the subscriber opened it. Each Rekey uses
+//! the next channel key, and both sides drop the one before.
 //!
-//! Every key message is one ChaCha20-Poly1305 envelope under `signal_key`, so only link
-//! holders can read or forge it, and the SFU sees no viewer ids or keys. Its tag is the
-//! cheap check that drops messages from non-holders; the plan's separate `mac_key` is
-//! folded into it.
+//! Every key message is one ChaCha20-Poly1305 envelope under `signal_key`, so the SFU
+//! sees no subscriber ids or keys, and messages from parties without S fail at the tag
+//! (the plan's `mac_key` is this tag):
 //!
 //! ```text
 //! struct { uint8 version = 1; uint8 kind; opaque nonce[12]; opaque sealed<..16 KiB>; }
 //!   sealed = ChaCha20-Poly1305(signal_key, nonce, aad = version || kind, body)
 //!
-//! kind 1  KeyRequest       opaque viewer_id[16]; opaque nonce_v[32]; uint64 not_after;
-//!                          opaque pk_v[1216];
-//! kind 2  KeyGrant         opaque viewer_id[16]; opaque nonce_s[32]; opaque enc[1120];
-//!                          opaque sealed_key[52];
-//! kind 3  KeyAck           opaque viewer_id[16]; opaque confirm[32];
-//! kind 4  Rekey            opaque viewer_id[16]; uint64 counter; opaque sealed_key[52];
-//!                          (nonce = 0u32 || counter, aad = viewer_id || counter)
+//! kind 1  KeyRequest  opaque subscriber_id[16]; opaque nonce_v[32]; uint64 not_after;
+//!                     opaque pk_v[1216];
+//! kind 2  KeyGrant    opaque subscriber_id[16]; opaque nonce_s[32]; opaque enc[1120];
+//!                     opaque sealed_key[52];
+//! kind 3  KeyAck      opaque subscriber_id[16]; opaque confirm[32];
+//! kind 4  Rekey       opaque subscriber_id[16]; uint64 counter; opaque sealed_key[52];
+//!                     (nonce = 0u32 || counter, aad = subscriber_id || counter)
 //!
 //! struct { uint32 epoch; opaque key[32]; } EpochKey;
 //! ```
 //!
-//! **Delivery.** [`Sharer::rekey`] returns the messages and the new [`EpochKey`]. Send the
-//! messages, send them again after [`RESEND_AFTER_MS`] (viewers drop duplicates as
-//! replays), and switch the encryptors to the new key [`SWITCH_AFTER_MS`] after the
-//! first send. A viewer that missed Rekeys catches up with the next one, up to
-//! [`MAX_MISSED_REKEYS`]; further behind, a Rekey fails with [`Error::LimitReached`] and
-//! the viewer joins again. Rekeys carry no acknowledgement, so the sharer cannot tell;
-//! the old join's id stays in its roster until the caller removes it.
+//! **Delivery.** Send the messages from [`Publisher::rekey`], send them again after
+//! [`RESEND_AFTER_MS`] (subscribers drop duplicates as replays), and switch the
+//! encryptors to the new [`EpochKey`] [`SWITCH_AFTER_MS`] after the first send. A
+//! subscriber that missed up to [`MAX_MISSED_REKEYS`] Rekeys catches up with the next
+//! one; further behind, it joins again.
 //!
-//! **Restarted senders.** Never send an epoch's key to a restarted sender (a new
-//! encoder, track or worker process): its counters start at zero and would repeat
-//! AES-GCM nonces. Rekey, and give the new sender the new epoch's key.
-//!
-//! **Who can do what.**
-//! - A passive party with S and every recording cannot decrypt: sk_v and every epoch
-//!   key are fresh random values, independent of S and of every earlier key.
-//! - PSK mode authenticates a grant only as "from a holder of S". Any link holder that
-//!   gets a KeyGrant to a viewer becomes that viewer's sharer, and every viewer holds the
-//!   epoch key and could encrypt frames others accept. Media authenticity rests on the
-//!   SFU admitting only the publisher that proves P (plan E1), and on identity-bound
-//!   sharers (plan N1).
+//! **What S grants.** Every sk_v and epoch key is fresh randomness, so S and every
+//! recorded message decrypt no media. PSK mode authenticates a grant as coming from a
+//! holder of S, and every subscriber holds the epoch key: media authenticity rests on the
+//! SFU admitting only publishers that prove P (plan E1).
 
 mod exchange;
 mod link;
@@ -101,8 +76,9 @@ mod tests;
 use rand_core::TryCryptoRng;
 
 pub use exchange::{
-    EpochKey, MAX_MISSED_REKEYS, RESEND_AFTER_MS, Rekey, SWITCH_AFTER_MS, Sharer, SharerEvent,
-    Viewer, ViewerEvent, ViewerId,
+    EpochKey, MAX_MISSED_REKEYS, MIN_EPOCH_INTERVAL_MS, Publisher, PublisherEvent,
+    REQUEST_LIFETIME_MS, RESEND_AFTER_MS, Rekey, SWITCH_AFTER_MS, Subscriber, SubscriberEvent,
+    SubscriberId,
 };
 pub use link::{Link, LinkKeys};
 
@@ -127,8 +103,8 @@ pub enum Error {
     Replay,
     #[error("stale epoch")]
     StaleEpoch,
-    #[error("unknown viewer")]
-    UnknownViewer,
+    #[error("unknown subscriber")]
+    UnknownSubscriber,
     #[error("unexpected message")]
     Unexpected,
     #[error("limit reached")]

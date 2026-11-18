@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: EUPL-1.2
 [package]
 name = "nuschl-stream"
-description = "Screen-share key agreement: watch links, the X-Wing HPKE-PSK exchange and rekeying (docs/screen-share-plan.md §3)"
+description = "Call keys: links, the X-Wing HPKE-PSK exchange and rekeying (docs/video-plan.md §4)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

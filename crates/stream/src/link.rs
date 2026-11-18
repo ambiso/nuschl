@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: EUPL-1.2
-//! Watch and share links (docs/screen-share-plan.md §2), and the keys derived from the
+//! Watch and call links (docs/video-plan.md §3), and the keys derived from the
 //! link secret S:
 //!
 //! ```text
 //! https://<host>/watch#v=1&k=<S>          posted to the channel
-//! https://<host>/share#v=1&k=<S>&p=<P>    opened by the sharer only
+//! https://<host>/call#v=1&k=<S>&p=<P>     opened by the call's creator only
 //! ```
 //!
 //! S and P are 32 bytes in unpadded base64url. The host is the configured stream host,
@@ -22,7 +22,7 @@ use crate::{Error, hkdf_expand, hkdf_extract, random};
 pub(crate) const LABEL: &str = "nuschl/stream/v2";
 const ENCODED_SECRET_LEN: usize = 43;
 
-/// A parsed watch or share link. `Debug` leaves out the secrets.
+/// A parsed watch or call link. `Debug` leaves out the secrets.
 pub struct Link {
     host: String,
     secret: [u8; 32],
@@ -32,7 +32,7 @@ pub struct Link {
 impl Link {
     pub const MAX_LEN: usize = 512;
 
-    /// A new share link on the stream host (`host[:port]`) with fresh S and P.
+    /// A new call link on the stream host (`host[:port]`) with fresh S and P.
     pub fn generate<R: TryCryptoRng + ?Sized>(host: &str, rng: &mut R) -> Result<Self, Error> {
         check_host(host)?;
         Ok(Self {
@@ -56,9 +56,9 @@ impl Link {
         let (page, fragment) = page
             .split_once('#')
             .ok_or(Error::Malformed("link fragment"))?;
-        let share = match page {
+        let call = match page {
             "watch" => false,
-            "share" => true,
+            "call" => true,
             _ => return Err(Error::Malformed("link page")),
         };
         let mut params = fragment.split('&');
@@ -68,7 +68,7 @@ impl Link {
             _ => return Err(Error::Malformed("link version")),
         }
         let secret = decode_param(params.next(), "k=")?;
-        let publisher = share
+        let publisher = call
             .then(|| decode_param(params.next(), "p="))
             .transpose()?;
         if params.next().is_some() {
@@ -89,7 +89,7 @@ impl Link {
         &self.secret
     }
 
-    /// P, for share links only.
+    /// P, for call links only.
     pub fn publisher(&self) -> Option<&[u8; 32]> {
         self.publisher.as_ref()
     }
@@ -99,10 +99,10 @@ impl Link {
         format!("https://{}/watch#v=1&k={}", self.host, encode(&self.secret))
     }
 
-    pub fn share_url(&self) -> Option<String> {
+    pub fn call_url(&self) -> Option<String> {
         let publisher = self.publisher.as_ref()?;
         Some(format!(
-            "https://{}/share#v=1&k={}&p={}",
+            "https://{}/call#v=1&k={}&p={}",
             self.host,
             encode(&self.secret),
             encode(publisher)
@@ -118,7 +118,7 @@ impl fmt::Debug for Link {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Link")
             .field("host", &self.host)
-            .field("share", &self.publisher.is_some())
+            .field("call", &self.publisher.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -186,7 +186,7 @@ impl LinkKeys {
         &self.stream_id
     }
 
-    /// What the SFU checks viewer admission with.
+    /// What the SFU checks subscriber admission with.
     pub fn admit_key(&self) -> &[u8; 32] {
         &self.admit_key
     }

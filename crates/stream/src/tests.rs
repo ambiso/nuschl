@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-//! Known answers, the exchange end to end, and malformed input through the real parsers.
+//! Known answers, the full exchange, and malformed input through the real parsers.
 
 use hpke_rs::hpke_types::{AeadAlgorithm, KdfAlgorithm, KemAlgorithm};
 use hpke_rs::{Hpke, Mode};
@@ -7,7 +7,7 @@ use hpke_rs_libcrux::{HpkeLibcrux, HpkeLibcruxPrng};
 use libcrux_kem::Algorithm::XWingKemDraft06;
 
 use crate::exchange::{
-    ACK, GRANT, MAX_PENDING, MAX_SEEN, MAX_VIEWERS, REKEY, REQUEST, REQUEST_LIFETIME_MS,
+    ACK, GRANT, MAX_PENDING, MAX_SEEN, MAX_SUBSCRIBERS, REKEY, REQUEST, REQUEST_LIFETIME_MS,
     hpke_receiver, hpke_sender, open_message, seal_message, transcript,
 };
 use crate::*;
@@ -31,58 +31,62 @@ pub(crate) fn link(seed: u8) -> Link {
     Link::generate(HOST, &mut rng(seed)).unwrap()
 }
 
-pub(crate) fn sharer(link: &Link) -> Sharer {
-    Sharer::new(link.keys())
+pub(crate) fn publisher(link: &Link) -> Publisher {
+    Publisher::new(link.keys())
 }
 
 pub(crate) fn request<R: rand_core::TryCryptoRng>(
     link: &Link,
     now: u64,
     rng: &mut R,
-) -> (Viewer, Vec<u8>) {
-    Viewer::join(link.keys(), now, rng).unwrap()
+) -> (Subscriber, Vec<u8>) {
+    Subscriber::join(link.keys(), now, rng).unwrap()
 }
 
-pub(crate) fn admit(sharer: &mut Sharer, request: &[u8], now: u64) -> ViewerId {
-    let SharerEvent::Requested(viewer) = sharer.receive(request, now).unwrap() else {
+pub(crate) fn admit(publisher: &mut Publisher, request: &[u8], now: u64) -> SubscriberId {
+    let PublisherEvent::Requested(subscriber) = publisher.receive(request, now).unwrap() else {
         panic!("expected a request");
     };
-    viewer
+    subscriber
 }
 
-/// Runs one join to a confirmed key; returns the viewer, its key and the rekey's other
+/// Runs one join to a confirmed key; returns the subscriber, its key and the rekey's other
 /// messages.
 pub(crate) fn join(
     link: &Link,
-    sharer: &mut Sharer,
+    publisher: &mut Publisher,
     now: u64,
     seed: u8,
-) -> (Viewer, EpochKey, Vec<(ViewerId, Vec<u8>)>) {
+) -> (Subscriber, EpochKey, Vec<(SubscriberId, Vec<u8>)>) {
     let mut rng = rng(seed);
-    let (mut viewer, request) = request(link, now, &mut rng);
-    admit(sharer, &request, now);
+    let (mut subscriber, request) = request(link, now, &mut rng);
+    admit(publisher, &request, now);
     let mut others = Vec::new();
     let mut key = None;
-    for (to, message) in sharer.rekey(now, &mut rng).unwrap().messages {
-        if to != viewer.id() {
+    for (to, message) in publisher.rekey(now, &mut rng).unwrap().messages {
+        if to != subscriber.id() {
             others.push((to, message));
             continue;
         }
-        let ViewerEvent::Granted { key: granted, ack } =
-            viewer.receive(&message, now, &mut rng).unwrap()
+        let SubscriberEvent::Granted { key: granted, ack } =
+            subscriber.receive(&message, now, &mut rng).unwrap()
         else {
             panic!("expected a grant");
         };
-        let confirmed = sharer.receive(&ack, now).unwrap();
-        assert!(matches!(confirmed, SharerEvent::Confirmed(id) if id == viewer.id()));
+        let confirmed = publisher.receive(&ack, now).unwrap();
+        assert!(matches!(confirmed, PublisherEvent::Confirmed(id) if id == subscriber.id()));
         key = Some(granted);
     }
-    (viewer, key.expect("a grant for the new viewer"), others)
+    (
+        subscriber,
+        key.expect("a grant for the new subscriber"),
+        others,
+    )
 }
 
-fn rekeyed(viewer: &mut Viewer, message: &[u8], now: u64) -> Result<EpochKey, Error> {
-    match viewer.receive(message, now, &mut rng(99))? {
-        ViewerEvent::Rekeyed(key) => Ok(key),
+fn rekeyed(subscriber: &mut Subscriber, message: &[u8], now: u64) -> Result<EpochKey, Error> {
+    match subscriber.receive(message, now, &mut rng(99))? {
+        SubscriberEvent::Rekeyed(key) => Ok(key),
         other => panic!("expected a rekey, got {other:?}"),
     }
 }
@@ -223,19 +227,19 @@ fn stream_id_known_answer() {
 
 #[test]
 fn links_round_trip_and_keep_secrets_out_of_debug() {
-    let share = link(3);
-    let parsed = Link::parse(&share.share_url().unwrap(), HOST).unwrap();
-    assert_eq!(parsed.share_url(), share.share_url());
-    let watch = Link::parse(&share.watch_url(), HOST).unwrap();
-    assert_eq!(watch.secret(), share.secret());
+    let call = link(3);
+    let parsed = Link::parse(&call.call_url().unwrap(), HOST).unwrap();
+    assert_eq!(parsed.call_url(), call.call_url());
+    let watch = Link::parse(&call.watch_url(), HOST).unwrap();
+    assert_eq!(watch.secret(), call.secret());
     assert_eq!(watch.publisher(), None);
-    assert_eq!(watch.share_url(), None);
-    assert_eq!(watch.keys().stream_id(), share.keys().stream_id());
-    assert_ne!(link(4).keys().stream_id(), share.keys().stream_id());
+    assert_eq!(watch.call_url(), None);
+    assert_eq!(watch.keys().stream_id(), call.keys().stream_id());
+    assert_ne!(link(4).keys().stream_id(), call.keys().stream_id());
 
-    let url = share.share_url().unwrap();
+    let url = call.call_url().unwrap();
     let encoded_secret = url.split("k=").nth(1).unwrap().split('&').next().unwrap();
-    for debug in [format!("{share:?}"), format!("{:?}", share.keys())] {
+    for debug in [format!("{call:?}"), format!("{:?}", call.keys())] {
         assert!(!debug.contains(encoded_secret), "{debug}");
     }
 }
@@ -290,7 +294,7 @@ fn links_reject_every_other_form() {
             Error::Malformed("link parameters"),
         ),
         (
-            format!("https://stream.nuschl.eu/share#v=1&k={k}"),
+            format!("https://stream.nuschl.eu/call#v=1&k={k}"),
             Error::Malformed("link parameters"),
         ),
         (
@@ -336,14 +340,14 @@ fn links_reject_every_other_form() {
 // The exchange
 
 #[test]
-fn viewers_get_only_fresh_epochs_and_removed_viewers_are_locked_out() {
+fn subscribers_get_only_fresh_epochs_and_removed_subscribers_are_locked_out() {
     let link = link(5);
-    let mut sharer = sharer(&link);
-    let (mut first, key_1, _) = join(&link, &mut sharer, T0, 10);
+    let mut publisher = publisher(&link);
+    let (mut first, key_1, _) = join(&link, &mut publisher, T0, 10);
     assert_eq!(key_1.epoch, 1);
 
-    // A second join moves the first viewer to epoch 2 in the same rekey.
-    let (mut second, key_2, others) = join(&link, &mut sharer, T0 + 1000, 11);
+    // A second join moves the first subscriber to epoch 2 in the same rekey.
+    let (mut second, key_2, others) = join(&link, &mut publisher, T0 + 1000, 11);
     assert_eq!(key_2.epoch, 2);
     assert_eq!(others.len(), 1);
     assert_eq!(others[0].0, first.id());
@@ -351,10 +355,10 @@ fn viewers_get_only_fresh_epochs_and_removed_viewers_are_locked_out() {
     assert_eq!(&first_2.key, &key_2.key);
     assert_ne!(&key_1.key, &key_2.key);
 
-    // Removing the first viewer: the next epoch goes to the second only, and the first
+    // Removing the first subscriber: the next epoch goes to the second only, and the first
     // cannot open the second's Rekey.
-    assert!(sharer.remove(&first.id()));
-    let rekey = sharer.rekey(T0 + 2000, &mut rng(12)).unwrap();
+    assert!(publisher.remove(&first.id()));
+    let rekey = publisher.rekey(T0 + 2000, &mut rng(12)).unwrap();
     assert_eq!(rekey.key.epoch, 3);
     assert_eq!(rekey.messages.len(), 1);
     assert_eq!(rekey.messages[0].0, second.id());
@@ -364,36 +368,37 @@ fn viewers_get_only_fresh_epochs_and_removed_viewers_are_locked_out() {
         first
             .receive(&rekey.messages[0].1, T0 + 2000, &mut rng(13))
             .err(),
-        Some(Error::UnknownViewer)
+        Some(Error::UnknownSubscriber)
     );
 
     // A request removed before the rekey gets no grant.
     let (_, request) = self::request(&link, T0 + 3000, &mut rng(14));
-    let turned_down = admit(&mut sharer, &request, T0 + 3000);
-    assert!(sharer.remove(&turned_down));
-    let rekey = sharer.rekey(T0 + 3000, &mut rng(15)).unwrap();
+    let turned_down = admit(&mut publisher, &request, T0 + 3000);
+    assert!(publisher.remove(&turned_down));
+    let rekey = publisher.rekey(T0 + 3000, &mut rng(15)).unwrap();
     assert_eq!(rekey.messages.len(), 1);
     assert_eq!(rekey.messages[0].0, second.id());
 }
 
 /// A party with S and every message cannot open a grant: the X-Wing secret is the
-/// viewer's alone, and the epoch keys appear in no message, even with every signal
+/// subscriber's alone, and the epoch keys appear in no message, even with every signal
 /// envelope opened.
 #[test]
 fn passive_link_holder_cannot_decrypt() {
     let link = link(6);
-    let mut sharer = sharer(&link);
+    let mut publisher = publisher(&link);
     let mut rng = rng(12);
-    let (mut viewer, request) = request(&link, T0, &mut rng);
-    admit(&mut sharer, &request, T0);
-    let first = sharer.rekey(T0, &mut rng).unwrap();
+    let (mut subscriber, request) = request(&link, T0, &mut rng);
+    admit(&mut publisher, &request, T0);
+    let first = publisher.rekey(T0, &mut rng).unwrap();
     let grant = first.messages[0].1.clone();
-    let ViewerEvent::Granted { key, ack } = viewer.receive(&grant, T0, &mut rng).unwrap() else {
+    let SubscriberEvent::Granted { key, ack } = subscriber.receive(&grant, T0, &mut rng).unwrap()
+    else {
         panic!("expected a grant");
     };
-    let second = sharer.rekey(T0 + 1000, &mut rng).unwrap();
+    let second = publisher.rekey(T0 + 1000, &mut rng).unwrap();
     let rekey = second.messages[0].1.clone();
-    let next = rekeyed(&mut viewer, &rekey, T0 + 1000).unwrap();
+    let next = rekeyed(&mut subscriber, &rekey, T0 + 1000).unwrap();
 
     let keys = link.keys();
     let (_, request_body) = open_message(&keys, &request).unwrap();
@@ -423,20 +428,21 @@ fn passive_link_holder_cannot_decrypt() {
 }
 
 /// L1, pinned: PSK mode authenticates a grant as "from a holder of S". A second party
-/// with the link can grant a viewer its own key; media authenticity rests on the SFU's
-/// P-based publish check (E1) and on identity-bound sharers (N1).
+/// with the link can grant a subscriber its own key; media authenticity rests on the SFU's
+/// P-based publish check (E1) and on identity-bound publishers (N1).
 #[test]
-fn any_link_holder_can_act_as_sharer() {
+fn any_link_holder_can_act_as_publisher() {
     let link = link(34);
-    let mut genuine = sharer(&link);
-    let mut impostor = sharer(&link);
+    let mut genuine = publisher(&link);
+    let mut impostor = publisher(&link);
     let mut rng = rng(35);
-    let (mut viewer, request) = request(&link, T0, &mut rng);
+    let (mut subscriber, request) = request(&link, T0, &mut rng);
     genuine.receive(&request, T0).unwrap();
     admit(&mut impostor, &request, T0);
     let forged = impostor.rekey(T0, &mut rng).unwrap();
-    let ViewerEvent::Granted { key, .. } =
-        viewer.receive(&forged.messages[0].1, T0, &mut rng).unwrap()
+    let SubscriberEvent::Granted { key, .. } = subscriber
+        .receive(&forged.messages[0].1, T0, &mut rng)
+        .unwrap()
     else {
         panic!("the forged grant is accepted");
     };
@@ -447,19 +453,19 @@ fn any_link_holder_can_act_as_sharer() {
 fn parties_without_the_link_secret_are_rejected() {
     let link = link(7);
     let other = self::link(8);
-    let mut sharer = sharer(&link);
+    let mut publisher = publisher(&link);
     let mut rng = rng(13);
     let (mut outsider, request) = self::request(&other, T0, &mut rng);
     assert_eq!(
-        sharer.receive(&request, T0).err(),
+        publisher.receive(&request, T0).err(),
         Some(Error::Authentication)
     );
 
-    // An interceptor relaying between two links: the sharer's grant does not open under
+    // An interceptor relaying between two links: the publisher's grant does not open under
     // the other link's keys.
     let (_, request) = self::request(&link, T0, &mut rng);
-    admit(&mut sharer, &request, T0);
-    let grant = sharer.rekey(T0, &mut rng).unwrap().messages.remove(0).1;
+    admit(&mut publisher, &request, T0);
+    let grant = publisher.rekey(T0, &mut rng).unwrap().messages.remove(0).1;
     assert_eq!(
         outsider.receive(&grant, T0, &mut rng).err(),
         Some(Error::Authentication)
@@ -470,63 +476,69 @@ fn parties_without_the_link_secret_are_rejected() {
 fn replays_reflections_and_bad_confirmations_fail() {
     let link = link(9);
     let keys = link.keys();
-    let mut sharer = sharer(&link);
+    let mut publisher = publisher(&link);
     let mut rng = rng(14);
-    let (mut viewer, request) = request(&link, T0, &mut rng);
-    admit(&mut sharer, &request, T0);
-    assert_eq!(sharer.receive(&request, T0).err(), Some(Error::Replay));
-    // Reflected to the viewer itself.
+    let (mut subscriber, request) = request(&link, T0, &mut rng);
+    admit(&mut publisher, &request, T0);
+    assert_eq!(publisher.receive(&request, T0).err(), Some(Error::Replay));
+    // Reflected to the subscriber itself.
     assert_eq!(
-        viewer.receive(&request, T0, &mut rng).err(),
+        subscriber.receive(&request, T0, &mut rng).err(),
         Some(Error::Unexpected)
     );
 
-    let grant = sharer.rekey(T0, &mut rng).unwrap().messages.remove(0).1;
-    assert_eq!(sharer.receive(&grant, T0).err(), Some(Error::Unexpected));
+    let grant = publisher.rekey(T0, &mut rng).unwrap().messages.remove(0).1;
+    assert_eq!(publisher.receive(&grant, T0).err(), Some(Error::Unexpected));
     // An ack carrying bytes other than the exported confirmation.
-    let forged =
-        seal_message(&keys, ACK, &[&viewer.id()[..], &[0; 32]].concat(), &mut rng).unwrap();
+    let forged = seal_message(
+        &keys,
+        ACK,
+        &[&subscriber.id()[..], &[0; 32]].concat(),
+        &mut rng,
+    )
+    .unwrap();
     assert_eq!(
-        sharer.receive(&forged, T0).err(),
+        publisher.receive(&forged, T0).err(),
         Some(Error::Authentication)
     );
 
-    let ViewerEvent::Granted { ack, .. } = viewer.receive(&grant, T0, &mut rng).unwrap() else {
+    let SubscriberEvent::Granted { ack, .. } = subscriber.receive(&grant, T0, &mut rng).unwrap()
+    else {
         panic!("expected a grant");
     };
     assert_eq!(
-        viewer.receive(&grant, T0, &mut rng).err(),
+        subscriber.receive(&grant, T0, &mut rng).err(),
         Some(Error::Unexpected)
     );
-    sharer.receive(&ack, T0).unwrap();
-    assert_eq!(sharer.receive(&ack, T0).err(), Some(Error::Replay));
+    publisher.receive(&ack, T0).unwrap();
+    assert_eq!(publisher.receive(&ack, T0).err(), Some(Error::Replay));
 }
 
-/// L4: a rekey's messages may be sent twice; a viewer that misses one catches up with
+/// L4: a rekey's messages may be sent twice; a subscriber that misses one catches up with
 /// the next, and duplicates and older ones are replays.
 #[test]
 fn resends_and_missed_rekeys() {
     let link = link(36);
-    let mut sharer = sharer(&link);
-    let (mut viewer, _, _) = join(&link, &mut sharer, T0, 37);
+    let mut publisher = publisher(&link);
+    let (mut subscriber, _, _) = join(&link, &mut publisher, T0, 37);
     let mut rng = rng(38);
-    let lost = sharer
+    let lost = publisher
         .rekey(T0 + 1000, &mut rng)
         .unwrap()
         .messages
         .remove(0)
         .1;
-    let next = sharer.rekey(T0 + 2000, &mut rng).unwrap();
+    let next = publisher.rekey(T0 + 2000, &mut rng).unwrap();
     let message = &next.messages[0].1;
-    let key = rekeyed(&mut viewer, message, T0 + 2000).unwrap();
+    let key = rekeyed(&mut subscriber, message, T0 + 2000).unwrap();
     assert_eq!(key.epoch, 3);
     assert_eq!(&key.key, &next.key.key);
     assert_eq!(
-        rekeyed(&mut viewer, message, T0 + 2000).err(),
+        rekeyed(&mut subscriber, message, T0 + 2000).err(),
         Some(Error::Replay)
     );
     assert_eq!(
-        rekeyed(&mut viewer, &lost, T0 + 2000).err(),
+        rekeyed(&mut subscriber, &lost, T0 + 2000).err(),
         Some(Error::Replay)
     );
 }
@@ -534,37 +546,48 @@ fn resends_and_missed_rekeys() {
 #[test]
 fn time_limits_and_clock_steps() {
     let link = link(15);
-    let mut sharer = sharer(&link);
+    let mut publisher = publisher(&link);
     let mut rng = rng(16);
 
     // Expired, or dated further ahead than a minute of clock difference allows.
     let (_, request) = self::request(&link, T0, &mut rng);
     assert_eq!(
-        sharer.receive(&request, T0 + REQUEST_LIFETIME_MS + 1).err(),
+        publisher
+            .receive(&request, T0 + REQUEST_LIFETIME_MS + 1)
+            .err(),
         Some(Error::Expired)
     );
     let (_, request) = self::request(&link, T0 + 2 * REQUEST_LIFETIME_MS, &mut rng);
-    assert_eq!(sharer.receive(&request, T0 - 1).err(), Some(Error::Expired));
+    assert_eq!(
+        publisher.receive(&request, T0 - 1).err(),
+        Some(Error::Expired)
+    );
 
-    // A grant after the request's lifetime, and a viewer that never confirms.
+    // A grant after the request's lifetime, and a subscriber that never confirms.
     let (mut slow, request) = self::request(&link, T0, &mut rng);
-    admit(&mut sharer, &request, T0);
-    let grant = sharer.rekey(T0, &mut rng).unwrap().messages.remove(0).1;
-    assert_eq!(sharer.rekey(T0 + 999, &mut rng).err(), Some(Error::TooSoon));
+    admit(&mut publisher, &request, T0);
+    let grant = publisher.rekey(T0, &mut rng).unwrap().messages.remove(0).1;
+    assert_eq!(
+        publisher.rekey(T0 + 999, &mut rng).err(),
+        Some(Error::TooSoon)
+    );
     assert_eq!(
         slow.receive(&grant, T0 + REQUEST_LIFETIME_MS + 1, &mut rng)
             .err(),
         Some(Error::Expired)
     );
-    let rekey = sharer
+    let rekey = publisher
         .rekey(T0 + REQUEST_LIFETIME_MS + 1, &mut rng)
         .unwrap();
     assert!(rekey.messages.is_empty());
 
     // L3: after the clock steps back an hour, a removal can still rekey at once.
     let now = T0 + REQUEST_LIFETIME_MS + 1 - 3_600_000;
-    assert!(sharer.rekey(now, &mut rng).is_ok());
-    assert_eq!(sharer.rekey(now + 1, &mut rng).err(), Some(Error::TooSoon));
+    assert!(publisher.rekey(now, &mut rng).is_ok());
+    assert_eq!(
+        publisher.rekey(now + 1, &mut rng).err(),
+        Some(Error::TooSoon)
+    );
 }
 
 #[test]
@@ -573,40 +596,53 @@ fn caps() {
     let mut rng = rng(18);
 
     // At most MAX_PENDING requests wait for a rekey.
-    let mut sharer = sharer(&link);
+    let mut publisher = publisher(&link);
     for _ in 0..MAX_PENDING {
         let (_, request) = request(&link, T0, &mut rng);
-        sharer.receive(&request, T0).unwrap();
+        publisher.receive(&request, T0).unwrap();
     }
     let (_, extra) = request(&link, T0, &mut rng);
-    assert_eq!(sharer.receive(&extra, T0).err(), Some(Error::LimitReached));
+    assert_eq!(
+        publisher.receive(&extra, T0).err(),
+        Some(Error::LimitReached)
+    );
 
     // The nonce cache holds MAX_SEEN requests until their not_after, removed or not.
-    let mut sharer = self::sharer(&link);
+    let mut publisher = self::publisher(&link);
     for _ in 0..MAX_SEEN {
-        let (viewer, request) = request(&link, T0, &mut rng);
-        sharer.receive(&request, T0).unwrap();
-        sharer.remove(&viewer.id());
+        let (subscriber, request) = request(&link, T0, &mut rng);
+        publisher.receive(&request, T0).unwrap();
+        publisher.remove(&subscriber.id());
     }
-    assert_eq!(sharer.receive(&extra, T0).err(), Some(Error::LimitReached));
+    assert_eq!(
+        publisher.receive(&extra, T0).err(),
+        Some(Error::LimitReached)
+    );
     let (_, later) = request(&link, T0 + REQUEST_LIFETIME_MS + 1, &mut rng);
-    assert!(sharer.receive(&later, T0 + REQUEST_LIFETIME_MS + 1).is_ok());
+    assert!(
+        publisher
+            .receive(&later, T0 + REQUEST_LIFETIME_MS + 1)
+            .is_ok()
+    );
 
-    // At most MAX_VIEWERS viewers and pending requests together.
-    let mut sharer = self::sharer(&link);
+    // At most MAX_SUBSCRIBERS subscribers and pending requests together.
+    let mut publisher = self::publisher(&link);
     let mut now = T0;
-    for _ in 0..MAX_VIEWERS / MAX_PENDING {
+    for _ in 0..MAX_SUBSCRIBERS / MAX_PENDING {
         for _ in 0..MAX_PENDING {
             let (_, request) = request(&link, now, &mut rng);
-            admit(&mut sharer, &request, now);
+            admit(&mut publisher, &request, now);
         }
-        sharer.rekey(now, &mut rng).unwrap();
+        publisher.rekey(now, &mut rng).unwrap();
         now += 1000;
     }
-    // Once every nonce has expired, the viewer cap alone refuses.
+    // Once every nonce has expired, the subscriber cap alone refuses.
     let now = now + 3 * REQUEST_LIFETIME_MS;
     let (_, extra) = request(&link, now, &mut rng);
-    assert_eq!(sharer.receive(&extra, now).err(), Some(Error::LimitReached));
+    assert_eq!(
+        publisher.receive(&extra, now).err(),
+        Some(Error::LimitReached)
+    );
 
     // An X-Wing key that fails the ML-KEM modulus check.
     let (_, request) = self::request(&link, T0, &mut rng);
@@ -614,7 +650,7 @@ fn caps() {
     body[56..56 + 1216].fill(0xff);
     let forged = seal_message(&link.keys(), REQUEST, &body, &mut rng).unwrap();
     assert_eq!(
-        self::sharer(&link).receive(&forged, T0).err(),
+        self::publisher(&link).receive(&forged, T0).err(),
         Some(Error::InvalidPublicKey)
     );
 }
@@ -627,11 +663,11 @@ fn caps() {
 #[test]
 fn mutated_messages_are_rejected() {
     let link = link(21);
-    let mut sharer = sharer(&link);
+    let mut publisher = publisher(&link);
     let mut rng = rng(22);
-    let (mut viewer, request) = request(&link, T0, &mut rng);
-    admit(&mut sharer, &request, T0);
-    let grant = sharer.rekey(T0, &mut rng).unwrap().messages.remove(0).1;
+    let (mut subscriber, request) = request(&link, T0, &mut rng);
+    admit(&mut publisher, &request, T0);
+    let grant = publisher.rekey(T0, &mut rng).unwrap().messages.remove(0).1;
     let mut noise = self::rng(23);
     for message in [&request, &grant] {
         for _ in 0..200 {
@@ -643,11 +679,15 @@ fn mutated_messages_are_rejected() {
                 1 => mutated.truncate(index),
                 _ => mutated.extend_from_slice(&[bit; 3]),
             }
-            assert!(sharer.receive(&mutated, T0).is_err());
-            assert!(viewer.receive(&mutated, T0, &mut rng).is_err());
+            assert!(publisher.receive(&mutated, T0).is_err());
+            assert!(subscriber.receive(&mutated, T0, &mut rng).is_err());
         }
     }
-    assert!(sharer.receive(&vec![1; MAX_KEY_MESSAGE + 1], T0).is_err());
+    assert!(
+        publisher
+            .receive(&vec![1; MAX_KEY_MESSAGE + 1], T0)
+            .is_err()
+    );
 }
 
 /// Bodies sealed correctly under `signal_key`, so the body parsers themselves see the
@@ -658,8 +698,8 @@ fn mutated_bodies_reach_the_parsers() {
     let keys = link.keys();
     let mut rng = rng(25);
     let mut noise = self::rng(26);
-    let mut sharer = sharer(&link);
-    let (mut viewer, request) = request(&link, T0, &mut rng);
+    let mut publisher = publisher(&link);
+    let (mut subscriber, request) = request(&link, T0, &mut rng);
     let (_, request_body) = open_message(&keys, &request).unwrap();
 
     for len in 0..request_body.len() + 2 {
@@ -669,23 +709,23 @@ fn mutated_bodies_reach_the_parsers() {
         let mut body = request_body.clone();
         body.resize(len, 0);
         let message = seal_message(&keys, REQUEST, &body, &mut rng).unwrap();
-        assert!(sharer.receive(&message, T0).is_err(), "length {len}");
+        assert!(publisher.receive(&message, T0).is_err(), "length {len}");
     }
     for _ in 0..500 {
         let mut body = request_body.clone();
         let [position, value] = random::<2, _>(&mut noise).unwrap();
         body[usize::from(position) * request_body.len() / 256] = value;
         let message = seal_message(&keys, REQUEST, &body, &mut rng).unwrap();
-        let _ = sharer.receive(&message, T0);
+        let _ = publisher.receive(&message, T0);
     }
 
-    // Grant bodies at a new viewer, Rekey bodies at a granted one.
-    let (mut granted, _, _) = join(&link, &mut self::sharer(&link), T0, 27);
+    // Grant bodies at a new subscriber, Rekey bodies at a granted one.
+    let (mut granted, _, _) = join(&link, &mut self::publisher(&link), T0, 27);
     for (kind, len) in [(GRANT, 16 + 32 + 1120 + 52), (REKEY, 16 + 8 + 52)] {
         let target = if kind == REKEY {
             &mut granted
         } else {
-            &mut viewer
+            &mut subscriber
         };
         for cut in [16, 17, len - 1, len + 1] {
             let mut body = target.id().to_vec();
@@ -703,7 +743,7 @@ fn mutated_bodies_reach_the_parsers() {
 #[test]
 fn link_parser_survives_noise() {
     let mut noise = rng(28);
-    let good = link(29).share_url().unwrap();
+    let good = link(29).call_url().unwrap();
     for _ in 0..2000 {
         let [position, value, kind] = random::<3, _>(&mut noise).unwrap();
         let mut bytes = good.clone().into_bytes();
@@ -716,7 +756,7 @@ fn link_parser_survives_noise() {
         if let Ok(text) = String::from_utf8(bytes)
             && let Ok(parsed) = Link::parse(&text, HOST)
         {
-            let canonical = parsed.share_url().unwrap_or_else(|| parsed.watch_url());
+            let canonical = parsed.call_url().unwrap_or_else(|| parsed.watch_url());
             assert_eq!(canonical, text);
         }
     }

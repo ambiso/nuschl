@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
-//! Screen-share media encryption (docs/screen-share-plan.md §3, "SFrame"): RFC 9605
-//! SFrame ([`rfc9605`]) and the AV1 frame envelope, over the epoch keys that
-//! `nuschl-stream` agrees.
+//! Call media encryption (docs/video-plan.md §4, "SFrame"): RFC 9605 SFrame
+//! ([`rfc9605`]) and the AV1 frame envelope, over the epoch keys that `nuschl-stream`
+//! agrees.
 //!
 //! Each encoding of an epoch has its own KID, `epoch << 8 | encoding`, and so its own
 //! SFrame key and counter. On the wire a frame is one envelope byte, then the SFrame
@@ -20,9 +20,9 @@
 //! track, a new worker process) requires a rekey: counters start at zero again only
 //! under a new epoch.
 //!
-//! This crate is the AES code of screen sharing, kept apart from the key agreement so
-//! the crypto worker links no AES. Its callers, the SDK driver and the browser stream
-//! worker, are held until their SECURITY.md rows are reviewed.
+//! This crate holds the calls' AES code, apart from the key agreement, so the crypto
+//! worker links no AES. Its callers, the SDK driver and the browser stream worker, wait
+//! for their SECURITY.md rows.
 
 pub mod rfc9605;
 

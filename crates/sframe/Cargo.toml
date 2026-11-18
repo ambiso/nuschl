@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: EUPL-1.2
 [package]
 name = "nuschl-sframe"
-description = "RFC 9605 SFrame and the AV1 frame envelope for screen sharing (docs/screen-share-plan.md §3)"
+description = "RFC 9605 SFrame and the AV1 frame envelope for calls (docs/video-plan.md §4)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
