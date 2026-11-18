@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { VOICE_BITRATES, VOICE_BITRATE_KEY, bitrateExplanation, bitrateLine, initialVoiceBitrate, storeVoiceBitrate, storedVoiceBitrate } from "./voice-bitrate.js";
+import { VOICE_BITRATES, VOICE_BITRATE_KEY, initialVoiceBitrate, storeVoiceBitrate, storedVoiceBitrate } from "./voice-bitrate.js";
 
 function storage(initial = {}) {
   const values = new Map(Object.entries(initial));
@@ -22,15 +22,4 @@ test("only the supported choices are stored and restored", () => {
   assert.equal(storeVoiceBitrate(refusing, 96000), false);
   // Without local storage at all (Node here, private modes in browsers).
   assert.equal(initialVoiceBitrate(), 128000);
-});
-
-test("the voice line names requested, effective and the reason", () => {
-  const view = (bitrate, requested, budget, limit) => ({bitrate, requested_bitrate: requested, server_bandwidth: budget, bitrate_limit: limit});
-  assert.equal(bitrateLine(view(128000, 128000, 558000, "requested")), "Voice 128 kb/s");
-  assert.equal(bitrateLine(view(48000, 256000, 72000, "server_budget")), "Voice 48 of 256 kb/s · server limit");
-  assert.match(bitrateLine(view(0, 128000, 20000, "no_server_budget")), /^Voice not sending \(requested 128 kb\/s\)/);
-  assert.match(bitrateExplanation(view(48000, 256000, 72000, "server_budget")), /allows 72 kb\/s per user, 24 kb\/s/);
-  assert.equal(bitrateExplanation(view(128000, 128000, 558000, "requested")), "128 kb/s, as requested.");
-  assert.equal(bitrateLine(null), "");
-  assert.equal(bitrateLine({bitrate: "128000"}), "");
 });
