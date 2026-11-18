@@ -26,6 +26,12 @@ async fn start(name: &str, role: Role<'_>) -> Result<Worker, Error> {
     nuschl_sandbox::spawn(command).await.map_err(failed)
 }
 
+/// How long the first request after a start may take: the worker opens its
+/// database before it reads requests, and its pool allows 60 s for that.
+const STORAGE_OPENING: Duration = Duration::from_secs(65);
+/// How long any later request may take.
+const STORAGE_ANSWER: Duration = Duration::from_secs(5);
+
 pub struct Storage {
     worker: Worker,
     request_id: u64,
@@ -56,7 +62,10 @@ impl Storage {
         self.request_id += 1;
         let id = self.request_id;
         let exchange = async {
-            send(&mut self.worker.input, &Envelope::new(id, payload)).await?;
+            // Bounded with the reply: an opening worker reads nothing yet.
+            let mut bytes = Vec::new();
+            write_frame(&mut bytes, &Envelope::new(id, payload))?;
+            self.worker.input.write_all(&bytes).await?;
             let response: Envelope<StorageResponse> =
                 read_frame_async(&mut self.worker.output, MAX_FRAME_BYTES).await?;
             if response.request_id != id {
@@ -64,7 +73,12 @@ impl Storage {
             }
             Ok(response.payload)
         };
-        match timeout(Duration::from_secs(5), exchange).await {
+        let limit = if id == 1 {
+            STORAGE_OPENING
+        } else {
+            STORAGE_ANSWER
+        };
+        match timeout(limit, exchange).await {
             Ok(Ok(StorageResponse::Rejected(error))) => Err(Error::Worker(error)),
             Ok(Ok(response)) => Ok(response),
             result => {
@@ -489,5 +503,14 @@ mod tests {
         assert!(storage.append(message()).await.is_err());
         assert!(!storage.failed());
         assert_eq!(storage.append(message()).await.unwrap(), 7);
+    }
+
+    /// Longer than a later request's limit: the worker is still opening its
+    /// database when the first request arrives.
+    #[tokio::test]
+    async fn the_first_request_waits_for_the_database_to_open() {
+        let (mut storage, _frames) = fake("6", &[StorageResponse::Appended(7)]).await;
+        assert_eq!(storage.append(message()).await.unwrap(), 7);
+        assert!(!storage.failed());
     }
 }
