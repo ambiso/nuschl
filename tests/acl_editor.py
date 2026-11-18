@@ -773,9 +773,11 @@ def actions(args, root, shell, application, bot, murmur):
     finally:
         admin.close()
     mark("channel_password_set_and_removed")
-    # A picked built-in group becomes the rule's target once applied.
+    # A picked built-in group becomes the rule's target once applied; the
+    # groups are searched.
     activate("Add rule")
-    activate("Registered users")
+    type_field("Group for this rule", "registered")
+    shell.key("Return")
     activate("Apply target")
     wait("Registered users · Sets no permissions", "push button")
     activate("Remove rule")

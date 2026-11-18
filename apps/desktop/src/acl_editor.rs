@@ -6,6 +6,7 @@ use crate::{
     layout,
     menus::{ActionOrigin, MenuTarget},
     panels::Panel,
+    picker::{Choice, Picker},
     state::{Desktop, ServerView, accessible},
     theme::*,
 };
@@ -69,6 +70,8 @@ pub struct Editor {
     check_picker: crate::picker::Picker,
     /// Adds a row to the permission table.
     table_picker: crate::picker::Picker,
+    /// Picks the selected rule's group.
+    group_picker: crate::picker::Picker,
     parents: parents::Parents,
     /// Where to go once the Save/Discard question is answered.
     then: Option<Jump>,
@@ -77,6 +80,7 @@ pub struct Editor {
     _flash_frames: Option<Task<()>>,
     /// Rows added to the access table that set nothing yet.
     table_rows: Vec<nuschl_core::access::Who>,
+    table_scroll: UniformListScrollHandle,
     /// Closing waits for Save, Discard or Keep editing.
     leaving: bool,
     /// The rule list is open although the table shows the channel.
@@ -144,11 +148,13 @@ impl Editor {
             _flash_frames: None,
             check_picker: check_access::picker(token, window, cx),
             table_picker: access_table::picker(token, window, cx),
+            group_picker: group_picker(token, window, cx),
             table_rows: Vec::new(),
             leaving: false,
             show_rules: false,
             close_after_save: false,
             rule_scroll: UniformListScrollHandle::new(),
+            table_scroll: UniformListScrollHandle::new(),
             group_scroll: UniformListScrollHandle::new(),
             member_scroll: std::array::from_fn(|_| UniformListScrollHandle::new()),
             timeout: None,
@@ -1847,67 +1853,50 @@ fn effect(entry: &AclEntry, short: bool) -> String {
 
 /// Mumble's built-in groups and the channel's groups, to pick as a rule's
 /// target; a pick fills in the expression, which "Apply target" applies.
-fn group_picker(editor: &Editor, id: RowId, cx: &mut Context<Desktop>) -> AnyElement {
-    const BUILT_IN: [(&str, &str); 4] = [
-        ("all", "Everyone, registered or not."),
-        ("auth", "Everyone with a registered account."),
-        (
-            "in",
-            "Everyone in the channel the permission is checked for.",
-        ),
-        (
-            "out",
-            "Everyone outside the channel the permission is checked for.",
-        ),
-    ];
-    let token = editor.token;
-    let defined: Vec<String> = editor
-        .state
-        .draft()
-        .map(|draft| {
-            draft
-                .groups()
-                .iter()
-                .map(|row| row.value.name.clone())
-                .collect()
+/// The search field that picks a rule's group, for `Editor::new`. A pick
+/// fills the rule's target field, which Apply target then writes.
+fn group_picker(token: u64, window: &mut Window, cx: &mut Context<Desktop>) -> Picker {
+    Picker::new(
+        "Group for this rule",
+        "Pick a group",
+        |this| match this.panel.as_mut() {
+            Some(Panel::Acl { editor, .. }) => Some(&mut editor.group_picker),
+            _ => None,
+        },
+        move |this, group, window, cx| {
+            if let Some(editor) = active_editor(this, token)
+                && editor.state.pending().is_none()
+                && editor.rule().is_some()
+            {
+                editor.target.update(cx, |input, cx| {
+                    input.set_value(group.to_owned(), window, cx)
+                });
+                editor.group_picker.clear(window, cx);
+            }
+            cx.notify();
+        },
+        window,
+        cx,
+    )
+}
+
+/// The built-in groups, then the channel's own and inherited ones.
+fn group_choices(editor: &Editor) -> Vec<Choice> {
+    ["all", "auth", "in", "out"]
+        .into_iter()
+        .map(|group| Choice {
+            key: group.to_owned(),
+            label: group_target(group),
+            kind: "Built-in group",
         })
-        .unwrap_or_default();
-    let choices = BUILT_IN
-        .iter()
-        .map(|&(group, help)| (group.to_owned(), group_target(group), help))
-        .chain(defined.into_iter().map(|group| {
-            let label = format!("@{group}");
-            (
-                group,
-                label,
-                "A group of this channel, defined here or inherited.",
-            )
-        }));
-    let mut picker = div().flex().flex_wrap().gap_2();
-    for (group, label, help) in choices {
-        picker = picker.child(with_help(
-            format!("acl-pick-help-{token}-{id}-{group}"),
-            help,
-            styled_button(
-                SharedString::from(format!("acl-pick-{token}-{id}-{group}")),
-                label,
-                Tone::Ghost,
-                move |this, window, cx| {
-                    if let Some(editor) = active_editor(this, token)
-                        && editor.state.pending().is_none()
-                        && editor.rule().is_some_and(|(selected, _)| selected == id)
-                    {
-                        editor
-                            .target
-                            .update(cx, |input, cx| input.set_value(group.clone(), window, cx));
-                    }
-                    cx.notify();
-                },
-                cx,
-            ),
-        ));
-    }
-    picker.into_any_element()
+        .chain(editor.state.draft().into_iter().flat_map(|draft| {
+            draft.groups().iter().map(|row| Choice {
+                key: row.value.name.clone(),
+                label: format!("@{}", row.value.name),
+                kind: "Group",
+            })
+        }))
+        .collect()
 }
 
 /// `control` with `help` shown on hover.
@@ -2033,7 +2022,13 @@ fn rule_detail(
                     }),
             ),
         )
-        .children((!user).then(|| group_picker(editor, id, cx)))
+        .children((!user).then(|| {
+            editor.group_picker.render(
+                &format!("acl-pick-{}-{id}", editor.token),
+                &group_choices(editor),
+                cx,
+            )
+        }))
         .child(field(
             if user {
                 "Registered account name or #id"
