@@ -138,6 +138,7 @@ in
             receiver_bitrate = limit 25000000 "Forwarded media per receiver, bits per second.";
             room_bitrate = limit 150000000 "Forwarded media per room, bits per second.";
             max_connections = limit 4096 "Signalling connections at once.";
+            connections_per_address = limit 32 "Signalling connections at once per client address (IPv6 per /64).";
           };
         };
       };

@@ -156,7 +156,7 @@ pub struct Rooms {
 }
 
 /// IPv4 addresses as they are, IPv6 addresses by their /64.
-fn network(ip: IpAddr) -> IpAddr {
+pub fn network(ip: IpAddr) -> IpAddr {
     match ip {
         IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
             Some(v4) => IpAddr::V4(v4),

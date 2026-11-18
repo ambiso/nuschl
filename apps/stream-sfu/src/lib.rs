@@ -18,11 +18,9 @@ use media::{Command, Core};
 use protocol::{ClientMessage, ServerMessage, from_hex};
 use rooms::{Bucket, Join, PeerId};
 use std::{
+    collections::HashMap,
     net::{IpAddr, Ipv4Addr},
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tokio::{
@@ -61,7 +59,7 @@ pub async fn serve(config: Config) -> std::io::Result<()> {
     let core = Core::new(config.clone(), socket.clone(), turn)?;
     let (commands, receiver) = mpsc::channel(1024);
     tokio::spawn(core.run(receiver));
-    let connections = Arc::new(AtomicUsize::new(0));
+    let connections = Arc::default();
     let mut next_id: PeerId = 0;
     match &config.listen {
         Listen::Tcp(address) => {
@@ -113,22 +111,70 @@ pub async fn serve(config: Config) -> std::io::Result<()> {
     }
 }
 
+/// Signalling connections open, in total and per client address (IPv6 per /64).
+#[derive(Default)]
+struct Connections {
+    total: usize,
+    per_address: HashMap<IpAddr, usize>,
+}
+
+/// One connection's share of [`Connections`], returned when dropped.
+struct Slot(Arc<Mutex<Connections>>, Option<IpAddr>);
+
+impl Slot {
+    fn new(connections: &Arc<Mutex<Connections>>, max: usize) -> Option<Self> {
+        let mut open = connections.lock().expect("lock");
+        if open.total >= max {
+            return None;
+        }
+        open.total += 1;
+        Some(Self(connections.clone(), None))
+    }
+
+    /// Counts the connection for its client's address, within `max`.
+    fn address(&mut self, client: IpAddr, max: usize) -> bool {
+        let network = rooms::network(client);
+        let mut open = self.0.lock().expect("lock");
+        let count = open.per_address.entry(network).or_default();
+        if *count >= max {
+            return false;
+        }
+        *count += 1;
+        drop(open);
+        self.1 = Some(network);
+        true
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let mut open = self.0.lock().expect("lock");
+        open.total -= 1;
+        if let Some(network) = self.1
+            && let Some(count) = open.per_address.get_mut(&network)
+        {
+            *count -= 1;
+            if *count == 0 {
+                open.per_address.remove(&network);
+            }
+        }
+    }
+}
+
 fn spawn<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     stream: S,
     client: Option<IpAddr>,
     id: PeerId,
     config: &Arc<Config>,
     commands: &mpsc::Sender<Command>,
-    connections: &Arc<AtomicUsize>,
+    connections: &Arc<Mutex<Connections>>,
 ) {
-    if connections.fetch_add(1, Ordering::Relaxed) >= config.max_connections {
-        connections.fetch_sub(1, Ordering::Relaxed);
+    let Some(slot) = Slot::new(connections, config.max_connections) else {
         return;
-    }
-    let (config, commands, connections) = (config.clone(), commands.clone(), connections.clone());
+    };
+    let (config, commands) = (config.clone(), commands.clone());
     tokio::spawn(async move {
-        connection(stream, client, id, &config, &commands).await;
-        connections.fetch_sub(1, Ordering::Relaxed);
+        connection(stream, client, id, &config, &commands, slot).await;
     });
 }
 
@@ -171,6 +217,7 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(
     id: PeerId,
     config: &Config,
     commands: &mpsc::Sender<Command>,
+    mut slot: Slot,
 ) {
     // Behind the web server (a Unix socket), the client address comes from it.
     let mut forwarded = None;
@@ -195,6 +242,11 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(
     let client = client
         .or(forwarded)
         .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+    if !slot.address(client, config.connections_per_address) {
+        let reason = "connections";
+        let _ = socket.send(text(&ServerMessage::Error { reason })).await;
+        return;
+    }
     let nonce = rooms::random::<32>();
     let hello = ServerMessage::Hello {
         nonce: hex::encode(nonce),
@@ -265,4 +317,29 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(
     }
     let _ = commands.send(Command::Leave { id }).await;
     let _ = socket.close(None).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connection_slots() {
+        let connections = Arc::default();
+        let ip = |text: &str| text.parse::<IpAddr>().expect("ip");
+        let mut first = Slot::new(&connections, 3).expect("first");
+        let mut second = Slot::new(&connections, 3).expect("second");
+        let mut third = Slot::new(&connections, 3).expect("third");
+        assert!(Slot::new(&connections, 3).is_none(), "the total");
+        assert!(first.address(ip("2001:db8::1"), 2));
+        assert!(second.address(ip("2001:db8::2"), 2));
+        assert!(!third.address(ip("2001:db8::3"), 2), "the same /64");
+        assert!(third.address(ip("192.0.2.1"), 2));
+        drop(first);
+        let mut fourth = Slot::new(&connections, 3).expect("a slot is free");
+        assert!(fourth.address(ip("2001:db8::4"), 2));
+        drop((second, third, fourth));
+        let open = connections.lock().expect("lock");
+        assert_eq!((open.total, open.per_address.len()), (0, 0));
+    }
 }

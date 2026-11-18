@@ -84,6 +84,8 @@ pub struct Config {
     pub room_bitrate: u64,
     /// WebSocket connections at once, joined or not.
     pub max_connections: usize,
+    /// WebSocket connections at once per client address (IPv6 per /64).
+    pub connections_per_address: usize,
 }
 
 impl Default for Config {
@@ -103,6 +105,7 @@ impl Default for Config {
             receiver_bitrate: 25_000_000,
             room_bitrate: 150_000_000,
             max_connections: 4096,
+            connections_per_address: 32,
         }
     }
 }
@@ -133,6 +136,7 @@ impl Config {
             || self.receiver_bitrate == 0
             || self.room_bitrate == 0
             || self.max_connections == 0
+            || self.connections_per_address == 0
         {
             return Err("a limit is zero or too small".into());
         }
