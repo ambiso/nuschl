@@ -138,6 +138,7 @@ async fn actual_stream_quota(worker: &Path, restart: bool) {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
+    let containment = nuschl_sandbox::contain(&child).unwrap();
     let mut retirement = host::preview_lifecycle::Retirement::new(&mut child);
     let result = async {
         retirement
@@ -195,7 +196,7 @@ async fn actual_stream_quota(worker: &Path, restart: bool) {
     // Preserve the same original namespace handle on success, error, timeout.
     let outcome = tokio::time::timeout(Duration::from_secs(8), result).await;
     drop(child.stdin.take());
-    retirement.retire(&mut child).await;
+    retirement.retire(&mut child, &containment).await;
     outcome.expect("stream quota deadline").unwrap();
 }
 

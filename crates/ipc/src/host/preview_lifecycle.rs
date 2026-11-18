@@ -6,7 +6,13 @@
 //! A retained proc stat file names that original init even if its numeric PID
 //! is later reused. The kernel completes namespace teardown before init is a
 //! zombie. Missing identity or an ambiguous observation never releases credit.
+//!
+//! On Windows the worker starts inside the supervisor's job, which also holds
+//! the launch stage; retirement waits until that job lists no process. On
+//! macOS `sandbox-exec` execs the worker and its profile denies `process-fork`,
+//! so reaping the child retires the whole sandbox.
 
+use nuschl_sandbox::Containment;
 #[cfg(target_os = "linux")]
 use std::{fs::File, io, time::Duration};
 use tokio::process::Child;
@@ -67,19 +73,14 @@ impl Retirement {
             Ok(())
         }
         #[cfg(not(target_os = "linux"))]
-        {
-            Err(nuschl_sandbox::Error::MissingSandboxHelper(
-                "preview role retirement on this platform",
-            )
-            .into())
-        }
+        Ok(())
     }
 
     /// Reap the wrapper and observe original namespace-init retirement. The
     /// owner must await this even after a logical timeout or readiness failure.
     /// No observation is weaker than an indefinitely occupied process slot.
     #[cfg(target_os = "linux")]
-    pub async fn retire(mut self, child: &mut Child) {
+    pub async fn retire(mut self, child: &mut Child, _: &Containment) {
         nuschl_sandbox::reap(child).await;
         loop {
             if let Some(init) = self.init.as_mut()
@@ -100,10 +101,19 @@ impl Retirement {
         }
     }
 
-    #[cfg(not(target_os = "linux"))]
-    pub async fn retire(self, child: &mut Child) {
+    #[cfg(windows)]
+    pub async fn retire(self, child: &mut Child, containment: &Containment) {
         nuschl_sandbox::reap(child).await;
-        std::future::pending::<()>().await;
+        // The launch stage's exit closes the worker's own job, which ends the
+        // worker; a failed query counts as a process still running.
+        while !containment.is_empty().unwrap_or(false) {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", windows)))]
+    pub async fn retire(self, child: &mut Child, _: &Containment) {
+        nuschl_sandbox::reap(child).await;
     }
 }
 

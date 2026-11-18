@@ -294,7 +294,7 @@ impl Media {
             let mut retirement = nuschl_ipc::host::preview_lifecycle::Retirement::new(&mut child);
             if let Err(error) = retirement.ready().await {
                 let _ = child.start_kill();
-                retirement.retire(&mut child).await;
+                retirement.retire(&mut child, &containment).await;
                 return Err(Error::Worker(error.to_string()));
             }
             retirement
@@ -339,7 +339,7 @@ impl Media {
             let _ = child.start_kill();
             // On Linux, wait for the wrapper and the sandbox's namespace init.
             #[cfg(target_os = "linux")]
-            retirement.retire(&mut child).await;
+            retirement.retire(&mut child, &_containment).await;
             #[cfg(not(target_os = "linux"))]
             nuschl_sandbox::reap(&mut child).await;
         });

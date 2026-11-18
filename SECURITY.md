@@ -65,7 +65,7 @@ add only:
 
 | Role | Grants | Limits |
 | --- | --- | --- |
-| content, one-shot (also link-preview parsing, Linux only) | none | 512 MiB address space; 5 s CPU and wall time per request (15 s for image re-encoding) |
+| content, one-shot (also link-preview parsing) | none | 512 MiB address space; 5 s CPU and wall time per request (15 s for image re-encoding) |
 | math, long-lived, stops after a minute idle | none | 512 MiB; 3 s wall per formula, then killed; 120 s CPU over its life |
 | update verifiers (Ed25519, ML-DSA-44), one-shot | none | 256 MiB; 5 s CPU |
 | storage | its history directory, writable | 1 GiB |
@@ -85,6 +85,10 @@ Rules for every platform:
   Native Windows, macOS and mobile each need their own capability review.
 - An audio service socket grants that service's whole API. Nuschl code creates
   and changes only its own streams.
+- A link-preview worker's slot is released only after the whole worker has
+  exited: on Linux the namespace init named by bwrap's receipt, on Windows when
+  the supervisor's job lists no process, on macOS when the worker is reaped
+  (`sandbox-exec` execs it and its profile denies `process-fork`).
 
 Three processes run outside `nuschl-sandbox`:
 
@@ -101,9 +105,9 @@ Three processes run outside `nuschl-sandbox`:
 
 Workers start under `sandbox-exec` with Seatbelt profiles
 (`crates/sandbox/src/macos.rs`), without memory or CPU limits; supervisor deadlines
-bound them. Content, math and update use a deny-by-default profile on top of
-`system.sb`; storage and crypto add reads and writes below their directory;
-transfer adds network and the offered file. Media uses a deny list, since CoreAudio
+bound them. Content, link-preview parsing, math and update use a deny-by-default
+profile on top of `system.sb`; storage and crypto add reads and writes below their
+directory; transfer adds network and the offered file. Media uses a deny list, since CoreAudio
 needs undocumented Mach services: no network or process execution, writes only to
 `/dev` and temporary directories, home reads only for audio preferences. Narrow it
 to deny-by-default once it is traced on hardware.
@@ -112,9 +116,9 @@ to deny-by-default once it is traced on hardware.
 
 Each worker runs in an AppContainer inside a job object of its own, started by its
 own launch stage, which reads no untrusted input and exits 125 when it cannot
-apply the policy ([Windows sandbox](docs/windows-sandbox.md)). Content, math,
-update, storage and crypto are less privileged AppContainers without capabilities. Media
-gets `microphone`; transfer gets `internetClient` and `privateNetworkClientServer`.
+apply the policy ([Windows sandbox](docs/windows-sandbox.md)). Content, link-preview
+parsing, math, update, storage and crypto are less privileged AppContainers without
+capabilities. Media gets `microphone`; transfer gets `internetClient` and `privateNetworkClientServer`.
 Storage and crypto may modify only their own directory's contents, each in a
 container per directory; junctions are refused. The offered file reaches transfer
 as an inherited read-only handle; only it and the standard handles are inherited.

@@ -199,7 +199,7 @@ async fn http(
         mut child,
         input: child_input,
         output: child_output,
-        containment: _containment,
+        containment,
     } = nuschl_sandbox::spawn_receipted(
         executable,
         nuschl_sandbox::Role::Preview {
@@ -292,7 +292,7 @@ async fn http(
     // before child retirement. kill_on_drop alone would not prove actual exit.
     // Wrapper exit alone is not namespace teardown. The tracker retains the
     // original task handle and holds this actor/credit on unknown retirement.
-    retirement.retire(&mut child).await;
+    retirement.retire(&mut child, &containment).await;
     result
 }
 

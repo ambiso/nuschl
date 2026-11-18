@@ -460,14 +460,7 @@ impl Desktop {
             bookmarks,
             nuschl_client::native::preferences(&settings),
         );
-        client.set_link_preview_settings(
-            if cfg!(target_os = "linux") {
-                settings.link_previews.clone()
-            } else {
-                crate::link_preview::off()
-            },
-            monotonic_ms(),
-        );
+        client.set_link_preview_settings(settings.link_previews.clone(), monotonic_ms());
         let (services, mut service_events) = Services::new(handle.clone(), driver.settings());
         // The desktop's own services report apart from the driver.
         let serve = cx.spawn(async move |this, cx| {

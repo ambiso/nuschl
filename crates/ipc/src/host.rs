@@ -240,7 +240,7 @@ async fn bounded_content_request(
         mut child,
         mut input,
         mut output,
-        containment: _containment,
+        containment,
     } = if is_preview {
         nuschl_sandbox::spawn_receipted(
             executable,
@@ -307,7 +307,7 @@ async fn bounded_content_request(
     // Process credit stays with this owner through actual retirement. A
     // supervising HTTP task can complete its logical timeout independently.
     match retirement {
-        Some(retirement) => retirement.retire(&mut child).await,
+        Some(retirement) => retirement.retire(&mut child, &containment).await,
         None => nuschl_sandbox::reap(&mut child).await,
     }
     reply

@@ -47,7 +47,7 @@ pub struct ComposerPreview {
     pixels: Option<Arc<RenderImage>>,
 }
 
-pub(crate) fn off() -> Settings {
+fn off() -> Settings {
     Settings { mode: Mode::Off }
 }
 
@@ -58,10 +58,6 @@ impl Desktop {
             .set_link_preview_settings(off(), crate::state::monotonic_ms());
         self.link_preview.pixels = None;
         self.link_preview.settled = None;
-        if !cfg!(target_os = "linux") {
-            cx.notify();
-            return;
-        }
         let mut settings = self.settings.clone();
         settings.link_previews.mode = mode;
         let settings = self.managed.apply(settings.sanitized());
@@ -99,9 +95,6 @@ impl Desktop {
     /// Called on composer/connection changes and bounded service/timer replies.
     pub fn sync_link_preview(&mut self, cx: &mut Context<Self>) {
         let now = crate::state::monotonic_ms();
-        if !cfg!(target_os = "linux") {
-            self.client.set_link_preview_settings(off(), now);
-        }
         let text = self.composer.read(cx).value().to_string();
         let pasted = std::mem::take(&mut self.link_preview.pasted);
         self.client.composing_link_preview(
@@ -282,14 +275,13 @@ pub fn composer(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement>
 pub fn settings(this: &Desktop, cx: &mut Context<Desktop>) -> AnyElement {
     let mode = this.client.link_preview_settings().mode;
     div().flex().flex_col().gap_2()
-        .when(cfg!(target_os = "linux"), |settings| settings.child(crate::settings::segmented("link-preview-mode", "Link previews", [
+        .child(crate::settings::segmented("link-preview-mode", "Link previews", [
             ("Off", Mode::Off), ("Direct", Mode::Direct),
         ].into_iter().map(|(label, chosen)| {
             (label, mode == chosen, std::rc::Rc::new(move |this: &mut Desktop, _: &mut Window, cx: &mut Context<Desktop>| {
                 this.choose_link_preview_mode(chosen, cx);
             }) as crate::settings::Action)
-        }).collect(), cx)))
-        .when(!cfg!(target_os = "linux"), |settings| settings.child(div().text_sm().child(text!("Link previews are not available on this platform yet.").with_id("link-preview-platform-unavailable"))))
+        }).collect(), cx))
         .child(div().text_xs().text_color(color(TEXT_MUTED)).child(text!("Off makes no requests. Direct contacts the website. Receivers never fetch previews.").with_id("link-preview-privacy")))
         .into_any_element()
 }
