@@ -15,9 +15,10 @@ check:
     cargo deny check
 
 # The SDK's core builds for browsers (docs/clients.md, "The SDK"): no native
-# session, runtime or clock in it.
+# session, runtime or clock in it. The call page's stream worker too.
 wasm:
     cargo clippy -p nuschl-core -p nuschl-client --target wasm32-unknown-unknown --no-default-features -- -D warnings
+    cargo clippy -p nuschl-stream-wasm --target wasm32-unknown-unknown -- -D warnings
 
 # The SDK for browsers (crates/client-wasm, docs/web.md), for the Svelte client
 # in web/app (src/sdk). ring's C needs an unwrapped clang for wasm32, and the
