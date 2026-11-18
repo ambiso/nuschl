@@ -47,7 +47,7 @@
       nixosModules.musicbot = import ./nix/musicbot-module.nix { inherit self; };
       # Screen sharing: the TURN relay and the stream host (#143).
       nixosModules.turn = ./nix/turn-module.nix;
-      nixosModules.stream = ./nix/stream-module.nix;
+      nixosModules.stream = import ./nix/stream-module.nix { inherit self; };
       homeModules.default = import ./nix/home-manager.nix { inherit self; };
       homeManagerModules.default = self.homeModules.default;
     }
@@ -857,6 +857,7 @@
         packages.rtc-probe = rtcPackage;
         # The web client's tunnel relay and its probe (docs/web.md), from cached crates.
         packages.web-relay = crates.project.workspaceMembers."nuschl-web-relay".build;
+        packages.stream-sfu = crates.project.workspaceMembers."nuschl-stream-sfu".build;
         packages.web-client = webClient.app;
         packages.web-wasm = webClient.wasm;
         packages.web-audio-wasm = webClient.audioWasm;
