@@ -32,6 +32,53 @@ pub struct ChannelRow {
     /// Someone in that collapsed branch is talking.
     pub hidden_talking: bool,
 }
+impl TreeRow {
+    pub fn depth(&self) -> usize {
+        match self {
+            Self::Channel(row) => row.depth,
+            Self::User { depth, .. } | Self::Listener { depth, .. } => *depth,
+        }
+    }
+}
+
+/// What Right or Left does on a row of the tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TreeKey {
+    /// Open (true) or close the branch of the channel at this index into
+    /// `ServerState::channels`.
+    Expand(usize, bool),
+    /// Move to the row at this position.
+    Focus(usize),
+}
+
+/// Right or Left on the row at `at` of `rows`, as in any tree view: Right
+/// opens a closed branch and moves into an open one, to its first channel
+/// or person; Left closes an open branch and moves from anything else to
+/// its parent channel. Listeners take no focus.
+pub fn arrow(rows: &[TreeRow], at: usize, right: bool) -> Option<TreeKey> {
+    let row = rows.get(at)?;
+    let depth = row.depth();
+    let branch = match row {
+        TreeRow::Channel(channel) if channel.has_children => Some(channel),
+        _ => None,
+    };
+    match (branch, right) {
+        (Some(channel), _) if channel.expanded != right => {
+            Some(TreeKey::Expand(channel.index, right))
+        }
+        (Some(_), true) => rows[at + 1..]
+            .iter()
+            .take_while(|row| row.depth() > depth)
+            .position(|row| !matches!(row, TreeRow::Listener { .. }))
+            .map(|child| TreeKey::Focus(at + 1 + child)),
+        (None, true) => None,
+        (_, false) => rows[..at]
+            .iter()
+            .rposition(|row| matches!(row, TreeRow::Channel(channel) if channel.depth < depth))
+            .map(TreeKey::Focus),
+    }
+}
+
 impl ServerState {
     /// Channels in tree order, each followed by its people and listeners;
     /// a closed branch counts the people inside it. One pass over channels
@@ -228,7 +275,7 @@ fn run<T, K: Ord>(sorted: &[T], wanted: K, key: impl Fn(&T) -> K) -> &[T] {
 
 #[cfg(test)]
 mod tests {
-    use super::{ChannelRow, TreeRow};
+    use super::{ChannelRow, TreeKey, TreeRow, arrow};
     use crate::{
         conversation::ConversationState,
         model::{TextTarget, User},
@@ -384,6 +431,59 @@ mod tests {
                 "    > Gaming [1]",
             ]
         );
+    }
+
+    #[test]
+    fn right_and_left_open_close_and_move_as_in_a_tree_view() {
+        let mut server = sample();
+        let rows = server.tree_rows();
+        let at = |name: &str| {
+            describe(&server)
+                .iter()
+                .position(|row| {
+                    row.trim_start_matches([' ', 'v', '>', '@'])
+                        .starts_with(name)
+                })
+                .unwrap()
+        };
+        let index = |name: &str| {
+            server
+                .channels
+                .iter()
+                .position(|channel| channel.name == name)
+                .unwrap()
+        };
+        // Closed Music opens; open Lobby moves to Development, then closes.
+        assert_eq!(
+            arrow(&rows, at("Music"), true),
+            Some(TreeKey::Expand(index("Music"), true))
+        );
+        assert_eq!(
+            arrow(&rows, at("Lobby"), true),
+            Some(TreeKey::Focus(at("Development")))
+        );
+        assert_eq!(
+            arrow(&rows, at("Lobby"), false),
+            Some(TreeKey::Expand(index("Lobby"), false))
+        );
+        // A leaf, a closed branch and a person move to their parent channel.
+        assert_eq!(
+            arrow(&rows, at("Development"), false),
+            Some(TreeKey::Focus(at("Lobby")))
+        );
+        assert_eq!(
+            arrow(&rows, at("Gaming"), false),
+            Some(TreeKey::Focus(at("Lobby")))
+        );
+        assert_eq!(
+            arrow(&rows, at("grace"), false),
+            Some(TreeKey::Focus(at("Development")))
+        );
+        // Right on a leaf or a person, Left on the closed root: nothing.
+        assert_eq!(arrow(&rows, at("Development"), true), None);
+        assert_eq!(arrow(&rows, at("grace"), true), None);
+        server.set_expanded(0, false);
+        assert_eq!(arrow(&server.tree_rows(), 0, false), None);
     }
 
     #[test]

@@ -16,7 +16,8 @@ Orca would and checks that:
   voice card ("Accessible server #Development: Microphone destination · muted") and its place, a
   button that goes there;
 - with --gnome-shell: a pointer click beside a branch's chevron, at the row's
-  top and left edge, expands and collapses it at 100 % and 200 % zoom;
+  top and left edge, expands and collapses it at 100 % and 200 % zoom; Right
+  and Left open, enter, leave and close a branch and move to its parent;
 - with --gnome-shell (which has a clipboard): a pasted image shows in the
   composer's tray as a named list item, and its "Remove" button works through
   the Action interface;
@@ -386,6 +387,23 @@ class AccessibilityTest:
         self.shell.chord("Control_L", "0")
         eventually(lambda: named("tree item", "Music").extents()[3] == 32, "the zoom did not reset", timeout=10)
         print("A click beside the chevron expanded and collapsed Music at 100 % and 200 % zoom.", flush=True)
+
+        def state(name):
+            node = named("tree item", name)
+            return node.call("Accessible", "GetState")[0][0] if node else 0
+        named("tree item", "Music").call("Component", "GrabFocus")
+        eventually(lambda: state("Music") & FOCUSED, "GrabFocus did not focus Music", timeout=10)
+        # Right opens Music, then moves into it; Left moves back out, closes
+        # it, then moves to its parent.
+        for key, done, what in (
+                ("Right", listening, "open Music"),
+                ("Right", lambda: state("Listening party") & FOCUSED, "move to Listening party"),
+                ("Left", lambda: state("Music") & FOCUSED, "move back to Music"),
+                ("Left", lambda: not listening(), "close Music"),
+                ("Left", lambda: state("Root") & FOCUSED, "move to Root")):
+            self.shell.key(key)
+            eventually(done, f"{key} did not {what}", timeout=10)
+        print("Right and Left opened, entered, left and closed Music, then moved to Root.", flush=True)
 
     def check_attachments(self, nuschl):
         """Paste an image into the composer; remove it again through AT-SPI."""

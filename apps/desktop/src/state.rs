@@ -296,6 +296,10 @@ pub struct Desktop {
     /// Focused whenever nothing else is: keys reach the window's shortcuts
     /// (and Escape) only through a focused element.
     pub window_focus: FocusHandle,
+    /// The channel-tree row that Right or Left moved to, with its server's
+    /// index; that row alone tracks `tree_focus`.
+    pub tree_cursor: Option<(usize, crate::view::TreeFocus)>,
+    pub tree_focus: FocusHandle,
     pub identity_status: Option<String>,
     /// The Nuschl identity, as the crypto worker last reported it (Settings).
     pub own_identity: crate::identity::OwnIdentity,
@@ -574,6 +578,8 @@ impl Desktop {
             shortcodes: Default::default(),
             emoji_card: None,
             emoji_card_focus: cx.focus_handle(),
+            tree_cursor: None,
+            tree_focus: cx.focus_handle().tab_stop(true),
             mute_ease: None,
             modal_focus: Default::default(),
             deafen_ease: None,

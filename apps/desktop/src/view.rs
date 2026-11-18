@@ -15,7 +15,7 @@ use crate::{
     unread::{self, Lane},
 };
 use gpui_kit::{base::input::Textarea, prelude::*, *};
-use nuschl_client::{HistorySource, SessionSecurity, conversation::Entry};
+use nuschl_client::{HistorySource, SessionSecurity, conversation::Entry, tree::TreeKey};
 use nuschl_session::connection::{TextTarget, User};
 use std::{cell::Cell, collections::HashMap, rc::Rc};
 
@@ -1125,10 +1125,16 @@ fn channel_row(
             }
             cx.notify();
         }))
+        .when(
+            this.tree_cursor == Some((server_index, TreeFocus::Channel(id))),
+            |row| row.track_focus(&this.tree_focus),
+        )
         .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
             if activation_key(event) {
                 this.browse_channel(server_index, id, window, cx);
                 cx.notify();
+            } else if let Some(right) = arrow_key(event) {
+                this.tree_arrow(server_index, TreeFocus::Channel(id), right, window, cx);
             }
         }))
         .on_mouse_down(
@@ -1294,6 +1300,61 @@ fn channel_row(
         .into_any_element()
 }
 
+/// A row of the channel tree the keyboard can be on: a channel by id, or a
+/// person by session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TreeFocus {
+    Channel(u32),
+    User(u32),
+}
+
+/// Right (true) or Left (false) without modifiers.
+fn arrow_key(event: &KeyDownEvent) -> Option<bool> {
+    match event.keystroke.key.as_str() {
+        _ if event.keystroke.modifiers.modified() => None,
+        "right" => Some(true),
+        "left" => Some(false),
+        _ => None,
+    }
+}
+
+impl Desktop {
+    /// Right or Left on a row of a server's channel tree (`tree::arrow`):
+    /// open or close the branch, or move the focus to the row it names.
+    fn tree_arrow(
+        &mut self,
+        server_index: usize,
+        from: TreeFocus,
+        right: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.stop_propagation();
+        let server = &mut self.client.servers[server_index];
+        let rows = server.tree_rows();
+        let focus_of = |row: &TreeRow| match *row {
+            TreeRow::Channel(row) => Some(TreeFocus::Channel(server.channels[row.index].id)),
+            TreeRow::User { session, .. } => Some(TreeFocus::User(session)),
+            TreeRow::Listener { .. } => None,
+        };
+        let Some(at) = rows.iter().position(|row| focus_of(row) == Some(from)) else {
+            return;
+        };
+        match nuschl_client::tree::arrow(&rows, at, right) {
+            Some(TreeKey::Expand(index, open)) => {
+                let id = server.channels[index].id;
+                server.set_expanded(id, open);
+            }
+            Some(TreeKey::Focus(to)) => {
+                self.tree_cursor = focus_of(&rows[to]).map(|key| (server_index, key));
+                window.focus(&self.tree_focus, cx);
+            }
+            None => return,
+        }
+        cx.notify();
+    }
+}
+
 /// People sit under their channel's name, further in than its sub-channels'
 /// icons: `depth` is the channel's depth plus one. The constant is the
 /// channel row's inset, chevron, gap, speaker icon and gap.
@@ -1362,6 +1423,15 @@ fn user_row(
         .hover(|style| style.bg(color(HOVER)).text_color(color(TEXT)))
         .on_click(cx.listener(move |this, _, window, cx| {
             this.open_direct(server_index, session, window, cx);
+        }))
+        .when(
+            this.tree_cursor == Some((server_index, TreeFocus::User(session))),
+            |row| row.track_focus(&this.tree_focus),
+        )
+        .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+            if let Some(right) = arrow_key(event) {
+                this.tree_arrow(server_index, TreeFocus::User(session), right, window, cx);
+            }
         }))
         .on_mouse_down(
             MouseButton::Right,
