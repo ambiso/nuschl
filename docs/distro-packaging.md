@@ -51,6 +51,52 @@ bind the source revision, lockfile and nine executables to the tested artifact.
 The canonical source binding compares the staged notices and desktop assets with
 the source helpers; recipes must not invent a separate weaker attribution policy.
 
+## Portable binaries
+
+`nix build .#linux-portable` and `nix build .#server-static` (x86_64) build with
+cargo-zigbuild. Every Rust crate and C dependency, including SQLite, ring, the
+compiler runtime and the unwinder, is linked statically.
+
+- `linux-portable` has the nine programs above plus `nuschl-cli` and `nuschl-tui`
+  side by side in `lib/nuschl/`, links to the three clients in `bin/`, the desktop
+  entry, icons and licences.
+- `server-static` has `nuschld` and its storage worker in `bin/`, and the music bot
+  in `bin/` with its codec and content workers in `libexec/nuschl-musicbot/`.
+
+`nuschl` and `nuschl-media-worker` link glibc dynamically: symbol versions up to
+`GLIBC_2.17`, interpreter `/lib64/ld-linux-x86-64.so.2`, no RPATH. They load these
+host libraries by soname:
+
+| Program | Linked | Opened at runtime |
+| --- | --- | --- |
+| `nuschl` | `libxcb.so.1`, `libxkbcommon.so.0`, `libxkbcommon-x11.so.0` | `libvulkan.so.1` and its ICDs, `libwayland-client.so.0`, `libEGL.so.1` |
+| `nuschl-media-worker` | `libpipewire-0.3.so.0` (0.3.53 or later), `libasound.so.2` | PipeWire, PulseAudio and ALSA plugins of those libraries |
+
+All other programs are static musl executables. The build fails when a program
+needs another library, a newer glibc symbol, another interpreter, or names a Nix
+store path.
+
+Host requirements beyond glibc 2.17: PipeWire 0.3.53 for the media worker, whose
+CPAL backend calls `pw_stream_get_time_n`, and a bubblewrap with `--clearenv` for
+every worker. Debian 11's own bubblewrap 0.4.1 and PipeWire 0.3.19 fail these
+checks and the workers fail closed; with bubblewrap 0.8.0 and PipeWire 0.3.65 from
+`bullseye-backports` they start. Workers run as `/worker` in their sandbox and find
+the interpreter and host libraries in its read-only `/usr/lib`, `/lib` and `/lib64`.
+
+In `nuschld`, the CLI, the TUI, the music bot and the transfer worker, musl
+resolves names from `/etc/hosts` and the servers in `/etc/resolv.conf` only, with
+`search`, `ndots` and TCP retries for truncated answers. NSS sources such as mDNS,
+LDAP or SSSD reach them only through a DNS server, for example systemd-resolved's
+stub at `127.0.0.53`. Link previews resolve in the desktop process through the
+host's glibc and NSS.
+
+The musl programs use musl's allocator. A chat workload of eight clients costs
+`nuschld` about 11% more user-space instructions than the glibc build with the
+same profile.
+
+Before distribution the notices also need musl's licence and those of zig's
+compiler-rt, libunwind and glibc startup objects.
+
 ## Source builds and compiler availability
 
 The workspace declares Rust 1.95 or newer. Its pinned Nix toolchain is currently
