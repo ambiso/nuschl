@@ -8373,7 +8373,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 [[package]]
 name = "opus-rs"
 version = "0.1.42"
-source = "git+https://github.com/ambiso/opus-rs?rev=1666bbc5730bd3f6ac624a2d056e0ec7b18093c6#1666bbc5730bd3f6ac624a2d056e0ec7b18093c6"
+source = "git+https://github.com/ambiso/opus-rs?rev=cced3b908b5667aacde8b190729e1bb5dc75bcc8#cced3b908b5667aacde8b190729e1bb5dc75bcc8"
 dependencies = [
  "fearless_simd 1.2.0",
 ]

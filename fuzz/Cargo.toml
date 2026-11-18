@@ -34,7 +34,7 @@ image = { version = "0.25", default-features = false }
 nuschl-client = { path = "../crates/client" }
 nuschl-legacy-html = { path = "../crates/legacy-html" }
 nuschl-session = { path = "../crates/session" }
-opus-rs = { version = "0.1.42", git = "https://github.com/ambiso/opus-rs", rev = "1666bbc5730bd3f6ac624a2d056e0ec7b18093c6" }
+opus-rs = { version = "0.1.42", git = "https://github.com/ambiso/opus-rs", rev = "cced3b908b5667aacde8b190729e1bb5dc75bcc8" }
 
 [[bin]]
 name = "html"
