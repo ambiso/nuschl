@@ -29729,8 +29729,8 @@ rec {
         workspace_member = null;
         src = pkgs.fetchgit {
           url = "https://github.com/ambiso/opus-rs";
-          rev = "cced3b908b5667aacde8b190729e1bb5dc75bcc8";
-          sha256 = "10j8n7j5zfkdr2zbyxw9y0m0ycr20dv0pn44ya36kpp6q7m45mn2";
+          rev = "6e2284cedd4df9a5c958cc4f2975619eee5dec33";
+          sha256 = "1i1h1d1fzx5ax9rf88vnwsw2bc9li2x6q7grjy31vljjiiwpj049";
         };
         libName = "opus_rs";
         authors = [

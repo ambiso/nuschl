@@ -216,7 +216,7 @@ deny = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# opus-rs, the Opus codec: the owner's fork, pinned by commit in Cargo.toml.
+# opus-rs, the Opus codec: the owner's fork, at the commit Cargo.lock pins.
 allow-git = ["https://github.com/ambiso/opus-rs"]
 
 [[bans.features]]
