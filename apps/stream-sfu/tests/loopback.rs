@@ -4,8 +4,9 @@
 //! host publishes AV1 and one participant VP9; every peer receives the others'
 //! RTP payloads byte for byte with consecutive sequence numbers. Key messages
 //! reach the named peer only. Wrong proofs, unknown rooms, oversized key
-//! messages and host actions by participants are refused. The creator's lease
-//! renews with `host_key`, and ending it disconnects everyone.
+//! messages and host actions by participants are refused. The call codec
+//! follows the peers' decoders. The creator's lease renews with `host_key`, and
+//! ending it disconnects everyone.
 
 use futures_util::{SinkExt, StreamExt};
 use hmac::{KeyInit, Mac};
@@ -281,9 +282,19 @@ async fn next(from_sfu: &mut mpsc::UnboundedReceiver<Value>) -> Value {
         .expect("open")
 }
 
-/// Joins with the admit proof, the host proof and the room's keys as asked;
-/// returns the peer and the SFU's first answer.
+/// Joins with the admit proof, the host proof and the room's keys as asked,
+/// decoding AV1 and VP9; returns the peer and the SFU's first answer.
 async fn join(url: &str, admit: &[u8; 32], host: bool, create: bool) -> (Peer, Value) {
+    join_decoding(url, admit, host, create, &["av1", "vp9"]).await
+}
+
+async fn join_decoding(
+    url: &str,
+    admit: &[u8; 32],
+    host: bool,
+    create: bool,
+    codecs: &[&str],
+) -> (Peer, Value) {
     let (to_sfu, mut from_sfu) = connect(url).await;
     let hello = next(&mut from_sfu).await;
     assert_eq!(hello["type"], "hello");
@@ -293,6 +304,7 @@ async fn join(url: &str, admit: &[u8; 32], host: bool, create: bool) -> (Peer, V
         "room": hex::encode(ROOM),
         "verifier": hex::encode(<sha2::Sha256 as sha2::Digest>::digest(HOST)),
         "proof": prove(admit, b"nuschl/stream/v2 sfu admit", &nonce),
+        "codecs": codecs,
     });
     if host {
         message["host_proof"] = prove(&HOST, b"nuschl/stream/v2 sfu host", &nonce).into();
@@ -539,6 +551,7 @@ async fn forwards_media_and_key_messages_unchanged() {
     );
     assert_eq!(lease(url, "POST", [4; 16], HOST), 404);
     assert_eq!(welcome["role"], "host");
+    assert_eq!(welcome["codec"], "av1");
     let turn = &welcome["turn"];
     assert_eq!(turn["urls"], json!(["turn:turn.test:3478?transport=udp"]));
     assert!(turn["username"].as_str().expect("username").contains(':'));
@@ -600,6 +613,20 @@ async fn forwards_media_and_key_messages_unchanged() {
         }
         assert!(Instant::now() < deadline, "no demand of tier 1");
     }
+
+    // A peer without AV1 switches the call to VP9 and back when it leaves; a
+    // peer without VP9 cannot join then.
+    let (vp9, welcome) = join_decoding(url, &ADMIT, false, false, &["vp9"]).await;
+    assert_eq!(welcome["codec"], "vp9");
+    assert_eq!(bob.expect("codec").await["codec"], "vp9");
+    let (_, refused) = join_decoding(url, &ADMIT, false, false, &["av1"]).await;
+    assert_eq!(refused, json!({"type": "error", "reason": "codec"}));
+    let (_, refused) = join_decoding(url, &ADMIT, false, false, &[]).await;
+    assert_eq!(refused["reason"], "join");
+    let vp9_id = vp9.id;
+    drop(vp9);
+    assert_eq!(bob.expect("codec").await["codec"], "av1");
+    assert_eq!(host.expect("left").await["peer"], vp9_id);
 
     // Key messages reach the named peer, unchanged, with the sender's id.
     let data = "a5".repeat(16 * 1024);

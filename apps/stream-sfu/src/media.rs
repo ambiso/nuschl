@@ -10,7 +10,7 @@
 
 use crate::{
     config::Config,
-    protocol::{self, ClientMessage, PeerInfo, ServerMessage, Track, TurnCredentials},
+    protocol::{self, ClientMessage, Decoders, PeerInfo, ServerMessage, Track, TurnCredentials},
     quality,
     rooms::{self, Bucket, Join, Nonce, PeerId, Refusal, RoomId, Rooms},
     routing::Routing,
@@ -104,6 +104,7 @@ struct Forward {
 
 struct Peer {
     room: RoomId,
+    decoders: Decoders,
     out: mpsc::Sender<ServerMessage>,
     publish: Option<Rtc>,
     subscribe: Rtc,
@@ -311,6 +312,16 @@ impl Core {
         rtc
     }
 
+    /// The call codec of `room`'s peers.
+    fn codec(&self, room: &RoomId) -> Option<protocol::Codec> {
+        let room = self.rooms.get(room)?;
+        protocol::call_codec(
+            room.peers
+                .iter()
+                .filter_map(|(id, _)| Some(self.peers.get(id)?.decoders)),
+        )
+    }
+
     fn join(
         &mut self,
         id: PeerId,
@@ -324,6 +335,7 @@ impl Core {
             let _ = out.try_send(ServerMessage::Error { reason: "traffic" });
             return;
         }
+        let decoders = join.decoders;
         let role = match self.rooms.join(id, &join, nonce, client, now) {
             Ok(role) => role,
             Err(refusal) => {
@@ -340,6 +352,13 @@ impl Core {
             .filter(|(other, _)| *other != id)
             .map(|&(id, role)| PeerInfo { id, role })
             .collect();
+        let before = self.codec(&join.room).filter(|_| !others.is_empty());
+        let others_decoders = others.iter().map(|other| self.peers[&other.id].decoders);
+        let Some(codec) = protocol::call_codec(others_decoders.chain([decoders])) else {
+            self.rooms.leave(&join.room, id);
+            let _ = out.try_send(ServerMessage::Error { reason: "codec" });
+            return;
+        };
         let turn = self.turn.as_ref().map(|turn| {
             let (username, credential) =
                 rooms::turn_credentials(&turn.secret, turn.lifetime, SystemTime::now());
@@ -357,6 +376,7 @@ impl Core {
         }
         let peer = Peer {
             room: join.room,
+            decoders,
             out,
             publish: None,
             subscribe: self.new_rtc((id, Leg::Subscribe), now),
@@ -390,11 +410,15 @@ impl Core {
                 peer: id,
                 role,
                 peers: others.clone(),
+                codec,
                 turn,
             },
         );
         for other in others {
             self.send(other.id, ServerMessage::Joined { peer: id, role });
+            if before != Some(codec) {
+                self.send(other.id, ServerMessage::Codec { codec });
+            }
         }
         self.negotiate(id);
     }
@@ -591,6 +615,7 @@ impl Core {
     }
 
     fn remove(&mut self, id: PeerId, reason: Option<&'static str>) {
+        let before = self.peers.get(&id).and_then(|peer| self.codec(&peer.room));
         let Some(peer) = self.peers.remove(&id) else {
             return;
         };
@@ -604,7 +629,13 @@ impl Core {
             .get(&peer.room)
             .map(|room| room.peers.iter().map(|(id, _)| *id).collect())
             .unwrap_or_default();
+        let codec = self
+            .codec(&peer.room)
+            .filter(|&codec| Some(codec) != before);
         for other in others {
+            if let Some(codec) = codec {
+                self.send(other, ServerMessage::Codec { codec });
+            }
             if let Some(other_peer) = self.peers.get_mut(&other) {
                 for forward in other_peer.forwards.iter_mut().filter(|f| f.from == id) {
                     forward.stopping = true;

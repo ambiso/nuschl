@@ -71,6 +71,7 @@ pub struct Join {
     /// `(admit_key, host_key)`: creates the room, or joins it if it exists
     /// with the same keys.
     pub create: Option<(Key, Key)>,
+    pub decoders: crate::protocol::Decoders,
 }
 
 pub fn prove(key: &Key, label: &[u8], nonce: &Nonce) -> [u8; 32] {

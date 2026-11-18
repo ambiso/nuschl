@@ -18,7 +18,7 @@ pub mod traffic;
 use config::{Config, Listen};
 use futures_util::{SinkExt, StreamExt};
 use media::{Command, Core};
-use protocol::{ClientMessage, ServerMessage, from_hex};
+use protocol::{ClientMessage, Decoders, ServerMessage, from_hex};
 use rooms::{Bucket, Join, PeerId};
 use std::{
     collections::HashMap,
@@ -203,6 +203,7 @@ fn join(message: ClientMessage) -> Option<Join> {
         proof,
         host_proof,
         create,
+        codecs,
     } = message
     else {
         return None;
@@ -218,6 +219,7 @@ fn join(message: ClientMessage) -> Option<Join> {
             Some(create) => Some((from_hex(&create.admit_key)?, from_hex(&create.host_key)?)),
             None => None,
         },
+        decoders: Decoders::new(&codecs)?,
     })
 }
 
