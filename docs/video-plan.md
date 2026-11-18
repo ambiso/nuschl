@@ -308,14 +308,14 @@ alongside.
 | K1 | `crates/stream` and `crates/sframe` | S0 | in review | #267 |
 | K2 | `crates/stream-wasm` for the browser stream worker | K1 | S | #413 |
 | Q1 | `crates/stream-quality`: requests, reports, tier ladders, layer choice, budgets | S0 | M | #414 |
-| E1 | Companion SFU: rooms with many publishers, admission, per-receiver layers, key relay, TURN credentials, NixOS unit | S0 | L | — |
+| E1 | Companion SFU: rooms with many publishers, admission, per-receiver layers, key relay, TURN credentials, NixOS unit | S0 | L | #422 |
 | W1 | Call and watch pages: subscribe, decrypt, grid and large view, roster | K2, E1 | M | #416 |
 | B1 | Publishing from the page: camera and screen, grants and rekeys, Stop | W1 | M | #417 |
-| D1 | Desktop: Start call and Share screen, S and P, the card, the lease, Rotate link | K1, #93 | S–M | — |
+| D1 | Desktop: Start call and Share screen, S and P, the card, the lease, Rotate link | K1, #93 | S–M | #423 |
 | I1 | Hosts, DNS and modules (§8) | owner hosts | S–M | #415 |
 | T1 | End-to-end tests and documentation | Phase 1 | M | #147 (part) |
 | V1 | `nuschl-video-worker --encode`: portal PipeWire, VA-API AV1, software fallback | S0f | M–L | #418 |
-| R1 | SDK driver RTC: UDP in the network process, `PeerPolicy`, SFrame, bitrate | K1, E1, V1 | L | — |
+| R1 | SDK driver RTC: UDP in the network process, `PeerPolicy`, SFrame, bitrate | K1, E1, V1 | L | #424 |
 | U1 | Native call controls: camera and screen pickers, indicators, curtain | V1, R1 | M | #419 |
 | N1 | Native call view: `--decode` role, GPUI grid, lip sync, `CallBinding` | R1, #93 | L | #145, #35 |
 | X1 | Direct paths (§5.4), two-person calls first | R1, N1, Q1 | L | #420 |
