@@ -13,6 +13,7 @@ use crate::{
     rooms::{self, Bucket, Join, Nonce, PeerId, Refusal, RoomId, Rooms},
     routing::Routing,
 };
+use nuschl_stream_quality::{DecodeCapacity, Kind, QualityRequest, Throttle};
 use std::{
     cmp::Reverse,
     collections::{BinaryHeap, HashMap},
@@ -73,6 +74,8 @@ enum Leg {
 struct Source {
     mid: Mid,
     kind: MediaKind,
+    /// Video sources only.
+    video: Option<quality::Video>,
     /// The simulcast layer forwarded, fixed by the first packet.
     layer: Option<Option<Rid>>,
     keyframe_asked: Option<Instant>,
@@ -82,12 +85,15 @@ struct Forward {
     from: PeerId,
     source: Mid,
     kind: MediaKind,
+    /// `camera`, `screen` or `audio`.
+    label: &'static str,
     /// The receiver-side mid, once offered.
     mid: Option<Mid>,
     open: bool,
     stopping: bool,
     /// The publisher's sequence number that maps to zero for this receiver.
     base: Option<u64>,
+    view: quality::View,
 }
 
 struct Peer {
@@ -100,6 +106,20 @@ struct Peer {
     forwards: Vec<Forward>,
     budget: Bucket,
     deadlines: [Option<Instant>; 2],
+    /// The video mids of its publish connection that carry a screen.
+    screens: Vec<Mid>,
+    decode: DecodeCapacity,
+    decode_throttle: Throttle,
+}
+
+impl Source {
+    fn label(&self) -> &'static str {
+        match &self.video {
+            None => "audio",
+            Some(video) if video.kind == Kind::Screen => "screen",
+            Some(_) => "camera",
+        }
+    }
 }
 
 impl Peer {
@@ -130,6 +150,8 @@ pub struct Core {
     timers: BinaryHeap<Reverse<(Instant, PeerId, u8)>>,
     dirty: Vec<(PeerId, Leg)>,
     kicks: Vec<(PeerId, &'static str)>,
+    /// The origin of the quality logic's time.
+    origin: Instant,
 }
 
 fn canonical(address: SocketAddr) -> SocketAddr {
@@ -172,6 +194,7 @@ impl Core {
             timers: BinaryHeap::new(),
             dirty: Vec::new(),
             kicks: Vec::new(),
+            origin: Instant::now(),
         })
     }
 
@@ -179,6 +202,7 @@ impl Core {
         let socket = self.socket.clone();
         let mut buffer = vec![0; MAX_DATAGRAM];
         let mut expiry = tokio::time::interval(Duration::from_secs(10));
+        let mut quality = tokio::time::interval(Throttle::INTERVAL);
         loop {
             let next = self.timers.peek().map_or_else(
                 || Instant::now() + Duration::from_secs(1),
@@ -197,6 +221,7 @@ impl Core {
                     }
                 }
                 _ = tokio::time::sleep_until(next.into()) => self.timeouts(Instant::now()),
+                _ = quality.tick() => self.quality(Instant::now()),
                 _ = expiry.tick() => {
                     self.routing.expire(Instant::now());
                     for id in self.rooms.expire(Instant::now()) {
@@ -305,7 +330,7 @@ impl Core {
         let mut forwards = Vec::new();
         for other in &others {
             for source in &self.peers[&other.id].sources {
-                forwards.push(forward(other.id, source.mid, source.kind));
+                forwards.push(forward(other.id, source.mid, source.kind, source.label()));
             }
         }
         let peer = Peer {
@@ -318,6 +343,9 @@ impl Core {
             forwards,
             budget: rooms::media_budget(self.config.receiver_bitrate, now),
             deadlines: [None; 2],
+            screens: Vec::new(),
+            decode: quality::full_capacity(),
+            decode_throttle: Throttle::default(),
         };
         self.peers.insert(id, peer);
         self.send(
@@ -344,8 +372,14 @@ impl Core {
         let room = self.peers.get(&id).ok_or("unknown")?.room;
         match message {
             ClientMessage::Join { .. } => return Err("joined"),
-            ClientMessage::Offer { sdp } => {
+            ClientMessage::Offer { sdp, screens } => {
                 let offer = SdpOffer::from_sdp_string(&sdp).map_err(|_| "sdp")?;
+                let limit = self.config.max_sources_per_peer;
+                self.peers.get_mut(&id).expect("exists").screens = screens
+                    .iter()
+                    .take(limit)
+                    .map(|mid| Mid::from(mid.as_str()))
+                    .collect();
                 if self.peers[&id].publish.is_none() {
                     let rtc = self.new_rtc((id, Leg::Publish), now);
                     self.peers.get_mut(&id).expect("exists").publish = Some(rtc);
@@ -388,6 +422,43 @@ impl Core {
                 }
                 self.dirty.push((id, Leg::Subscribe));
                 self.negotiate(id);
+            }
+            ClientMessage::Quality { request } => {
+                let request = protocol::from_hex::<{ QualityRequest::SIZE }>(&request)
+                    .and_then(|bytes| QualityRequest::from_bytes(&bytes))
+                    .ok_or("quality")?;
+                let since = now.saturating_duration_since(self.origin);
+                let publisher = self.peers.get(&request.publisher);
+                let sources: Vec<Mid> = publisher
+                    .map(|p| {
+                        p.sources
+                            .iter()
+                            .filter(|s| s.video.as_ref().is_some_and(|v| v.kind == request.kind))
+                            .map(|s| s.mid)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let peer = self.peers.get_mut(&id).expect("exists");
+                for forward in peer
+                    .forwards
+                    .iter_mut()
+                    .filter(|f| f.from == request.publisher && sources.contains(&f.source))
+                {
+                    // A sooner request is dropped; the receiver sends its latest later.
+                    if forward.view.throttle.allow(since) {
+                        forward.view.request = Some(usize::from(request.tier));
+                    }
+                }
+            }
+            ClientMessage::Capacity { decode } => {
+                let decode = protocol::from_hex::<{ DecodeCapacity::SIZE }>(&decode)
+                    .and_then(|bytes| DecodeCapacity::from_bytes(&bytes))
+                    .ok_or("capacity")?;
+                let since = now.saturating_duration_since(self.origin);
+                let peer = self.peers.get_mut(&id).expect("exists");
+                if peer.decode_throttle.allow(since) {
+                    peer.decode = decode;
+                }
             }
             ClientMessage::Key { to, data } => {
                 if !protocol::valid_key_message(&data) {
@@ -456,6 +527,7 @@ impl Core {
                     mid: f.mid?.to_string(),
                     peer: f.from,
                     source: f.source.to_string(),
+                    kind: f.label,
                 })
             })
             .collect();
@@ -649,12 +721,21 @@ impl Core {
             self.kicks.push((id, "sources"));
             return;
         }
+        let video = (kind == MediaKind::Video).then(|| {
+            quality::Video::new(if peer.screens.contains(&mid) {
+                Kind::Screen
+            } else {
+                Kind::Camera
+            })
+        });
         peer.sources.push(Source {
             mid,
             kind,
+            video,
             layer: None,
             keyframe_asked: None,
         });
+        let label = peer.sources.last().expect("pushed").label();
         let room = peer.room;
         let others: Vec<PeerId> = self.rooms.get(&room).map_or_else(Vec::new, |r| {
             r.peers
@@ -665,7 +746,7 @@ impl Core {
         });
         for other in others {
             if let Some(peer) = self.peers.get_mut(&other) {
-                peer.forwards.push(forward(id, mid, kind));
+                peer.forwards.push(forward(id, mid, kind, label));
                 self.negotiate(other);
             }
         }
@@ -773,6 +854,49 @@ impl Core {
         }
     }
 
+    /// Once a second: tells each publisher the largest tier asked of each of its
+    /// video sources, when it changed.
+    fn quality(&mut self, now: Instant) {
+        let since = now.saturating_duration_since(self.origin);
+        let mut demands: HashMap<(PeerId, Mid), usize> = HashMap::new();
+        for peer in self.peers.values() {
+            for forward in &peer.forwards {
+                let Some(video) = self.peers.get(&forward.from).and_then(|p| {
+                    p.sources
+                        .iter()
+                        .find(|s| s.mid == forward.source)
+                        .and_then(|s| s.video.as_ref())
+                }) else {
+                    continue;
+                };
+                let tier = quality::tier(video.kind, &forward.view, peer.decode);
+                let demand = demands.entry((forward.from, forward.source)).or_default();
+                *demand = (*demand).max(tier);
+            }
+        }
+        let mut messages = Vec::new();
+        for (&id, peer) in &mut self.peers {
+            for source in &mut peer.sources {
+                let Some(video) = &mut source.video else {
+                    continue;
+                };
+                let demand = demands.get(&(id, source.mid)).copied();
+                if demand.is_some() && demand != video.demand && video.throttle.allow(since) {
+                    video.demand = demand;
+                    let request = QualityRequest {
+                        publisher: id,
+                        kind: video.kind,
+                        tier: demand.unwrap_or(0) as u8,
+                    };
+                    messages.push((id, hex::encode(request.to_bytes())));
+                }
+            }
+        }
+        for (id, request) in messages {
+            self.send(id, ServerMessage::Quality { request });
+        }
+    }
+
     /// Asks a publisher for a keyframe of a video source, at most once per
     /// [`KEYFRAME_INTERVAL`].
     fn keyframe(&mut self, from: PeerId, mid: Mid, now: Instant) {
@@ -800,11 +924,13 @@ impl Core {
     }
 }
 
-fn forward(from: PeerId, source: Mid, kind: MediaKind) -> Forward {
+fn forward(from: PeerId, source: Mid, kind: MediaKind, label: &'static str) -> Forward {
     Forward {
         from,
         source,
         kind,
+        label,
+        view: quality::View::default(),
         mid: None,
         open: false,
         stopping: false,
