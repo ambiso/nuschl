@@ -3,8 +3,53 @@
 //!
 //! The AV1 Dependency Descriptor travels through str0m as a user header
 //! extension on both legs, as the publisher wrote it.
+//!
+//! A receiver asks for a tier per source (`QualityRequest`) and states the
+//! tiers it decodes (`DecodeCapacity`), each at most once a second. The tier it
+//! gets is the least of both; until it asks, it asks for the top tier. Once a
+//! second each publisher hears the largest tier its receivers get per source.
 
+use nuschl_stream_quality::{DecodeCapacity, Kind, Throttle, receive};
 use str0m::rtp::{Extension, ExtensionSerializer, ExtensionValues};
+
+/// A video source: its kind and the demand last sent to its publisher.
+pub struct Video {
+    pub kind: Kind,
+    pub demand: Option<usize>,
+    pub throttle: Throttle,
+}
+
+impl Video {
+    pub fn new(kind: Kind) -> Self {
+        Self {
+            kind,
+            demand: None,
+            throttle: Throttle::default(),
+        }
+    }
+}
+
+/// One receiver's view of one video source.
+#[derive(Default)]
+pub struct View {
+    /// The tier asked for.
+    pub request: Option<usize>,
+    pub throttle: Throttle,
+}
+
+/// Every tier of both kinds.
+pub fn full_capacity() -> DecodeCapacity {
+    DecodeCapacity {
+        camera: Kind::Camera.top() as u8,
+        screen: Kind::Screen.top() as u8,
+    }
+}
+
+/// The tier a receiver gets of a source of `kind`.
+pub fn tier(kind: Kind, view: &View, decode: DecodeCapacity) -> usize {
+    let top = kind.top();
+    receive(view.request.unwrap_or(top), decode.get(kind), top, top)
+}
 
 /// The descriptor's extension id in the SFU's offers; an offer from a peer
 /// keeps its own id.

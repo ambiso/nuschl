@@ -9,6 +9,7 @@
 
 use futures_util::{SinkExt, StreamExt};
 use hmac::{KeyInit, Mac};
+use nuschl_stream_quality::{Kind, QualityRequest};
 use nuschl_stream_sfu::quality::{DESCRIPTOR_ID, Descriptor, descriptor_extension};
 use serde_json::{Value, json};
 use std::{
@@ -550,6 +551,29 @@ async fn forwards_media_and_key_messages_unchanged() {
     assert_forwarded(&alice, &host, Codec::Av1);
     assert_forwarded(&host, &alice, Codec::Vp9);
     assert!(!bob.received.contains_key(&bob.id) && !host.received.contains_key(&host.id));
+
+    // The publisher hears the largest tier its receivers ask for.
+    let ask = |publisher: u64, tier: u8| {
+        let request = QualityRequest {
+            publisher,
+            kind: Kind::Camera,
+            tier,
+        };
+        json!({"type": "quality", "request": hex::encode(request.to_bytes())})
+    };
+    alice.send(ask(host.id, 0));
+    bob.send(ask(host.id, 1));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let message = host.expect("quality").await;
+        let bytes = hex::decode(message["request"].as_str().expect("hex")).expect("hex");
+        let demand = QualityRequest::from_bytes(&bytes).expect("a request");
+        assert_eq!((demand.publisher, demand.kind), (host.id, Kind::Camera));
+        if demand.tier == 1 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no demand of tier 1");
+    }
 
     // Key messages reach the named peer, unchanged, with the sender's id.
     let data = "a5".repeat(16 * 1024);

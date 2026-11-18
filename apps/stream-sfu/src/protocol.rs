@@ -12,11 +12,15 @@
 //! peer → SFU  join {room, verifier, proof, host_proof?, create?: {admit_key, host_key}}
 //! SFU → peer  welcome {peer, role, peers: [{id, role}], turn?: {urls, username, credential}}
 //!             | error {reason}
-//! peer → SFU  offer {sdp}                  publish connection
+//! peer → SFU  offer {sdp, screens?: [mid]} publish connection; screens names
+//!                                          the video mids that carry a screen
 //! SFU → peer  answer {sdp}
-//! SFU → peer  offer {sdp, tracks: [{mid, peer, source}]}   subscribe connection
+//! SFU → peer  offer {sdp, tracks: [{mid, peer, source, kind}]}   subscribe connection
 //! peer → SFU  answer {sdp}
 //! peer → SFU  key {to, data}               relayed as key {from, data}
+//! peer → SFU  quality {request}            hex QualityRequest, per source, ≤ 1/s
+//! peer → SFU  capacity {decode}            hex DecodeCapacity, ≤ 1/s
+//! SFU → peer  quality {request}            the largest tier asked of a source
 //! peer → SFU  remove {peer} | end          hosts only
 //! SFU → peer  joined {peer, role} | left {peer}
 //! ```
@@ -84,6 +88,8 @@ pub enum ClientMessage {
     },
     Offer {
         sdp: String,
+        #[serde(default)]
+        screens: Vec<String>,
     },
     Answer {
         sdp: String,
@@ -91,6 +97,12 @@ pub enum ClientMessage {
     Key {
         to: PeerId,
         data: String,
+    },
+    Quality {
+        request: String,
+    },
+    Capacity {
+        decode: String,
     },
     Remove {
         peer: PeerId,
@@ -135,6 +147,9 @@ pub enum ServerMessage {
         from: PeerId,
         data: String,
     },
+    Quality {
+        request: String,
+    },
     Error {
         reason: &'static str,
     },
@@ -160,6 +175,8 @@ pub struct Track {
     pub mid: String,
     pub peer: PeerId,
     pub source: String,
+    /// `camera`, `screen` or `audio`.
+    pub kind: &'static str,
 }
 
 pub fn from_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
@@ -179,6 +196,23 @@ pub fn valid_key_message(data: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quality_messages() {
+        let quality: ClientMessage =
+            serde_json::from_str(r#"{"type":"quality","request":"0100"}"#).expect("quality");
+        assert!(matches!(quality, ClientMessage::Quality { request } if request == "0100"));
+        let offer: ClientMessage =
+            serde_json::from_str(r#"{"type":"offer","sdp":"","screens":["1"]}"#).expect("offer");
+        assert!(matches!(offer, ClientMessage::Offer { screens, .. } if screens == ["1"]));
+        let demand = ServerMessage::Quality {
+            request: "01".into(),
+        };
+        assert_eq!(
+            serde_json::to_string(&demand).expect("json"),
+            r#"{"type":"quality","request":"01"}"#
+        );
+    }
 
     #[test]
     fn wire_format() {
