@@ -214,7 +214,7 @@ def notice_zoom(args, root, shell, registry, bots, profile, port, pin, shot):
                 connect.press()
             eventually(lambda: next((node for node, role, name, _ in items(application)
                                      if role == "push button" and name.startswith("Screenshot server;")
-                                     and "voice here, muted" in name), None),
+                                     and "Microphone destination · muted" in name), None),
                        "the server did not reconnect while muted", timeout=30)
             for _ in range(steps):
                 shell.chord("Control_L", "equal")
@@ -224,7 +224,7 @@ def notice_zoom(args, root, shell, registry, bots, profile, port, pin, shot):
                        f"Ctrl++ did not reach {percent}%")
             rail = eventually(lambda: next((node for node, role, name, _ in items(application)
                                             if role == "push button" and name.startswith("Screenshot server;")
-                                            and "voice here, muted" in name), None),
+                                            and "Microphone destination · muted" in name), None),
                               "the server rail does not announce muted voice", timeout=30)
             session = eventually(lambda: next((u["session"] for u in bots[0].users.values()
                                                if u["name"] == "Andi"), None), "Andi did not reconnect")
@@ -250,7 +250,11 @@ def notice_zoom(args, root, shell, registry, bots, profile, port, pin, shot):
             dismiss = next((node for _, node, role, name in descendants
                             if role == "push button" and name == "Dismiss notice"), None)
             assert dismiss, "the notice has no accessible Dismiss button"
+            text = next(node for _, node, role, name in descendants if role == "label" and reason in name)
             toast_bounds, button_bounds = notice.extents(), dismiss.extents()
+            # The text begins beside the icon and Dismiss, inside the padding.
+            text_offset = text.extents()[1] - toast_bounds[1]
+            assert text_offset <= 16 * percent / 100, f"the notice text starts below its icon row: {text_offset} px"
             window = shell.window("Nuschl")
             viewport = (0, 0, window["width"], window["height"])
             entry = dict(width=size_name, requested_width=width, zoom=percent,
@@ -284,6 +288,29 @@ def notice_zoom(args, root, shell, registry, bots, profile, port, pin, shot):
     shell.place("Nuschl", 40, 40, *map(int, args.size.split("x")))
 
 
+def notice_heading(registry, shell, port, shot):
+    """A notice with a heading: the certificate prompt of a server added without its pin."""
+    assert registry, "notice-heading requires --at-spi"
+    application = eventually(lambda: next((node for node in registry.children()
+                                          if node.name.lower() == "nuschl"), None),
+                             "Nuschl is not in the accessibility registry")
+
+    def named(role, name):
+        return next((node for node, r, n, _ in items(application) if r == role and n == name), None)
+    eventually(lambda: named("push button", "Add a server"), "no Add a server button").press()
+    eventually(lambda: named("dialog", "Add or connect to a Mumble server"), "the Add server dialog did not open")
+    for field, value in [("Server address", "127.0.0.1"), ("Port", str(port)), ("Server name", "Unpinned"),
+                         ("Username", "Unpinned user")]:
+        entry = eventually(lambda: named("entry", field), f"no {field} field")
+        entry.call("Component", "GrabFocus")
+        shell.chord("Control_L", "a")
+        shell.type(value)
+    named("push button", "Add and connect").press()
+    eventually(lambda: named("push button", "Trust certificate and connect"), "no certificate prompt")
+    time.sleep(0.6)
+    shot("46-notice-heading")
+
+
 def make_png(path, width, seed, height=None):
     """A small gradient PNG written with the standard library only."""
     height = height or width
@@ -311,7 +338,7 @@ def main():
     parser.add_argument("--gnome-shell", type=Path)
     parser.add_argument("--size", default="1280x800")
     parser.add_argument("--settle", type=float, default=4.0)
-    parser.add_argument("--scenes", default="all", help="comma-separated: select,multiline,links,rich,friends,runs,unread,dialog,settings,shortcuts,server,menus,long,search,finder,emoji,toggles,clipping,viewer,notify,scroll,paste,attach,transfer,appearance,maximize; not in all: layout (long migration paths/voice names and zoom matrix, needs --at-spi), layout-controls (dialog/nested-control focus), layout-performance (matched frame timings), native-spacing (rail bottom/footer gaps; requires --pulse-bin and --at-spi), voice-status (two-server voice facts, consent/reconnect and visible zoom layout; requires --pulse-bin and --at-spi), rail-layout (first/last paint gutters and animated contours, needs --at-spi), resize (measures resizing), managed, math (formulas; run it with --theme light and --zoom 1.25 too), devices (wheel over Settings' device lists, checked over AT-SPI; needs --pulse-bin and --at-spi), notice-zoom (real Mumble failures and Dismiss bounds at 100–200%%, needs --at-spi), dialog-overscroll (Settings and Details end at their content at 100%% and 200%%, needs --at-spi)")
+    parser.add_argument("--scenes", default="all", help="comma-separated: select,multiline,links,rich,friends,runs,unread,dialog,settings,shortcuts,server,menus,long,search,finder,emoji,toggles,clipping,viewer,notify,scroll,paste,attach,transfer,appearance,maximize; not in all: layout (long migration paths/voice names and zoom matrix, needs --at-spi), layout-controls (dialog/nested-control focus), layout-performance (matched frame timings), native-spacing (rail bottom/footer gaps; requires --pulse-bin and --at-spi), voice-status (two-server voice facts, consent/reconnect and visible zoom layout; requires --pulse-bin and --at-spi), rail-layout (first/last paint gutters and animated contours, needs --at-spi), resize (measures resizing), managed, math (formulas; run it with --theme light and --zoom 1.25 too), devices (wheel over Settings' device lists, checked over AT-SPI; needs --pulse-bin and --at-spi), notice-zoom (real Mumble failures and Dismiss bounds at 100–200%%, needs --at-spi), notice-heading (a certificate prompt: a notice with a heading, needs --at-spi), dialog-overscroll (Settings and Details end at their content at 100%% and 200%%, needs --at-spi)")
     parser.add_argument("--dragon-drop", type=Path, help="dragon-drop, to drop files on the conversation (attach scene)")
     # Dark by default, as the scenes were drawn; the private shell has no
     # settings portal, so "system" means GPUI's fallback (light).
@@ -580,6 +607,8 @@ def main():
 
             if "notice-zoom" in scenes:
                 notice_zoom(args, root, shell, registry, bots, profile, port, pin, shot)
+            if "notice-heading" in scenes:
+                notice_heading(registry, shell, port, shot)
 
             if want("select"):
                 # Runs first, while the patch is where the coordinates expect it.

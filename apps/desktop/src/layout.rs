@@ -210,8 +210,13 @@ pub fn actions() -> Div {
         .gap_2()
 }
 
-/// Common notice shell. Only compact controls belong in `trailing`; longer
-/// action labels go below the text through `actions`, not beside its width.
+/// A notice's line height: its icon and `trailing` control are centred on
+/// the first line of the body.
+const NOTICE_LINE: f32 = 20.;
+
+/// Common notice shell: the icon, the body and `trailing` side by side. Only
+/// compact controls belong in `trailing`; longer action labels go below the
+/// text through `actions`.
 pub fn notice(
     id: &'static str,
     tone: Token,
@@ -219,6 +224,9 @@ pub fn notice(
     body: AnyElement,
     trailing: Option<AnyElement>,
 ) -> Stateful<Div> {
+    // The icon button is 32 px tall: centred on the first line, it reaches
+    // into the padding and leaves a one-line notice its text's height.
+    let overhang = px((32. - NOTICE_LINE) / 2.);
     div()
         .id(id)
         .role(Role::Status)
@@ -231,17 +239,19 @@ pub fn notice(
         .border_1()
         .border_color(tint(tone, 0x60))
         .text_sm()
-        .flex()
-        .flex_col()
-        .gap_2()
+        .line_height(px(NOTICE_LINE))
         .child(
             row()
-                .items_center()
-                .child(fixed().child(icon(icon_name, 16., color(tone))))
-                .child(flexible())
-                .when_some(trailing, |row, action| row.child(fixed().child(action))),
+                .child(fixed().h(px(NOTICE_LINE)).flex().items_center().child(icon(
+                    icon_name,
+                    16.,
+                    color(tone),
+                )))
+                .child(flexible().child(body))
+                .when_some(trailing, |row, action| {
+                    row.child(fixed().my(-overhang).child(action))
+                }),
         )
-        .child(div().w_full().min_w_0().child(body))
 }
 
 /// A bounded scroll region with real keyboard navigation as well as wheel
