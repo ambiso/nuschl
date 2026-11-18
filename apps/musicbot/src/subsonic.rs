@@ -1205,24 +1205,11 @@ pub(crate) mod tests {
                         socket
                             .set_write_timeout(Some(Duration::from_secs(2)))
                             .unwrap();
-                        let mut bytes = Vec::new();
-                        while !bytes.ends_with(b"\r\n\r\n") {
-                            let mut byte = [0];
-                            socket.read_exact(&mut byte).unwrap();
-                            bytes.push(byte[0]);
-                            assert!(bytes.len() <= 128 * 1024, "fixture request too large");
-                        }
-                        let request = String::from_utf8(bytes).unwrap();
-                        let length = request
-                            .lines()
-                            .find_map(|line| {
-                                let (name, value) = line.split_once(':')?;
-                                name.eq_ignore_ascii_case("content-length")
-                                    .then(|| value.trim().parse::<usize>().unwrap())
-                            })
-                            .unwrap_or(0);
-                        assert!(length <= 128 * 1024, "fixture body too large");
-                        socket.read_exact(&mut vec![0; length]).unwrap();
+                        // A client past its deadline may close mid-request, which
+                        // ends that connection.
+                        let Ok(request) = read_request(&mut socket) else {
+                            continue;
+                        };
                         requests.lock().unwrap().push(request.clone());
                         handler(&request, &mut socket);
                     }
@@ -1246,6 +1233,28 @@ pub(crate) mod tests {
         pub(crate) fn requests(&self) -> Vec<String> {
             self.requests.lock().unwrap().clone()
         }
+    }
+
+    fn read_request(socket: &mut TcpStream) -> std::io::Result<String> {
+        let mut bytes = Vec::new();
+        while !bytes.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            socket.read_exact(&mut byte)?;
+            bytes.push(byte[0]);
+            assert!(bytes.len() <= 128 * 1024, "fixture request too large");
+        }
+        let request = String::from_utf8(bytes).unwrap();
+        let length = request
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().unwrap())
+            })
+            .unwrap_or(0);
+        assert!(length <= 128 * 1024, "fixture body too large");
+        socket.read_exact(&mut vec![0; length])?;
+        Ok(request)
     }
 
     impl Drop for Server {
@@ -1413,17 +1422,18 @@ pub(crate) mod tests {
     #[test]
     fn metadata_art_and_decision_body_reads_obey_total_deadline() {
         for endpoint in ["search", "art", "decision", "scrobble", "scrobble-shutdown"] {
-            let server = Server::new(|request, socket| {
+            // The body stalls after its first byte until the client has failed.
+            // Under load the deadline may pass earlier, during the request or the head.
+            let (release, stalled) = std::sync::mpsc::channel::<()>();
+            let server = Server::new(move |request, socket| {
                 let (mime, body): (_, &[u8]) = if request.starts_with("GET /rest/getCoverArt") {
                     ("image/png", b"ab")
                 } else {
                     ("application/json", br#"{"subsonic-response":{"status":"ok","transcodeDecision":{"canDirectPlay":true,"canTranscode":false}}}"#)
                 };
-                write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
-                socket.write_all(&body[..1]).unwrap();
-                thread::sleep(Duration::from_millis(200));
-                // A timed-out client may already have closed its socket.
-                let _ = socket.write_all(&body[1..]);
+                let _ = write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())
+                    .and_then(|()| socket.write_all(&body[..1]));
+                let _ = stalled.recv();
             });
             let mut library = library(&server);
             if endpoint != "scrobble-shutdown" {
@@ -1452,6 +1462,7 @@ pub(crate) mod tests {
                     .unwrap(),
                 _ => library.stream(&track()).err().unwrap(),
             };
+            drop(release);
             assert!(
                 matches!(
                     error,
