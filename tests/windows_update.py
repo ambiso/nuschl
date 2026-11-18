@@ -88,13 +88,20 @@ $fixtureJob = Start-Job -Name "nuschl-update-__RUN__" -ArgumentList $fixture,__P
   } finally { $listener.Stop() }
 }
 "FIXTURE_JOB_ID=$($fixtureJob.Id)"
-Start-Sleep -Seconds 2
-# Fail before starting Nuschl if the fixture did not bind or publish its files.
-$probe = [Net.HttpWebRequest]::Create('http://127.0.0.1:__PORT__/update.json')
-$probe.Proxy = $null
-$probe.Timeout = 5000
-$response = $probe.GetResponse()
-$response.Dispose()
+# Fail before starting Nuschl if the fixture did not bind or publish its files
+# within 30 seconds; the job's PowerShell takes a few seconds to start.
+foreach ($attempt in 1..30) {
+  try {
+    $probe = [Net.HttpWebRequest]::Create('http://127.0.0.1:__PORT__/update.json')
+    $probe.Proxy = $null
+    $probe.Timeout = 5000
+    $probe.GetResponse().Dispose()
+    break
+  } catch {
+    if ($attempt -eq 30) { throw }
+    Start-Sleep -Seconds 1
+  }
+}
 '''
 
 
