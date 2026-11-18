@@ -9,11 +9,11 @@ decisions (§11).
 
 ## 0. Summary
 
-- **One call per channel.** A camera and a shared screen are two sources a
-  participant publishes into the same call. A Nuschl user starts the call;
-  stock Mumble users join through the link in the channel message and publish
-  their own camera and screen from the page. Camera and microphone open only
-  on the user's own Start camera or Unmute.
+- **One call per channel or direct conversation.** A camera and a shared
+  screen are two sources a participant publishes into the same call. A
+  Nuschl user starts the call; stock Mumble users join through the link in
+  the message and publish their own camera and screen from the page. Camera
+  and microphone open only on the user's own Start camera or Unmute.
 - **Voice stays on Mumble.** Calls carry video and screen audio; talking uses
   the existing voice path, so stock Mumble users hear the call. Video playout
   follows the voice playout delay for lip sync (§6).
@@ -54,10 +54,12 @@ decisions (§11).
 
 ## 2. The call
 
-- **Room:** one SFU room per call, named by `stream_id` from S. A channel has at
-  most one call; Nuschl clients show it as a card with the participants and
-  their sources (plugin data, #93), and the channel message carries the call
-  link as readable text for stock Mumble clients.
+- **Room:** one SFU room per call, named by `stream_id` from S. A call belongs
+  to a channel or a direct conversation, each with at most one call; a DM call
+  is a two-person call. Nuschl clients show the call as a card with the
+  participants and their sources (plugin data, #93), and the message carries
+  the call link as readable text for stock Mumble clients: in the channel, or
+  for a DM call as a private text message to that user (D2).
 - **Sources:** everyone with the link, stock Mumble users included, watches and
   publishes at most one camera and one screen; publishing takes S and the
   user's own action.
@@ -380,8 +382,8 @@ encoder offers them, spatial layers.
 
 ## 10. Slices
 
-Phase 1: S0f, K1 → K2 → W1 → B1 → T1, with E1 (the long pole), Q1, D1 and I1
-alongside.
+Phase 1: S0f, K1 → K2 → W1 → B1 → T1, with E1 (the long pole), Q1, D1, D2 and
+I1 alongside.
 
 | ID | Goal | Depends on | Size | Issue |
 | --- | --- | --- | --- | --- |
@@ -394,6 +396,7 @@ alongside.
 | W1 | Call page: subscribe, decrypt, grid and large view, roster | K2, E1 | M | #416 |
 | B1 | Publishing from the page for everyone with the link: camera and screen, key grants and rekeys, Stop | W1 | M | #417 |
 | D1 | Desktop: Start call and Share screen, S and P, the card, the lease, Rotate link | K1, #93 | S–M | #423 |
+| D2 | DM calls: Start call and Share screen in the DM view, link and card to that user | D1 | S | #441 |
 | I1 | Hosts, DNS and modules (§8) | owner hosts | S–M | #415 |
 | T1 | End-to-end tests and documentation | Phase 1 | M | #147 (part) |
 | V1 | `nuschl-video-worker --encode`: portal PipeWire, VA-API AV1, software fallback | S0f | M–L | #418 |
@@ -446,7 +449,8 @@ Murmur 1.4 and 1.5 with a stock Mumble client, and relay-only by packet capture.
   and Start camera and Share screen add tracks to it, with per-participant
   admission, limits and removal (§3).
 - Camera quality and screen quality are user-selectable (§5).
-- Call model: one call per channel with camera and screen as sources (§2).
+- Call model: one call per channel or direct conversation with camera and
+  screen as sources (§2).
 - Call keys: per-publisher sender keys over the K1 exchange (§4); a call-wide
   group key needs MLS and comes with end-to-end servers (M1).
 - Camera consent: the microphone rule applies to the camera (§7).
