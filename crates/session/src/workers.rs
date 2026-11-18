@@ -26,35 +26,64 @@ async fn start(name: &str, role: Role<'_>) -> Result<Worker, Error> {
     nuschl_sandbox::spawn(command).await.map_err(failed)
 }
 
+/// How long the first request after a start may take: the worker opens its
+/// database before it reads requests, and its pool allows 60 s for that.
+const STORAGE_OPENING: Duration = Duration::from_secs(65);
+/// How long any later request may take.
+const STORAGE_ANSWER: Duration = Duration::from_secs(5);
+
 pub struct Storage {
     worker: Worker,
     request_id: u64,
+    failed: bool,
 }
 impl Storage {
     pub async fn start(directory: &Path) -> Result<Self, Error> {
-        Ok(Self {
-            worker: start("nuschl-storage-worker", Role::Storage { directory }).await?,
+        Ok(Self::new(
+            start("nuschl-storage-worker", Role::Storage { directory }).await?,
+        ))
+    }
+    /// A storage worker its caller started (a trusted test's own).
+    pub fn new(worker: Worker) -> Self {
+        Self {
+            worker,
             request_id: 0,
-        })
+            failed: false,
+        }
+    }
+    /// Whether the worker was killed: it broke the protocol, exited or took
+    /// too long. A request it rejected leaves it running.
+    pub fn failed(&self) -> bool {
+        self.failed
     }
     async fn request(&mut self, payload: StorageRequest) -> Result<StorageResponse, Error> {
+        if self.failed {
+            return Err(Error::Worker("Local history is unavailable.".into()));
+        }
         self.request_id += 1;
         let id = self.request_id;
         let exchange = async {
-            send(&mut self.worker.input, &Envelope::new(id, payload)).await?;
+            // Bounded with the reply: an opening worker reads nothing yet.
+            let mut bytes = Vec::new();
+            write_frame(&mut bytes, &Envelope::new(id, payload))?;
+            self.worker.input.write_all(&bytes).await?;
             let response: Envelope<StorageResponse> =
                 read_frame_async(&mut self.worker.output, MAX_FRAME_BYTES).await?;
             if response.request_id != id {
                 return Err(Error::Worker("storage response ID mismatch".into()));
             }
-            match response.payload {
-                StorageResponse::Rejected(error) => Err(Error::Worker(error)),
-                response => Ok(response),
-            }
+            Ok(response.payload)
         };
-        match timeout(Duration::from_secs(5), exchange).await {
+        let limit = if id == 1 {
+            STORAGE_OPENING
+        } else {
+            STORAGE_ANSWER
+        };
+        match timeout(limit, exchange).await {
+            Ok(Ok(StorageResponse::Rejected(error))) => Err(Error::Worker(error)),
             Ok(Ok(response)) => Ok(response),
             result => {
+                self.failed = true;
                 let _ = self.worker.child.kill().await;
                 match result {
                     Ok(Err(error)) => Err(error),
@@ -427,4 +456,62 @@ async fn send<T: Serialize>(input: &mut ChildStdin, frame: &Envelope<T>) -> Resu
         .await
         .map_err(|_| Error::Timeout("writing to worker"))??;
     Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    /// A storage worker that waits `delay` seconds, answers `replies` to
+    /// requests 1, 2, … and keeps running.
+    async fn fake(delay: &str, replies: &[StorageResponse]) -> (Storage, tempfile::NamedTempFile) {
+        let mut frames = Vec::new();
+        for (index, reply) in replies.iter().enumerate() {
+            write_frame(&mut frames, &Envelope::new(index as u64 + 1, reply.clone())).unwrap();
+        }
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut file, &frames).unwrap();
+        let mut command = tokio::process::Command::new("sh");
+        command
+            .args(["-c", &format!("sleep {delay}; cat \"$0\"; exec sleep 60")])
+            .arg(file.path());
+        (
+            Storage::new(nuschl_sandbox::spawn(command).await.unwrap()),
+            file,
+        )
+    }
+
+    fn message() -> ChatMessage {
+        ChatMessage {
+            server: "server".into(),
+            channel: "channel".into(),
+            author: "author".into(),
+            observed_at_ms: 1,
+            body: "body".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rejected_request_leaves_the_worker_serving() {
+        let (mut storage, _frames) = fake(
+            "0",
+            &[
+                StorageResponse::Rejected("refused".into()),
+                StorageResponse::Appended(7),
+            ],
+        )
+        .await;
+        assert!(storage.append(message()).await.is_err());
+        assert!(!storage.failed());
+        assert_eq!(storage.append(message()).await.unwrap(), 7);
+    }
+
+    /// Longer than a later request's limit: the worker is still opening its
+    /// database when the first request arrives.
+    #[tokio::test]
+    async fn the_first_request_waits_for_the_database_to_open() {
+        let (mut storage, _frames) = fake("6", &[StorageResponse::Appended(7)]).await;
+        assert_eq!(storage.append(message()).await.unwrap(), 7);
+        assert!(!storage.failed());
+    }
 }

@@ -1047,8 +1047,12 @@ impl Driver {
         let (sender, events) = mpsc::channel(512);
         let (storage, storage_rx) = mpsc::channel(128);
         let (content, content_rx) = mpsc::channel(64);
+        let history = profile.history_dir().to_owned();
         let storage_task = handle.spawn(storage_loop(
-            profile.history_dir().to_owned(),
+            move || {
+                let history = history.clone();
+                async move { Storage::start(&history).await }
+            },
             storage_rx,
             sender.clone(),
         ));
@@ -2942,6 +2946,14 @@ impl RecentChanges {
         }
     }
 }
+/// Drop a storage worker that was killed; one that rejected a request keeps
+/// serving the next.
+fn retire(storage: &mut Option<Storage>) {
+    if storage.as_ref().is_some_and(Storage::failed) {
+        *storage = None;
+    }
+}
+
 async fn keep_change(
     storage: &mut Option<Storage>,
     recent: &mut RecentChanges,
@@ -2975,14 +2987,16 @@ async fn keep_change(
                 }
             };
             if result.is_err() {
-                storage.take();
+                retire(storage);
             }
         }
     }
 }
 
-async fn storage_loop(
-    directory: PathBuf,
+/// `start` starts a storage worker: when the loop begins, and for the
+/// request after one was killed.
+async fn storage_loop<F: Future<Output = Result<Storage, Error>>>(
+    start: impl Fn() -> F,
     mut jobs: mpsc::Receiver<StorageCommand>,
     events: mpsc::Sender<Event>,
 ) {
@@ -3002,7 +3016,7 @@ async fn storage_loop(
             continue;
         }
         if storage.is_none() {
-            match Storage::start(&directory).await {
+            match start().await {
                 Ok(worker) => storage = Some(worker),
                 Err(error) => {
                     let _ = events.send(Event::HistoryError(error.to_string())).await;
@@ -3052,14 +3066,10 @@ async fn storage_loop(
                         .and_then(|key| early_acks.remove(&key))
                         .map(|seq| seq as i64)
                 });
-                // A crashed worker is replaced and the append retried once, so the
-                // message that discovered the failure is not lost.
+                // A failed append is reported once; the next request starts a
+                // fresh worker if this one was killed.
                 let mut id = None;
-                for attempt in 0..2 {
-                    if storage.is_none() {
-                        storage = Storage::start(&directory).await.ok();
-                    }
-                    let Some(worker) = &mut storage else { break };
+                if let Some(worker) = &mut storage {
                     let saved = match seq {
                         Some(seq) => {
                             let mut records = vec![nuschl_core::ServerRecord {
@@ -3086,13 +3096,10 @@ async fn storage_loop(
                                 }
                                 unacked_rows.insert(key, saved);
                             }
-                            break;
                         }
                         Err(error) => {
-                            storage.take();
-                            if attempt == 1 {
-                                let _ = events.send(Event::HistoryError(error.to_string())).await;
-                            }
+                            retire(&mut storage);
+                            let _ = events.send(Event::HistoryError(error.to_string())).await;
                         }
                     }
                 }
@@ -3150,7 +3157,7 @@ async fn storage_loop(
                     None => Err(Error::Worker("Local history is unavailable.".into())),
                 };
                 if let Err(error) = result {
-                    storage.take();
+                    retire(&mut storage);
                     let _ = events.send(Event::HistoryError(error.to_string())).await;
                 }
             }
@@ -3174,7 +3181,7 @@ async fn storage_loop(
                     if let Some(worker) = &mut storage
                         && worker.set_seq(id, seq as i64).await.is_err()
                     {
-                        storage.take();
+                        retire(&mut storage);
                     }
                 }
                 // Acknowledged before it was kept (it is still rendering).
@@ -3226,7 +3233,7 @@ async fn storage_loop(
                     None => Err(Error::Worker("Local history is unavailable.".into())),
                 };
                 if result.is_err() {
-                    storage.take();
+                    retire(&mut storage);
                 }
                 let result = result.map_err(|error| error.to_string());
                 let _ = events.send(Event::SearchResults { request, result }).await;
@@ -3252,7 +3259,7 @@ async fn storage_loop(
                         let _ = pages.send((server, ticket, page, history)).await;
                     }
                     Err(error) => {
-                        storage.take();
+                        retire(&mut storage);
                         let _ = events.send(Event::HistoryError(error.to_string())).await;
                     }
                 }
@@ -5331,5 +5338,112 @@ mod reply_owner_tests {
         assert_eq!(credits.available_permits(), 1);
         drop(second);
         assert_eq!(credits.available_permits(), 2);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod storage_loop_tests {
+    use super::*;
+    use nuschl_ipc::{Envelope, StorageResponse, write_frame};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    /// A storage worker from `sh -c script`.
+    async fn worker(script: String) -> Result<Storage, Error> {
+        let mut command = tokio::process::Command::new("sh");
+        command.args(["-c", &script]);
+        Ok(Storage::new(nuschl_sandbox::spawn(command).await.unwrap()))
+    }
+
+    fn append() -> StorageCommand {
+        StorageCommand::Append {
+            job: Box::new(ContentJob {
+                server: "server".into(),
+                generation: 0,
+                identity: "identity".into(),
+                nonce: "nonce".into(),
+                text: IncomingText {
+                    target: TextTarget::Channel(1),
+                    author: "Ada".into(),
+                    peer: None,
+                    body: "body".into(),
+                    html: false,
+                    outgoing: false,
+                    observed_at_ms: 1,
+                    seq: None,
+                    pending: None,
+                },
+                archived: false,
+            }),
+            source: "body".into(),
+            document: MessageDocument { blocks: Vec::new() },
+        }
+    }
+
+    #[tokio::test]
+    async fn an_append_whose_worker_exits_fails_once_and_the_next_request_starts_a_worker() {
+        let mut reply = Vec::new();
+        let page = nuschl_core::SearchPage {
+            hits: Vec::new(),
+            next: None,
+            indexing: false,
+        };
+        write_frame(
+            &mut reply,
+            &Envelope::new(1, StorageResponse::SearchResults(page)),
+        )
+        .unwrap();
+        let reply: String = reply.iter().map(|byte| format!("\\{byte:03o}")).collect();
+        let starts = Arc::new(AtomicUsize::new(0));
+        let counted = starts.clone();
+        let (jobs, receiver) = mpsc::channel(4);
+        let (sender, mut events) = mpsc::channel(16);
+        tokio::spawn(storage_loop(
+            move || {
+                // The first exits once a request arrives; the next answers one.
+                let script = match counted.fetch_add(1, Ordering::SeqCst) {
+                    0 => "head -c 1 >/dev/null; exit 1".to_owned(),
+                    _ => format!("printf '{reply}'; exec sleep 60"),
+                };
+                worker(script)
+            },
+            receiver,
+            sender,
+        ));
+        jobs.send(append()).await.unwrap();
+        loop {
+            match events.recv().await.unwrap() {
+                Event::HistoryError(_) => break,
+                Event::HistoryRecovered => panic!("the append was sent again"),
+                _ => {}
+            }
+        }
+        assert_eq!(
+            starts.load(Ordering::SeqCst),
+            1,
+            "the append went to a second worker"
+        );
+        jobs.send(StorageCommand::Search {
+            request: 1,
+            scope: (vec!["identity".into()], None),
+            query: "body".into(),
+            after: None,
+        })
+        .await
+        .unwrap();
+        loop {
+            match events.recv().await.unwrap() {
+                Event::SearchResults { result, .. } => {
+                    assert!(result.is_ok(), "{result:?}");
+                    break;
+                }
+                Event::HistoryError(error) => panic!("a second error: {error}"),
+                _ => {}
+            }
+        }
+        // One worker for the append, a fresh one for the search.
+        assert_eq!(starts.load(Ordering::SeqCst), 2);
     }
 }
