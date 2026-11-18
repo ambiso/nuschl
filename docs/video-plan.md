@@ -29,10 +29,10 @@ decisions (§11).
 - **Phases:** browser pages first (camera, screen and watching), launched from
   Nuschl or opened from the link, then native Linux capture, encoding and
   viewing; end-to-end-mode servers last (§3).
-- **Codec (Owner):** AV1 only. The pages use the browser's own encoding and
-  decoding; native clients use hardware AV1 first, software AV1 as the
-  fallback, and rav1d for decoding. The SFU forwards encoded frames as they
-  are.
+- **Codec (Owner):** royalty-free codecs only: AV1 first, VP9 where it helps.
+  The pages use the browser's own encoding and decoding; native clients use
+  hardware AV1 first, software AV1 as the fallback, and rav1d for decoding.
+  The SFU forwards encoded frames as they are.
 
 ## 1. What exists
 
@@ -95,6 +95,12 @@ direct paths.
 **Later:** Windows and macOS capture, scalable layers everywhere (#140),
 nuschld's own SFU and `rtc/1` (#141, #142), end-to-end servers over MLS (#135),
 long-call validation (#147).
+
+**Target on Nuschl servers (Owner):** every voice channel is already a WebRTC
+session, and that session is the call. **Start camera** and **Share screen**
+add camera and screen tracks to it directly, and the channel's keys cover them
+(M1). The explicit call with link secret and card is the stock-Mumble path
+only (#141, #142, M1).
 
 ## 4. Keys on stock servers
 
@@ -242,9 +248,12 @@ encoder offers them, spatial layers.
   camera's frames for its talker's voice playout delay, aiming for audio
   ahead by at most 45 ms and behind by at most 125 ms (ITU-R BT.1359).
 - **Browser (Owner).** The pages use the browser's own video encoding and
-  decoding: WebRTC, and WebCodecs where needed, with AV1 where the browser
-  supports it; the page goes by `getStats`. A browser without AV1 decoding
-  (WebKit today) gets a clear message. The native path above stays as it is.
+  decoding: WebRTC, and WebCodecs where needed. They negotiate AV1 first and
+  VP9 second; a viewer without AV1 decoding (WebKit today) receives a VP9
+  encoding, which costs its publisher a second encoding per source, since the
+  SFU forwards without transcoding. A browser with neither gets a clear
+  message. The page goes by `getStats`. The native path above stays as it
+  is.
 
 ## 7. Consent, privacy and bounds
 
@@ -341,8 +350,9 @@ Murmur 1.4 and 1.5 with a stock Mumble client, and relay-only by packet capture.
 
 **Made by the owner (2026-11-13 and 2026-11-17):**
 - Video calls and screen sharing are one feature, planned and built together.
-- AV1 only: hardware first on every platform, software AV1 as the fallback;
-  rav1d for native software decoding.
+- AV1: hardware first on every platform, software AV1 as the fallback; rav1d
+  for native software decoding. Since 2026-11-18 VP9 is allowed too:
+  royalty-free codecs only, so H.264 and HEVC stay out.
 - Phase 1 captures in the browser, launched from Nuschl; native Linux follows.
 - Up to 4K60 screens; each receiver gets min(request, capacity, network,
   policy); relaying is the publisher's opt-in when its upload falls short.
@@ -358,8 +368,10 @@ Murmur 1.4 and 1.5 with a stock Mumble client, and relay-only by packet capture.
 - In a call a Nuschl user starts, stock Mumble users join through the link
   in the channel message and share their own camera and screen from the page.
   P covers the owner actions only.
-- The pages use the browser's own video encoding and decoding, AV1 where
-  supported; a browser without AV1 decoding gets a clear message.
+- The pages use the browser's own video encoding and decoding, AV1 first and
+  VP9 where it helps; a browser with neither gets a clear message.
+- On Nuschl servers, later: the voice channel's WebRTC session is the call,
+  and Start camera and Share screen add tracks to it (§3).
 - Camera quality and screen quality are user-selectable (§5).
 - Call model: one call per channel with camera and screen as sources (§2).
 - Call keys: per-publisher sender keys over the K1 exchange (§4); a call-wide
@@ -386,8 +398,5 @@ Murmur 1.4 and 1.5 with a stock Mumble client, and relay-only by packet capture.
 libwebrtc's future handling of the AV1 envelope; spatial layers and simulcast
 with the envelope; hardware AV1 encoding per browser and per GPU vendor; the
 §5.1 figures on real content; camera SVC in hardware encoders; native 4K60
-decoding; the publisher-lease stop deadline; all effort estimates.
-
-For the owner: VP9 as a second browser codec would reach viewers without AV1
-decoding (WebKit today) and costs every publisher a second encoding per
-source, since the SFU forwards without transcoding; it conflicts with AV1 only.
+decoding; the publisher-lease stop deadline; the SFrame envelope for VP9; all
+effort estimates.
