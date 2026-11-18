@@ -24,32 +24,13 @@ The initial failed build is retained, not counted as a successful probe.
 
 ## Notice authority
 
-The old probe installed only EUPL; no runtime inventory selected its real
-str0m/dimpl/RustCrypto dependencies. Each supported native target now declares a
-named `standalone.rtc-probe` group in `release/notice-roots.json`, with an explicit
-source-selected `rtc-probe-<RustTarget>` scope and Rust standard-library notices.
-Existing desktop/cross scopes select their original main roots/features unchanged.
-The all-target audit unions main and standalone roots deterministically. Nix and
-Python normalize to the same target/packages/features records. Scope selection
-comes from the package/platform, never the artifact's claimed metadata.
-
-The actual Linux x86_64 inventory selects 98 runtime packages, with no ring or
-AWS-LC. Its first inspectable result kept three unresolved entries:
-`is0.12.0`, `str0m-proto0.8.0`, and the patched `str0m-rust-crypto0.7.0`.
-Their published archives omit license files. Each retained VCS record names
-str0m revision `5f2183ce7c67117cd1960dfeb11bed11fc188b66`. The exact upstream
-monorepo MIT grant and root/three package/author declarations are retained under
-`release/licenses/rtc-upstreams`, with immutable URLs and SHA-256 provenance.
-Their declarations permit MIT or Apache2; this supplement chooses the actual MIT
-alternative. The nested packet-specific Apache text is not presented as a blanket
-monorepo grant. No generic SPDX text or legal-completeness assurance was introduced.
-The real strict RTC bundle now has zero unresolved entries.
-
-`tests/build_package_notices.py` checks actual compact byte ranges against these
-source files, rejects real payload corruption, compares main roots/features with
-the baseline, and validates the real prior Windows/Mac bundles under unchanged
-main policy. Existing release tests also pass. Other native scope definitions are
-not additional hardware/runtime test claims.
+`release/notice-roots.json` has an `rtc-probe-<RustTarget>` scope for each
+supported native target: the probe's root crate, the Rust standard library and
+the Mumble protocol notice ([release notices](release-notices.md)). The published
+`is`, `str0m-proto` and patched `str0m-rust-crypto` packages omit license files;
+`about.toml` clarifies them with str0m's MIT text at revision
+`5f2183ce7c67117cd1960dfeb11bed11fc188b66`, kept in `release/licenses/crates/str0m`.
+The probe's notices contain neither ring nor AWS-LC.
 
 ## Actual Linux validation
 

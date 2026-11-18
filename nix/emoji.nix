@@ -50,15 +50,6 @@ pkgs.runCommand "nuschl-emoji-assets"
       pkgs.python3
       pkgs.zopfli
     ];
-    # For the release notices (nix/release-external-notices.nix).
-    passthru = {
-      inherit pins;
-      sources = {
-        twemoji = "https://github.com/jdecked/twemoji/tree/${pins.twemoji.rev} (${pins.twemoji.hash})";
-        emojibase = "${pins.emojibase.url} (${pins.emojibase.hash})";
-        cldr = "${cldrLicense.url} (${pins.cldr.hash})";
-      };
-    };
   }
   ''
     python3 -I ${./emoji.py} --twemoji ${twemoji} --emojibase ${emojibase} \

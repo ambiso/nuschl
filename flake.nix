@@ -221,8 +221,8 @@
         releaseNotices = import ./nix/release-notices.nix {
           inherit pkgs toolchain craneLib;
           projectRoot = ./.;
-          webRuntimeNotices = webClient.runtimeNotices;
-          musicbotRuntimeNotices = "${musicbotWeb}/licenses/runtime";
+          webRuntimeNotices = "${webClient.rawApp}/licenses";
+          musicbotRuntimeNotices = "${musicbotWeb}/licenses/npm";
         };
         nativeNoticeScope =
           if pkgs.stdenv.hostPlatform.isDarwin then
@@ -858,14 +858,11 @@
         packages.web-wasm = webClient.wasm;
         packages.web-audio-wasm = webClient.audioWasm;
         packages.web-content-wasm = webClient.contentWasm;
-        packages.web-runtime-notices = webClient.runtimeNotices;
-        packages.release-license-inventory = releaseNotices.all.inventory;
-        packages.release-license-compact-inventory = releaseNotices.all.compactInventory;
         packages.release-notices-linux = releaseNotices.linux.bundle;
+        packages.release-notices-linux-portable = releaseNotices.portable.bundle;
         packages.release-notices-windows = releaseNotices.windows.bundle;
         packages.release-notices-macos = releaseNotices.macos.bundle;
         packages.release-notices-web = releaseNotices.web.bundle;
-        packages.release-rtc-license-inventory = rtcNotices.inventory;
         packages.release-notices-rtc = rtcNotices.bundle;
         # Keep share-link routes at the root; the Svelte client lives at /app/.
         packages.web-site = pkgs.runCommand "nuschl-web-site" { } ''

@@ -151,12 +151,10 @@ effort; it is not a hard disk-size guarantee. Source syntax was checked with
 actionlint; first-run cache effectiveness, disk use, elapsed time and actual
 platform build success remain unproven until an authenticated GitHub dispatch.
 
-Downloadable CI snapshots also distribute their contents: the shared notice
-bundle/check must gate those artifacts as well as public release assets. The
-source inventory in `nix/release-licenses.nix` is inspectable when incomplete;
-its `check`/`bundle` fail on unresolved source notices or required external
-runtime/embedded-asset records. Generic SPDX text is not silently substituted for
-missing upstream attribution.
+Downloadable CI snapshots also distribute their contents: the notice bundles and
+`release/check-notices.py` gate those artifacts as well as public release assets.
+The bundles in `nix/release-notices.nix` fail on a crate without its own license
+text or a missing component ([release notices](release-notices.md)).
 
 ## Baseline workflow findings
 

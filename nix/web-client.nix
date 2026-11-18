@@ -152,14 +152,6 @@ let
       cp -R dist/. "$out/"
     '';
   };
-  runtimeNotices =
-    pkgs.runCommand "nuschl-web-runtime-notices" { nativeBuildInputs = [ pkgs.python3 ]; }
-      ''
-        python3 ${../release/web-notices.py} --app ${rawApp} \
-          --lock ${../web/app/package-lock.json} --cargo-lock ${../Cargo.lock} \
-          --temml-source ${../web/app/public/licenses} \
-          --sdk ${wasm} --audio ${audioWasm} --content ${contentWasm} --output "$out"
-      '';
   app =
     if releaseNotices == null then
       rawApp
@@ -178,7 +170,6 @@ in
     wasm
     audioWasm
     contentWasm
-    runtimeNotices
     rawApp
     ;
 }

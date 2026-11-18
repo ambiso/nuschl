@@ -11,9 +11,7 @@ import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import re
-import runpy
 import tarfile
-import tomllib
 
 ROOTS = {"windows-x86_64": "windows", "macos-universal": "Nuschl.app"}
 
@@ -49,129 +47,15 @@ def checked_relative(value):
     return path
 
 
-def notice_scope(policy, scope):
-    scopes = load(Path(__file__).with_name("notice-scopes.json"))
-    if scope not in scopes:
-        raise ValueError("unknown source-selected notice scope")
-    targets = scopes[scope]["targets"]
-    group = scopes[scope].get("root_group", "main")
-    selected = []
-    for item in policy:
-        if item["target"] not in targets:
-            continue
-        standalone = item.get("standalone", {})
-        if not isinstance(standalone, dict) or not isinstance(group, str):
-            raise ValueError("invalid source root group")
-        if group == "main":
-            selections = [item]
-        elif group == "all":
-            selections = [item] + [standalone[name] for name in sorted(standalone)]
-        elif group in standalone:
-            selections = [standalone[group]]
-        else:
-            raise ValueError("missing standalone root group")
-        selected.append({"target": item["target"],
-            "packages": list(dict.fromkeys(name for selection in selections for name in selection["packages"])),
-            "features": list(dict.fromkeys(name for selection in selections for name in selection.get("features", [])))})
-    if len(selected) != len(targets) or {item["target"] for item in selected} != set(targets):
-        raise ValueError("scope targets absent or duplicated in the source authority")
-    return selected, set(scopes[scope]["external_components"])
-
-
-def verify_notices(root, policy, scope="all"):
-    selected, expected_external = notice_scope(policy, scope)
+def verify_notices(root, policy, scope):
+    """Check a bundle against the notice policy of the scope its caller expects."""
+    if scope not in policy:
+        raise ValueError("unknown notice scope")
     report = load(root / "THIRD-PARTY.json", 8 * 1024 * 1024)
-    if (report.get("format") not in (1, 2) or report.get("unresolved") != [] or
-            report.get("roots_by_target") != selected or report.get("bundle_scope") != scope):
-        raise ValueError("missing/incomplete/mismatched runtime attribution scope")
-    source = Path(__file__).resolve().parents[1]
-    workspace = {tomllib.loads(path.read_text())["package"]["name"]
-                 for directory in ("crates", "apps") for path in (source / directory).glob("*/Cargo.toml")}
-    compact = report.get("format") == 2
-    index = report.get("notice_files", {})
-    if compact:
-        payload = report.get("notice_payload", {})
-        file = root / "THIRD-PARTY.txt"
-        if (payload.get("path") != "THIRD-PARTY.txt" or not file.is_file() or file.is_symlink() or
-                type(payload.get("size")) is not int or not 1 <= payload["size"] <= 128 * 1024**2 or
-                file.stat().st_size != payload["size"] or digest(file) != payload.get("sha256") or
-                not isinstance(index, dict) or not 1 <= len(index) <= 16384):
-            raise ValueError("invalid compact notice payload/index")
-        previous_end, aliases = 0, set()
-        with file.open("rb") as stream:
-            for name, item in sorted(index.items(), key=lambda pair: pair[1].get("offset", -1)):
-                checked_relative(name)
-                if (name.casefold() in aliases or type(item.get("offset")) is not int or
-                        type(item.get("size")) is not int or not 1 <= item["size"] <= 4 * 1024**2 or
-                        item["offset"] < previous_end or item["offset"] + item["size"] > payload["size"]):
-                    raise ValueError("overlapping/invalid compact notice byte range")
-                aliases.add(name.casefold())
-                stream.seek(item["offset"])
-                if hashlib.sha256(stream.read(item["size"])).hexdigest() != item.get("sha256"):
-                    raise ValueError("compact notice byte-range hash mismatch")
-                previous_end = item["offset"] + item["size"]
-    def notice_hash(path):
-        if compact:
-            name = path.relative_to(root).as_posix()
-            if name not in index:
-                raise ValueError("missing compact notice reference")
-            return index[name]["sha256"]
-        return digest(path)
-    project_files = [("EUPL-1.2", "LICENSE"), ("Mumble-BSD", "crates/protocol/proto/LICENSE.mumble")]
-    if "newcm-math-font" in expected_external:
-        project_files.append(("NewCMMath-GUST-Font-License", "crates/math/fonts/GUST-FONT-LICENSE.txt"))
-    for bundled, original in project_files:
-        if notice_hash(root / bundled) != digest(source / original):
-            raise ValueError("first-party/protocol/font notice differs from the source")
-    packages = report.get("packages")
-    if not isinstance(packages, list) or not 1 <= len(packages) <= 8192:
-        raise ValueError("missing bounded runtime package inventory")
-    required = {(item["target"], name) for item in selected for name in item["packages"]}
-    required.update((item["target"], name) for item in selected
-                    if any("update-worker/" in f for f in item.get("features", []))
-                    for name in ("ed25519-dalek", "ml-dsa"))
-    found = set()
-    references = set()
-    def check_files(directory, files):
-        if not isinstance(files, list) or len(files) > 4096:
-            raise ValueError("invalid notice file list")
-        for entry in files:
-            relative = checked_relative(entry["path"])
-            path = directory / relative
-            if len(references) >= 16384 or path in references:
-                raise ValueError("duplicate or excessive notice references")
-            if not re.fullmatch(r"[0-9a-f]{64}", entry["sha256"]) or notice_hash(path) != entry["sha256"]:
-                raise ValueError("bundled notice digest mismatch")
-            references.add(path)
-    for package in packages:
-        name, version = package["name"], package["version"]
-        if not re.fullmatch(r"[A-Za-z0-9_.+-]{1,128}", name + "-" + version):
-            raise ValueError("invalid notice package identity")
-        targets = package["targets"]
-        if (not isinstance(targets, list) or not targets or len(targets) != len(set(targets)) or
-                not set(targets) <= {item["target"] for item in selected}):
-            raise ValueError("package targets differ from the expected source-selected scope")
-        for target in targets:
-            found.add((target, name))
-        if type(package["first_party"]) is not bool or (package["first_party"] and
-                (name not in workspace or package.get("license") != "EUPL-1.2" or package.get("source") != "project-path")):
-            raise ValueError("self-asserted first-party license exemption")
-        if not package["first_party"] and not package["files"]:
-            raise ValueError("missing third-party notice text")
-        check_files(root / "crates" / (name + "-" + version), package["files"])
-    if not required <= found:
-        raise ValueError("runtime roots or hybrid engines absent from attribution inventory")
-    components = report.get("external_components", [])
-    if len(components) != len(expected_external) or {item["name"] for item in components} != expected_external:
-        raise ValueError("missing/extra native/font/web runtime notice families for the expected scope")
-    for item in components:
-        checked_relative(item["name"])
-        if not item.get("files"):
-            raise ValueError("missing native/asset notice text")
-        check_files(root / "external" / item["name"], item["files"])
-    if not references:
-        raise ValueError("no actual notice payload")
-    runpy.run_path(str(source / "release/license-evidence.py"))["verify_bundled"](report, root, notice_hash, source)
+    text = root / "THIRD-PARTY.txt"
+    if (report.get("scope") != scope or report.get("policy") != policy[scope] or not report.get("crates") or
+            not text.is_file() or text.is_symlink() or digest(text) != report.get("notices_sha256")):
+        raise ValueError("missing or mismatched third-party notices")
 
 
 def evidence(directory, platform, *, repository, commit, run_id, attempt, version, filenames):
@@ -288,8 +172,6 @@ def prepare_linux(directory, output, *, repository, commit, run_id, attempt, ver
         archive.extractall(destination, members=members, filter="data")
     if not (destination / "index.html").is_file() or not (destination / "app/index.html").is_file():
         raise ValueError("static web bundle lacks landing/client entry points")
-    # All three WASM roots and JS/assets need actual notice bytes. Existing
-    # Temml-only notices do not substitute for the pipeline's full inventory.
     verify_notices(destination / "licenses/nuschl", policy, "web")
     return info
 
