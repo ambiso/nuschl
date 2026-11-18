@@ -6,10 +6,12 @@
 //! talk servers; the client's voice policy decides which). A deafened server
 //! gets nothing and plays nothing; with every server deafened no worker runs.
 //!
-//! The microphone opens and closes with a new worker process, as before
-//! (native stream teardown can block inside a backend; replacing the
-//! isolated process closes its audio capability even then): the worker is
-//! replaced when the microphone's state or its destinations change. Speech
+//! The microphone opens and closes inside the worker, so playback goes on
+//! across a mute. A mute takes effect at once: the packet epoch changes, so
+//! nothing captured before it leaves, and the worker processes no more
+//! microphone audio. Native stream teardown can block inside a backend: a
+//! worker that has not confirmed the microphone closed within
+//! [`CLOSE_DEADLINE`] is replaced, and its process exit closes it. Speech
 //! buffered for one set of listeners must not reach a newly added listener.
 use super::{Event, HOST_PIN, MAX_SOUND_DELAY, VoiceKeys, chime, configure, pinned_host, play};
 use nuschl_core::audio::{Sound, TransmitMode};
@@ -230,6 +232,29 @@ fn capture_route_changed(old: &Link, next: &Link) -> bool {
     speaking_to(old) != speaking_to(next) || (speaking_to(next) && old.revision != next.revision)
 }
 
+/// How long a worker may take to confirm that the microphone closed.
+const CLOSE_DEADLINE: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Tell the worker whether the microphone is open, for the packets of
+/// `epoch`. A close must be confirmed by `closing`'s deadline.
+fn set_microphone(
+    media: &Option<Media>,
+    epoch: u64,
+    open: bool,
+    (sent, closing): (&mut bool, &mut Option<(u64, Instant)>),
+) {
+    if let Some(worker) = media {
+        let _ = worker.commands.try_send(LiveMediaRequest::SetState {
+            epoch,
+            muted: !open,
+            deafened: false,
+        });
+    }
+    if std::mem::replace(sent, open) && !open && closing.is_none() {
+        *closing = Some((epoch, Instant::now() + CLOSE_DEADLINE));
+    }
+}
+
 /// Slots of the worker's one request queue kept for control: voice and sound
 /// effects take a slot only while more than this many are free, so
 /// push-to-talk, a deafen or a setting has room during a burst. One queue
@@ -328,6 +353,10 @@ async fn run_with_start<Starting>(
     // changed, never leave.
     let mut epoch = 0_u64;
     let mut planned = plan(std::iter::empty());
+    // Whether the worker was told to open the microphone, and the mute it
+    // has yet to confirm (its epoch and deadline).
+    let mut capture_sent = false;
+    let mut closing: Option<(u64, Instant)> = None;
     // Sanitized: it bounds the push-to-talk release tail (see `talk_allows`).
     let mut applied = settings.borrow().audio.clone().sanitized();
     let mut talk_key = voice_keys.borrow().talk;
@@ -372,12 +401,6 @@ async fn run_with_start<Starting>(
                     #[cfg(test)]
                     Control::Inspect(_) | Control::Rates(_) => unreachable!(),
                 };
-                if capture_changed {
-                    // Invalidate even a packet already in the worker's IPC
-                    // queue before admitting another speaking destination.
-                    // Replacing the process also discards its queued PCM.
-                    replace(&mut media, &mut stopping, &mut epoch, &mut retry);
-                }
                 match message {
                     Control::Attach { server, generation, link, voice } => {
                         numbers = numbers.wrapping_add(1);
@@ -407,6 +430,16 @@ async fn run_with_start<Starting>(
                     #[cfg(test)]
                     Control::Inspect(_) | Control::Rates(_) => unreachable!(),
                 }
+                if capture_changed {
+                    // Invalidate even a packet already in the worker's IPC
+                    // queue before admitting another speaking destination;
+                    // the worker drops its queued PCM with the epoch. With
+                    // no destination left the microphone closes now; one
+                    // opens only once the changes settle.
+                    epoch += 1;
+                    let open = capture_sent && plan(streams.values().map(|stream| &stream.link)).capture;
+                    set_microphone(&media, epoch, open, (&mut capture_sent, &mut closing));
+                }
                 // A first explicitly authorized microphone needs no debounce.
                 // Moving an active voice still settles both server changes.
                 let now = Instant::now();
@@ -426,12 +459,16 @@ async fn run_with_start<Starting>(
                 let next = plan(streams.values().map(|stream| &stream.link));
                 let opened = !planned.capture && next.capture;
                 let closed = planned.capture && !next.capture;
-                if opened || closed || !next.listen {
-                    // The microphone opens or closes with a new process; with
-                    // nothing to listen to, none runs.
+                if !next.listen {
+                    // With nothing to listen to, no worker runs.
                     replace(&mut media, &mut stopping, &mut epoch, &mut retry);
-                } else if (next.bitrate, next.loss_percent) != (planned.bitrate, planned.loss_percent) {
-                    send_control(&mut media, &mut stopping, &mut epoch, &mut retry, configure(&applied, (next.bitrate, next.loss_percent), pinned_host(&audio_host)));
+                } else {
+                    if next.capture != capture_sent {
+                        set_microphone(&media, epoch, next.capture, (&mut capture_sent, &mut closing));
+                    }
+                    if (next.bitrate, next.loss_percent) != (planned.bitrate, planned.loss_percent) {
+                        send_control(&mut media, &mut stopping, &mut epoch, &mut retry, configure(&applied, (next.bitrate, next.loss_percent), pinned_host(&audio_host)));
+                    }
                 }
                 planned = next;
                 let current = settings.borrow();
@@ -488,6 +525,12 @@ async fn run_with_start<Starting>(
                 }
             },
             _ = async { stopping.as_mut().unwrap().await }, if stopping.is_some() => stopping = None,
+            // The microphone was not confirmed closed in time: the process
+            // exit closes it (playback pauses until the next worker).
+            _ = tokio::time::sleep_until(closing.map_or_else(Instant::now, |(_, deadline)| deadline)), if closing.is_some() && media.is_some() => {
+                closing = None;
+                replace(&mut media, &mut stopping, &mut epoch, &mut retry);
+            },
             _ = tokio::time::sleep_until(retry), if settle.is_none() && planned.listen && media.is_none() && stopping.is_none() => {
                 epoch += 1;
                 // Until the devices are open, nobody hears you yet.
@@ -497,6 +540,7 @@ async fn run_with_start<Starting>(
                         // A new worker's empty queue takes its whole state.
                         let _ = worker.commands.try_send(configure(&applied, (planned.bitrate, planned.loss_percent), pinned_host(&audio_host)));
                         let _ = worker.commands.try_send(LiveMediaRequest::SetState { epoch, muted: !planned.capture, deafened: false });
+                        (capture_sent, closing) = (planned.capture, None);
                         let _ = worker.commands.try_send(LiveMediaRequest::PushToTalk { active: voice_keys.borrow().talk });
                         for (sound, requested) in pending.drain(..) {
                             if requested.elapsed() < MAX_SOUND_DELAY { play(&worker, &settings.borrow(), sound); }
@@ -557,6 +601,11 @@ async fn run_with_start<Starting>(
                     // A worker for listening only says so; a server you listen
                     // to has no microphone, wherever the one microphone goes.
                     broadcast(&streams, &events, |server, generation| Event::AudioStatus { server, generation, message: message.clone() }).await;
+                },
+                Some(LiveMediaEvent::MicrophoneClosed { epoch: closed }) => {
+                    if closing.is_some_and(|(muted, _)| closed >= muted) {
+                        closing = None;
+                    }
                 },
                 // The meter and the echo test are the Settings check's (preview.rs).
                 Some(LiveMediaEvent::Level { .. } | LiveMediaEvent::EchoTest { .. }) => {},
@@ -705,12 +754,11 @@ mod tests {
         let (_, current, wait) = inspect(&control).await;
         assert!(current);
         assert_eq!(wait, std::time::Duration::ZERO);
-        tokio::time::timeout(std::time::Duration::from_secs(2), starts.recv())
-            .await
-            .unwrap()
-            .unwrap();
+        while !inspect(&control).await.0 {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
         // Muting the active destination then unmuting another remains a
-        // coalesced move, with the old worker already invalidated.
+        // coalesced move, with the old packets already invalidated.
         control
             .send(Control::Update {
                 server: "one".into(),
@@ -1209,7 +1257,7 @@ mod tests {
         .await
         .expect("the connection is asked to mute");
         assert_eq!(stopped, ("one".to_string(), 1));
-        let (_second, muted) = next().await;
+        let ((mut second, _replies), muted) = next().await;
         assert!(muted, "the replacement opened the microphone");
         // A new routing revision of the still unmuted connection keeps it closed.
         rig.control.send(update(1, false)).unwrap();
@@ -1218,8 +1266,76 @@ mod tests {
         assert!(!inspected.await.unwrap().1, "an update reopened it");
         rig.control.send(update(2, true)).unwrap();
         rig.control.send(update(3, false)).unwrap();
-        let (_third, muted) = next().await;
-        assert!(!muted);
+        // The Unmute after the mute opens it in the same worker.
+        until(&mut second, |request| {
+            matches!(request, LiveMediaRequest::SetState { muted: false, .. })
+        })
+        .await;
+        rig.task.abort();
+        let _ = rig.task.await;
+    }
+
+    /// #73: a mute closes the microphone inside the worker, so playback goes
+    /// on; nothing captured before the mute leaves. A worker that does not
+    /// confirm the microphone closed in time is replaced.
+    #[tokio::test(start_paused = true)]
+    async fn a_mute_closes_the_microphone_in_place_or_replaces_a_stalled_worker() {
+        let mut rig = rig(ClientSettings::default());
+        let (mut outgoing, mut requests, replies, epoch) = talk_server(&mut rig).await;
+        let update = |revision, muted| Control::Update {
+            server: "one".into(),
+            generation: 1,
+            link: Link {
+                revision,
+                ..link(muted, false, 40_000, 1)
+            },
+            cue: None,
+        };
+        let set = |muted: bool| move |request: &LiveMediaRequest| matches!(request, LiveMediaRequest::SetState { muted: m, .. } if *m == muted);
+        rig.control.send(update(1, true)).unwrap();
+        let Some(&LiveMediaRequest::SetState { epoch: muted, .. }) =
+            until(&mut requests, set(true)).await.last()
+        else {
+            unreachable!()
+        };
+        assert!(muted > epoch);
+        // Captured before the mute and sent while the microphone closes.
+        replies.send(packet(epoch, 1)).await.unwrap();
+        replies
+            .send(LiveMediaEvent::MicrophoneClosed { epoch: muted })
+            .await
+            .unwrap();
+        taken(&replies).await;
+        tokio::time::sleep(CLOSE_DEADLINE * 3).await;
+        assert!(
+            outgoing.try_recv().is_err(),
+            "audio from before the mute left"
+        );
+        assert!(
+            rig.workers.try_recv().is_err(),
+            "a confirmed mute replaced the worker"
+        );
+        // The Unmute opens the microphone in the same worker.
+        rig.control.send(update(2, false)).unwrap();
+        until(&mut requests, set(false)).await;
+        // This mute is never confirmed: the stalled worker is replaced, and
+        // the next one starts with the microphone closed.
+        rig.control.send(update(3, true)).unwrap();
+        until(&mut requests, set(true)).await;
+        let (mut next, _, _) = tokio::time::timeout(WAIT, rig.workers.recv())
+            .await
+            .expect("the stalled worker is replaced")
+            .unwrap();
+        let _ = queued(&mut requests);
+        assert!(requests.is_closed(), "the stalled worker is stopped");
+        let start = until(&mut next, |request| {
+            matches!(request, LiveMediaRequest::SetState { .. })
+        })
+        .await;
+        assert!(matches!(
+            start.last(),
+            Some(LiveMediaRequest::SetState { muted: true, .. })
+        ));
         rig.task.abort();
         let _ = rig.task.await;
     }

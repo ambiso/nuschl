@@ -32,13 +32,19 @@ appeared. Checks:
    become the defaults). The worker's streams follow the defaults: it keeps
    running without reopening its devices, and its playback reaches each new
    sink.
-8. The restarts of 2 and 3 with every worker in the sandbox a call gives it
+8. Mute and unmute close and open the microphone inside the running worker
+   (#73): incoming playback goes on (no silence longer than the occasional
+   period a loaded host drops), PipeWire removes the
+   capture streams within the worker's 100 ms close bound, the worker
+   confirms each mute, and no microphone audio is encoded after a mute.
+9. The restarts of 2 and 3 with every worker in the sandbox a call gives it
    (`nuschl media-sandbox`, the desktop's own bwrap command), replaced as
    the desktop replaces it. PipeWire's socket is bound as a file, so after a
    restart only a replacement worker reaches the new one; PulseAudio's
    directory is bound, so a pipewire-pulse restart shows up in place.
 """
 import argparse
+import itertools
 import json
 import math
 import os
@@ -109,6 +115,8 @@ ROOM = """context.modules = [
   }
 ]
 """
+# nuschl_core::audio::SILENT_OPUS: the terminator that ends a transmission.
+SILENT_OPUS = bytes([0xF8, 0xFF, 0xFE])
 NO_HARDWARE = """wireplumber.profiles = {
   main = {
     monitor.alsa = disabled
@@ -253,7 +261,9 @@ class Worker:
             header = self.process.stdout.read(4)
             if len(header) < 4:
                 return
-            self.events.append(json.loads(self.process.stdout.read(struct.unpack(">I", header)[0]))["payload"])
+            event = json.loads(self.process.stdout.read(struct.unpack(">I", header)[0]))["payload"]
+            event["received"] = time.monotonic()
+            self.events.append(event)
 
     def send(self, payload):
         body = json.dumps({"version": 1, "request_id": 0, "payload": payload}).encode()
@@ -474,6 +484,130 @@ def check_output_switch(binary, pipewire, packets, output):
           f"(RMS {level:.3f}).", flush=True)
 
 
+class NodeMonitor:
+    """PipeWire's own account of nodes coming and going (pw-mon), timed on arrival."""
+
+    def __init__(self, pipewire):
+        self.process = subprocess.Popen([str(pipewire.pipewire / "bin/pw-mon"), "-N", "--hide-params"], env=pipewire.env,
+                                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                                        start_new_session=True)
+        self.nodes = {}
+        self.removed = {}
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self):
+        kind = node = None
+        for line in self.process.stdout:
+            if line.rstrip() in ("added:", "changed:", "removed:"):
+                kind, node = line.strip().rstrip(":"), None
+            elif line.strip().startswith("id: "):
+                node = int(line.split(":", 1)[1])
+                if kind == "removed":
+                    self.removed[node] = time.monotonic()
+                    self.nodes.pop(node, None)
+                elif kind == "added":
+                    self.nodes[node] = {}
+            elif node in self.nodes and " = " in line:
+                key, value = line.strip().lstrip("*").strip().split(" = ", 1)
+                self.nodes[node][key] = value.strip('"')
+
+    def captures(self):
+        """Nuschl's capture streams (the only application in the session)."""
+        return {node for node, props in list(self.nodes.items())
+                if props.get("media.class") == "Stream/Input/Audio" and props.get("node.name") == "Nuschl"}
+
+    def close(self):
+        os.killpg(self.process.pid, signal.SIGTERM)
+        self.process.wait(timeout=5)
+
+
+def percentiles(values):
+    ordered = sorted(values)
+    pick = lambda share: ordered[min(len(ordered) - 1, int(share * len(ordered)))]  # noqa: E731
+    return {"p50": pick(.5), "p95": pick(.95), "p99": pick(.99), "max": ordered[-1]}
+
+
+def check_mute(binary, pipewire, packets, output, cycles):
+    """Mute and unmute `cycles` times while voice plays (#73)."""
+    monitor = NodeMonitor(pipewire)
+    worker = Worker(binary, pipewire, muted=False, settings={"transmit": "continuous"})
+    worker.ready()
+    deadline = time.monotonic() + 10
+    while len(monitor.captures()) < 2:
+        assert time.monotonic() < deadline, f"no microphone and reference streams: {monitor.nodes}"
+        time.sleep(0.01)
+    stop = threading.Event()
+
+    def play():
+        start, index = time.monotonic(), 0
+        while not stop.is_set():
+            time.sleep(max(0, start + index * 0.02 - time.monotonic()))
+            worker.send({"kind": "playback", "stream": 1, "sender": 9, "sequence": index * 2,
+                         "opus": packets[index % len(packets)], "end": False, "volume": 1.0})
+            index += 1
+    path = output / "mute-playback.wav"
+    recorder = pipewire.record(0, path)
+    threading.Thread(target=play, daemon=True).start()
+    time.sleep(1)
+    gone, confirmed, late = [], [], []
+    epoch = 1
+    for _ in range(cycles):
+        streams = monitor.captures()
+        epoch += 1
+        mark = len(worker.events)
+        muted = time.monotonic()
+        worker.send({"kind": "set_state", "epoch": epoch, "muted": True, "deafened": False})
+        closed = worker.wait(lambda e: e["kind"] == "microphone_closed" and e["epoch"] >= epoch,
+                             "the worker did not confirm the mute", since=mark)
+        confirmed.append(closed["received"] - muted)
+        deadline = time.monotonic() + 1
+        while not all(node in monitor.removed for node in streams):
+            assert time.monotonic() < deadline, f"PipeWire kept the capture streams {streams}"
+            time.sleep(0.001)
+        gone.append(max(monitor.removed[node] for node in streams) - muted)
+        time.sleep(0.25)
+        # Microphone audio encoded before the worker applied the mute carries
+        # the old epoch (the supervisor drops it); after it, only the
+        # terminator, which is silence.
+        packets_after = [e for e in worker.events[mark:] if e["kind"] == "packet"]
+        assert all(e["epoch"] < epoch or (e["end"] and bytes(e["opus"]) == SILENT_OPUS)
+                   for e in packets_after), f"microphone audio was encoded after the mute: {packets_after}"
+        late += [e["received"] - muted for e in packets_after if e["epoch"] < epoch]
+        epoch += 1
+        mark = len(worker.events)
+        worker.send({"kind": "set_state", "epoch": epoch, "muted": False, "deafened": False})
+        worker.wait(lambda e: e["kind"] == "packet" and e["epoch"] == epoch, "the Unmute sent no voice", since=mark)
+        time.sleep(0.25)
+    stop.set()
+    time.sleep(0.3)
+    os.killpg(recorder.pid, signal.SIGINT)
+    recorder.wait(timeout=5)
+    statuses = [e for e in worker.events if e["kind"] == "status" and not e["ready"]]
+    worker.stop()
+    monitor.close()
+    assert not statuses, f"the worker restarted its devices: {statuses}"
+    with wave.open(str(path)) as recording:
+        frames = recording.readframes(recording.getnframes())
+    samples = struct.unpack("<%dh" % (len(frames) // 2), frames)
+    window = 480
+    levels = [math.sqrt(sum(v * v for v in samples[i:i + window]) / window) / 32768
+              for i in range(0, len(samples) - window, window)]
+    playing = [i for i, level in enumerate(levels) if level > 0.02]
+    silent = [i for i in range(playing[0], playing[-1]) if levels[i] < 0.01]
+    # A loaded host drops a period now and then with or without a mute; a
+    # restarted worker leaves 150 ms and more of silence.
+    runs = [len(list(group)) for _, group in itertools.groupby(
+        enumerate(silent), key=lambda pair: pair[1] - pair[0])]
+    report = {"cycles": cycles, "stream_gone_ms": {k: round(v * 1000, 1) for k, v in percentiles(gone).items()},
+              "confirmed_ms": {k: round(v * 1000, 1) for k, v in percentiles(confirmed).items()},
+              "old_epoch_packets_after_mute": len(late),
+              "silent_10ms_windows": len(silent), "longest_silence_ms": 10 * max(runs, default=0)}
+    (output / "mute-timing.json").write_text(json.dumps(report, indent=2))
+    print(f"Mute in place: {report}", flush=True)
+    assert max(runs, default=0) < 6, f"playback stopped across mute/unmute: {report}"
+    assert max(confirmed) < 0.1, f"a mute was confirmed after the 100 ms bound: {report}"
+
+
 def check_echo_cancel(binary, pipewire):
     # The user chose the canceller as their microphone (as in GNOME Settings).
     subprocess.run([str(pipewire.pipewire / "bin/pw-metadata"), "-n", "default", "0",
@@ -621,6 +755,7 @@ def main():
     parser.add_argument("--dbus-daemon", default=shutil.which("dbus-daemon") or "dbus-daemon")
     parser.add_argument("--output", type=Path, default=Path(tempfile.gettempdir()))
     parser.add_argument("--rnnoise-ladspa", type=Path, help="librnnoise_ladspa.so (else a pass-through)")
+    parser.add_argument("--mute-cycles", type=int, default=8, help="mute/unmute cycles of the mute check")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     Worker.logs = args.output
@@ -641,6 +776,13 @@ def main():
             try:
                 pipewire.up()
                 check_output_switch(binary, pipewire, packets, args.output)
+            finally:
+                pipewire.close()
+        if only in (None, "mute"):
+            pipewire = PipeWire(args.pipewire, args.wireplumber, args.dbus_daemon, Path(temporary) / "mute")
+            try:
+                pipewire.up()
+                check_mute(binary, pipewire, packets, args.output, args.mute_cycles)
             finally:
                 pipewire.close()
         if only in (None, "sandbox"):

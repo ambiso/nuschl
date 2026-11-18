@@ -476,6 +476,8 @@ mod tests {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum LiveMediaRequest {
+    /// The microphone opens and closes in place; a mute is confirmed with
+    /// [`LiveMediaEvent::MicrophoneClosed`].
     SetState {
         epoch: u64,
         muted: bool,
@@ -593,6 +595,11 @@ pub enum LiveMediaEvent {
         underruns: u32,
         /// Nuschl's own playback buffer.
         playback_ms: u32,
+    },
+    /// The microphone is closed: every stream it had is gone, after the
+    /// `SetState` of this epoch muted it (or found it closed).
+    MicrophoneClosed {
+        epoch: u64,
     },
     /// Result of [`LiveMediaRequest::EchoTest`].
     EchoTest {

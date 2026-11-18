@@ -361,11 +361,14 @@ voice quality; the separate stereo music preset is still planned.
   settings; the server's menu), applied with the per-user volume to each packet.
 - **One capture, encoded once**, handed to every server you are unmuted on. The
   encoder takes the lowest bitrate and the highest measured loss among those servers.
-  The microphone still opens and closes with a new worker process (a native stream's
-  teardown can block); the worker is replaced when the microphone's state or its
-  speaking destinations change, discarding speech buffered for the previous
+  The microphone opens and closes inside the running worker, so playback goes on
+  across a mute. A mute takes effect at once: the packet epoch changes, so nothing
+  captured before it leaves, and the worker processes no more microphone audio. Its
+  streams close on their own thread (a native stream's teardown can block); a worker
+  that has not confirmed them closed within 100 ms is replaced, and its exit closes
+  them. A change of speaking destinations discards speech buffered for the previous
   listeners. Per-connection routing revisions reject packets queued before a
-  mute/unmute round trip, even while another server keeps speaking. Until a new one
+  mute/unmute round trip, even while another server keeps speaking. Until a worker
   has its devices open, every server's status says "Starting audio…". Changes settle
   for 30 ms first, so moving your voice (one server muted, another unmuted) is one
   change, and it sounds like what the microphone did, not like a mute and an unmute.
