@@ -89,8 +89,8 @@ python3 release/local-release.py prepare \
 
 The output directory must not already exist. Omit `--build` to use already-built
 local products and fail if any exact-tag product is absent. `--build` selects the
-actual tag's `windows`, `macos-app`, `default`, `server`, `web-relay` and `web-site`
-outputs sequentially. The guard stops only its own
+actual tag's `windows`, `windows-installer`, `macos-app`, `default`, `server`,
+`web-relay` and `web-site` outputs sequentially. The guard stops only its own
 build if `/tmp` free space or `MemAvailable` drops below 8 GiB. Client `TMPDIR`
 does not relocate daemon scratch; monitor/coordinate substantial builds.
 
@@ -98,7 +98,8 @@ Preparation records each actual `.drv`, output store path and NAR hash, with
 `local-nix` provenance. It does not invent a CI run ID. The helper copies all nine
 Windows and macOS programs, complete scoped notices, static web files and exact
 Linux Nix references; Linux is not a portable native tarball. Windows/Mac archives
-are canonical checked copies. Original notice bytes and the 256-file updater
+are canonical checked copies, and the Windows installer is the selected product's
+exact file. Original notice bytes and the 256-file updater
 limit remain enforced. Both entry points must exist in the static site.
 
 Preparation also generates the GitHub release body once, with `git-cliff` and the

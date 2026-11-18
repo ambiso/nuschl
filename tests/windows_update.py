@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: EUPL-1.2
 """In-place update of the Windows build, in the VM from windows_vm.py.
 
-    windows_update.py RESULT_WINDOWS --output DIR --secret-file FIXTURE_SECRET --public-file FIXTURE_PUBLIC --signer SIGNER
+    windows_update.py RESULT_WINDOWS --output DIR --secret-file FIXTURE_SECRET --public-file FIXTURE_PUBLIC --signer SIGNER [--installer SETUP_EXE]
 
 Installs RESULT_WINDOWS/bin/*.exe into a per-user folder in the guest. This
 MUST be a separately built fixture source tree embedding the provided temporary
@@ -11,6 +11,8 @@ trust override exists. Never use production private keys for this harness. Publi
 marker file), starts Nuschl with NUSCHL_UPDATE_URL pointing at it, clicks
 "Update and restart" and "Restart now", and checks that the files were swapped,
 the marker arrived, a new process runs and the old files are cleaned up.
+With --installer, the per-user installer built from the same fixture tree
+installs the folder (setup.exe /S /D=...), and the uninstaller stays in it.
 """
 import argparse
 import json
@@ -88,13 +90,48 @@ $fixtureJob = Start-Job -Name "nuschl-update-__RUN__" -ArgumentList $fixture,__P
   } finally { $listener.Stop() }
 }
 "FIXTURE_JOB_ID=$($fixtureJob.Id)"
-Start-Sleep -Seconds 2
-# Fail before starting Nuschl if the fixture did not bind or publish its files.
-$probe = [Net.HttpWebRequest]::Create('http://127.0.0.1:__PORT__/update.json')
-$probe.Proxy = $null
-$probe.Timeout = 5000
-$response = $probe.GetResponse()
-$response.Dispose()
+# Fail before starting Nuschl if the fixture did not bind or publish its files
+# within 30 seconds; the job's PowerShell takes a few seconds to start.
+foreach ($attempt in 1..30) {
+  try {
+    $probe = [Net.HttpWebRequest]::Create('http://127.0.0.1:__PORT__/update.json')
+    $probe.Proxy = $null
+    $probe.Timeout = 5000
+    $probe.GetResponse().Dispose()
+    break
+  } catch {
+    if ($attempt -eq 30) { throw }
+    Start-Sleep -Seconds 1
+  }
+}
+'''
+
+
+COPY = r'''
+New-Item -ItemType Directory -Force -Path $dir | Out-Null
+foreach ($f in __INITIAL_FILES__) {
+  $destination = Join-Path $dir $f.local
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
+  Get-NuschlTestFile -Name $f.remote -OutFile $destination
+}
+'''
+
+# Removes what the installer registered before the folder goes.
+UNINSTALL = r'''
+$uninstaller = Join-Path $env:LOCALAPPDATA 'Programs\NuschlUpdateTest\{run}\Uninstall.exe'
+if (Test-Path -LiteralPath $uninstaller) {{
+  Start-Process -FilePath $uninstaller -ArgumentList '/S'
+  $deadline = (Get-Date).AddSeconds(60)
+  while ((Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Nuschl') -and (Get-Date) -lt $deadline) {{ Start-Sleep 1 }}
+}}
+'''
+
+# The installer of the same fixture tree, silently into the test folder.
+SETUP = r'''
+if (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Nuschl') { throw 'Nuschl is already installed in this guest' }
+$setup = "$env:TEMP\nuschl-signed-update-fixture-__RUN__\__SETUP__"
+Get-NuschlTestFile -Name 'install-__RUN__-setup' -OutFile $setup
+if ((Start-Process -FilePath $setup -ArgumentList '/S', "/D=$dir" -PassThru -Wait).ExitCode -ne 0) { throw 'the installer failed' }
 '''
 
 
@@ -174,6 +211,7 @@ def main():
     parser.add_argument("--signer", required=True)
     parser.add_argument("--secret-file", type=Path, required=True, help="temporary fixture pair only")
     parser.add_argument("--public-file", type=Path, required=True, help="same fixture pair embedded when building the guest app")
+    parser.add_argument("--installer", type=Path, help="the .#windows-installer file of the same fixture tree")
     args = parser.parse_args()
     if "NUSCHL_WINDOWS_VM_DIR" not in os.environ:
         parser.error("explicit NUSCHL_WINDOWS_VM_DIR for the owned installed guest is required")
@@ -185,6 +223,7 @@ def main():
         try:
             cleanup = stop_owned(args.run)
             cleanup += f"Get-Job -Name 'nuschl-update-{args.run}' -ErrorAction SilentlyContinue | ForEach-Object {{ Stop-Job $_; Remove-Job $_ -Force }}\n"
+            cleanup += UNINSTALL.format(run=args.run)
             for relative in ("Programs/NuschlUpdateTest/", "NuschlUpdateProfiles/"):
                 cleanup += f"Remove-Item -LiteralPath (Join-Path $env:LOCALAPPDATA '{relative}{args.run}') -Recurse -Force -ErrorAction SilentlyContinue\n"
             cleanup += f"Remove-Item -LiteralPath (Join-Path $env:TEMP 'nuschl-signed-update-fixture-{args.run}') -Recurse -Force -ErrorAction SilentlyContinue\n"
@@ -237,16 +276,16 @@ def exercise_update(args):
         raise RuntimeError("fixture listener job identity absent")
     args.fixture_job = int(match[1])
     print(output, flush=True)
+    if args.installer:
+        vm("push", str(args.installer), f"install-{args.run}-setup")
+        install = SETUP.replace("__SETUP__", args.installer.name)
+    else:
+        install = COPY.replace("__INITIAL_FILES__", "@(" + ",".join("@{remote='" + remote + "';local='" + local + "'}" for remote, local in initial_files) + ")")
     print(guest(r'''
 $dir = "$env:LOCALAPPDATA\Programs\NuschlUpdateTest\__RUN__"
 $relativeProfile = 'profiles\profile µ'
 $profile = Join-Path $dir $relativeProfile
-New-Item -ItemType Directory -Force -Path $dir | Out-Null
-foreach ($f in __INITIAL_FILES__) {
-  $destination = Join-Path $dir $f.local
-  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
-  Get-NuschlTestFile -Name $f.remote -OutFile $destination
-}
+__INSTALL__
 $info = New-Object Diagnostics.ProcessStartInfo
 $info.FileName = "$dir\nuschl.exe"
 $info.Arguments = '--profile-dir "' + $relativeProfile + '"'
@@ -256,7 +295,7 @@ $info.CreateNoWindow = $true
 $info.EnvironmentVariables['NUSCHL_UPDATE_URL'] = "http://127.0.0.1:__PORT__/"
 $p = [Diagnostics.Process]::Start($info)
 "started $($p.Id)"
-'''.replace("__RUN__", args.run).replace("__PORT__", str(port)).replace("__INITIAL_FILES__", "@(" + ",".join("@{remote='" + remote + "';local='" + local + "'}" for remote, local in initial_files) + ")")), flush=True)
+'''.replace("__INSTALL__", install).replace("__RUN__", args.run).replace("__PORT__", str(port))), flush=True)
     time.sleep(8)
     # Focus only the window belonging to the unique owned install before the
     # existing fixture's display-level key/click operations.
@@ -285,6 +324,7 @@ $dir = "$env:LOCALAPPDATA\Programs\NuschlUpdateTest\__RUN__"
 "marker: " + (Test-Path "$dir\licenses\UPDATE-TEST")
 "old files left: " + (Test-Path "$dir\.nuschl-old")
 "staging left: " + (Test-Path "$dir\.nuschl-update")
+"uninstaller kept: " + (Test-Path "$dir\Uninstall.exe")
 "process: " + ($owned.ProcessId -join ",")
 $profile = Join-Path $dir 'profiles\profile µ'
 $pattern = '(?:^|\s)--profile-dir\s+"' + [Regex]::Escape($profile) + '"(?:\s|$)'
@@ -302,6 +342,7 @@ foreach ($expected in __EXPECTED_FILES__) {
     print(report, flush=True)
     assert "marker: True" in report, report
     assert "staging left: False" in report, report
+    assert not args.installer or "uninstaller kept: True" in report, report
     assert "old files left: False" in report, "the restarted process did not clean up the old files"
     after = report.split("process:")[1].splitlines()[0].strip()
     previous_pids = set(before.strip().split(",")) - {""}

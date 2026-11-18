@@ -71,8 +71,10 @@ bubblewrap (`bwrap`) for its sandbox.
 
 Windows releases use a portable zip, `nuschl-<version>-windows-x86_64.zip`, on the
 [Releases page](https://github.com/nuschl-eu/nuschl/releases). Unpack it into a folder of your own (not
-Program Files) and start `nuschl.exe`. There is no installer yet; Nuschl updates
-itself in that folder.
+Program Files) and start `nuschl.exe`. Releases after 0.2.0 also have an installer,
+`nuschl-<version>-windows-x86_64-setup.exe`: it needs no administrator rights and adds
+a Start menu entry and an uninstall entry. Both update themselves in place
+([details](docs/install.md#windows)).
 
 Releases are not code-signed for now, so on the first start Windows shows "Windows
 protected your PC". Choose **More info**, then **Run anyway**. Windows with Smart App

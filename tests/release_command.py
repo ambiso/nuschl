@@ -177,7 +177,7 @@ class ReleaseCommand(unittest.TestCase):
         self.assertEqual(stage.parent.stat().st_mode & 0o777, 0o700)
         self.assertEqual(self.pointer_path().stat().st_mode & 0o777, 0o600)
         self.assertNotIn('/tmp/', str(stage))
-        self.assertEqual(len(self.builds), 7)
+        self.assertEqual(len(self.builds), 8)
         self.assertIn('?rev=' + self.pointer()['commit'] + '#update-signer', self.builds[0][-1])
         self.assertFalse(self.remote_calls)
         old = self.pointer_path().read_bytes()

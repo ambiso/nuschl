@@ -191,6 +191,15 @@ Use `Get-NuschlTestFile` inside the guest; bare fixture URLs no longer work. Exi
 guests are refreshed without reinstalling; details and validation are in
 [windows-vm.md](../docs/windows-vm.md).
 
+`windows_installer.py SETUP_EXE RESULT_WINDOWS --output DIR` runs the per-user
+installer (`.#windows-installer`) in that guest: a silent install into
+`%LOCALAPPDATA%\Programs\Nuschl` with the zip's files, the uninstall entry, the
+`mumble://` and `nuschl://` handlers and the Start menu shortcut; Nuschl started from
+the shortcut and from a `mumble://` link; a silent uninstall that keeps settings; and
+an uninstall through the dialog with **Remove settings and history** ticked, which
+removes them. `windows_update.py --installer SETUP_EXE` installs its fixture with the
+installer of the same fixture tree and updates that folder in place.
+
 ### Windows worker sandbox
 
 `crates/sandbox-windows/tests/confinement.rs` checks every worker's AppContainer from

@@ -814,6 +814,10 @@
         packages.musicbot-web = musicbotWeb;
         packages.release-notices-musicbot = musicbotNotices.bundle;
         packages.windows = windowsPackage;
+        packages.windows-installer = import ./packaging/windows/package.nix {
+          inherit pkgs version;
+          windows = windowsPackage;
+        };
         packages.windows-update-ed25519 = windowsVerifiers.ed25519;
         packages.windows-update-mldsa44 = windowsVerifiers.mldsa44;
         packages.macos-x86_64-update-ed25519 = macVerifier "x86_64" "ed25519";
