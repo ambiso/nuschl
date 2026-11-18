@@ -218,13 +218,9 @@ class PipeWire:
         for name in ("pipewire-pulse", "wireplumber", "pipewire"):
             self.stop(name)
 
-    def record(self, seconds, path, target="speakers"):
+    def record(self, path, target="speakers"):
         """Record what reaches a sink (its monitor) as 16-bit mono WAV."""
-        recorder = subprocess.Popen([str(self.pipewire / "bin/pw-record"), "--target", target,
-                                     "-P", "{ stream.capture.sink = true }", "--format", "s16", "--rate", "48000",
-                                     "--channels", "1", str(path)], env=self.env, stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL, start_new_session=True)
-        return recorder
+        return Recorder(self, path, target)
 
     def close(self):
         self.down()
@@ -293,20 +289,59 @@ class Worker:
             self.process.wait(timeout=5)
 
 
+class Recorder:
+    """pw-record of a sink's monitor. It returns once audio is being written,
+    so nothing played after it is missed, however slow the host."""
+
+    # A WAV header; the file grows past it once samples arrive.
+    HEADER = 44
+
+    def __init__(self, pipewire, path, target):
+        self.path, self.log = path, path.with_suffix(".record.log")
+        self.process = subprocess.Popen(
+            [str(pipewire.pipewire / "bin/pw-record"), "--target", target, "-P", "{ stream.capture.sink = true }",
+             "--format", "s16", "--rate", "48000", "--channels", "1", str(path)],
+            env=pipewire.env, stdout=subprocess.DEVNULL, stderr=self.log.open("w"), start_new_session=True)
+        deadline = time.monotonic() + 30
+        first = None
+        while True:
+            size = path.stat().st_size if path.exists() else 0
+            if first is not None and size > first:
+                return
+            if size > self.HEADER:
+                first = size
+            if self.process.poll() is not None:
+                raise AssertionError(f"pw-record exited ({self.process.returncode}) before recording {path}: "
+                                     f"{self.log.read_text()[-2000:]}")
+            if time.monotonic() > deadline:
+                self.process.kill()
+                self.process.wait(timeout=5)
+                raise AssertionError(f"pw-record wrote no audio to {path} within 30 s: {self.log.read_text()[-2000:]}")
+            time.sleep(0.05)
+
+    def stop(self):
+        """End the recording and return its samples, once the file is complete."""
+        os.killpg(self.process.pid, signal.SIGINT)
+        try:
+            self.process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            os.killpg(self.process.pid, signal.SIGKILL)
+            self.process.wait(timeout=5)
+            raise AssertionError(f"pw-record did not finish {self.path} within 30 s: {self.log.read_text()[-2000:]}")
+        with wave.open(str(self.path)) as recording:
+            frames = recording.readframes(recording.getnframes())
+        return struct.unpack("<%dh" % (len(frames) // 2), frames)
+
+
 def play_and_measure(worker, pipewire, packets, path, target="speakers"):
-    recorder = pipewire.record(4, path, target)
-    time.sleep(0.6)
+    recorder = pipewire.record(path, target)
     start = time.monotonic()
     for index, opus in enumerate(packets):
         time.sleep(max(0, start + index * 0.02 - time.monotonic()))
         worker.send({"kind": "playback", "sender": 9, "sequence": index * 2, "opus": opus,
                      "end": index == len(packets) - 1, "volume": 1.0})
     time.sleep(0.6)
-    os.killpg(recorder.pid, signal.SIGINT)
-    recorder.wait(timeout=5)
-    with wave.open(str(path)) as recording:
-        frames = recording.readframes(recording.getnframes())
-    samples = struct.unpack("<%dh" % (len(frames) // 2), frames)
+    samples = recorder.stop()
     return math.sqrt(sum(s * s for s in samples) / max(len(samples), 1)) / 32768
 
 
@@ -546,7 +581,7 @@ def check_mute(binary, pipewire, packets, output, cycles):
                          "opus": packets[index % len(packets)], "end": False, "volume": 1.0})
             index += 1
     path = output / "mute-playback.wav"
-    recorder = pipewire.record(0, path)
+    recorder = pipewire.record(path)
     threading.Thread(target=play, daemon=True).start()
     time.sleep(1)
     gone, confirmed, late = [], [], []
@@ -580,15 +615,11 @@ def check_mute(binary, pipewire, packets, output, cycles):
         time.sleep(0.25)
     stop.set()
     time.sleep(0.3)
-    os.killpg(recorder.pid, signal.SIGINT)
-    recorder.wait(timeout=5)
+    samples = recorder.stop()
     statuses = [e for e in worker.events if e["kind"] == "status" and not e["ready"]]
     worker.stop()
     monitor.close()
     assert not statuses, f"the worker restarted its devices: {statuses}"
-    with wave.open(str(path)) as recording:
-        frames = recording.readframes(recording.getnframes())
-    samples = struct.unpack("<%dh" % (len(frames) // 2), frames)
     window = 480
     levels = [math.sqrt(sum(v * v for v in samples[i:i + window]) / window) / 32768
               for i in range(0, len(samples) - window, window)]
