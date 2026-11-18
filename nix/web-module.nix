@@ -67,6 +67,8 @@ let
     "style-src 'self'"
     "img-src 'self' data: blob:"
     "font-src 'self'"
+    # A call's silent media element, for the phone's media notification (docs/browser-audio.md).
+    "media-src blob:"
     "connect-src 'self' ${if https then "wss" else "ws"}://${cfg.hostName}"
     "worker-src 'self'"
     "manifest-src 'self'"

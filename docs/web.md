@@ -107,7 +107,8 @@ One nginx virtual host with `enableACME` and `forceSSL` (both on by default) ser
   `/run/nuschl-web-relay` that only nginx's group reaches.
 
 Every response carries a strict Content-Security-Policy (only this origin; the relay
-as the one connection; `wasm-unsafe-eval` for WebAssembly), `Referrer-Policy:
+as the one connection; `wasm-unsafe-eval` for WebAssembly; media only from `blob:`
+for a call's silent keep-alive), `Referrer-Policy:
 no-referrer`, `nosniff` and a Permissions-Policy allowing only the microphone. The
 relay runs as its own system user (static, so nginx can share the socket's group)
 under the server module's systemd hardening. `installUrl` sets where "Get Nuschl"

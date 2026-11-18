@@ -110,6 +110,62 @@ The modules operate with same-origin scripts/workers/connections and
 JavaScript `unsafe-eval`. Deployment must permit microphone access for the
 application origin; camera access is not needed for voice.
 
+## Screen off
+
+`CallSession` (`web/app/src/call-session.js`) holds a screen wake lock while the
+page is joining or in voice, so the screen stays on. The browser releases the
+lock when the page is hidden; the page requests it again each time it becomes
+visible and releases it on leave. When the browser refuses the lock (hidden page,
+low battery, policy), voice runs on without it. Chrome on Android has the Screen
+Wake Lock API since 84 and Safari on iOS since 16.4, in Home Screen web apps since
+18.4 ([MDN compatibility data](https://github.com/mdn/browser-compat-data/blob/main/api/WakeLock.json)).
+
+In voice the page is also a media session: the channel and server as metadata,
+`playing` as its state, `setMicrophoneActive` with the microphone's state, and
+action handlers where `togglemicrophone` and `pause` mute and `hangup` and `stop`
+stop audio. The handlers only mute; only the user's Unmute button opens the
+microphone. A silent ten-second WAV from a `blob:` URL loops in an `<audio>`
+element while in voice (CSP `media-src blob:`); the Join click starts it once so
+Safari lets it play later. Chrome shows a media notification only for a playing
+media element of more than five seconds ([web.dev](https://web.dev/articles/media-session)).
+Chromium's Android notification (`MediaSessionHelper`) needs a controllable
+session, and `MediaSessionImpl` on Android counts one as controllable with full
+audio focus, which such an element requests; an `AudioContext` joins the session
+as ambient sound and a `MediaStream` element as one-shot. The notification shows
+the channel as title and the server below it. Its buttons
+(`MediaNotificationController`) cover play or pause, seek, previous, next and
+stop, so on Android, pause mutes and stop stops audio.
+
+| | Chrome on Android | Safari on iOS |
+| --- | --- | --- |
+| Screen Wake Lock | 84 | 16.4; Home Screen web apps 18.4 |
+| Media Session metadata, `play`, `pause` | 57 | 15 |
+| `togglemicrophone`, `setMicrophoneActive` | 93 per MDN; buttons only in desktop Picture-in-Picture | 18.4 |
+| `hangup` | 93 per MDN; as above | absent (WebKit's `MediaSessionExtendedActionsEnabled` is off) |
+| Microphone with the page hidden | unverified | WebKit interrupts capture (`InterruptAudioOnPageVisibilityChangeEnabled` is on for iOS) |
+
+Versions come from MDN's compatibility data. Whether a phone keeps voice
+running with the screen off is the manual check in #447.
+
+When the browser freezes the page (`freeze`, Chrome 68) or hides it for good
+(`pagehide`), the call ends at once: the client plays the native client's
+Disconnected sound unless deafened and closes the SDK worker. Closing the worker
+sends the WebSocket close frame within milliseconds, and the relay then ends the
+Mumble connection, so the server sees the user leave. The page then shows "Voice
+ended in the background. Reload to reconnect." Chrome pauses a frozen page's Web
+Audio output (Blink `BaseAudioContext`), so the sound plays when the page
+resumes. Safari has no `freeze` event; there `pagehide` and the server's timeout
+end the call.
+
+`web/app/src/call-session.test.js` covers the lock and media session state;
+`tests/web_call_session.browser.mjs <repository> <chromium> <playwright-core/index.mjs>`
+runs `CallSession` in Chromium with the production CSP and the browser's Wake
+Lock, Media Session and media element, then a freeze: the call ends, a terminated
+worker's WebSocket sends its close frame, and an offline render of the
+disconnect sound is audible (silent while deafened).
+Headless Chromium keeps every page visible, so that test sets the page's
+visibility itself.
+
 ## Verification scope
 
 `node --test tests/web_audio.unit.mjs` exercises the production worklet queue,

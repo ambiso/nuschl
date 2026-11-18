@@ -301,6 +301,20 @@ export class BrowserAudio {
       clearTimeout(timeout);if(this.txJobs.get(job)===pending)this.txJobs.delete(job);
     });
   }
+  // The native Disconnected sound (apps/media-worker/src/sounds.rs): falling
+  // bell notes A5, F5 and D5 at about -25 LUFS. It runs on the context's clock,
+  // so a page frozen right after plays it when it resumes.
+  playDisconnected() {
+    const ctx=this.ctx;
+    if(!ctx||ctx.state==="closed"||!this.voice||this.voice.deafened||this.localDeaf)return;
+    for(const [onset,note,level] of [[0,880,1],[0.11,698.46,0.9],[0.22,587.33,0.85]])
+      for(const [ratio,amplitude,decay] of [[1,1,0.5],[2,0.28,0.3],[3,0.08,0.18]]) {
+        const start=ctx.currentTime+onset,tone=new OscillatorNode(ctx,{frequency:note*ratio}),gain=new GainNode(ctx,{gain:0});
+        gain.gain.setValueAtTime(0,start);gain.gain.linearRampToValueAtTime(0.08*level*amplitude,start+0.008);
+        gain.gain.setTargetAtTime(0,start+0.008,decay);gain.gain.setTargetAtTime(0,ctx.currentTime+0.6,0.03);
+        tone.connect(gain).connect(ctx.destination);tone.start(start);tone.stop(ctx.currentTime+0.75);
+      }
+  }
   sendTerminator(){this.sendPacket(this.sequence,new Uint8Array([0xf8,0xff,0xfe]),true);}
   fail(error) {
     this.stopCapture(true);this.workerReady=false;this.worker?.terminate();this.worker=null;
