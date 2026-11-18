@@ -197,7 +197,8 @@ installer (`.#windows-installer`) in that guest: a silent install into
 `mumble://` and `nuschl://` handlers and the Start menu shortcut; Nuschl started from
 the shortcut and from a `mumble://` link; a silent uninstall that keeps settings; and
 an uninstall through the dialog with **Remove settings and history** ticked, which
-removes them.
+removes them. `windows_update.py --installer SETUP_EXE` installs its fixture with the
+installer of the same fixture tree and updates that folder in place.
 
 ### Windows worker sandbox
 
