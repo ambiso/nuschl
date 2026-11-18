@@ -1,59 +1,94 @@
+# nuschl-bin for the AUR: a PKGBUILD that downloads the .deb and its OpenPGP
+# signature from dl.nuschl.eu, checks the sha256 and the signature by the
+# archive key, and unpacks the .deb's data.tar. With the .deb's signature it
+# also builds the package with makepkg and checks that makepkg refuses a
+# missing signature, a signature by another key and a modified .deb.
 {
   pkgs,
-  stage,
   version,
-  sourceDateEpoch,
-  sourceURL ? null,
-  packageRevision ? "1",
+  deb,
+  # The archive's armored public key.
+  key,
+  signature ? null,
+  maintainer,
+  # Arch package names of the libraries and tools the .deb's Depends names.
+  depends,
+  debianRevision ? "1",
+  pkgrel ? "1",
 }:
-assert builtins.match "[1-9][0-9]{0,5}" packageRevision != null;
-assert pkgs.lib.assertMsg (
-  builtins.match "[0-9][A-Za-z0-9._+]*" version != null
-) "Invalid Arch version";
-pkgs.runCommand "nuschl-arch-artifacts-${version}"
+let
+  name = "nuschl_${version}-${debianRevision}_amd64.deb";
+  pkgbuild = pkgs.writeText "PKGBUILD" ''
+    # Maintainer: ${maintainer}
+    pkgname=nuschl-bin
+    pkgver=${version}
+    pkgrel=${pkgrel}
+    _debrev=${debianRevision}
+    pkgdesc='Voice and text chat for Mumble servers'
+    arch=('x86_64')
+    url='https://github.com/nuschl-eu/nuschl'
+    license=('EUPL-1.2')
+    depends=(${pkgs.lib.concatMapStringsSep " " (name: "'${name}'") depends})
+    provides=('nuschl')
+    conflicts=('nuschl')
+    options=('!strip' '!debug')
+    source=("https://dl.nuschl.eu/apt/pool/main/n/nuschl/nuschl_''${pkgver}-''${_debrev}_amd64.deb"{,.sig})
+    sha256sums=('@sha256@' 'SKIP')
+    validpgpkeys=('@fingerprint@')
+
+    package() {
+      bsdtar -xf data.tar.xz -C "$pkgdir"
+    }
+  '';
+in
+pkgs.runCommand "nuschl-aur-${version}"
   {
     nativeBuildInputs = [
-      pkgs.python3
-      pkgs.gnutar
-      pkgs.xz
       pkgs.pacman
       pkgs.fakeroot
-      pkgs.file
+      pkgs.gnupg
       pkgs.libarchive
       pkgs.zstd
+      pkgs.xz
+      pkgs.file
     ];
   }
   ''
-    export SOURCE_DATE_EPOCH=${toString sourceDateEpoch}
-    mkdir -p "$out"
-    tar --sort=name --mtime=@${toString sourceDateEpoch} --owner=0 --group=0 --numeric-owner \
-      --mode='u=rwX,go=rX' -C ${stage} -c usr | xz --threads=2 > "$out/nuschl-${version}-x86_64.tar.xz"
-    python3 ${./generate.py} --archive "$out/nuschl-${version}-x86_64.tar.xz" \
-      --version ${pkgs.lib.escapeShellArg version} --package-revision ${pkgs.lib.escapeShellArg packageRevision} --output "$out/aur" \
-      ${pkgs.lib.optionalString (sourceURL != null) "--source-url ${pkgs.lib.escapeShellArg sourceURL}"}
-    cd "$out/aur"
-    makepkg --config ${pkgs.pacman}/etc/makepkg.conf --printsrcinfo > .SRCINFO
-    # Test the exact recipe/package() and checksum with makepkg itself. --nodeps
-    # is necessary in the Nix build environment, not an Arch install exemption.
+    export GNUPGHOME=$TMPDIR/gnupg
+    mkdir -m700 "$GNUPGHOME"
+    gpg --batch --import ${key}
+    fingerprint=$(gpg --with-colons --fingerprint | awk -F: '$1 == "fpr" { print $10; exit }')
+    mkdir -p "$out/aur/keys/pgp"
+    cp ${key} "$out/aur/keys/pgp/$fingerprint.asc"
+    sed -e "s/@sha256@/$(sha256sum < ${deb} | cut -d' ' -f1)/" -e "s/@fingerprint@/$fingerprint/" \
+      ${pkgbuild} > "$out/aur/PKGBUILD"
     cp ${pkgs.pacman}/etc/makepkg.conf makepkg.conf
     chmod u+w makepkg.conf
-    printf '%s\n' 'PKGEXT=.pkg.tar.zst' 'COMPRESSZST=(zstd -c -T2 -9 -)' >> makepkg.conf
-    export SRCDEST="$out" PKGDEST="$out/packages" BUILDDIR="$TMPDIR/makepkg"
-    export PACKAGER='Local package validation <nobody@example.invalid>'
-    mkdir -p "$PKGDEST" "$BUILDDIR"
-    mkdir -p "$TMPDIR/pacman-db" "$TMPDIR/pacman-cache"
-    printf '%s\n' '[options]' "DBPath = $TMPDIR/pacman-db" "CacheDir = $TMPDIR/pacman-cache" \
-      "LogFile = $TMPDIR/pacman.log" 'Architecture = auto' > pacman.conf
-    cat > pacman-metadata <<EOF
-    #!${pkgs.runtimeShell}
-    exec ${pkgs.pacman}/bin/pacman --config "$PWD/pacman.conf" "\$@"
-    EOF
-    chmod +x pacman-metadata
-    export PACMAN="$PWD/pacman-metadata"
-    makepkg --config "$PWD/makepkg.conf" --nodeps --nocheck
-    test -s "$out/packages/nuschl-bin-${version}-${packageRevision}-x86_64.pkg.tar.zst"
-    rm pacman.conf pacman-metadata
-    rm makepkg.conf
-    cd "$out"
-    sha256sum *.tar.xz packages/*.pkg.tar.zst > SHA256SUMS
+    echo "PKGEXT=.pkg.tar.zst" >> makepkg.conf
+    cd "$out/aur"
+    makepkg --config "$TMPDIR/makepkg.conf" --printsrcinfo > .SRCINFO
+    ${pkgs.lib.optionalString (signature != null) ''
+      export SRCDEST=$TMPDIR/sources BUILDDIR=$TMPDIR/build PKGDEST=$out PACKAGER=${pkgs.lib.escapeShellArg maintainer}
+      mkdir "$SRCDEST" "$BUILDDIR"
+      cp ${deb} "$SRCDEST/${name}"
+      cp ${signature} "$SRCDEST/${name}.sig"
+      verify() { makepkg --config "$TMPDIR/makepkg.conf" --verifysource --noconfirm; }
+      verify
+      # makepkg downloads a missing signature, and the build has no network.
+      rm "$SRCDEST/${name}.sig"
+      if verify; then echo "makepkg accepted a missing signature"; exit 1; fi
+      gpg --batch --passphrase "" --quick-generate-key 'Other <other@nuschl.invalid>' ed25519 sign never
+      gpg --batch --local-user Other --detach-sign --output "$SRCDEST/${name}.sig" "$SRCDEST/${name}"
+      if verify; then echo "makepkg accepted a signature by another key"; exit 1; fi
+      cp ${signature} "$SRCDEST/${name}.sig"
+      cp PKGBUILD "$TMPDIR/PKGBUILD"
+      chmod u+w "$SRCDEST/${name}"
+      echo modified >> "$SRCDEST/${name}"
+      sed -i "s/^sha256sums=('[0-9a-f]*'/sha256sums=('$(sha256sum < "$SRCDEST/${name}" | cut -d' ' -f1)'/" PKGBUILD
+      if verify; then echo "makepkg accepted a modified .deb"; exit 1; fi
+      cp "$TMPDIR/PKGBUILD" PKGBUILD
+      cp ${deb} "$SRCDEST/${name}"
+      # Nix is no Arch installation, so makepkg skips the dependency check here.
+      makepkg --config "$TMPDIR/makepkg.conf" --nodeps --noconfirm
+    ''}
   ''

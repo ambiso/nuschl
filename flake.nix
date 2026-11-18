@@ -680,7 +680,7 @@
         packages.default = package;
         packages.${distroOutput "linux-native-stage"} = linuxDistro.stage;
         packages.${distroOutput "deb"} = linuxDistro.deb;
-        packages.${distroOutput "arch-bin"} = linuxDistro.archBin;
+        packages.${if linuxDistro ? aur then distroOutput "aur" else null} = linuxDistro.aur;
         packages.${distroOutput "apt-repository"} = linuxDistro.aptRepository.command;
         legacyPackages.crate2nixInputs = crate2nixInputs;
         packages.default-crane = cranePackage;
@@ -759,6 +759,7 @@
             meta.description = "Nuschl in a terminal";
           };
         checks = {
+          ${distroOutput "distro-aur"} = linuxDistro.aurTest;
           build = package;
           server-build = serverPackage;
           rtc-build = rtcPackage;
