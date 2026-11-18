@@ -299,6 +299,16 @@ impl Peer {
         self.publish = Some((leg, Some(pending), mid, codec));
     }
 
+    /// Stops the published source with a new offer.
+    fn stop_publishing(&mut self) {
+        let (leg, pending, mid, _) = self.publish.as_mut().expect("publishing");
+        let mut api = leg.rtc.sdp_api();
+        api.stop_media(*mid);
+        let (offer, next) = api.apply().expect("offer");
+        *pending = Some(next);
+        self.send(json!({"type": "offer", "sdp": offer.to_sdp_string()}));
+    }
+
     fn step(&mut self) {
         while let Ok(message) = self.from_sfu.try_recv() {
             match message["type"].as_str() {
@@ -307,6 +317,7 @@ impl Peer {
                     let offer = SdpOffer::from_sdp_string(message["sdp"].as_str().expect("sdp"))
                         .expect("offer");
                     let answer = leg.rtc.sdp_api().accept_offer(offer).expect("accept");
+                    self.tracks.clear();
                     for track in message["tracks"].as_array().expect("tracks") {
                         let mid = track["mid"].as_str().expect("mid").to_owned();
                         let peer = track["peer"].as_u64().expect("peer");
@@ -504,6 +515,18 @@ async fn forwards_media_and_key_messages_unchanged() {
         HashSet::from([host.id]),
         "the host's track is a screen"
     );
+
+    // A publisher that stops its source leaves the subscribers' offers.
+    alice.stop_publishing();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while bob.tracks.values().any(|&peer| peer == alice.id) {
+        assert!(Instant::now() < deadline, "the stopped source stayed");
+        for peer in [&mut host, &mut alice, &mut bob] {
+            peer.step();
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(bob.tracks.values().any(|&peer| peer == host.id));
 
     // A peer without AV1 switches the call to VP9 and back when it leaves; a
     // peer without VP9 cannot join then.

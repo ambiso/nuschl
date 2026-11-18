@@ -26,7 +26,8 @@
 //!
 //! A publisher's `screens` names the mids of its offer that carry a shared
 //! screen, at most `max_sources_per_peer`; the SFU marks their tracks `screen`
-//! for the pages' large view.
+//! for the pages' large view. A later offer that stops or deactivates a mid
+//! ends that source: its tracks leave the subscribers' next offers.
 //!
 //! **One codec per call** (docs/video-plan.md §6). `codecs` lists the video
 //! codecs the peer decodes in WebRTC, `"av1"` and `"vp9"`, at least one. The
