@@ -207,6 +207,11 @@ channel:
 - Everyone gets a message with the link, so stock Mumble users can open the
   page and share their camera and screen as well.
 
+In a direct conversation with someone online, the same buttons start a call
+with that person alone: the link goes to them as a private message, and the
+card shows in their direct conversation with you. The call ends when either of
+you leaves the server.
+
 The creator's card also has **Rotate link**, which ends the call for everyone
 on the old link, opens the page again on a new one and posts it, and **End
 call**. The call also ends when you leave the channel or the server, after 4

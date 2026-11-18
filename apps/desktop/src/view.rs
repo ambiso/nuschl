@@ -2011,16 +2011,23 @@ fn conversation_header(
         )
         .when(
             connected
-                && in_this_voice
+                && match channel.target {
+                    TextTarget::Channel(_) => in_this_voice,
+                    TextTarget::Direct(session) => {
+                        server.users.contains_key(&session) && server.own_session != Some(session)
+                    }
+                    TextTarget::DirectConversation(_) => false,
+                }
                 && server.has_mumble_voice()
                 && !server.mls
-                && this.client.calls_in(index, channel.id).is_empty()
+                && this.client.calls_in(index, &channel.target).is_empty()
                 && this
                     .client
                     .own_call()
                     .is_none_or(|call| call.server != server.id),
             |controls| {
                 let start = |id, icon, label, cx: &mut Context<Desktop>| {
+                    let target = channel.target.clone();
                     icon_button(
                         id,
                         icon,
@@ -2028,7 +2035,7 @@ fn conversation_header(
                         TEXT_MUTED,
                         None,
                         move |this, _, cx| {
-                            this.start_call(index, cx);
+                            this.start_call(index, target.clone(), cx);
                             cx.notify();
                         },
                         cx,
@@ -3214,9 +3221,7 @@ fn conversation_notices(
             .into_any_element(),
         );
     }
-    if let TextTarget::Channel(channel) = target {
-        notices.extend(call_card(this, index, channel, cx));
-    }
+    notices.extend(call_card(this, index, &target, cx));
     if let Some(text) = &server.suggestion {
         let ptt = text.contains("push-to-talk");
         let actions = layout::actions()
@@ -3264,12 +3269,12 @@ fn conversation_notices(
     layout::notices(window, cx, notices)
 }
 
-/// The call in `channel`: ours, with the creator's actions, or the one
-/// someone announced, with Join.
+/// The call in conversation `target`: ours, with the creator's actions, or
+/// the one someone announced, with Join.
 fn call_card(
     this: &Desktop,
     index: usize,
-    channel: u32,
+    target: &TextTarget,
     cx: &mut Context<Desktop>,
 ) -> Option<AnyElement> {
     let server = &this.client.servers[index];
@@ -3285,7 +3290,7 @@ fn call_card(
     let own = this
         .client
         .own_call()
-        .filter(|call| call.server == server.id && call.channel == channel)
+        .filter(|call| call.server == server.id && call.target == *target)
         .and(this.call.as_ref());
     let (who, link, actions) = if let Some(call) = own {
         let actions = layout::actions()
@@ -3312,7 +3317,7 @@ fn call_card(
             ));
         ("You".to_owned(), call.link.host().to_owned(), actions)
     } else {
-        let call = *this.client.calls_in(index, channel).first()?;
+        let call = *this.client.calls_in(index, target).first()?;
         let link = crate::call::join_link(&call.link)?;
         let actions = layout::actions().child(join(link.url(), cx));
         let who = server.users.get(&call.sender).map(|user| user.name.clone());
