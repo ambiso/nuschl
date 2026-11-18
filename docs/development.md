@@ -133,9 +133,10 @@ Reviews check that a change is:
   per minute, packets sent a period or more after their deadline, and
   capture-to-send latency percentiles (the sounds check transmits continuously).
   media_live's jitter check adds silent 20 ms playback windows per minute.
-  Sandboxed workers do not receive that variable. The results (`one-core.json`, each
-  run's log) are printed beside the baseline. desktop_recovery's reconnect after
-  the server restart fails often on one core (#263).
+  Sandboxed workers do not receive that variable. The suite prints its results
+  and writes them to `one-core.json` beside each run's log. It reports them
+  without a recorded baseline: they depend on host contention. desktop_recovery's
+  reconnect after the server restart fails often on one core (#263).
 
 ## Packages and cross builds
 

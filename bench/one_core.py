@@ -6,7 +6,7 @@ seconds per second alive (bench/worker_cpu.py) and, from the media worker's
 `audio-stats` lines (apps/media-worker/src/stats.rs), capture gaps and playback
 underruns, late packets and capture-to-send latency percentiles (nearest rank
 over 1 ms bins: "p50 29" is 29-30 ms). Writes one-core.json and prints the
-numbers beside the baseline."""
+numbers, without a recorded baseline: they depend on host contention."""
 import datetime
 import json
 import re
@@ -70,7 +70,7 @@ def summarize(attempts):
     return result
 
 
-def run(machine, tests, runs, slice_, sampler, out_dir, baseline):
+def run(machine, tests, runs, slice_, sampler, out_dir):
     """The busy loop runs in the tested processes' slice, at the default CPU weight of its siblings."""
     machine.succeed(f"systemd-run --slice={slice_} --unit=busy-loop sh -c 'while :; do :; done'")
     results = {}
@@ -80,5 +80,4 @@ def run(machine, tests, runs, slice_, sampler, out_dir, baseline):
             (out_dir / f"{name}-{number}.log").write_text(attempt[4])
         results[name] = summarize(attempts)
         print(f"one-core {name}: {json.dumps(results[name])}")
-        print(f"  baseline: {json.dumps(baseline.get(name))}")
     (out_dir / "one-core.json").write_text(json.dumps(results, indent=2) + "\n")

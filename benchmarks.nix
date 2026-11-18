@@ -35,7 +35,6 @@ let
           skipTypeCheck = true;
           nodes.${node}.virtualisation.cores = lib.mkForce 1;
           testScript = lib.mkForce ''
-            import json
             import sys
             sys.path.insert(0, "${./bench}")
             import one_core
@@ -44,7 +43,7 @@ let
             ${setup}
             one_core.run(${node}, ${builtins.toJSON tests}, ${toString runs}, "${slice}",
                          "${python} ${./bench/worker_cpu.py} ${lib.concatStringsSep " " workers}",
-                         driver.out_dir, json.loads(open("${./bench/baseline.json}").read()).get("one_core", {}))
+                         driver.out_dir)
           '';
         }
       ];
