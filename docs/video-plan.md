@@ -249,7 +249,10 @@ Owner rule (2026-11-18):
 - Candidates travel to the peer sealed under the pairwise channel key.
 - Phase 1 relays every source through the SFU; X1 adds direct paths, starting
   with two-person calls.
-- Path switches keep the keys and run both paths for at most 2 s.
+- Path switches (Owner) are quick and keep the keys: the new path is set up
+  and ICE-connected in the background without media, media moves in one step
+  with a key frame on the new path, and the old path closes at once. Media
+  runs on one path at a time.
 
 ## 6. Capture, codecs and rendering
 
