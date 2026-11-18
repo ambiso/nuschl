@@ -28,6 +28,9 @@
 //! SFU → peer  codec {codec}
 //! ```
 //!
+//! A later publish offer that stops or deactivates a mid ends that source:
+//! its tracks leave the subscribers' next offers.
+//!
 //! **One codec per call** (docs/video-plan.md §6). `codecs` lists the video
 //! codecs the peer decodes in WebRTC, `"av1"` and `"vp9"`, at least one. The
 //! call codec is AV1 while every peer decodes it, otherwise VP9; a join that

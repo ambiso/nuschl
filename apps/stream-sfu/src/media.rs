@@ -797,6 +797,9 @@ impl Core {
             (Leg::Publish, Event::MediaAdded(added)) if added.direction.is_receiving() => {
                 self.add_source(id, added.mid, added.kind);
             }
+            (Leg::Publish, Event::MediaChanged(changed)) if !changed.direction.is_receiving() => {
+                self.remove_source(id, changed.mid);
+            }
             (Leg::Publish, Event::RtpPacket(packet)) => self.forward(id, packet, now),
             (Leg::Subscribe, Event::EgressBitrateEstimate(BweKind::Twcc { estimate, .. })) => {
                 if let Some(peer) = self.peers.get_mut(&id) {
@@ -853,6 +856,34 @@ impl Core {
         for other in others {
             if let Some(peer) = self.peers.get_mut(&other) {
                 peer.forwards.push(forward(id, mid, kind, label));
+                self.negotiate(other);
+            }
+        }
+    }
+
+    /// A publisher stopped a source: its forwards end on every subscribe connection.
+    fn remove_source(&mut self, id: PeerId, mid: Mid) {
+        let Some(peer) = self.peers.get_mut(&id) else {
+            return;
+        };
+        let count = peer.sources.len();
+        peer.sources.retain(|source| source.mid != mid);
+        if peer.sources.len() == count {
+            return;
+        }
+        let others: Vec<PeerId> = self.peers.keys().copied().filter(|p| *p != id).collect();
+        for other in others {
+            let peer = self.peers.get_mut(&other).expect("listed");
+            let mut stopped = false;
+            for forward in peer
+                .forwards
+                .iter_mut()
+                .filter(|f| f.from == id && f.source == mid)
+            {
+                forward.stopping = true;
+                stopped = true;
+            }
+            if stopped {
                 self.negotiate(other);
             }
         }
