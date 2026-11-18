@@ -2942,6 +2942,14 @@ impl RecentChanges {
         }
     }
 }
+/// Drop a storage worker that was killed; one that rejected a request keeps
+/// serving the next.
+fn retire(storage: &mut Option<Storage>) {
+    if storage.as_ref().is_some_and(Storage::failed) {
+        *storage = None;
+    }
+}
+
 async fn keep_change(
     storage: &mut Option<Storage>,
     recent: &mut RecentChanges,
@@ -2975,7 +2983,7 @@ async fn keep_change(
                 }
             };
             if result.is_err() {
-                storage.take();
+                retire(storage);
             }
         }
     }
@@ -3089,9 +3097,11 @@ async fn storage_loop(
                             break;
                         }
                         Err(error) => {
-                            storage.take();
-                            if attempt == 1 {
+                            retire(&mut storage);
+                            // A rejected append fails; only a crashed worker is replaced.
+                            if storage.is_some() || attempt == 1 {
                                 let _ = events.send(Event::HistoryError(error.to_string())).await;
+                                break;
                             }
                         }
                     }
@@ -3150,7 +3160,7 @@ async fn storage_loop(
                     None => Err(Error::Worker("Local history is unavailable.".into())),
                 };
                 if let Err(error) = result {
-                    storage.take();
+                    retire(&mut storage);
                     let _ = events.send(Event::HistoryError(error.to_string())).await;
                 }
             }
@@ -3174,7 +3184,7 @@ async fn storage_loop(
                     if let Some(worker) = &mut storage
                         && worker.set_seq(id, seq as i64).await.is_err()
                     {
-                        storage.take();
+                        retire(&mut storage);
                     }
                 }
                 // Acknowledged before it was kept (it is still rendering).
@@ -3226,7 +3236,7 @@ async fn storage_loop(
                     None => Err(Error::Worker("Local history is unavailable.".into())),
                 };
                 if result.is_err() {
-                    storage.take();
+                    retire(&mut storage);
                 }
                 let result = result.map_err(|error| error.to_string());
                 let _ = events.send(Event::SearchResults { request, result }).await;
@@ -3252,7 +3262,7 @@ async fn storage_loop(
                         let _ = pages.send((server, ticket, page, history)).await;
                     }
                     Err(error) => {
-                        storage.take();
+                        retire(&mut storage);
                         let _ = events.send(Event::HistoryError(error.to_string())).await;
                     }
                 }
