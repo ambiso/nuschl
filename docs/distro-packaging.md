@@ -6,9 +6,9 @@ that `.deb`. [install.md](install.md#debian-and-ubuntu) shows how users install 
 
 ## The package
 
-`packaging/linux/default.nix` builds both from a directory of the nine Linux
-executables. The stage puts them next to each other in `/usr/lib/nuschl/`, since
-helper discovery looks in the executable's directory:
+`packaging/linux/default.nix` builds both from the portable binaries below
+(`linux-portable`). The stage puts the nine programs next to each other in
+`/usr/lib/nuschl/`, since helper discovery looks in the executable's directory:
 
 ```
 nuschl                        nuschl-storage-worker
@@ -20,16 +20,16 @@ nuschl-media-worker
 
 `/usr/bin/nuschl` links to the executable. The stage adds the desktop entry,
 which registers `mumble://` and `nuschl://`, the hicolor icons, the AppStream
-file and the license notices in `/usr/share/licenses/nuschl/`. The programs use
-the distribution's glibc, Vulkan, X11, Wayland, PipeWire and ALSA libraries, and
-`bwrap` and `prlimit` for the worker sandbox (SECURITY.md). The package has no
+file and the license notices in `/usr/share/licenses/nuschl/`. The package has no
 maintainer scripts and changes no system policy. The in-app updater is off on
 Linux; APT and pacman update the package.
 
-The `.deb` build checks that every program uses the system loader, has no
-RUNPATH and no Nix store path, and sets `libc6 (>= …)` from the newest glibc
-symbol the programs use. The version is the workspace version with revision
-`1`; packages are published from release tags.
+`Depends` names glibc 2.17 (from the newest glibc symbol), the libraries the
+desktop and the media worker link or open (libxcb, libxkbcommon, Vulkan,
+PipeWire 0.3.53 with its modules, ALSA), bubblewrap 0.8 and util-linux for the
+sandbox, and the desktop and icon cache tools. Wayland and EGL are
+`Recommends`. `nuschl-bin` depends on the matching Arch packages. The version is
+the workspace version with revision `1`; packages are published from release tags.
 
 ## Portable binaries
 
@@ -74,7 +74,7 @@ The musl programs use musl's allocator. A chat workload of eight clients costs
 `nuschld` about 11% more user-space instructions than the glibc build with the
 same profile.
 
-Before distribution the notices also need musl's licence and those of zig's
+Before publication the notices also need musl's licence and those of zig's
 compiler-rt, libunwind and glibc startup objects.
 
 ## Tests
