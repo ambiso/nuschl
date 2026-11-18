@@ -697,6 +697,13 @@ impl WebClient {
         }
     }
 
+    /// Connect every saved server, as the desktop does on startup.
+    pub fn connect_saved(&mut self) {
+        for index in 0..self.client.servers.len() {
+            self.connect(index);
+        }
+    }
+
     pub fn disconnect(&mut self, index: usize) {
         self.shared.images.borrow_mut().invalidate();
         if index < self.client.servers.len() {
