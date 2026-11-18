@@ -239,14 +239,15 @@
           inherit pkgs;
           binaries = linuxPortable;
           projectRoot = ./.;
-          nativeNotices = releaseNotices.linux.bundle;
+          nativeNotices = releaseNotices.portable.bundle;
           desktopFiles = (import ./nix/desktop-files.nix { inherit pkgs; }).linux;
           appstreamXML = ./packaging/flatpak/org.nuschl.Nuschl.metainfo.xml;
         };
-        installNativeNotices = ''
+        installNotices = bundle: ''
           mkdir -p "$out/share/licenses/nuschl"
-          cp -R ${nativeNoticeBundle}/share/licenses/nuschl/. "$out/share/licenses/nuschl/"
+          cp -R ${bundle}/share/licenses/nuschl/. "$out/share/licenses/nuschl/"
         '';
+        installNativeNotices = installNotices nativeNoticeBundle;
         witnessPackage =
           pkgs.runCommand "nuschl-witness-${version}" { meta.mainProgram = "nuschl-witness"; }
             ''
@@ -304,7 +305,7 @@
               install -Dm644 ${./crates/protocol/proto/LICENSE.mumble} "$out/share/licenses/nuschl/Mumble-BSD"
               ${installNativeNotices}
             '';
-        licenseLayout = ''
+        licenseLayoutWith = notices: ''
           install -Dm644 ${./LICENSE} "$out/share/licenses/nuschl/EUPL-1.2"
           install -Dm644 ${./crates/protocol/proto/LICENSE.mumble} "$out/share/licenses/nuschl/Mumble-BSD"
           install -Dm644 ${./vendor/pulseaudio/LICENSE.md} "$out/share/licenses/nuschl/pulseaudio-MIT"
@@ -313,8 +314,9 @@
           install -Dm644 ${./vendor/ratatui-image/LICENSE-icy_sixel-MIT} "$out/share/licenses/nuschl/sixel-encoder-MIT"
           install -Dm644 ${./vendor/ratatui-image/NOTICE} "$out/share/licenses/nuschl/ratatui-image-NOTICE"
           install -Dm644 ${./crates/math/fonts/GUST-FONT-LICENSE.txt} "$out/share/licenses/nuschl/NewCMMath-GUST-Font-License"
-          ${installNativeNotices}
+          ${installNotices notices}
         '';
+        licenseLayout = licenseLayoutWith nativeNoticeBundle;
         # Licences, and on Linux the desktop binary under libexec (screen readers
         # announce the executable's name, not ".nuschl-wrapped") with wrappers.
         packageLayout =
@@ -800,7 +802,7 @@
             ln -s ../lib/nuschl/$program "$out/bin/$program"
           done
           cp -R --no-preserve=mode ${(import ./nix/desktop-files.nix { inherit pkgs; }).linux}/share "$out/"
-          ${licenseLayout}
+          ${licenseLayoutWith releaseNotices.portable.bundle}
         '';
         serverStatic = pkgs.runCommand "nuschld-static-${version}" { } ''
           install -Dm755 -t "$out/bin" ${portableHeadless}/bin/nuschld ${portableHeadless}/bin/nuschl-storage-worker
