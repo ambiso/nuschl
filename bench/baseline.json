@@ -1,0 +1,12 @@
+{
+  "measured": "claude/benchmarks on main 5a4a600f (opus-rs 1666bbc5)",
+  "instructions": {
+    "cpu": "AMD Ryzen 9 5900X 12-Core Processor",
+    "per_audio_second": {
+      "capture_chain": 202481953,
+      "opus_encode": 113501224,
+      "total": 315983177
+    },
+    "echo_reduction_db": 26.03
+  }
+}
