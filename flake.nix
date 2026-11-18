@@ -683,6 +683,8 @@
         packages.${if linuxDistro ? aur then distroOutput "aur" else null} = linuxDistro.aur;
         packages.${distroOutput "apt-repository"} = linuxDistro.aptRepository.command;
         legacyPackages.crate2nixInputs = crate2nixInputs;
+        # The clean-system package tests, including the Ubuntu AppArmor test.
+        legacyPackages.${distroOutput "distroTests"} = linuxDistro.tests;
         packages.default-crane = cranePackage;
         packages.emojiAssets = emojiAssets;
         packages.server = serverPackage;
@@ -759,6 +761,9 @@
             meta.description = "Nuschl in a terminal";
           };
         checks = {
+          ${distroOutput "distro-debian"} = linuxDistro.tests.debian;
+          ${distroOutput "distro-ubuntu"} = linuxDistro.tests.ubuntu;
+          ${distroOutput "distro-arch"} = linuxDistro.tests.arch;
           ${distroOutput "distro-aur"} = linuxDistro.aurTest;
           build = package;
           server-build = serverPackage;
