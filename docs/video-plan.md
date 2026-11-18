@@ -265,8 +265,16 @@ encoder offers them, spatial layers.
      a slot over; the trusted side checks slot and length against its own
      table, uploads the pixels and returns "slot k free". Ordering,
      backpressure and crash handling stay on the pipe, so a hostile worker
-     can at most produce wrong pixels. Mapping the `memfd` needs one narrow
-     SECURITY.md exception.
+     can at most produce wrong pixels.
+
+     Unsafe stays minimal (Owner): the only `unsafe` is one block in the
+     sandbox adapter that maps the `memfd` with `memmap2::MmapRaw` and views
+     it as `&[AtomicU8]`, with a `SAFETY:` comment and one narrow SECURITY.md
+     exception. Slot bookkeeping, length checks, `SCM_RIGHTS` fd passing
+     (`rustix` or `nix`, both in Cargo.lock) and dmabuf fds are safe Rust. The
+     worker may write the mapping at any time, and `AtomicU8` permits that:
+     the trusted side copies pixels out by atomic loads into an owned or GPU
+     staging buffer, and no `&[u8]` over the mapping exists.
   3. Hardware frames go zero-copy: VA-API exports decoded surfaces as dmabuf
      fds, passed over the Unix socket in the same ordered protocol and
      imported by the GPU; shared D3D11 textures on Windows and IOSurface on
@@ -420,7 +428,7 @@ Murmur 1.4 and 1.5 with a stock Mumble client, and relay-only by packet capture.
   video-worker role, as the fallback to hardware codecs (§6).
 - Frame transport: framed pipes first, then `memfd` slots for pixels with
   control on the pipe, and dmabuf (or the platform equivalent) for hardware
-  frames (§6).
+  frames (§6). The only `unsafe` is the one `memmap2` mapping of the `memfd`.
 - On Nuschl servers, later: the voice channel's WebRTC session is the call,
   and Start camera and Share screen add tracks to it (§3).
 - Camera quality and screen quality are user-selectable (§5).
