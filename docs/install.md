@@ -1,7 +1,8 @@
 # Installing and updating Nuschl
 
 The README has the short version. This page has the details: the Nix package and
-the Home Manager module, the Windows and macOS downloads, how releases are made and
+the Home Manager module, the Debian, Ubuntu and Arch packages, the Windows and
+macOS downloads, how releases are made and
 signed, and how Nuschl updates itself. No release has been published yet; the
 first publication still requires enrolled signing trust and complete notices ([How releases are made](#how-releases-are-made)).
 
@@ -92,9 +93,47 @@ An invalid `managed.json` is reported and ignored until it is fixed. The check
 `.#checks.x86_64-linux.vm-home-manager` boots a VM in which logging in starts
 Nuschl and managed settings show as set by the system configuration and stay so.
 
+## Debian and Ubuntu
+
+The APT repository at `https://dl.nuschl.eu/apt` has Nuschl for amd64 on Debian 13
+(trixie), Ubuntu 24.04 (noble) and newer releases. Its key signs only this
+repository:
+
+```sh
+sudo curl -fsSLo /usr/share/keyrings/nuschl-archive-keyring.gpg https://dl.nuschl.eu/apt/nuschl-archive-keyring.gpg
+gpg --show-keys /usr/share/keyrings/nuschl-archive-keyring.gpg
+sudo tee /etc/apt/sources.list.d/nuschl.sources <<'EOF'
+Types: deb
+URIs: https://dl.nuschl.eu/apt
+Suites: stable
+Components: main
+Signed-By: /usr/share/keyrings/nuschl-archive-keyring.gpg
+EOF
+sudo apt update && sudo apt install nuschl
+```
+
+Compare the fingerprint `gpg --show-keys` prints with the one in this section
+(published with the first release). The suites `trixie` and `noble` have the same
+contents as `stable`. On Ubuntu 23.10 and later, AppArmor's default restriction of
+unprivileged user namespaces stops the worker sandbox, and Nuschl refuses to start
+its workers; the fix is open in #148. APT updates Nuschl with the rest of the system. `sudo apt
+purge nuschl` removes the program; your settings and history stay in your home
+folder ([desktop.md](desktop.md#where-nuschl-keeps-its-files)).
+
+## Arch Linux
+
+The AUR package `nuschl-bin` installs the same `.deb` after checking its sha256
+and its signature by the repository key. Import the key from the package's
+`keys/pgp/` folder (AUR helpers offer to), then build it:
+
+```sh
+git clone https://aur.archlinux.org/nuschl-bin.git && cd nuschl-bin
+gpg --import keys/pgp/*.asc
+makepkg -si
+```
+
 ## Other Linux distributions
 
-There is no package outside Nix yet (no Flatpak, AppImage or distribution package).
 Building from source works with Cargo ([development.md](development.md)). At run time
 Nuschl needs a Vulkan driver, and `bwrap` (bubblewrap) and `prlimit` (util-linux) on
 the `PATH`: it refuses to start a worker it cannot sandbox.
