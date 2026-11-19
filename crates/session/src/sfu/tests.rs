@@ -424,8 +424,10 @@ async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
         assert!(
             decoded
                 .bgra
-                .chunks_exact(4)
-                .all(|px| px[0] < 45 && px[1] < 45 && px[2] > 200 && px[3] == 255)
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|&[b, g, r, a]| b < 45 && g < 45 && r > 200 && a == 255)
         );
     })
     .await
