@@ -303,6 +303,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "nuschl-rtc-worker" = rec {
+      packageId = "nuschl-rtc-worker";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "nuschl-rtc-worker";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "nuschl-sandbox" = rec {
       packageId = "nuschl-sandbox";
       build = internal.buildRustCrateWithFeatures {
@@ -25379,6 +25389,48 @@ rec {
           {
             name = "nuschl-rtc";
             packageId = "nuschl-rtc";
+          }
+        ];
+
+      };
+      "nuschl-rtc-worker" = rec {
+        crateName = "nuschl-rtc-worker";
+        version = "0.2.0";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "nuschl-rtc-worker";
+            path = "src/main.rs";
+            requiredFeatures = [ ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../apps/rtc-worker; };
+        dependencies = [
+          {
+            name = "nuschl-ipc";
+            packageId = "nuschl-ipc";
+            target = { target, features }: ("linux" == target."os" or null);
+          }
+          {
+            name = "nuschl-rtc";
+            packageId = "nuschl-rtc";
+            target = { target, features }: ("linux" == target."os" or null);
+          }
+          {
+            name = "nuschl-sframe";
+            packageId = "nuschl-sframe";
+            target = { target, features }: ("linux" == target."os" or null);
+          }
+        ];
+        devDependencies = [
+          {
+            name = "nuschl-testkit";
+            packageId = "nuschl-testkit";
+          }
+          {
+            name = "tokio";
+            packageId = "tokio";
+            features = [ "macros" "rt" "net" "time" ];
           }
         ];
 
