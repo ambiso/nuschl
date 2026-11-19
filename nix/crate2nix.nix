@@ -30,7 +30,15 @@ let
     nativeBuildInputs = pkgConfig ++ [ pkgs.rustPlatform.bindgenHook ];
     buildInputs = [ pkgs.pipewire ];
   };
+  videoCodec = _: {
+    CARGO_CFG_TARGET_ARCH = pkgs.stdenv.hostPlatform.parsed.cpu.name;
+    CARGO_CFG_TARGET_OS = pkgs.stdenv.hostPlatform.parsed.kernel.name;
+    CARGO_ENCODED_RUSTFLAGS = "";
+  };
   overrides = pkgs.defaultCrateOverrides // {
+    # These build scripts read Cargo's target environment directly.
+    av-scenechange = videoCodec;
+    rav1e = videoCodec;
     pipewire-sys = bindgen;
     libspa-sys = bindgen;
     # Their build scripts probe the PipeWire version with pkg-config.
@@ -73,17 +81,18 @@ let
     # harness records at test-compile time (CARGO_BIN_EXE_nuschl-cli); the
     # merged dev dependency nuschld marks that compilation, and the worker
     # joins its bin directory.
-    nuschl-cli = attrs:
+    nuschl-cli =
+      attrs:
       withLibraries attrs
-      // lib.optionalAttrs
-        (lib.any (d: lib.hasInfix "rust_nuschld" (d.name or (toString d)))
-          (attrs.dependencies or [ ]))
-        {
-          postInstall = (attrs.postInstall or "") + ''
-            cp ${project.workspaceMembers.nuschl-crypto-worker.build}/bin/nuschl-crypto-worker \
-              $out/bin/nuschl-crypto-worker
-          '';
-        };
+      //
+        lib.optionalAttrs
+          (lib.any (d: lib.hasInfix "rust_nuschld" (d.name or (toString d))) (attrs.dependencies or [ ]))
+          {
+            postInstall = (attrs.postInstall or "") + ''
+              cp ${project.workspaceMembers.nuschl-crypto-worker.build}/bin/nuschl-crypto-worker \
+                $out/bin/nuschl-crypto-worker
+            '';
+          };
   };
   project = import ./crate2nix/Cargo.nix {
     inherit pkgs;
