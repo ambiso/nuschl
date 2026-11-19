@@ -104,7 +104,7 @@ RTCPeerConnection.prototype.getStats = async function (...args) {
 """
 
 
-def chromium(*, script=None, devices=False):
+def chromium(*, script=None, devices=False, direct=False):
     """Headless Chromium; `script` runs before every page's own, `devices` gives it
     Chromium's fake camera and screen without permission prompts."""
     options = webdriver.ChromeOptions()
@@ -116,6 +116,9 @@ def chromium(*, script=None, devices=False):
     if devices:
         options.add_argument("--use-fake-device-for-media-stream")
         options.add_argument("--use-fake-ui-for-media-stream")
+    if direct:
+        # These two profiles exchange host IP candidates inside the isolated VM network.
+        options.add_argument("--disable-features=WebRtcHideLocalIpsWithMdns")
     driver = webdriver.Chrome(options=options, service=webdriver.ChromeService(shutil.which("chromedriver")))
     if script:
         driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": script})
@@ -229,12 +232,12 @@ try:
     drivers += [user, vp9, plain]
     publishers, pages = {}, {}
     for name, fragment in [("a", CREATOR), ("b", LINK), ("c", LINK)]:
-        driver = pages[name] = chromium(script=DIRECT_UPLOAD if name == "a" else None)
+        driver = pages[name] = chromium(script=DIRECT_UPLOAD if name == "a" else None, direct=name == "a")
         drivers.append(driver)
         driver.get(f"{ORIGIN}/call_publisher.html{fragment}")
         publishers[name] = wait(driver, "return window.peer && window.peer()", f"publisher {name} joined")
         if name == "a":
-            chrome, fox = chromium(script=RECORD_QUALITY), firefox()
+            chrome, fox = chromium(script=RECORD_QUALITY, direct=True), firefox()
             drivers += [chrome, fox]
             chrome.get(f"{ORIGIN}/call{LINK}")
             direct_video(driver, chrome, publishers[name])
