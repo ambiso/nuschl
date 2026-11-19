@@ -375,6 +375,7 @@ impl Platform for BrowserPlatform {
             pin: bookmark.certificate_sha256.clone(),
         })?));
         session.borrow_mut().set_self(true, deafened);
+        session.borrow_mut().rejoin(bookmark.last_channel);
         let socket = WebSocket::new_with_str(&shared.relay, tunnel::SUBPROTOCOL)
             .map_err(|_| "The relay's address is not valid.".to_string())?;
         socket.set_binary_type(BinaryType::Arraybuffer);
@@ -646,6 +647,7 @@ impl WebClient {
             }
             if bookmark.certificate_sha256 == saved.certificate_sha256 {
                 bookmark.cached_channels.clone_from(&saved.cached_channels);
+                bookmark.last_channel = saved.last_channel;
             }
             let stamp = self
                 .catalog
@@ -694,6 +696,13 @@ impl WebClient {
         self.shared.images.borrow_mut().invalidate();
         if index < self.client.servers.len() {
             self.client.connect(index, None, true);
+        }
+    }
+
+    /// Connect every saved server, as the desktop does on startup.
+    pub fn connect_saved(&mut self) {
+        for index in 0..self.client.servers.len() {
+            self.connect(index);
         }
     }
 
@@ -1344,6 +1353,7 @@ impl WebClient {
                 old.certificate_sha256,
             )?;
             bookmark.cached_channels = old.cached_channels.into_iter().take(10_000).collect();
+            bookmark.last_channel = old.last_channel;
             if self.client.server_index(&bookmark.id).is_none() {
                 let stamp = self.catalog.reserve(self.client.servers.len(), None)?;
                 let index = self.client.add_server(bookmark);

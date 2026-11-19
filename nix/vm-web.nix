@@ -2,8 +2,8 @@
 # share-link landing page and the app-link files, and the tunnel relay behind it.
 # A client without a browser logs in to a stock Murmur through the relay (TLS on
 # the client, as the web client will do in WebAssembly), the packaged web app in
-# headless Chromium joins voice by double-click, and what the relay must refuse
-# is refused. No ACME in the VM: plain HTTP.
+# headless Chromium joins voice by double-click and connects its saved servers on
+# load, and what the relay must refuse is refused. No ACME in the VM: plain HTTP.
 {
   pkgs,
   relay,
@@ -85,7 +85,7 @@ pkgs.testers.runNixOSTest {
     web.wait_for_unit("nginx.service")
     web.wait_for_open_port(80)
     murmur.wait_for_unit("murmur.service")
-    # Channels for the web app's double-click test, added to the database Murmur created.
+    # Channels for the web app's tests, added to the database Murmur created.
     murmur.wait_for_open_port(64738)
     murmur.succeed(
         "systemctl stop murmur",
@@ -129,6 +129,10 @@ pkgs.testers.runNixOSTest {
         time.sleep(5)
     # The packaged app: a mouse or pen double-click joins voice, touch opens chat.
     client.succeed("node ${../tests/web_channel_dblclick.browser.mjs} http://web/app/ murmur 64738")
+
+    # The packaged app connects saved servers on load and rejoins Lobby; the
+    # service on 64740 refuses.
+    client.succeed("node ${../tests/web_autoconnect.browser.mjs} http://web/app/ murmur 64738 64740")
 
     # The relay never logs payloads; its journal names no user.
     web.fail("journalctl -u nuschl-web-relay | grep -q relay-probe")

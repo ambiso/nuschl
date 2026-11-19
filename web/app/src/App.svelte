@@ -272,7 +272,8 @@
     ownedWorker.onmessageerror = () => {
       if (worker === ownedWorker) rpc.close("The browser worker sent an unreadable response. Reload to reconnect.");
     };
-    rpc.initialize(relay);
+    // Saved servers connect on load; a server link connects only its server.
+    rpc.initialize(relay, !link.host);
     return cleanup;
 
   });
