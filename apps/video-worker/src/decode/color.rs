@@ -66,7 +66,8 @@ fn write_pixels<const WIDE: bool>(
         } else {
             None
         };
-        for (column, pixel) in output_row.chunks_exact_mut(4).enumerate() {
+        let (pixels, _) = output_row.as_chunks_mut::<4>();
+        for (column, pixel) in pixels.iter_mut().enumerate() {
             let y = sample::<WIDE>(y, column);
             let neutral = if conversion.identity {
                 y
@@ -77,7 +78,7 @@ fn write_pixels<const WIDE: bool>(
                 let index = column >> shift_x;
                 [sample::<WIDE>(u, index), sample::<WIDE>(v, index)]
             });
-            pixel.copy_from_slice(&conversion.bgra(y, u, v));
+            *pixel = conversion.bgra(y, u, v);
         }
     }
     Ok(())
