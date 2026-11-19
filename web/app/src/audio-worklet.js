@@ -78,14 +78,16 @@ export class PcmMixer {
 
 // Explicit credits ensure the browser's MessagePort cannot build an unbounded
 // capture backlog while the codec worker is busy, suspended or terminated.
+// Six 20 ms frames (audio-protocol.js MAX_CAPTURE) cover a 120 ms stall.
+export const CAPTURE_CREDITS = 6;
 export class CaptureFrames {
   constructor(send) { this.send=send;this.buffer=new Float32Array(AUDIO_FRAME);this.configure("",false); }
   configure(epoch,enabled) {
     this.epoch=typeof epoch==="string"&&epoch.length<=200?epoch:"";
-    this.enabled=Boolean(enabled&&this.epoch);this.cursor=0;this.frame=0;this.credits=this.enabled?2:0;
+    this.enabled=Boolean(enabled&&this.epoch);this.cursor=0;this.frame=0;this.credits=this.enabled?CAPTURE_CREDITS:0;
     this.buffer.fill(0);
   }
-  credit(epoch) { if(epoch===this.epoch&&this.enabled)this.credits=Math.min(2,this.credits+1); }
+  credit(epoch) { if(epoch===this.epoch&&this.enabled)this.credits=Math.min(CAPTURE_CREDITS,this.credits+1); }
   append(input) {
     if(!this.enabled)return;
     for(let i=0;i<input.length;i++) {

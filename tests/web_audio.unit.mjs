@@ -1,20 +1,20 @@
 // SPDX-License-Identifier: EUPL-1.2
 import test from "node:test";
 import assert from "node:assert/strict";
-import {PcmMixer,CaptureFrames,AUDIO_FRAME,MAX_QUEUED_SAMPLES,MAX_SPEAKERS} from "../web/app/src/audio-worklet.js";
+import {PcmMixer,CaptureFrames,CAPTURE_CREDITS,AUDIO_FRAME,MAX_QUEUED_SAMPLES,MAX_SPEAKERS} from "../web/app/src/audio-worklet.js";
 import {BrowserAudio} from "../web/app/src/audio.js";
-import {context} from "../web/app/src/audio-protocol.js";
+import {context,MAX_CAPTURE} from "../web/app/src/audio-protocol.js";
 
 test("real worklet capture credits bound a stalled codec and reject stale acknowledgments",()=>{
   const frames=[];const capture=new CaptureFrames((epoch,samples)=>frames.push({epoch,samples}));
   capture.configure("voice:1",true);
   capture.append(new Float32Array(AUDIO_FRAME*100).fill(0.25));
-  assert.equal(frames.length,2);assert.equal(capture.cursor,0);
+  assert.equal(frames.length,CAPTURE_CREDITS);assert.equal(capture.cursor,0);
   assert.ok(frames.every(f=>f.samples.length===AUDIO_FRAME&&f.samples.every(v=>v===0.25)));
-  capture.credit("old");capture.append(new Float32Array(AUDIO_FRAME));assert.equal(frames.length,2);
-  capture.credit("voice:1");capture.append(new Float32Array(AUDIO_FRAME));assert.equal(frames.length,3);
+  capture.credit("old");capture.append(new Float32Array(AUDIO_FRAME));assert.equal(frames.length,CAPTURE_CREDITS);
+  capture.credit("voice:1");capture.append(new Float32Array(AUDIO_FRAME));assert.equal(frames.length,CAPTURE_CREDITS+1);
   capture.configure("voice:2",false);capture.credit("voice:1");capture.append(new Float32Array(AUDIO_FRAME));
-  assert.equal(frames.length,3);
+  assert.equal(frames.length,CAPTURE_CREDITS+1);
 });
 
 test("partial capture from before a mute or route change cannot enter the next frame",()=>{
@@ -65,14 +65,14 @@ test("valid long bookmark identities and exact u64 generations survive the audio
 
 test("old transport promises cannot consume or release the next connection's audio credits",async()=>{
   const completions=[];const audio=new BrowserAudio({onPacket:()=>new Promise(resolve=>completions.push(resolve))});
-  audio.syncVoice(voice("1"));audio.sendPacket(0n,new Uint8Array([0xf8,0xff,0xfe]),false);audio.sendPacket(2n,new Uint8Array([0xf8,0xff,0xfe]),false);
-  audio.sendPacket(4n,new Uint8Array([0xf8,0xff,0xfe]),false);assert.equal(completions.length,2);
-  audio.syncVoice(voice("2"));audio.sendPacket(0n,new Uint8Array([0xf8,0xff,0xfe]),false);
-  assert.equal(audio.txJobs.size,2);assert.equal(completions.length,2,"epoch change cannot acknowledge old SDK inbox work");
-  completions[0]();await turn();assert.equal(audio.txJobs.size,1);
-  audio.sendPacket(0n,new Uint8Array([0xf8,0xff,0xfe]),false);assert.equal(completions.length,3);assert.equal(audio.txJobs.size,2);
-  completions[1]();await turn();assert.equal(audio.txJobs.size,1);
-  completions[2]();await turn();assert.equal(audio.txJobs.size,0);await audio.dispose();
+  const send=sequence=>audio.sendPacket(sequence,new Uint8Array([0xf8,0xff,0xfe]),false);
+  audio.syncVoice(voice("1"));for(let index=0;index<=MAX_CAPTURE;index++)send(BigInt(2*index));
+  assert.equal(completions.length,MAX_CAPTURE);
+  audio.syncVoice(voice("2"));send(0n);
+  assert.equal(audio.txJobs.size,MAX_CAPTURE);assert.equal(completions.length,MAX_CAPTURE,"epoch change cannot acknowledge old SDK inbox work");
+  completions[0]();await turn();assert.equal(audio.txJobs.size,MAX_CAPTURE-1);
+  send(0n);assert.equal(completions.length,MAX_CAPTURE+1);assert.equal(audio.txJobs.size,MAX_CAPTURE);
+  for(const complete of completions.slice(1))complete();await turn();assert.equal(audio.txJobs.size,0);await audio.dispose();
 });
 
 test("a stalled transport closes capture instead of growing an unlimited RPC backlog",async()=>{
@@ -115,21 +115,41 @@ test("stalled encoding stays globally bounded across TX epochs; stale/unsolicite
   audio.worker={postMessage:message=>sent.push(message),terminate:()=>{}};
   audio.captureNode={port:{postMessage:message=>credits.push(message)},disconnect:()=>{}};
   const frame=()=>({kind:"capture",epoch:audio.epoch,frame:0,samples:new Float32Array(960)});
-  audio.captureRunning=true;audio.captureFrame(frame());audio.captureFrame(frame());
-  const original=sent.filter(m=>m.kind==="encode");assert.equal(original.length,2);
+  const fill=()=>{for(let index=0;index<MAX_CAPTURE;index++)audio.captureFrame(frame());};
+  audio.captureRunning=true;fill();
+  const original=sent.filter(m=>m.kind==="encode");assert.equal(original.length,MAX_CAPTURE);
   for(let index=0;index<20;index++) {
-    audio.resetMedia();audio.captureRunning=true;audio.captureFrame(frame());audio.captureFrame(frame());
+    audio.resetMedia();audio.captureRunning=true;fill();
   }
-  assert.equal(sent.filter(m=>m.kind==="encode").length,2);assert.equal(audio.encodeJobs.size,2);
+  assert.equal(sent.filter(m=>m.kind==="encode").length,MAX_CAPTURE);assert.equal(audio.encodeJobs.size,MAX_CAPTURE);
   const before=credits.length;
   audio.workerMessage({kind:"encoded",epoch:audio.epoch,job:original[0].job,opus:new Uint8Array([0xf8,0xff,0xfe])});
   audio.workerMessage({kind:"encoded",epoch:audio.epoch,job:99999,opus:new Uint8Array([0xf8,0xff,0xfe])});
-  assert.equal(credits.length,before);assert.equal(audio.encodeJobs.size,2);
+  assert.equal(credits.length,before);assert.equal(audio.encodeJobs.size,MAX_CAPTURE);
   audio.workerMessage({kind:"encoded",epoch:original[0].epoch,job:original[0].job,opus:new Uint8Array([0xf8,0xff,0xfe])});
   assert.equal(credits.length,before,"old ACK cannot replenish current Worklet credits");
-  assert.equal(audio.encodeJobs.size,1);audio.captureFrame(frame());assert.equal(audio.encodeJobs.size,2);
+  assert.equal(audio.encodeJobs.size,MAX_CAPTURE-1);audio.captureFrame(frame());assert.equal(audio.encodeJobs.size,MAX_CAPTURE);
   audio.workerMessage({kind:"encoded",epoch:original[0].epoch,job:original[0].job,opus:new Uint8Array([0xf8,0xff,0xfe])});
-  assert.equal(audio.encodeJobs.size,2);await audio.dispose();
+  assert.equal(audio.encodeJobs.size,MAX_CAPTURE);await audio.dispose();
+});
+
+test("a 90 ms codec worker stall loses no capture frame",async()=>{
+  const packets=[];const audio=new BrowserAudio({onPacket:packet=>{packets.push(packet.sequence);return Promise.resolve(true);}});
+  audio.syncVoice(voice());const queue=[];
+  audio.worker={postMessage:message=>{if(message.kind==="encode")queue.push(message);},terminate:()=>{}};
+  const capture=new CaptureFrames((epoch,samples,frame)=>audio.captureFrame({kind:"capture",epoch,samples,frame}));
+  audio.captureNode={port:{postMessage:message=>{if(message.kind==="credit")capture.credit(message.epoch);}},disconnect:()=>{}};
+  audio.captureRunning=true;capture.configure(audio.epoch,true);
+  // 10 ms per step; the worker answers nothing from 200 to 290 ms.
+  for(let step=0;step<100;step++) {
+    capture.append(new Float32Array(AUDIO_FRAME/2).fill(.1));
+    if(step<20||step>=29)while(queue.length) {
+      const job=queue.shift();
+      audio.workerMessage({kind:"encoded",epoch:job.epoch,job:job.job,opus:new Uint8Array([0xf8,0xff,0xfe])});
+    }
+    await turn();
+  }
+  assert.deepEqual(packets,Array.from({length:50},(_,index)=>String(2*index)));await audio.dispose();
 });
 
 test("mic mute and bitrate reset TX only, but deafen/route changes revoke RX",async()=>{

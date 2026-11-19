@@ -74,10 +74,10 @@ RX authorization has its own epoch. Microphone mute, bitrate changes and capture
 transport failure invalidate TX while preserving still-authorized listening and
 its decoded cache. Deafen, destination/connection changes, suspension and actual
 RX revocation flush playback. Revocation does not release unacknowledged inbox
-credits: packet jobs remain capped at 16 globally and codec capture jobs at two,
+credits: packet jobs remain capped at 16 globally and codec capture jobs at six,
 even during repeated epoch changes. Only exact matching ACKs or worker termination
 release those slots; old capture ACKs never grant current Worklet credits or
-transmit stale PCM. The two acknowledged SDK send slots and 250 ms deadline are
+transmit stale PCM. The six acknowledged SDK send slots and 250 ms deadline are
 separate; a stalled route closes capture without releasing its unacknowledged
 SDK slots. SDK command timeout permanently retires/terminates the owned lane
 before synthetic promise rejection; it does not recycle a live worker's inbox.

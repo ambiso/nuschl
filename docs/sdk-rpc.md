@@ -22,7 +22,7 @@ focusable read-only textarea for selection/copy. It is not automatically submitt
 or silently cleared. Drafts still live in page memory: copy an unsent draft before
 explicitly reloading; this change does not add draft persistence.
 
-BrowserAudio's two acknowledged SDK audio-send slots are global across TX epoch
+BrowserAudio's six acknowledged SDK audio-send slots are global across TX epoch
 changes. Its 250 ms capture deadline closes capture but does not acknowledge the
 SDK inbox or release those slots. A real result, or a synthetic rejection from
 an already permanently retired SDK owner, settles them. Old completion identity
@@ -53,7 +53,7 @@ from the void termination API.
 `node --test tests/sdk_rpc.unit.mjs tests/web_audio.unit.mjs tests/web_playout_clock.mjs`
 passes 36 checks. The six focused RPC checks independently exercise the 128-command
 cap, exact acknowledgments, termination-before-synthetic-settlement ordering,
-transient errors, failed termination, and two audio slots through 20 epochs plus
+transient errors, failed termination, and six audio slots through 20 epochs plus
 the 250 ms timeout.
 
 `tests/sdk_rpc.browser.mjs APP RELAY_URL MURMUR_PORT WRAPPER OUTPUT` runs an actual

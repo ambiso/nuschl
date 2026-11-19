@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-import {context,sameContext,sameDestination,validPacket,FRAME,RATE,MAX_PENDING,OUTPUT_CHANNELS} from "./audio-protocol.js";
+import {context,sameContext,sameDestination,validPacket,FRAME,RATE,MAX_PENDING,MAX_CAPTURE,OUTPUT_CHANNELS} from "./audio-protocol.js";
 
 // The UI owns this adapter; the codec worker receives only PCM/Opus, local
 // epochs and speaker numbers. No SDK client, identity, endpoint or key crosses.
@@ -239,7 +239,7 @@ export class BrowserAudio {
   captureFrame(data) {
     if(data?.kind!=="capture"||data.epoch!==this.epoch)return;
     const credit=()=>this.captureNode?.port.postMessage({kind:"credit",epoch:data.epoch});
-    if(!this.captureRunning||!this.voice?.can_transmit||this.encodeJobs.size>=2||this.txJobs.size>=2||
+    if(!this.captureRunning||!this.voice?.can_transmit||this.encodeJobs.size>=MAX_CAPTURE||this.txJobs.size>=MAX_CAPTURE||
         !(data.samples instanceof Float32Array)||data.samples.length!==FRAME||!Number.isSafeInteger(data.frame)||data.frame<0){credit();return;}
     const job=++this.job;
     this.encodeJobs.set(job,{epoch:this.epoch,context:{...this.voice},started:performance.now(),sequence:this.baseSequence+BigInt(data.frame)*2n});
@@ -280,7 +280,7 @@ export class BrowserAudio {
   }
 
   sendPacket(sequence,opus,end) {
-    if(!this.voice||this.txJobs.size>=2||sequence<0n||sequence>=(1n<<64n))return;
+    if(!this.voice||this.txJobs.size>=MAX_CAPTURE||sequence<0n||sequence>=(1n<<64n))return;
     this.sequence=sequence+2n;
     const job=++this.job,epoch=this.epoch;
     const pending={epoch};this.txJobs.set(job,pending);

@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 export const RATE=48000, FRAME=960, MAX_PACKET=1024, MAX_PCM=5760, OUTPUT_CHANNELS=2, MAX_STREAMS=16, MAX_PENDING=16;
+// Capture frames (20 ms each) in the codec worker or the SDK at once: a 120 ms
+// stall of either loses no frame. The Worklet's CAPTURE_CREDITS matches it.
+export const MAX_CAPTURE=6;
 const U64=(1n<<64n)-1n;
 export function decimal(value) {
   return typeof value==="string"&&/^(0|[1-9][0-9]{0,19})$/.test(value)&&BigInt(value)<=U64;
