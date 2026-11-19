@@ -1,5 +1,8 @@
 # Direct browser playout port contract (version 1)
 
+This records the original MessageChannel playout implementation. The current
+shared-memory transport is described in [Browser voice](browser-audio.md).
+
 This freezes the interface between the codec-worker/audio-controller owner and
 Worklet owner. It is an internal same-origin MessageChannel, with no session,
 network, storage or identity capabilities. Existing capture messages are unchanged.

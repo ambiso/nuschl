@@ -15,10 +15,13 @@ const csp="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 
 let origin;
 const routes={"/audio.js":join(source,"web/app/src/audio.js"),"/audio-protocol.js":join(source,"web/app/src/audio-protocol.js"),
   "/audio-codec.worker.js":join(source,"web/app/src/audio-codec.worker.js"),"/audio-worklet.js":join(source,"web/app/src/audio-worklet.js"),
-  "/fixture.mjs":join(source,"tests/web_audio.fixture.mjs"),"/sdk.worker.js":join(sdkSource,"sdk.worker.js"),"/history.js":join(sdkSource,"history.js"),"/server-order.js":join(sdkSource,"server-order.js")};
+  "/fixture.mjs":join(source,"tests/web_audio.fixture.mjs")};
+for(const name of ["sdk.worker.js","history.js","server-order.js","action-context.js","state-publication.js","content-publication.js"])
+  routes["/"+name]=join(sdkSource,name);
 const server=createServer(async(req,res)=>{
   const path=new URL(req.url,"http://127.0.0.1").pathname;
-  const headers={"Content-Security-Policy":csp,"Permissions-Policy":"microphone=(self), camera=()","X-Content-Type-Options":"nosniff"};
+  const headers={"Cross-Origin-Opener-Policy":"same-origin","Cross-Origin-Embedder-Policy":"require-corp",
+    "Content-Security-Policy":csp,"Permissions-Policy":"microphone=(self), camera=()","X-Content-Type-Options":"nosniff"};
   try {
     let body,type="text/javascript";
     if(path==="/"){body='<!doctype html><meta charset="utf-8"><title>Private browser audio proof</title><button id="join">Join voice</button><button id="microphone">Microphone</button><button id="mute">Mute microphone</button><button id="deafen">Deafen</button><div id="loaded"></div><output></output><script type="module" src="/fixture.mjs"></script>';type="text/html";}
@@ -51,6 +54,7 @@ async function open(username){
   page.on("console",msg=>{if(msg.type()==="error")browserErrors.push(msg.text());});
   await page.addInitScript(()=>document.addEventListener("securitypolicyviolation",event=>{globalThis.policyViolations??=[];globalThis.policyViolations.push(event.violatedDirective);}));
   await page.goto(`${origin}/?username=${username}`);
+  assert.equal(await page.evaluate(()=>crossOriginIsolated),true);
   await page.waitForFunction(()=>window.fixture?.snapshot().servers[0]?.status==="connected",null,{timeout:20000});
   return page;
 }

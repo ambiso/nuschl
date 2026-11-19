@@ -51,7 +51,7 @@ from the void termination API.
 ## Verification
 
 `node --test tests/sdk_rpc.unit.mjs tests/web_audio.unit.mjs tests/web_playout_clock.mjs`
-passes 36 checks. The six focused RPC checks independently exercise the 128-command
+exercises the audio and RPC bounds. The six focused RPC checks exercise the 128-command
 cap, exact acknowledgments, termination-before-synthetic-settlement ordering,
 transient errors, failed termination, and six audio slots through 20 epochs plus
 the 250 ms timeout.

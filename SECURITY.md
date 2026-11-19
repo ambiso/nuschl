@@ -28,7 +28,7 @@ change alone is no reason to change a cryptographic protocol.
 | GPUI and its graphics, font and window backends | Desktop rendering and accessibility | Desktop shell only; message content arrives from workers as typed documents and validated pixels. Its SVG renderer draws only compiled-in icons and pinned Twemoji ([emoji](docs/emoji.md)). |
 | Terminal graphics and clipboard adapters | Terminal output, OS clipboard | TUI only; draws bounded, validated worker bitmaps. Clipboard helpers get fixed argv, byte and time bounds, and run only on explicit local paste; SSH sessions skip the host clipboard. |
 | CPAL and OS audio bindings | PipeWire, PulseAudio, CoreAudio, WASAPI | Media worker; device handles and audio only. |
-| Codec and DSP crates with SIMD internals | Voice processing | Media worker, with its audio grants only. |
+| Codec and DSP crates with SIMD internals | Voice processing | Native media worker or browser codec Worker. The browser Worker shares fixed PCM rings with AudioWorklets. Capture and playback authorization stay in separate page-to-worklet buffers. |
 | SQLx SQLite | Local history, server state | Storage worker; one database directory, fixed parameterized statements, extension loading and deserialization disabled. `nuschld --import-murmur` reads the untrusted Murmur file read-only, immutable and query-only ([server](docs/server.md)). |
 | SQLx PostgreSQL | Server persistence | `nuschld`'s storage worker; it holds the database credential and one scoped connection. |
 | TLS provider (rustls with ring) | TLS and CPU acceleration | Session and server authority; bounded protocol framing. |

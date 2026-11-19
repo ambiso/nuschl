@@ -38,10 +38,10 @@ intent from effective restrictions while a server acknowledgment is pending.
 ## Media boundary and bounds
 
 `BrowserAudio` in `web/app/src/audio.js` handles permission, Web Audio nodes and
-routing gates. It exchanges only bounded PCM/Opus messages with a dedicated
-module Worker. TLS, certificate identity and session state stay in the SDK
-Worker; they are not passed to the codec Worker. A browser Worker is a separate
-JavaScript/WASM realm, not a guarantee of a separate operating-system process.
+routing gates. It exchanges bounded Opus jobs and control messages with the
+codec Worker. The Worker shares fixed PCM rings with the capture and playback
+AudioWorklets. TLS, certificate identity and session state stay in the SDK
+Worker. A browser Worker uses a separate JavaScript/WASM realm.
 
 `nuschl-audio-wasm` uses the memory-safe `opus-rs` implementation and forbids
 first-party unsafe Rust. Its WASM imports contain no network, storage or clock
@@ -50,63 +50,51 @@ the media protocol provides no caller-selected URL. AudioWorklet modules are
 also fixed same-origin resources. The browser's audio and permission services
 are system-service boundaries.
 
-Capture is mono 48 kHz in 20 ms frames. Encoded output is capped at 960 bytes.
-Receive validates full Opus framing before speaker/timing/gain admission and
-accepts 10–120 ms durations in 10 ms units. Sixteen independent stereo decoders
-share the reviewed Rust adaptive jitter policy with native playback: reordered
-packets retain their gain, exact missing spans use FEC or PLC, and end/reset
-semantics preserve cached PCM. Concealment retains the preceding known gain;
-the lost packet's original gain may be unavailable. Full packing validation is
-not entropy authentication.
+Capture is mono 48 kHz in 20 ms frames. The capture Worklet writes up to ten
+frames (200 ms); the codec Worker encodes frames from the newest 120 ms when
+they match the current TX epoch. Its six outstanding encoded replies and
+BrowserAudio's six acknowledged SDK sends each have an independent limit.
+The 250 ms SDK deadline closes capture and keeps outstanding slots until a
+genuine reply or lane retirement. See [the SDK protocol](sdk-rpc.md).
 
-A direct MessageChannel connects the codec Worker and AudioWorklet. Actual
-48 kHz rendered frames grant 480-frame/10 ms renders ahead of playback by a lead
-of 30 ms that grows to the slowest reply seen, within a fixed 5760-frame/120 ms
-transport ring. No decoded PCM traverses the UI thread and
-clocked playback adds no second per-speaker startup hold. Exact RX epoch, clock
-generation, request and absolute-frame matching rejects stale/duplicate replies.
-An elapsed deadline never releases an unacknowledged render: that block stays
-silent until its reply or worker failure. A fully late reply triggers a bounded FIFO
-rebuffer barrier instead of a catch-up decode burst. A 2.5 s rendered stall fails
-the lane; the worker's wall-clock heartbeat is checked separately.
+Receive validates full Opus framing before admitting speaker, timing and gain
+state. It accepts 10–120 ms packets in 10 ms units. Up to sixteen stereo
+decoders preserve reordered packet gains, conceal lost spans with FEC or PLC,
+and retain cached samples at talkspurt end. Each speaker has up to 64 encoded
+packets of 1024 bytes. Admission allows 2000 packets/s globally and 200 per
+speaker, with up to 16 new decoders per second.
 
-RX authorization has its own epoch. Microphone mute, bitrate changes and capture
-transport failure invalidate TX while preserving still-authorized listening and
-its decoded cache. Deafen, destination/connection changes, suspension and actual
-RX revocation flush playback. Revocation does not release unacknowledged inbox
-credits: packet jobs remain capped at 16 globally and codec capture jobs at six,
-even during repeated epoch changes. Only exact matching ACKs or worker termination
-release those slots; old capture ACKs never grant current Worklet credits or
-transmit stale PCM. The six acknowledged SDK send slots and 250 ms deadline are
-separate; a stalled route closes capture without releasing its unacknowledged
-SDK slots. SDK command timeout permanently retires/terminates the owned lane
-before synthetic promise rejection; it does not recycle a live worker's inbox.
-See `sdk-rpc.md` for the 128-command bound, unavailable UI and asynchronous native
-shutdown limits. Encoder results older than 120 ms are
-dropped. Decoder packets are queued, not eagerly decoded into timed UI replies.
+The playback Worklet consumes fixed 10 ms stereo blocks from a twelve-slot
+ring (120 ms). Every rendered 480 frames, the Worklet makes one coalesced wake
+available to the codec Worker over a direct MessageChannel. The Worker fills
+the ring ahead by the 95th percentile of recent one-second peak wake gaps,
+with a 30–120 ms bound and exponential forgetting. The lead grows at most
+10 ms per 400 ms, giving the network buffer time to adapt. The receiver adapts
+its network jitter target using packet arrivals recorded before the codec
+queue. Time stretching moves the receiver towards its target while preserving
+pitch. Wide f64 sums stay in the ring; playback clips after mixing and folds
+stereo before clipping for mono output. Each callback reads a bounded number
+of slots using preallocated PCM storage.
 
-Per speaker there are at most 64 encoded packets of 1024 bytes and 120 ms of
-cached decoded stereo; at most 16 speakers are live. Admission allows 2000
-packets/s globally and 200 per speaker, with at most 16 new decoder creations/s.
-Each render does at most one packet/FEC/PLC decode per speaker, so the worst
-legal burst is 16 × 120 ms decoded internally; the transferred batch is still
-only 10 ms per speaker (61,440 PCM bytes maximum). Worklet's persistent f64
-transport ring occupies 92,160 bytes; its retained legacy test mixer has another
-153,600-byte scratch allocation. Clipping occurs after wide mixing/folding.
-No PCM scratch is allocated during the render callback; validation/codec/message
-allocation stays outside it. These are not universal real-time CPU guarantees.
+Main owns independent, exact capture and playback epochs and grants each
+Worklet its own shared authorization word. The codec Worker sees the ring
+buffers and their tagged blocks. Mute, bitrate changes and capture failure
+invalidate TX while preserving authorized RX. Deafen, destination or
+connection changes, and suspension revoke RX. Worklets discard stale blocks
+and play silence when the ring is empty or playback is disabled. The sixteen
+global packet inbox slots stay occupied until matching acknowledgments or
+Worker termination, including across route transitions. The Worker heartbeat
+bounds failure detection.
 
-These are application bounds rather than a hard CPU or memory quota enforced
-by the browser. A malicious packet remains subject to the browser's own worker
-and WASM runtime isolation. No claim of native process sandbox equivalence is
-made.
+These application bounds complement the browser's own Worker and WASM
+isolation.
 
 ## Browser support and deployment
 
 The baseline uses Rust WASM Opus rather than requiring WebCodecs AudioEncoder.
 WebCodecs codec support is optional and older Safari/iOS releases cannot be
-assumed to provide Opus encoding. Voice still requires a secure context,
-AudioWorklet, a 48 kHz AudioContext, and user permission. AudioContext resume
+assumed to provide Opus encoding. Voice requires a secure, cross-origin isolated context,
+SharedArrayBuffer, AudioWorklet, a 48 kHz AudioContext and user permission. AudioContext resume
 and permission acquisition begin synchronously with the activating gesture to
 support autoplay policies; there is no physical Safari/iOS or Android audio
 hardware proof yet.
@@ -114,7 +102,8 @@ hardware proof yet.
 The modules operate with same-origin scripts/workers/connections and
 `script-src 'self' 'wasm-unsafe-eval'`, without inline scripts, blob workers or
 JavaScript `unsafe-eval`. Deployment must permit microphone access for the
-application origin; camera access is not needed for voice.
+application origin and serve the page with COOP `same-origin` and COEP
+`require-corp`. Voice uses microphone permission.
 
 ## Screen off
 
@@ -174,8 +163,12 @@ visibility itself.
 
 ## Verification scope
 
-`node --test tests/web_audio.unit.mjs` exercises the production worklet queue,
-mixing, policy epochs, stale results and acknowledged-send credit behavior.
+`node --test tests/web_audio.unit.mjs tests/web_playout_clock.mjs` exercises
+the production worklet rings, mixing, policy epochs, capture after a 90 ms
+Worker stall, the adaptive wake lead and acknowledged-send credit behavior.
+`vm-web` connects two packaged browser profiles through stock Murmur and
+measures playback from a synthetic microphone. It also verifies each
+capture-stop path and cross-origin isolation.
 The native codec tests check actual tone encode/decode with spectral validation
 and reject malformed/non-finite/unbounded inputs without poisoning subsequent
 codec use.
