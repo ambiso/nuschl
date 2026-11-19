@@ -12,8 +12,10 @@
 }:
 let
   inherit (pkgs) lib;
-  policy = lib.importJSON (projectRoot + "/release/notice-roots.json");
-  source = lib.cleanSourceWith {
+  noticeRoots = projectRoot + "/release/notice-roots.json";
+  policy = lib.importJSON noticeRoots;
+  licenses = projectRoot + "/release/licenses";
+  workspaceSource = lib.cleanSourceWith {
     src = projectRoot;
     filter =
       path: _:
@@ -25,9 +27,23 @@ let
         "node_modules"
       ]);
   };
+  # Cargo needs the workspace manifests and targets for metadata. Patched
+  # dependencies retain their real files for cargo-about's license discovery.
+  source = craneLib.mkDummySrc {
+    src = workspaceSource;
+    cleanCargoTomlFilter = _: true;
+    extraDummyScript = ''
+      rm -rf "$out/vendor"
+      cp -R ${projectRoot + "/vendor"} "$out/vendor"
+    '';
+  };
   emoji = import ./emoji.nix { inherit pkgs; };
   gcc = pkgs.pkgsCross.mingwW64.stdenv.cc.cc;
   mingw = pkgs.pkgsCross.mingwW64.windows.mingw_w64;
+  mumbleProtocol = lib.fileset.toSource {
+    root = projectRoot + "/crates/protocol/proto";
+    fileset = projectRoot + "/crates/protocol/proto/LICENSE.mumble";
+  };
   # Only the runtime license files, from the pinned source archives.
   fromArchive =
     name: archive: members:
@@ -43,9 +59,9 @@ let
       "${toolchain}/share/doc/rust/licenses"
     ];
     # Paths in the source tree.
-    mumble-protocol = [ "crates/protocol/proto/LICENSE.mumble" ];
-    newcm-math-font = [ "release/licenses/newcm" ];
-    syntect-default-assets = [ "release/licenses/syntect-assets" ];
+    mumble-protocol = [ "${mumbleProtocol}/LICENSE.mumble" ];
+    newcm-math-font = [ (licenses + "/newcm") ];
+    syntect-default-assets = [ (licenses + "/syntect-assets") ];
     emoji-assets = map (file: "${emoji}/${file}") [
       "ATTRIBUTION.txt"
       "LICENSE-GRAPHICS"
@@ -109,7 +125,7 @@ let
         version = "1";
         src = source;
         cargoArtifacts = null;
-        cargoVendorDir = craneLib.vendorCargoDeps { src = source; };
+        cargoVendorDir = craneLib.vendorCargoDeps { src = workspaceSource; };
         nativeBuildInputs = [
           pkgs.cargo-about
           pkgs.jq
@@ -120,11 +136,13 @@ let
         # about each clarified crate outside a root's graph, so its log is shown
         # only when it fails or a clarified file's checksum differs.
         buildPhaseCargoCommand = ''
-          substituteInPlace about.toml --replace-fail @licenses@ "$PWD/release/licenses"
+          substitute ${projectRoot + "/about.toml"} about.toml --replace-fail @licenses@ ${licenses}
           mkdir reports
           cargo metadata --frozen --no-deps --format-version 1 > metadata.json
           ${reports}
-          python3 release/notices.py --scope ${scope} --policy release/notice-roots.json${componentArgs} \
+          python3 ${
+            projectRoot + "/release/notices.py"
+          } --scope ${scope} --policy ${noticeRoots}${componentArgs} \
             --output "$out/share/licenses/nuschl" reports/*.json
           cp Cargo.lock "$out/share/licenses/nuschl/Cargo.lock"
         '';
