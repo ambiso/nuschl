@@ -938,6 +938,14 @@
               ${./crates/stream-wasm/test-vectors/transcript.txt}
             touch $out
           '';
+          # The audio worker's simd128 build encodes and decodes to the scalar build's bits.
+          audio-wasm-simd =
+            pkgs.runCommand "nuschl-audio-wasm-simd" { nativeBuildInputs = [ pkgs.nodejs ]; }
+              ''
+                node ${./tests/web_audio_simd.mjs} ${webClient.audioWasmScalar} ${webClient.audioWasm} \
+                  ${./tests/fixtures/music-290k.opus}
+                touch $out
+              '';
           # The call page's link handling, admission, worker messages and bounds.
           call-page = pkgs.runCommand "nuschl-call-page" { nativeBuildInputs = [ pkgs.nodejs ]; } ''
             cp -R ${./web/call} call
