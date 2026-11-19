@@ -22,7 +22,7 @@ async function fixture() {
   let time=0;
   const queue=[],messages=[];
   const context=vm.createContext({...protocol,...worklet,VoiceEncoder:codec.VoiceEncoder,VoicePlayout:codec.VoicePlayout,
-    Float32Array,Float64Array,Uint8Array,SharedArrayBuffer,performance:{now:()=>time},init:async()=>{},
+    Float32Array,Float64Array,Uint8Array,SharedArrayBuffer,performance:{timeOrigin:1000,now:()=>time},init:async()=>{},
     onmessage:null,postMessage:data=>messages.push(data),setInterval:()=>0,close:()=>{}});
   await new vm.Script(`(async()=>{${source}\n})()`).runInContext(context);
   const send=data=>context.onmessage({data});
@@ -95,6 +95,24 @@ test("encode replies retain one global credit budget across TX epochs",async()=>
     assert.equal(encoded().at(-1).epoch,2);
     assert.equal(encoded().at(-1).frame,1);
   } finally {f.close();}
+});
+
+test("capture waits for its configuration when the audio wake reaches the worker first",async()=>{
+  for(const epoch of [1,2]) {
+    const f=await fixture(),encoded=()=>f.messages.filter(m=>m.kind==="encoded");
+    try {
+      f.authorize();
+      Atomics.store(f.capture.policy,0,epoch);
+      f.capture.append(tone);
+      f.tick();
+      assert.equal(encoded().length,0);
+      f.authorize({epoch,capture:true});
+      f.tick();
+      assert.equal(encoded().length,1);
+      assert.equal(encoded()[0].frame,0);
+      assert.equal(encoded()[0].epoch,epoch);
+    } finally {f.close();}
+  }
 });
 
 test("valid playback crosses the actual codec and ring while mute leaves RX intact",async()=>{

@@ -52,7 +52,8 @@ are system-service boundaries.
 
 Capture is mono 48 kHz in 20 ms frames. The capture Worklet writes up to ten
 frames (200 ms); the codec Worker encodes frames from the newest 120 ms when
-they match the current TX epoch. Its six outstanding encoded replies and
+they match the current TX epoch. Encoded replies expire at capture-clock
+granularity (20 ms). Its six outstanding encoded replies and
 BrowserAudio's six acknowledged SDK sends each have an independent limit.
 The 250 ms SDK deadline closes capture and keeps outstanding slots until a
 genuine reply or lane retirement. See [the SDK protocol](sdk-rpc.md).

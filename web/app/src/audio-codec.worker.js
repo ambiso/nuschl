@@ -38,10 +38,12 @@ function pump() {
   if (!loaded || !playout) return;
   try {
     for (let left = Math.min(capture.size(), CAPTURE_BLOCKS); left > 0; left--) {
-      const at = capture.head(), frame = capture.tags[at * 2 + 1] >>> 0;
+      const at = capture.head(), tag = capture.tags[at * 2];
+      // A wake can arrive before the matching configuration on the page port.
+      if (tag > epoch || tag === epoch && !enabled) break;
+      const frame = capture.tags[at * 2 + 1] >>> 0;
       const age = (capture.ticks() - frame) >>> 0;
-      if (enabled && encodedOutstanding < MAX_CAPTURE && capture.tags[at * 2] === epoch &&
-          age > 0 && age <= MAX_CAPTURE) {
+      if (tag === epoch && encodedOutstanding < MAX_CAPTURE && age > 0 && age <= MAX_CAPTURE) {
         const pcm = capture.data.subarray(at * FRAME, (at + 1) * FRAME);
         const deadline = performance.timeOrigin + performance.now() + (MAX_CAPTURE - age + 1) * 20;
         const opus = encoder.encode(pcm);
