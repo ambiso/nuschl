@@ -497,10 +497,19 @@ def check_sandboxed_restarts(sandboxed, pipewire, packets, output):
 
 
 def defaults(pipewire):
-    """The session's default sink and source (PipeWire 'default' metadata)."""
-    result = subprocess.run([str(pipewire.pipewire / "bin/pw-metadata"), "-n", "default"], env=pipewire.env,
-                            capture_output=True, text=True, timeout=10)
-    return sorted(line.split("key:", 1)[1] for line in result.stdout.splitlines() if "key:'default.audio." in line)
+    """The session's default sink and source (PipeWire 'default' metadata).
+
+    WirePlumber owns that metadata, and on a loaded host its properties can
+    reach pw-metadata after pw-metadata's round trip ends: a reading without
+    them is repeated."""
+    for _ in range(10):
+        result = subprocess.run([str(pipewire.pipewire / "bin/pw-metadata"), "-n", "default"], env=pipewire.env,
+                                capture_output=True, text=True, timeout=10)
+        found = sorted(line.split("key:", 1)[1] for line in result.stdout.splitlines() if "key:'default.audio." in line)
+        if found:
+            return found
+        time.sleep(0.1)
+    return found
 
 
 def connect_device(pipewire, name, media_class, position):
@@ -732,11 +741,15 @@ def check_rnnoise_chain(binary, pipewire):
         time.sleep(0.2)
     before = defaults(pipewire)
     worker = Worker(binary, pipewire, muted=False)
+    # The graph about when the worker inspects it, for a failure report (#321).
+    started = links(pipewire)
     devices = worker.wait(lambda e: e["kind"] == "devices", "no device report")
     status = worker.ready()
     graph = links(pipewire)
     assert devices["input"] == "pipewire:effect_output.rnnoise", devices["input"]
-    assert devices["echo"] == {"kind": "upstream", "device": "Echo-Cancel Source"}, devices["echo"]
+    assert devices["echo"] == {"kind": "upstream", "device": "Echo-Cancel Source"}, \
+        f"{devices['echo']}; links at the worker's start {sorted(started, key=str)}, " \
+        f"once ready {sorted(graph, key=str)}"
     assert devices["noise"] == "Noise Canceling source", devices["noise"]
     assert devices["output"].endswith(":echo-cancel-sink"), \
         f"Nuschl's playback must reach the canceller's reference: {devices['output']}"
