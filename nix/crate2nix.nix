@@ -137,6 +137,21 @@ let
 in
 {
   inherit project;
+  # Export the cached test ELF for VM scenarios that have their own fixtures.
+  sessionTest =
+    (project.workspaceMembers.nuschl-session.build.override {
+      runTests = true;
+      testPreRun = ''
+        case "$f" in
+          */nuschl_session-*)
+            test ! -e "$out/bin/nuschl-session-test"
+            install -Dm0555 "$f" "$out/bin/nuschl-session-test"
+            ;;
+        esac
+        continue
+      '';
+    }).test.overrideAttrs
+      { dontFixup = true; };
   # The programs of the desktop package (with the terminal client), each
   # built from cached crates.
   binaries = map (member: project.workspaceMembers.${member}.build) [

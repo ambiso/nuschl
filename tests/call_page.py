@@ -28,6 +28,7 @@ import json
 import os
 import secrets
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -52,8 +53,12 @@ def b64(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
+def fragment(secret, publisher):
+    return f"#v=1&k={b64(secret)}&h={b64(hashlib.sha256(hkdf(publisher, 'host', 32)).digest())}"
+
+
 S, P = secrets.token_bytes(32), secrets.token_bytes(32)
-LINK = f"#v=1&k={b64(S)}&h={b64(hashlib.sha256(hkdf(P, 'host', 32)).digest())}"
+LINK = fragment(S, P)
 CREATOR = f"{LINK}&p={b64(P)}"
 
 
@@ -223,6 +228,40 @@ def direct_video(publisher, viewer, peer):
     showing(viewer, tracks, "SFU video decoded after fallback")
 
 
+def native_video(viewer):
+    secret, publisher = secrets.token_bytes(32), secrets.token_bytes(32)
+    posted = fragment(secret, publisher)
+    state = OUT / "native"
+    state.mkdir()
+    log = state / "publisher.log"
+    env = dict(os.environ, NUSCHL_NATIVE_CALL_HOST=ORIGIN.removeprefix("https://"),
+               NUSCHL_NATIVE_CALL_STATE=str(state),
+               NUSCHL_NATIVE_CALL_LINK=f"{ORIGIN}/call{posted}&p={b64(publisher)}")
+    with log.open("w") as output:
+        native = subprocess.Popen([os.environ["NUSCHL_NATIVE_CALL_TEST"], "--ignored", "--exact",
+                                   "sfu::tests::native_publisher_in_call_page_vm"], env=env,
+                                  stdout=output, stderr=subprocess.STDOUT)
+        peer_file = state / "peer"
+        try:
+            for _ in range(150):
+                if peer_file.exists() and (peer := peer_file.read_text()).isdigit():
+                    break
+                assert native.poll() is None, log.read_text()
+                time.sleep(0.1)
+            else:
+                raise AssertionError(f"native publisher did not join: {log.read_text()}")
+            viewer.get(f"{ORIGIN}/call{posted}")
+            showing(viewer, {(int(peer), True): ((255, 0, 0), True)}, "native screen decoded in Chromium")
+        finally:
+            (state / "stop").touch()
+            try:
+                assert native.wait(timeout=15) == 0, log.read_text()
+            except subprocess.TimeoutExpired:
+                native.kill()
+                native.wait()
+                raise
+
+
 drivers = []
 try:
     # Every browser starts first, before the media load: a busy host slows startup most.
@@ -230,6 +269,7 @@ try:
     vp9 = chromium(script=WITHOUT_AV1)
     plain = chromium(script="delete window.RTCRtpScriptTransform")
     drivers += [user, vp9, plain]
+    native_video(user)
     publishers, pages = {}, {}
     for name, fragment in [("a", CREATOR), ("b", LINK), ("c", LINK)]:
         driver = pages[name] = chromium(script=DIRECT_UPLOAD if name == "a" else None, direct=name == "a")

@@ -10,6 +10,8 @@
   turnModule,
   streamModule,
   callSite,
+  nativeCallTest,
+  nativeCallWorkers,
 }:
 let
   restSecret = "call-test-rest-secret";
@@ -112,11 +114,17 @@ pkgs.testers.runNixOSTest {
           pkgs.chromedriver
           pkgs.geckodriver
           (pkgs.python3.withPackages (p: [ p.selenium ]))
-        ];
+          pkgs.bubblewrap
+          pkgs.util-linux
+        ]
+        ++ nativeCallWorkers;
         environment.variables = {
           CHROMIUM = "${pkgs.chromium}/bin/chromium";
           FIREFOX = "${pkgs.firefox}/bin/firefox";
           SE_OFFLINE = "true";
+          NUSCHL_NATIVE_CALL_TEST = "${nativeCallTest}/bin/nuschl-session-test";
+          NUSCHL_NATIVE_CALL_CA = "${certificate}/cert.pem";
+          NUSCHL_NATIVE_CALL_PORT = toString mediaPort;
         };
         fonts.packages = [ pkgs.dejavu_fonts ];
         networking.hosts = {

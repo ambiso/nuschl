@@ -206,9 +206,104 @@ async fn two_native_peers_admit_and_signal_through_the_sfu_over_wss() {
     retired(&bob_worker, 3).await;
 }
 
+async fn red_keyframe(executable: std::path::PathBuf) -> Vec<u8> {
+    use nuschl_ipc::video::{Encoder, Output, Settings, Source};
+
+    let mut encoder = Encoder::start(
+        executable,
+        Settings {
+            source: Source::Screen,
+            width: 32,
+            height: 32,
+            fps: 30,
+            bitrate: 256_000,
+        },
+    )
+    .unwrap();
+    // Limited-range I420 for a uniform red picture.
+    let mut pixels = vec![81; 32 * 32];
+    pixels.extend([90; 16 * 16]);
+    pixels.extend([240; 16 * 16]);
+    let Output::Keyframe(red) = encoder.encode(pixels).await.unwrap() else {
+        panic!("expected a synthetic red keyframe");
+    };
+    encoder.stop().await.unwrap();
+    red
+}
+
+#[tokio::test]
+#[ignore = "runs under vm-call-page with the stream host and Chromium"]
+async fn native_publisher_in_call_page_vm() {
+    use rustls::pki_types::{CertificateDer, pem::PemObject as _};
+    use std::{env, fs, path::PathBuf};
+
+    nuschl_testkit::sandbox();
+    let host = env::var("NUSCHL_NATIVE_CALL_HOST").unwrap();
+    let link = env::var("NUSCHL_NATIVE_CALL_LINK").unwrap();
+    let sfu_port = env::var("NUSCHL_NATIVE_CALL_PORT")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let state = PathBuf::from(env::var_os("NUSCHL_NATIVE_CALL_STATE").unwrap());
+    let mut roots = rustls::RootCertStore::empty();
+    roots
+        .add(CertificateDer::from_pem_file(env::var_os("NUSCHL_NATIVE_CALL_CA").unwrap()).unwrap())
+        .unwrap();
+    let directory = nuschl_testkit::temp_dir();
+    let red = red_keyframe(fixture("nuschl-video-worker")).await;
+    let call = Connection::connect_with_roots(
+        CryptoHandle::start(
+            fixture("nuschl-crypto-worker"),
+            directory.path().join("keys"),
+        ),
+        Connect {
+            generation: 1,
+            host: &host,
+            link: &link,
+            codecs: &[Codec::Av1],
+            policy: PeerPolicy::default(),
+        },
+        roots,
+    )
+    .await
+    .unwrap();
+    let peer = call.welcome().peer;
+    let mut media = call
+        .into_media(MediaOptions {
+            executable: fixture("nuschl-rtc-worker"),
+            sfu_port,
+            publish: Some(Purpose::ScreenVideo),
+        })
+        .await
+        .unwrap();
+    fs::write(state.join("peer"), peer.to_string()).unwrap();
+
+    let mut tick = tokio::time::interval(Duration::from_millis(34));
+    let mut timestamp = 0;
+    let mut ready = false;
+    let stop = state.join("stop");
+    timeout(Duration::from_secs(180), async {
+        loop {
+            tokio::select! {
+                _ = tick.tick() => {
+                    if stop.exists() { break; }
+                    if ready {
+                        timestamp += 3_060;
+                        media.send_keyframe(timestamp, red.clone()).unwrap();
+                    }
+                }
+                event = media.next() => {
+                    ready |= matches!(event.expect("publisher remains live").expect("RTC publisher"), MediaEvent::SendReady);
+                }
+            }
+        }
+    }).await.expect("browser observed the native publisher");
+    media.stop().await.unwrap();
+}
+
 #[tokio::test]
 async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
-    use nuschl_ipc::video::{Decoder, Encoder, Output, Settings, Source};
+    use nuschl_ipc::video::{Decoder, Source};
 
     // Successive AV1 packets from a synthetic 32×32 color source.
     const KEY: [u8; 30] = [
@@ -300,24 +395,7 @@ async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
         .unwrap();
 
     let mut decoder = Decoder::start(video.clone(), Source::Screen).unwrap();
-    let mut encoder = Encoder::start(
-        video.clone(),
-        Settings {
-            source: Source::Screen,
-            width: 32,
-            height: 32,
-            fps: 30,
-            bitrate: 256_000,
-        },
-    )
-    .unwrap();
-    // Limited-range I420 for a uniform red picture.
-    let mut pixels = vec![81; 32 * 32];
-    pixels.extend([90; 16 * 16]);
-    pixels.extend([240; 16 * 16]);
-    let Output::Keyframe(red) = encoder.encode(pixels).await.unwrap() else {
-        panic!("expected a synthetic red keyframe");
-    };
+    let red = red_keyframe(video.clone()).await;
 
     timeout(HANDSHAKE, async {
         loop {
@@ -432,7 +510,6 @@ async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
     })
     .await
     .expect("a native frame crosses the owned SFU");
-    encoder.stop().await.unwrap();
     decoder.stop().await.unwrap();
     bob.stop().await.unwrap();
     alice.stop().await.unwrap();
