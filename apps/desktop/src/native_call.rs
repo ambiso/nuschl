@@ -16,7 +16,9 @@ use nuschl_client::native::sfu::{
     Connect, Connection, Media, MediaEvent, MediaOptions, Purpose, Quality, VideoKind,
 };
 use nuschl_core::{model::TextTarget, network::PeerPolicy};
-use nuschl_ipc::video::{Capture, DecodeError, DecodedFrame, Decoder, Source, portal};
+use nuschl_ipc::video::{
+    Capture, CaptureLimits, DecodeError, DecodedFrame, Decoder, Source, portal,
+};
 use nuschl_protocol::sfu::Codec;
 use nuschl_session::{config::ClientSettings, identity::CryptoHandle};
 use std::{
@@ -944,12 +946,16 @@ async fn publish_video(
         }
     }
     let source = grant.source();
-    let kind = video_kind(source);
-    let rate = match source {
-        Source::Screen => 4_000_000,
-        Source::Camera => 2_000_000,
+    let encoding = Encoding {
+        kind: video_kind(source),
+        remote: None,
+        bitrate_estimate: None,
+        software: false,
     };
-    let mut capture = grant.start(worker.clone(), rate).map_err(text)?;
+    let initial = encoding.limits(display.quality.borrow_and_update().quality);
+    let mut capture = grant
+        .start_with_limits(worker.clone(), initial)
+        .map_err(text)?;
     let updates = display.updates.clone();
     let mut preview =
         preview::Preview::start(worker, source, move |frame| updates.frame(frame, false))
@@ -962,7 +968,7 @@ async fn publish_video(
     let result = tokio::select! {
         biased;
         () = &mut cancel => Ok(()),
-        result = send_video(media, &mut capture, &mut preview, rate, kind, display) => result,
+        result = send_video(media, &mut capture, &mut preview, encoding, initial, display) => result,
     };
     let closed = capture.stop().await.map_err(text);
     if let Some(preview) = preview
@@ -1019,21 +1025,85 @@ async fn prepare(
     Ok((media, grant, video_worker))
 }
 
+struct Encoding {
+    kind: VideoKind,
+    remote: Option<CaptureLimits>,
+    bitrate_estimate: Option<u32>,
+    software: bool,
+}
+
+impl Encoding {
+    fn preferred(&self, quality: Quality) -> CaptureLimits {
+        let tier = self.kind.ladder()[self.kind.request(quality, u32::MAX)];
+        CaptureLimits {
+            height: tier.height,
+            fps: tier.fps.into(),
+            bitrate: video_rate(tier.ceiling),
+        }
+    }
+
+    fn limits(&self, quality: Quality) -> CaptureLimits {
+        let local = self.preferred(quality);
+        let initial_bitrate = match self.kind {
+            VideoKind::Camera => 2_000_000,
+            VideoKind::Screen => 4_000_000,
+        };
+        let remote = self.remote.unwrap_or(CaptureLimits {
+            bitrate: initial_bitrate,
+            ..local
+        });
+        CaptureLimits {
+            height: local.height.min(remote.height),
+            fps: local.fps.min(remote.fps),
+            bitrate: local
+                .bitrate
+                .min(remote.bitrate)
+                .min(self.bitrate_estimate.unwrap_or(u32::MAX)),
+        }
+    }
+
+    fn limit_note(&self, quality: Quality) -> Option<String> {
+        let local = self.preferred(quality);
+        let effective = self.limits(quality);
+        let mut notes = Vec::new();
+        if let Some(remote) = self.remote
+            && (remote.height < local.height
+                || remote.fps < local.fps
+                || remote.bitrate < local.bitrate)
+        {
+            notes.push(format!(
+                "The call server allows up to {}p{} at {:.1} Mb/s.",
+                remote.height,
+                remote.fps,
+                f64::from(remote.bitrate) / 1_000_000.,
+            ));
+        }
+        if let Some(estimate) = self.bitrate_estimate
+            && effective.bitrate == estimate
+            && estimate < local.bitrate
+        {
+            notes.push(format!(
+                "Estimated upload allows {:.1} Mb/s.",
+                f64::from(estimate) / 1_000_000.,
+            ));
+        }
+        if self.software && effective.fps > 15 {
+            notes.push("Software encoding runs at up to 15 fps.".into());
+        }
+        (!notes.is_empty()).then(|| notes.join(" "))
+    }
+}
+
 async fn send_video(
     media: &mut Media,
     capture: &mut Capture,
     preview: &mut Option<preview::Preview>,
-    initial: u32,
-    kind: VideoKind,
+    mut encoding: Encoding,
+    mut applied: CaptureLimits,
     display: &mut Display,
 ) -> Result<(), String> {
     let mut ready = false;
     let mut sent = false;
-    let mut cap = initial;
-    let mut capacity = u32::MAX;
-    let mut rate = initial;
-    let mut limit = None;
-    let mut software = false;
     let mut timer = tokio::time::interval(stats::INTERVAL);
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -1042,11 +1112,14 @@ async fn send_video(
                 Some(MediaEvent::SendReady) => { ready = true; capture.request_keyframe(); }
                 Some(MediaEvent::KeyframeRequired) => capture.request_keyframe(),
                 Some(MediaEvent::EncoderLimits { height, fps, bitrate }) => {
-                    cap = video_rate(bitrate);
-                    limit = Some((height, fps));
+                    encoding.remote = Some(CaptureLimits {
+                        height,
+                        fps: fps.into(),
+                        bitrate: video_rate(bitrate),
+                    });
                 }
                 Some(MediaEvent::BandwidthEstimate { bitrate }) => {
-                    capacity = video_rate(bitrate.saturating_mul(4) / 5);
+                    encoding.bitrate_estimate = Some(video_rate(bitrate.saturating_mul(4) / 5));
                 }
                 Some(MediaEvent::Direct { active }) => display.stats.direct(active),
                 Some(_) => {}
@@ -1054,7 +1127,7 @@ async fn send_video(
             },
             frame = capture.next() => {
                 let frame = frame.map_err(text)?;
-                software = !frame.hardware;
+                encoding.software = !frame.hardware;
                 display.stats.frame(frame.width, frame.height, None);
                 if let Some(preview) = preview {
                     preview.offer(&frame, display.updates.visible());
@@ -1066,7 +1139,7 @@ async fn send_video(
                         display.stats.encoded(bytes);
                         if !sent {
                             sent = true;
-                            display.updates.status(match kind {
+                            display.updates.status(match encoding.kind {
                                 VideoKind::Camera => "Your camera",
                                 VideoKind::Screen => "Your screen",
                             });
@@ -1077,24 +1150,16 @@ async fn send_video(
                 }
             }
             _ = timer.tick() => {
-                let limits = limit.map(|(height, fps)| {
-                    format!("Viewer demand allows up to {height}p{fps}.")
-                });
-                let limits = if software {
-                    Some(format!("{}Software encoding runs at up to 15 fps.", limits.map_or_else(String::new, |limits| format!("{limits} "))))
-                } else {
-                    limits
-                };
-                display.report(kind, limits);
+                let quality = display.quality.borrow().quality;
+                display.report(encoding.kind, encoding.limit_note(quality));
             }
             Ok(()) = display.quality.changed() => {}
         }
         let quality = display.quality.borrow_and_update().quality;
-        let ceiling = kind.ladder()[kind.request(quality, u32::MAX)].ceiling;
-        let next = cap.min(capacity).min(video_rate(ceiling));
-        if next != rate {
-            capture.set_bitrate(next).map_err(text)?;
-            rate = next;
+        let next = encoding.limits(quality);
+        if next != applied {
+            capture.set_limits(next).map_err(text)?;
+            applied = next;
         }
     }
 }
