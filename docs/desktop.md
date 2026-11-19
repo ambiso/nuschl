@@ -210,8 +210,8 @@ the share, and **Return to call** to cover it again.
 
 The native path supports one publisher and one viewer. Two native clients can
 switch to a direct connection when it can carry their video, and return to the
-call server when the connection drops or runs out of bandwidth. With **Relay
-only** enabled, native video uses the call host's UDP TURN relay. **Open in
+call server when the connection drops or runs out of bandwidth.
+**Relay-only connections** sends native video through the call host's UDP TURN relay. **Open in
 browser** opens the same room for group calls and other call modes. Voice stays
 in Mumble.
 

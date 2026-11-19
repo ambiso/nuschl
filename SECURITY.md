@@ -39,7 +39,7 @@ change alone is no reason to change a cryptographic protocol.
 | libcrux and OpenMLS (with `rayon`) | Post-quantum MLS and identity signatures (X-Wing HPKE, ML-KEM, ML-DSA); no memory-safe Rust alternative | In the crypto worker, `nuschld` and `nuschl-witness`; in the desktop, `nuschl-stream` only parses call links and derives `stream_id` and `host_key` (HKDF and SHA-256) from secrets the desktop made itself. OpenMLS only through `nuschl-e2ee` (crypto worker, `nuschld`): every key package, tree and message is checked structurally first, and calls run under `catch_unwind`. Patched versions: `vendor/*/NUSCHEL-PATCH.md`. |
 | libcrux's portable wasm32 build with hpke-rs (X-Wing, HKDF, HMAC, SHA-256, ChaCha20-Poly1305), and `aes-gcm` through `nuschl-sframe` | Call keys and SFrame in the browser (docs/video-plan.md §4) | `nuschl-stream-wasm` only, in the call page's dedicated stream worker, which is also its encoded-transform worker. It holds S, P and every key and draws randomness from `crypto.getRandomValues`; the page receives the SFU's join fields and proofs, key messages and frames, the last two encrypted. Requests are bounded before parsing (key messages 16 KiB, 256 peers); `nuschl-stream` and `nuschl-sframe` bound pending requests and replay windows. |
 | str0m and `aes-gcm` through `nuschl-sframe` | Native call transport and media encryption | Linux RTC worker. The worker gets current call media epochs, bounded encoded frames and brokered UDP datagrams. The crypto worker holds key exchange and pairwise signaling keys. |
-| `turn-client-proto` | UDP TURN allocation, permission and channel framing | Session broker only. The broker pins the configured TURN address and admits media only for the authenticated SFU endpoint. |
+| `turn-client-proto` | UDP STUN discovery and TURN allocation, permission and channel framing | Session broker only. The broker pins the configured TURN address and admits media only for the authenticated SFU endpoint. |
 | PipeWire video bindings | Capture Linux portal video buffers | Capture worker only, through an inherited file descriptor from a fresh screen or camera grant. The desktop and diagnostic probe share the ashpd grant adapter. |
 | Global shortcuts (`ashpd`; `global-hotkey` on Windows and macOS) | System-wide push-to-talk | Desktop shell; press and release of one bound key. |
 | Typst (`typst`, `typst-render`) | LaTeX formulas; Typst scripts can reach files, packages, plugins and data | Math worker only. It receives code-free math markup from Nuschl's converter, in a one-file world without packages, clock or system fonts, with a library stripped of file, plugin, image, data, `eval` and `std` access, under per-formula limits ([math](docs/math.md)). |
@@ -255,7 +255,9 @@ and `/sfu`, and caps frames and messages at 256 KiB. Key messages share the SFU'
 SFrame counter and replay state for the call and receives only the media epochs
 the call needs. The video workers encode and decode media. The SDK applies
 `PeerPolicy` before network setup, then validates the destination and length of
-datagrams it routes. A direct leg uses addresses from sealed pairwise signaling.
+datagrams it routes. Outside relay-only mode, a direct leg can probe the
+configured UDP TURN service for one reflexive address. It sends and receives
+media only on the host and reflexive addresses from sealed pairwise signaling.
 Relay-only mode uses the TURN address advertised by the authenticated WSS
 connection and permits only the SFU's IP and configured media port. It sends
 only the relay candidate. The RTC worker uses a private network namespace and

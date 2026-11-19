@@ -265,5 +265,7 @@ using a synthetic AV1 frame in the worker's confined role.
 The Linux SDK media API accepts independent video frames in a two-person
 publisher/viewer call. It uses the authenticated WSS peer address and the SFU's
 configured UDP port, which defaults to 3479. Two native peers can switch to
-a direct route while keeping the SFU leg available. In relay-only mode, the
-broker forwards the SFU leg through a configured UDP TURN allocation.
+a direct route while keeping the SFU leg available. The direct leg tests its
+host address and can obtain a reflexive address from the WSS-advertised UDP
+TURN service with STUN. In relay-only mode, the broker forwards the SFU leg
+through an allocation on that service.
