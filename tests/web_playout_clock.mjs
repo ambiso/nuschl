@@ -6,7 +6,7 @@ const classes=new Map();
 globalThis.sampleRate=48000;
 globalThis.AudioWorkletProcessor=class {constructor(){this.port={sent:[],postMessage(value){this.sent.push(value);}};}};
 globalThis.registerProcessor=(name,type)=>classes.set(name,type);
-const {PLAYOUT_FRAME,PLAYOUT_RESERVE,MAX_SPEAKERS}=await import("../web/app/src/audio-worklet.js");
+const {PLAYOUT_FRAME,PLAYOUT_LEAD,PLAYOUT_RESERVE,MAX_SPEAKERS}=await import("../web/app/src/audio-worklet.js");
 const Processor=classes.get("nuschl-playback");
 class Port {
   constructor(){this.sent=[];this.closed=false;}
@@ -29,7 +29,7 @@ function fixture({order="port-first",rate=48000,enabled=true}={}) {
     processor.process([],[[left,...(right?[right]:[])]]);return {left,right};
   };
   const requests=()=>port.sent.filter(value=>value.kind==="render");
-  const pending=()=>processor.clock.inFlight;
+  const pending=()=>processor.clock.pending[0]??null;
   const reply=(speakers=[],tuple=pending())=>port.deliver({...tuple,kind:"playout",speakers});
   return {processor,port,control,configure,current,ready,tick,requests,pending,reply};
 }
@@ -49,13 +49,12 @@ test("both port/configure orders require the exact ready barrier before initial 
   }
 });
 
-test("actual processor requests exact 10 ms cadence and keeps at most 20 ms reserve",()=>{
+test("actual processor requests exact 10 ms cadence within the lead",()=>{
   const f=fixture();f.ready();let cursor=0;
   for(let quantum=0;quantum<100;quantum++) {
     const before=f.requests().length,out=f.tick();
     if(f.requests().length>before) {
-      const request=f.pending();assert.ok(request.start_frame<=cursor+480);
-      assert.ok(request.start_frame+480-cursor<=960);f.reply([speaker()]);
+      const request=f.pending();assert.ok(request.start_frame+480-cursor<=PLAYOUT_LEAD);f.reply([speaker()]);
     }
     for(let i=0;i<128;i++)assert.equal(out.left[i],cursor+i<480?0:.25);
     cursor+=128;
@@ -69,18 +68,19 @@ test("actual processor requests exact 10 ms cadence and keeps at most 20 ms rese
   assert.equal(f.processor.clock.right.length,PLAYOUT_RESERVE);
 });
 
-test("deadline expiry never releases the single request or queues catch-up decode",()=>{
+test("deadline expiry never releases outstanding requests or queues catch-up decode",()=>{
   const f=fixture();f.ready();f.tick();const pending=f.pending();
   for(let i=0;i<2000;i++)silence(f.tick());
-  assert.equal(f.requests().length,1);assert.equal(f.pending(),pending);
+  const blocks=PLAYOUT_LEAD/PLAYOUT_FRAME;
+  assert.equal(f.requests().length,blocks);assert.equal(f.pending(),pending);
   const stalls=f.processor.port.sent.filter(value=>value.kind==="playout-stalled");
   assert.equal(stalls.length,1);assert.equal(stalls[0].request,pending.request);
   assert.equal(stalls[0].clock_generation,pending.clock_generation);
   assert.equal(stalls[0].start_frame,pending.start_frame);
   f.reply([speaker()]);assert.equal(f.pending(),null);
   assert.ok(f.current().clock_generation>pending.clock_generation);
-  for(let i=0;i<10;i++)silence(f.tick());assert.equal(f.requests().length,1);
-  f.ready();while(!f.pending())f.tick();assert.equal(f.requests().length,2);
+  for(let i=0;i<10;i++)silence(f.tick());assert.equal(f.requests().length,blocks);
+  f.ready();while(!f.pending())f.tick();assert.equal(f.requests().length,blocks+1);
   assert.ok(f.pending().start_frame>=f.processor.clock.cursor-128);
 });
 
@@ -100,10 +100,10 @@ test("future PCM stays on its absolute timestamp and partial late PCM is trimmed
 test("whole-late exact reply re-buffers with a generation barrier and no stale replay",()=>{
   const f=fixture();f.ready();f.tick();const old={...f.pending()};
   for(let i=0;i<7;i++)f.tick(); // cursor1024 > block end960
-  f.reply([speaker()],old);const generation=f.current().clock_generation;
-  assert.ok(generation>old.clock_generation);silence(f.tick());assert.equal(f.requests().length,1);
-  f.ready({...f.current(),clock_generation:old.clock_generation});f.tick();assert.equal(f.requests().length,1);
-  f.ready();while(!f.pending())silence(f.tick());assert.equal(f.requests().length,2);
+  f.reply([speaker()],old);const generation=f.current().clock_generation,sent=f.requests().length;
+  assert.ok(generation>old.clock_generation);silence(f.tick());assert.equal(f.requests().length,sent);
+  f.ready({...f.current(),clock_generation:old.clock_generation});f.tick();assert.equal(f.requests().length,sent);
+  f.ready();while(!f.pending())silence(f.tick());assert.equal(f.requests().length,sent+1);
   assert.ok(f.pending().start_frame>old.start_frame+480);
   f.reply([speaker(1,1)],old);assert.ok(f.pending());
 });
@@ -135,7 +135,8 @@ test("disabled ready flushes PCM and preserves an outstanding credit",()=>{
   const f=fixture();f.ready();f.tick();const pending=f.pending();
   f.ready({...f.current(),enabled:false});for(let i=0;i<20;i++)silence(f.tick());
   assert.equal(f.pending(),pending);assert.equal(f.requests().length,1);
-  f.ready();f.tick();assert.equal(f.requests().length,1);
+  f.ready();f.tick();assert.equal(f.requests().length,2);assert.equal(f.pending(),pending);
+  assert.equal(f.requests()[1].start_frame,pending.start_frame+480);
 });
 
 test("clocked production rejects main-port PCM and close/replacement flush their owned port",()=>{
@@ -198,6 +199,32 @@ test("variable output quanta allocate no PCM scratch and never burst after a lon
   try {for(const output of outputs)f.processor.process([],[output]);}
   finally {globalThis.Float32Array=F32;globalThis.Float64Array=F64;}
   assert.equal(f.processor.clock.left,left);assert.equal(f.processor.clock.right,right);
-  assert.equal(f.requests().length,2);assert.ok(f.pending());
-  assert.equal(left.byteLength+right.byteLength,15360);
+  assert.ok(f.requests().length<=1+PLAYOUT_LEAD/PLAYOUT_FRAME);assert.ok(f.pending());
+  assert.equal(left.byteLength+right.byteLength,PLAYOUT_RESERVE*16);
+});
+
+test("replies delayed by a busy phone's 40-90 ms stalls play without gaps once the lead covers one",()=>{
+  // A codec worker that answers in 1-3 ms, except for a stall every 7 s.
+  // Callbacks render 480 frames, and replies arrive between callbacks.
+  const f=fixture();f.ready();
+  let seed=1;const random=()=>(seed=seed*16807%2147483647)/2147483647;
+  const queue=[];let answered=0,now=0,silent=0,gaps=0,started=false,zeros=0;
+  for(let callback=0;callback<6000;callback++,now+=10) {
+    while(queue.length&&queue[0].at<=now)f.reply([speaker()],queue.shift().tuple);
+    for(let quantum=0;quantum<(callback%4===3?3:4)&&f.processor.clock.cursor<(callback+1)*480;quantum++) {
+      const out=f.tick();
+      for(const request of f.requests().slice(answered)) {
+        const stall=Math.floor(request.request*10/7000)>Math.floor((request.request-1)*10/7000);
+        const at=Math.max(queue.at(-1)?.at??0,now+1+2*random()+(stall?40+50*random():0));
+        queue.push({at,tuple:request});answered++;
+      }
+      for(const value of out.left) {
+        if(value===0){zeros++;if(started)silent++;}
+        else {if(started&&zeros)gaps++;started=true;zeros=0;}
+      }
+    }
+  }
+  assert.ok(started);
+  assert.ok(gaps<=1,`${gaps} gaps, ${silent} silent frames`);
+  assert.ok(f.processor.clock.lead<=PLAYOUT_RESERVE);
 });

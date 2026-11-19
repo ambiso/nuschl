@@ -60,12 +60,13 @@ the lost packet's original gain may be unavailable. Full packing validation is
 not entropy authentication.
 
 A direct MessageChannel connects the codec Worker and AudioWorklet. Actual
-48 kHz rendered frames grant one 480-frame/10 ms render at a time, with a fixed
-960-frame/20 ms transport reserve. No decoded PCM traverses the UI thread and
+48 kHz rendered frames grant 480-frame/10 ms renders ahead of playback by a lead
+of 30 ms that grows to the slowest reply seen, within a fixed 5760-frame/120 ms
+transport ring. No decoded PCM traverses the UI thread and
 clocked playback adds no second per-speaker startup hold. Exact RX epoch, clock
 generation, request and absolute-frame matching rejects stale/duplicate replies.
-An elapsed deadline never releases an unacknowledged render: output stays silent
-until its reply or worker failure. A fully late reply triggers a bounded FIFO
+An elapsed deadline never releases an unacknowledged render: that block stays
+silent until its reply or worker failure. A fully late reply triggers a bounded FIFO
 rebuffer barrier instead of a catch-up decode burst. A 2.5 s rendered stall fails
 the lane; the worker's wall-clock heartbeat is checked separately.
 
@@ -90,7 +91,7 @@ packets/s globally and 200 per speaker, with at most 16 new decoder creations/s.
 Each render does at most one packet/FEC/PLC decode per speaker, so the worst
 legal burst is 16 × 120 ms decoded internally; the transferred batch is still
 only 10 ms per speaker (61,440 PCM bytes maximum). Worklet's persistent f64
-transport ring occupies 15,360 bytes; its retained legacy test mixer has another
+transport ring occupies 92,160 bytes; its retained legacy test mixer has another
 153,600-byte scratch allocation. Clipping occurs after wide mixing/folding.
 No PCM scratch is allocated during the render callback; validation/codec/message
 allocation stays outside it. These are not universal real-time CPU guarantees.
@@ -279,9 +280,9 @@ Across 240 renders per duration, costs were:
 | 120 ms | 25 | 4.55 ms | 4.57 ms | 0 / 0 |
 
 A separate cold simultaneous 16 × 120 ms tone decode took 5.44 ms. This compares
-bounded work with the 10 ms cadence/20 ms reserve; it is not a physical-device,
+bounded work with the 10 ms cadence/30 ms initial lead; it is not a physical-device,
 adversarial-entropy, or browser scheduling guarantee. Independent clock tests
-also deliberately expire deadlines: they remain silent with one request pending,
+also deliberately expire deadlines: they remain silent with their requests pending,
 trim partial lateness, and require the ready barrier after fully late replies.
 
 The updated confined Chromium 156 controller proof uses the actual packaged

@@ -4,14 +4,14 @@
 import init,{VoiceEncoder,VoicePlayout} from "./audio-codec/nuschl_audio_wasm.js";
 import {FRAME,MAX_PACKET,MAX_STREAMS,decimal} from "./audio-protocol.js";
 let encoder=null,epoch="",enabled=false,receiveEpoch="",playback=false,loaded=false;
-let pendingConfigure=null,port=null,wanted=null,lastRequest=0,lastStart=null,lastDemand=null;
+let pendingConfigure=null,port=null,wanted=null,lastRequest=0,lastStart=null;
 const speakers=new Map();
 let burst=0,created=0,windowStart=performance.now();
 const validEpoch=value=>typeof value==="string"&&value.length>0&&value.length<=200;
 const positive=value=>Number.isSafeInteger(value)&&value>0;
 function freeSpeakers() {
   for(const state of speakers.values())state.receiver.free();
-  speakers.clear();lastDemand=null;
+  speakers.clear();
 }
 function expire(now) {
   for(const [speaker,state] of speakers)if(now-state.last>2000){state.receiver.free();speakers.delete(speaker);}
@@ -57,11 +57,9 @@ function direct(data) {
       lastStart!==null&&data.start_frame!==lastStart+480)return;
   lastRequest=data.request;lastStart=data.start_frame;
   try {
-    const now=performance.now();
-    // Audio clock is authoritative. After a worker scheduling gap, discard
-    // old decode/packet caches; never run a wall-clock catch-up burst.
-    if(lastDemand!==null&&now-lastDemand>100)freeSpeakers();
-    lastDemand=now;expire(now);
+    // Audio clock is authoritative: the Worklet's requests decide what plays,
+    // and a reply too late for its block makes it start over (a new generation).
+    expire(performance.now());
     const output=[],transfers=[];
     for(const [speaker,state] of speakers) {
       const samples=state.receiver.render();

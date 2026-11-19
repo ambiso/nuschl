@@ -102,7 +102,10 @@ export class CaptureFrames {
 }
 
 export const PLAYOUT_FRAME = 480;
-export const PLAYOUT_RESERVE = PLAYOUT_FRAME * 2;
+// Requested PCM reaches this far ahead of the rendered position: 30 ms at
+// first, growing to cover the slowest reply seen, up to the 120 ms ring.
+export const PLAYOUT_LEAD = PLAYOUT_FRAME * 3;
+export const PLAYOUT_RESERVE = PLAYOUT_FRAME * 12;
 
 // Audio-frame demand owns this lane. In particular, a missed deadline does
 // not grant another credit: only an exactly bound reply acknowledges demand.
@@ -110,14 +113,14 @@ export class PlayoutClock {
   constructor(report, rate) {
     this.report=report;this.rate=rate;this.port=null;this.configured=false;
     this.epoch="";this.enabled=false;this.generation=0;this.request=0;
-    this.cursor=0;this.nextStart=0;this.inFlight=null;this.ready=false;
+    this.cursor=0;this.nextStart=0;this.pending=[];this.lead=PLAYOUT_LEAD;this.ready=false;
     this.failed=false;this.errorSent=false;
     this.left=new Float64Array(PLAYOUT_RESERVE);
     this.right=new Float64Array(PLAYOUT_RESERVE);
   }
   clear() { this.left.fill(0);this.right.fill(0); }
   fail(message) {
-    this.failed=true;this.ready=false;this.enabled=false;this.inFlight=null;this.clear();
+    this.failed=true;this.ready=false;this.enabled=false;this.pending.length=0;this.clear();
     if(!this.errorSent) {
       this.errorSent=true;this.report({kind:"playout-error",epoch:this.epoch,message});
     }
@@ -140,11 +143,11 @@ export class PlayoutClock {
     if(this.configured&&!this.failed)this.handshake();
   }
   close() {
-    this.enabled=false;this.ready=false;this.inFlight=null;this.clear();
+    this.enabled=false;this.ready=false;this.pending.length=0;this.clear();
     if(this.port) {this.port.onmessage=null;this.port.close?.();this.port=null;}
   }
   handshake() {
-    this.clear();this.ready=false;this.inFlight=null;
+    this.clear();this.ready=false;this.pending.length=0;
     if(this.generation>=Number.MAX_SAFE_INTEGER) {this.fail("Playback clock exhausted.");return;}
     this.generation++;
     this.nextStart=Math.ceil(this.cursor/PLAYOUT_FRAME)*PLAYOUT_FRAME+PLAYOUT_FRAME;
@@ -155,13 +158,14 @@ export class PlayoutClock {
     if(data.kind==="playout-ready") {
       if(typeof data.enabled!=="boolean")return;
       const ready=Boolean(this.enabled&&data.enabled);
-      if(ready&&!this.ready&&!this.inFlight)
+      if(ready&&!this.ready&&!this.pending.length)
         this.nextStart=Math.ceil(this.cursor/PLAYOUT_FRAME)*PLAYOUT_FRAME+PLAYOUT_FRAME;
       this.ready=ready;
       if(!this.ready)this.clear();
       return;
     }
-    const pending=this.inFlight;
+    // The worker answers in request order.
+    const pending=this.pending[0];
     if(data.kind!=="playout"||!pending||data.request!==pending.request||
         data.start_frame!==pending.start_frame)return;
     // Validate the entire batch before changing credit or accumulation state.
@@ -179,7 +183,11 @@ export class PlayoutClock {
       }
       ids.add(speaker.speaker);
     }
-    this.inFlight=null;
+    this.pending.shift();
+    // Keep the next requests as far ahead as this reply took, plus a quantum
+    // of request granularity and a block.
+    const needed=Math.ceil((this.cursor-pending.sentAt+128)/PLAYOUT_FRAME)*PLAYOUT_FRAME+PLAYOUT_FRAME;
+    this.lead=Math.min(PLAYOUT_RESERVE,Math.max(this.lead,needed));
     if(data.start_frame+PLAYOUT_FRAME<=this.cursor) {this.handshake();return;}
     if(!this.enabled||!this.ready)return;
     const elapsed=Math.max(0,this.cursor-data.start_frame);
@@ -195,11 +203,14 @@ export class PlayoutClock {
     if(!Number.isSafeInteger(this.cursor+left.length+PLAYOUT_RESERVE)) {
       this.fail("Playback clock exhausted.");return;
     }
-    if(this.ready&&this.port&&!this.inFlight&&this.nextStart<=this.cursor+PLAYOUT_FRAME) {
+    // At most one new request per quantum, for a block that fits the lead,
+    // and no more outstanding than the lead holds while the worker stalls.
+    if(this.ready&&this.port&&this.nextStart+PLAYOUT_FRAME<=this.cursor+this.lead&&
+        this.pending.length*PLAYOUT_FRAME<this.lead) {
       if(this.request>=Number.MAX_SAFE_INTEGER) {this.fail("Playback request exhausted.");return;}
       const pending={kind:"render",epoch:this.epoch,clock_generation:this.generation,
         request:++this.request,start_frame:this.nextStart,frames:PLAYOUT_FRAME};
-      this.inFlight={...pending,sentAt:this.cursor,stalled:false};
+      this.pending.push({...pending,sentAt:this.cursor,stalled:false});
       this.nextStart+=PLAYOUT_FRAME;
       this.port.postMessage(pending);
     }
@@ -210,7 +221,7 @@ export class PlayoutClock {
       this.left[at]=0;this.right[at]=0;
     }
     this.cursor+=left.length;
-    const pending=this.inFlight;
+    const pending=this.pending[0];
     if(pending&&!pending.stalled&&this.cursor-pending.sentAt>=AUDIO_RATE*2.5) {
       pending.stalled=true;
       this.report({kind:"playout-stalled",epoch:this.epoch,clock_generation:this.generation,

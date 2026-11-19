@@ -121,9 +121,7 @@ test("exact request sequence rejects duplicate, stale, skipped and malformed wor
  const f=await fixture();f.authorize();f.wanted();f.pump();f.render();f.pump();
  const before=f.port.sent.length;
  f.render();f.render(2,1440);f.render(3,-480);f.render(3,960,"rx",0);f.pump();assert.equal(f.port.sent.length,before);
- f.render(2,960);f.pump();assert.equal(f.port.sent.length,before+1);
- f.now(200);f.packet(packets[0],0);f.packet(packets[1],2);f.render(3,1440);f.pump();
- assert.equal(f.port.sent.at(-1).speakers.length,0,"stalled output cannot replay cached audio");f.close();
+ f.render(2,960);f.pump();assert.equal(f.port.sent.length,before+1);f.close();
 });
 
 test("packet/speaker budgets admit 16 legitimate 100pps streams but bound churn",async()=>{

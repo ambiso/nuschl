@@ -48,7 +48,8 @@ Worklet → worker:
   configure paths arrive in opposite order, wait rather than dropping the port.
 - `{kind:"render",epoch:RX,clock_generation:G,request:J,start_frame:F,frames:480}`.
   J is a positive monotonically increasing safe integer. F is a nonnegative safe
-  integer divisible by 480, with room for 480. Only one render may be unacknowledged.
+  integer divisible by 480, with room for 480. At most twelve renders (the
+  ring's 120 ms) are unacknowledged, and the worker answers them in order.
 
 Worker → Worklet:
 
@@ -74,13 +75,18 @@ duplicate, wrong RX/G/J/F or old replies do not clear another outstanding reques
 
 ## Audio clock, bounds and failure behavior
 
-Use actual rendered frame count, not a JS timer, to grant 480-frame blocks. Keep
-at most two blocks/960 frames (20 ms) of transport reserve and one outstanding
-request. Initial request starts at the next aligned frame **plus one block**;
-subsequent requests start 480 frames apart. Request when its start is no farther
-than 480 frames ahead. A late scheduler must not produce catch-up decode bursts.
+Use actual rendered frame count, not a JS timer, to grant 480-frame blocks.
+Initial request starts at the next aligned frame **plus one block**; subsequent
+requests start 480 frames apart. A block is requested once its end is within the
+lead of the rendered position, at most one request per render quantum, and only
+while the outstanding requests hold less than the lead. The lead starts at three
+blocks (30 ms) and grows with each reply to the time that reply took plus one
+block, up to the twelve-block/5760-frame (120 ms) ring. A phone's worker or
+message port pauses for 40–90 ms several times a minute; one such pause sets
+the lead that covers the next ones. A late scheduler must not produce catch-up
+decode bursts.
 
-A convenient implementation is a fixed 960-frame stereo f64 accumulation ring:
+The implementation is a fixed 5760-frame stereo f64 accumulation ring:
 validated batches mix unscaled finite PCM×gain into their absolute future slots,
 then final clip occurs at rendering (mono folds wide LR before clipping). Clearing
 consumed slots prevents stale wraparound. Other bounded implementations are fine.
@@ -90,13 +96,13 @@ PcmMixer fallback APIs can stay separate from this clocked path.
 For an acknowledged batch whose block partially elapsed, trim elapsed frames;
 never shift it later. If the entire block expired, discard it and perform a
 playback-only rebuffer handshake: increment G, flush PCM, send configure again,
-wait for ready. **Deadline expiry alone never clears inFlight or submits another
-render.** Until its exact reply arrives (or worker replacement), output silence.
+wait for ready. **Deadline expiry alone never clears an outstanding request or
+submits a render beyond the lead.** Until its exact reply arrives (or worker replacement), output silence.
 A changed configuration may cancel locally but must wait for the new FIFO-ready
 barrier before issuing fresh work. This bounds worker inbox growth across rapid
 revoke/reopen and stalls. Unknown/duplicate replies never act as acknowledgments.
 
-After 2500 ms of rendered audio without acknowledgment, send Main exactly one
+After 2500 ms of rendered audio without acknowledging the oldest request, send Main exactly one
 `{kind:"playout-stalled",epoch:RX,clock_generation:G,request:J,start_frame:F}`;
 keep the request outstanding. Main validates current RX, fails/replaces the worker
 and closes capture according to its existing policy. Fatal rate/configuration or
@@ -105,10 +111,11 @@ matching malformed replies send Main one bounded
 
 Clocked Worklet must assert actual global sampleRate 48000. Main already requests
 and verifies AudioContext 48000; neither side may silently play pitched audio at
-another rate. A codec-worker wall-clock demand gap can independently clear stale
-receiver caches before resuming; capture/permission state is not changed by that
-playback-only rebuffer. Browser/device/codec latency is additional to this 20 ms
-transport ceiling; measure realized delay, including single 120 ms/end/restart.
+another rate. A pause in the worker's demand that the lead covers keeps its
+receiver caches; a longer one expires a block and its rebuffer barrier clears
+them. Capture/permission state is not changed by that playback-only rebuffer.
+Browser/device/codec latency is additional to this 120 ms transport ceiling;
+measure realized delay, including single 120 ms/end/restart.
 
 ## Required boundary tests
 
