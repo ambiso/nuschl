@@ -561,6 +561,30 @@ impl Peer {
         Ok(())
     }
 
+    /// Drop queued RTP and retransmissions while keeping the negotiated transport warm.
+    pub fn clear_call_send(&mut self) {
+        for state in &self.tracks {
+            let mid = state.track.0;
+            let Some(direction) = self.rtc.media(mid).map(|media| media.direction()) else {
+                continue;
+            };
+            if direction.is_sending() {
+                let mut sdp = self.rtc.sdp_api();
+                // Changing the local direction clears str0m's payloader and transmit
+                // buffers. Restore the negotiated direction in the same operation.
+                sdp.set_direction(
+                    mid,
+                    if direction.is_receiving() {
+                        Direction::RecvOnly
+                    } else {
+                        Direction::Inactive
+                    },
+                );
+                sdp.set_direction(mid, direction);
+            }
+        }
+    }
+
     pub fn is_connected(&self) -> bool {
         !self.closed && self.rtc.is_connected()
     }

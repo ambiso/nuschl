@@ -267,7 +267,14 @@ impl Call {
                 }
                 if self.active != Some(leg) {
                     if let Some(previous) = self.active.replace(leg) {
-                        self.legs.remove(&previous);
+                        match self.legs.get_mut(&previous) {
+                            Some(old) if old.role == LegRole::SfuPublish => {
+                                old.peer.clear_call_send()
+                            }
+                            _ => {
+                                self.legs.remove(&previous);
+                            }
+                        }
                     }
                     self.keyframe = [false; MAX_ENCODINGS as usize];
                 }
