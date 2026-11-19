@@ -128,7 +128,7 @@ test("direct waits for consent, upload headroom and both ICE legs, then falls ba
   upload = 6_000_000;
   await publish.tick();
   const [outgoing] = Connection.opened;
-  assert.deepEqual(outgoing.configuration, { iceServers: [{ urls: ["stun:turn.test:3478"] }] });
+  assert.deepEqual(outgoing.configuration, { ...host.configuration, bundlePolicy: "max-bundle" });
   assert.equal(sfuSender.track, track);
   assert.equal(outgoing.getTransceivers()[0].sender.track, null);
   await signal(1, subscribe, "offer");

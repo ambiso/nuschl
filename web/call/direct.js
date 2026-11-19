@@ -4,7 +4,8 @@
 // for fallback. A direct leg negotiates with detached senders.
 import { sendCodecs } from "./support.js";
 
-const ICE_TIMEOUT = 5000;
+const GATHER_TIMEOUT = 3000;
+const SETUP_TIMEOUT = 15000;
 const RETRY_DELAY = 15000;
 const MAX_SDP = 12000;
 export const ENCODINGS = { camera: 0, screen: 1 };
@@ -36,17 +37,17 @@ function parse(data) {
 
 async function candidates(pc) {
   if (pc.iceGatheringState === "complete") return pc.localDescription.sdp;
-  await new Promise((resolve, reject) => {
-    function gathered() {
-      if (pc.iceGatheringState !== "complete") return;
+  await new Promise((resolve) => {
+    function finish() {
       clearTimeout(timeout);
       pc.removeEventListener("icegatheringstatechange", gathered);
       resolve();
     }
-    const timeout = setTimeout(() => {
-      pc.removeEventListener("icegatheringstatechange", gathered);
-      reject(new Error("direct ICE timed out"));
-    }, ICE_TIMEOUT);
+    function gathered() {
+      if (pc.iceGatheringState === "complete") finish();
+    }
+    // An unresponsive ICE server can leave gathered host candidates usable.
+    const timeout = setTimeout(finish, GATHER_TIMEOUT);
     pc.addEventListener("icegatheringstatechange", gathered);
     gathered();
   });
@@ -61,7 +62,8 @@ async function selectedPair(pc) {
   const pair = stats.get(transport?.selectedCandidatePairId);
   const local = stats.get(pair?.localCandidateId)?.candidateType;
   const remote = stats.get(pair?.remoteCandidateId)?.candidateType;
-  const direct = Boolean(local && remote && local !== "relay" && remote !== "relay");
+  const types = ["host", "srflx", "prflx"];
+  const direct = types.includes(local) && types.includes(remote);
   return { direct, bitrate: pair?.availableOutgoingBitrate };
 }
 
@@ -215,12 +217,9 @@ export class DirectPaths {
   }
 
   #connection(peer, publisher, id) {
-    // Use the call host's STUN address to find public candidates. TURN relay
-    // candidates belong to the SFU path.
-    const urls = this.#call.configuration.iceServers.flatMap(({ urls }) => urls)
-      .filter((url) => url.startsWith("turn:") && !url.endsWith("transport=tcp"))
-      .map((url) => `stun:${url.slice(5).split("?")[0]}`);
-    const pc = new RTCPeerConnection({ iceServers: urls.length ? [{ urls }] : [] });
+    // Use existing ICE credentials for discovery. Only a nominated non-relay
+    // pair can carry media on this connection.
+    const pc = new RTCPeerConnection({ ...this.#call.configuration, bundlePolicy: "max-bundle" });
     const leg = { peer, publisher, id, pc, active: false };
     pc.addEventListener("connectionstatechange", () => {
       this.#enqueue(async () => {
@@ -240,7 +239,7 @@ export class DirectPaths {
     });
     leg.timeout = setTimeout(() => {
       this.#enqueue(() => !leg.active && this.#drop(leg, true));
-    }, ICE_TIMEOUT * 3);
+    }, SETUP_TIMEOUT);
     return leg;
   }
 
@@ -258,9 +257,9 @@ export class DirectPaths {
     const desired = sources.reduce((sum, { encoding }) => sum + encoding.maxBitrate, 0);
     const leg = this.#outgoing;
     if (leg && (!sameSources(leg.sources, call) || leg.peer !== peer)) return this.#drop(leg, true);
-    const { bitrate } = await selectedPair(leg?.active ? leg.pc : call.publisher);
+    const { direct, bitrate } = await selectedPair(leg?.active ? leg.pc : call.publisher);
     if (leg?.active) {
-      if (Number.isFinite(bitrate) && bitrate * 0.8 < desired) return this.#drop(leg, true);
+      if (!direct || (Number.isFinite(bitrate) && bitrate * 0.8 < desired)) return this.#drop(leg, true);
       try {
         for (const source of leg.sources) await applyCaps(source);
       } catch {
