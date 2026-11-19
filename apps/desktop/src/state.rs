@@ -199,6 +199,7 @@ pub struct Desktop {
     pub services: Services,
     /// Our call's creator link and lease, and the last lease's id.
     pub call: Option<crate::call::Creator>,
+    #[cfg(target_os = "linux")]
     pub call_leases: u64,
     #[cfg(target_os = "linux")]
     pub native_call: Option<crate::native_call::Active>,
@@ -531,6 +532,7 @@ impl Desktop {
             driver,
             services,
             call: None,
+            #[cfg(target_os = "linux")]
             call_leases: 0,
             #[cfg(target_os = "linux")]
             native_call: None,
@@ -2718,6 +2720,7 @@ impl Desktop {
                 self.link_preview_pixels(ticket, pixels, cx)
             }
             ServiceEvent::Prepared { id, result } => self.prepared(id, result, cx),
+            #[cfg(target_os = "linux")]
             ServiceEvent::CallLeaseEnded { id } => self.call_lease_ended(id),
             #[cfg(target_os = "linux")]
             ServiceEvent::ConfirmMonitorShare { generation, ready } => {

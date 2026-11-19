@@ -13,26 +13,36 @@
 //! the lease over `http://`, for development and tests. With relay-only on, the page
 //! opens as `/call?relay#…` and connects through the call host's TURN server only
 //! (docs/web.md, "The call page").
-use crate::{services::ServiceEvent, state::Desktop};
-use nuschl_core::call::DEFAULT_HOST;
 #[cfg(target_os = "linux")]
-use nuschl_core::model::TextTarget;
+use crate::services::ServiceEvent;
+use crate::state::Desktop;
+#[cfg(target_os = "linux")]
+use nuschl_core::{call::DEFAULT_HOST, model::TextTarget};
 use nuschl_stream::Link;
+#[cfg(any(target_os = "linux", test))]
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+#[cfg(target_os = "linux")]
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
+#[cfg(target_os = "linux")]
 pub const RENEW: Duration = Duration::from_secs(10);
+#[cfg(any(target_os = "linux", test))]
 pub const TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(any(target_os = "linux", test))]
 pub const GRACE: Duration = Duration::from_secs(120);
+#[cfg(any(target_os = "linux", test))]
 pub const MAX: Duration = Duration::from_secs(4 * 60 * 60);
 
 /// Our call's creator link and its running lease; dropping it ends the lease.
 pub struct Creator {
     pub link: Link,
+    #[cfg(target_os = "linux")]
     lease: u64,
     _stop: oneshot::Sender<()>,
 }
 
+#[cfg(any(target_os = "linux", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reply {
     Renewed,
@@ -41,11 +51,13 @@ pub enum Reply {
 }
 
 /// When the lease ends, given the call host's replies.
+#[cfg(any(target_os = "linux", test))]
 #[derive(Debug, Default)]
 pub struct Clock {
     renewed: Option<Duration>,
 }
 
+#[cfg(any(target_os = "linux", test))]
 impl Clock {
     /// Whether the lease is over after `reply`, `elapsed` since it started.
     pub fn over(&mut self, elapsed: Duration, reply: Reply) -> bool {
@@ -63,6 +75,7 @@ impl Clock {
 }
 
 /// The lease address and body of the creator's `link`.
+#[cfg(any(target_os = "linux", test))]
 pub fn lease_request(link: &Link) -> (String, String) {
     let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
     let host = link.host();
@@ -80,6 +93,7 @@ pub fn lease_request(link: &Link) -> (String, String) {
 
 /// Keep the lease at `url` until it is over or `stop` fires or is dropped,
 /// then report `CallLeaseEnded` (over) or release it (stopped).
+#[cfg(target_os = "linux")]
 pub async fn run(
     id: u64,
     url: String,
@@ -126,6 +140,7 @@ pub async fn run(
 }
 
 impl Desktop {
+    #[cfg(target_os = "linux")]
     pub fn call_host(&self) -> &str {
         match self.settings.call_host.as_str() {
             "" => DEFAULT_HOST,
@@ -158,9 +173,15 @@ impl Desktop {
     pub fn end_call(&mut self) {
         #[cfg(target_os = "linux")]
         self.stop_native_owner();
-        if self.client.own_call().is_some() {
+        if let Some(call) = self.client.own_call() {
+            let announcing = self.selected_indices().is_some_and(|(server, channel)| {
+                let server = &self.client.servers[server];
+                server.id == call.server && server.channels[channel].target == call.target
+            });
             self.client.end_call();
-            let _ = self.client.send_text("Call ended".into());
+            if announcing {
+                let _ = self.client.send_text("Call ended".into());
+            }
         }
         self.call = None;
     }
@@ -178,6 +199,7 @@ impl Desktop {
     }
 
     /// Lease `id` is over: its call ends, if it is still ours.
+    #[cfg(target_os = "linux")]
     pub fn call_lease_ended(&mut self, id: u64) {
         if self.call.as_ref().is_some_and(|call| call.lease == id) {
             self.call = None;

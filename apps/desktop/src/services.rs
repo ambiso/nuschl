@@ -35,6 +35,7 @@ pub enum ServiceEvent {
         result: Result<nuschl_ipc::EncodedImage, String>,
     },
     /// Our call's lease `id` is over (`call`).
+    #[cfg(target_os = "linux")]
     CallLeaseEnded {
         id: u64,
     },
@@ -129,6 +130,7 @@ impl Services {
         }
     }
     /// Keep our call's lease (`call::run`).
+    #[cfg(target_os = "linux")]
     pub fn lease(
         &self,
         id: u64,

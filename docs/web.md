@@ -369,9 +369,11 @@ with a call link opens it ([desktop](desktop.md#calls)); the creator's link adds
 - **Quality:** The selectors beside the capture buttons set each source's
   maximum resolution and frame rate. The encoder also follows SFU bandwidth
   limits. Open **Video stats** on a remote tile to choose its receive quality
-  or leave it at Auto to follow the tile size. The panel shows the received
-  resolution, decoded and presented frame rates, receive bitrate, and mean
-  time in the receiver's jitter buffer. Browsers with a supported scalable
+  or leave it at Auto to follow the tile size. The panel shows the requested
+  quality ceiling, received resolution, decoded and presented frame rates,
+  receive bitrate, and mean time in the receiver's jitter buffer. The stats
+  on your own preview show capture and encoder dimensions, the SFU's caps
+  and any limitation reported by the browser. Browsers with a supported scalable
   AV1 encoder let the SFU forward different layers to different viewers.
 - **Tests:** `checks.call-page` runs `web/call/call.test.js` against the
   stream worker's wasm; `checks.vm-call-page` (`nix/call-page-vm.nix`,
