@@ -545,6 +545,40 @@ async fn native_video_for_policy(relay_only: bool) {
     })
     .await
     .expect("a native frame crosses the owned SFU");
+    if !relay_only {
+        async fn encoder_limits(publisher: &mut Media, tier: usize) {
+            let expected = &VideoKind::Screen.ladder()[tier];
+            timeout(HANDSHAKE, async {
+                loop {
+                    if let MediaEvent::EncoderLimits {
+                        height,
+                        fps,
+                        bitrate,
+                    } = publisher.next().await.unwrap().unwrap()
+                        && height == expected.height
+                    {
+                        assert_eq!(fps, expected.fps);
+                        assert_eq!(bitrate, expected.ceiling);
+                        return;
+                    }
+                }
+            })
+            .await
+            .expect("the native viewer's quality reaches the publisher");
+        }
+
+        // An explicit selection can request 1440p from a much shorter tile.
+        bob.set_quality(publisher, Purpose::ScreenVideo, Quality::Tier(2), 180)
+            .unwrap();
+        encoder_limits(&mut alice, 2).await;
+
+        // A burst during the signaling cooldown keeps the latest selection.
+        bob.set_quality(publisher, Purpose::ScreenVideo, Quality::Tier(0), 180)
+            .unwrap();
+        bob.set_quality(publisher, Purpose::ScreenVideo, Quality::Auto, 1000)
+            .unwrap();
+        encoder_limits(&mut alice, 1).await;
+    }
     decoder.stop().await.unwrap();
     bob.stop().await.unwrap();
     alice.stop().await.unwrap();

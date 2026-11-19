@@ -25715,6 +25715,11 @@ rec {
             packageId = "nuschl-sandbox";
           }
           {
+            name = "nuschl-stream-quality";
+            packageId = "nuschl-stream-quality";
+            target = { target, features }: ("linux" == target."os" or null);
+          }
+          {
             name = "p12-keystore";
             packageId = "p12-keystore";
           }

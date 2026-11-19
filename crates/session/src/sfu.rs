@@ -20,6 +20,8 @@ mod media;
 mod turn;
 #[cfg(target_os = "linux")]
 pub use media::{Media, MediaEvent, MediaOptions, Purpose};
+#[cfg(target_os = "linux")]
+pub use nuschl_stream_quality::{Kind as VideoKind, Quality};
 
 const HANDSHAKE: Duration = Duration::from_secs(10);
 type Socket = WebSocketStream<TlsStream<TcpStream>>;

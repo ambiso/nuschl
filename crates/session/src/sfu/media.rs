@@ -3,9 +3,13 @@
 //! signaling, and the isolated RTC worker owns ICE, DTLS, SRTP and SFrame.
 
 use super::turn::NetworkLeg;
-use super::{Action, ClientMessage, Codec, Connection, Error, Outcome, ServerMessage, write};
+use super::{
+    Action, ClientMessage, Codec, Connection, Error, Outcome, Quality, ServerMessage, VideoKind,
+    write,
+};
 use nuschl_core::network::Destination;
 use nuschl_ipc::rtc::{self, Command, Description, Event, LegRole, Reply, Track, Worker};
+use nuschl_stream_quality::{QualityRequest, Throttle};
 use std::{
     future::pending,
     net::SocketAddr,
@@ -15,7 +19,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    sync::mpsc,
+    sync::{mpsc, watch},
     task::JoinHandle,
     time::{Instant, sleep, sleep_until, timeout},
 };
@@ -86,6 +90,7 @@ struct Video {
 pub struct Media {
     input: mpsc::Sender<Input>,
     sequence: AtomicU64,
+    quality: watch::Sender<QualityRequests>,
     events: mpsc::Receiver<Result<MediaEvent, Error>>,
     keyframes: mpsc::Receiver<()>,
     task: JoinHandle<()>,
@@ -128,6 +133,42 @@ impl Media {
             Err(mpsc::error::TrySendError::Full(_)) => Ok(false),
             Err(mpsc::error::TrySendError::Closed(_)) => Err(Error::Protocol("media ended")),
         }
+    }
+
+    /// Set the ceiling for a subscribed video source. Auto fits the tile's
+    /// device-pixel height. The latest choice for each source takes effect when
+    /// the SFU accepts its next request.
+    pub fn set_quality(
+        &self,
+        publisher: u64,
+        purpose: Purpose,
+        quality: Quality,
+        tile_height: u32,
+    ) -> Result<(), Error> {
+        let kind = video_kind(purpose).ok_or(Error::Protocol("invalid video source"))?;
+        if self.source.is_some() || publisher == 0 {
+            return Err(Error::Protocol("invalid video subscription"));
+        }
+        if self.quality.is_closed() {
+            return Err(Error::Protocol("media ended"));
+        }
+        if quality == Quality::Auto && tile_height == 0 {
+            return Ok(());
+        }
+        let request = QualityRequest {
+            publisher,
+            kind,
+            tier: kind.request(quality, tile_height) as u8,
+        };
+        self.quality.send_if_modified(|latest| {
+            let slot = &mut latest[quality_index(kind)];
+            if *slot == Some(request) {
+                return false;
+            }
+            *slot = Some(request);
+            true
+        });
+        Ok(())
     }
 
     #[cfg(test)]
@@ -199,6 +240,7 @@ impl Connection {
         };
         let source = options.publish;
         let (input, frames) = mpsc::channel(1);
+        let (quality, preferences) = watch::channel([None; 2]);
         let (output, events) = mpsc::channel(4);
         let (requests, keyframes) = mpsc::channel(1);
         let task = tokio::spawn(async move {
@@ -209,7 +251,10 @@ impl Connection {
                 destination,
                 codec,
                 source,
-                frames,
+                Inputs {
+                    frames,
+                    preferences,
+                },
                 Output {
                     events: &output,
                     keyframes: &requests,
@@ -225,6 +270,7 @@ impl Connection {
         Ok(Media {
             input,
             sequence: AtomicU64::new(0),
+            quality,
             events,
             keyframes,
             task,
@@ -464,13 +510,76 @@ fn signaling_id(connection: &Connection, leg: u32) -> [u8; 16] {
     id
 }
 
+type QualityRequests = [Option<QualityRequest>; 2];
+
+struct Inputs {
+    frames: mpsc::Receiver<Input>,
+    preferences: watch::Receiver<QualityRequests>,
+}
+
+#[derive(Default)]
+struct ReceiveQuality {
+    wanted: QualityRequests,
+    sent: QualityRequests,
+    next: [Option<Instant>; 2],
+}
+
+impl ReceiveQuality {
+    fn next_request(&self, tracks: &[Track]) -> Option<(Instant, QualityRequest)> {
+        self.wanted
+            .iter()
+            .enumerate()
+            .filter_map(|(i, request)| {
+                let request = (*request)?;
+                if Some(request) == self.sent[i]
+                    || !tracks.iter().any(|track| {
+                        track.publisher == Some(request.publisher)
+                            && video_kind(track.purpose) == Some(request.kind)
+                    })
+                {
+                    return None;
+                }
+                Some((self.next[i].unwrap_or_else(Instant::now), request))
+            })
+            .min_by_key(|(at, _)| *at)
+    }
+
+    fn sent(&mut self, request: QualityRequest) {
+        let i = quality_index(request.kind);
+        self.sent[i] = Some(request);
+        // Give signaling transit jitter the same 100 ms margin as the call page.
+        self.next[i] = Some(Instant::now() + Throttle::INTERVAL + Duration::from_millis(100));
+    }
+
+    fn source_ended(&mut self, purpose: Purpose) {
+        if let Some(kind) = video_kind(purpose) {
+            self.sent[quality_index(kind)] = None;
+        }
+    }
+}
+
+fn video_kind(purpose: Purpose) -> Option<VideoKind> {
+    match purpose {
+        Purpose::Camera => Some(VideoKind::Camera),
+        Purpose::ScreenVideo => Some(VideoKind::Screen),
+        _ => None,
+    }
+}
+
+fn quality_index(kind: VideoKind) -> usize {
+    match kind {
+        VideoKind::Camera => 0,
+        VideoKind::Screen => 1,
+    }
+}
+
 async fn run(
     connection: &mut Connection,
     worker: &mut Worker,
     destination: SocketAddr,
     codec: rtc::Codec,
     source: Option<Purpose>,
-    mut frames: mpsc::Receiver<Input>,
+    mut inputs: Inputs,
     output: Output<'_>,
 ) -> Result<(), Error> {
     let publishing = source.is_some();
@@ -565,6 +674,7 @@ async fn run(
     let mut desired = None;
     let mut direct_buffer = [0; rtc::MAX_DATAGRAM + 1];
     let mut subscribed = Vec::<Track>::new();
+    let mut quality = ReceiveQuality::default();
     let mut pub_buffer = [0; rtc::MAX_DATAGRAM + 1];
     let mut sub_buffer = [0; rtc::MAX_DATAGRAM + 1];
     let mut sending = false;
@@ -585,6 +695,7 @@ async fn run(
             .map(|attempt| &mut attempt.transport);
         let publish_wake = publish.as_ref().and_then(|leg| leg.wake);
         let subscribe_wake = subscribe.wake;
+        let next_quality = quality.next_request(&subscribed);
         let mut retreat = false;
         let mut notify = true;
         tokio::select! {
@@ -612,6 +723,7 @@ async fn run(
                     // End old sources after queued frames and before any media from the new offer.
                     for track in subscribed.iter().filter(|track| !tracks.contains(track)) {
                         retreat |= attempting_direct;
+                        quality.source_ended(track.purpose);
                         if let Some(gate) = subscribe.video_gate(track.purpose) {
                             *gate = FrameGate::new();
                         }
@@ -663,13 +775,33 @@ async fn run(
                 ServerMessage::Quality { source, max_height, max_fps, max_bitrate, .. }
                     if publish_mid.as_ref() == Some(&source) && (16..=2160).contains(&max_height) && (1..=120).contains(&max_fps) && (64_000..=50_000_000).contains(&max_bitrate) => {
                     desired = Some(max_bitrate);
-                    let _ = output.events.try_send(Ok(MediaEvent::EncoderLimits { height: max_height, fps: max_fps, bitrate: max_bitrate }));
+                    if output.events.send(Ok(MediaEvent::EncoderLimits { height: max_height, fps: max_fps, bitrate: max_bitrate })).await.is_err() {
+                        return Ok(());
+                    }
                 }
                 ServerMessage::Codec { codec: changed } if changed != connection.welcome.codec => return Err(Error::Protocol("native call codec changed")),
                 ServerMessage::Error { reason } => return Err(Error::Refused(reason.into_owned())),
                 _ => {}
             },
-            input = frames.recv() => {
+            changed = inputs.preferences.changed() => {
+                if changed.is_err() {
+                    return Ok(());
+                }
+                quality.wanted = *inputs.preferences.borrow_and_update();
+            }
+            () = wake(next_quality.map(|(at, _)| at)) => {
+                // A new choice can arrive as the timer expires.
+                quality.wanted = *inputs.preferences.borrow_and_update();
+                if let Some((at, request)) = quality.next_request(&subscribed)
+                    && at <= Instant::now()
+                {
+                    write(&mut connection.socket, &ClientMessage::Quality {
+                        request: hex::encode(request.to_bytes()),
+                    }).await?;
+                    quality.sent(request);
+                }
+            }
+            input = inputs.frames.recv() => {
                 let frame = match input {
                     Some(Input::Frame(frame)) => frame,
                     #[cfg(test)]

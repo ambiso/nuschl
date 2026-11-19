@@ -62,4 +62,5 @@ tokio = { version = "1.54.1", features = ["test-util"] }
 workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+nuschl-stream-quality = { path = "../stream-quality", version = "0.2.0" }
 turn-client-proto = "0.8.0"
