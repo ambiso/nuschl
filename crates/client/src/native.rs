@@ -22,6 +22,8 @@ use nuschl_core::bitrate::{VoiceBitrate, voice_frame_fits};
 use nuschl_core::{ChatMessage, ContentBlock, HistoryPage, MessageDocument};
 use nuschl_ipc::{LiveMediaEvent, LiveMediaRequest};
 use nuschl_protocol::nuschl::v1;
+#[cfg(target_os = "linux")]
+pub use nuschl_session::sfu;
 use nuschl_session::{
     Error,
     config::{ClientSettings, Profile, ServerBookmark},

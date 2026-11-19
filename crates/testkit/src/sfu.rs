@@ -3,12 +3,14 @@
 
 use std::{
     io::{BufRead, BufReader},
+    net::SocketAddr,
     process::{Child, Command, Stdio},
 };
 
 pub struct Sfu {
     child: Child,
     pub url: String,
+    pub media: SocketAddr,
     pub directory: crate::TempDir,
 }
 
@@ -55,9 +57,16 @@ pub fn start(executable: impl AsRef<std::path::Path>, settings: &str) -> Sfu {
         .read_line(&mut line)
         .expect("ready line");
     let signalling = line.split_whitespace().nth(2).expect("signalling address");
+    let media = line
+        .split_whitespace()
+        .nth(4)
+        .expect("media address")
+        .parse()
+        .expect("UDP address");
     Sfu {
         child,
         url: format!("ws://{signalling}/sfu"),
+        media,
         directory,
     }
 }

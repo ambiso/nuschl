@@ -14,6 +14,11 @@ use tokio_tungstenite::{
     tungstenite::{Message, protocol::WebSocketConfig},
 };
 
+#[cfg(target_os = "linux")]
+mod media;
+#[cfg(target_os = "linux")]
+pub use media::{Media, MediaEvent, MediaOptions, Purpose};
+
 const HANDSHAKE: Duration = Duration::from_secs(10);
 type Socket = WebSocketStream<TlsStream<TcpStream>>;
 
@@ -29,6 +34,9 @@ pub enum Error {
     Refused(String),
     #[error("call signaling timed out")]
     Timeout,
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    Rtc(#[from] nuschl_ipc::rtc::WorkerError),
 }
 
 pub struct Connect<'a> {
@@ -46,6 +54,8 @@ pub struct Connection {
     welcome: Welcome,
     socket: Socket,
     scope: CallScope,
+    #[cfg(target_os = "linux")]
+    policy: PeerPolicy,
 }
 
 struct CallScope {
@@ -180,6 +190,8 @@ impl Connection {
             welcome,
             socket,
             scope,
+            #[cfg(target_os = "linux")]
+            policy: options.policy,
         })
     }
 

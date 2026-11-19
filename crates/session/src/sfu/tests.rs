@@ -205,3 +205,88 @@ async fn two_native_peers_admit_and_signal_through_the_sfu_over_wss() {
     assert!(matches!(attempt.await, Err(error) if error.is_cancelled()));
     retired(&bob_worker, 3).await;
 }
+
+#[tokio::test]
+async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
+    // An independent 32×32 black AV1 frame encoded from a synthetic color source.
+    const VIDEO: [u8; 30] = [
+        0x12, 0x00, 0x0a, 0x0a, 0x00, 0x00, 0x00, 0x02, 0x27, 0xfe, 0x6d, 0x7c, 0x80, 0x20, 0x32,
+        0x0e, 0x10, 0x00, 0xc0, 0x00, 0x00, 0x02, 0x80, 0x00, 0x00, 0x02, 0xe5, 0xd6, 0xf7, 0x40,
+    ];
+    nuschl_testkit::sandbox();
+    let crypto = fixture("nuschl-crypto-worker");
+    let rtc = fixture("nuschl-rtc-worker");
+    let sfu = nuschl_testkit::sfu::start(fixture("nuschl-stream-sfu"), "");
+    let (host, roots) = tls_proxy(&sfu).await;
+    let directory = nuschl_testkit::temp_dir();
+    let posted = format!("https://{host}/call#{LINK}");
+    let owner = format!("{posted}&p={OWNER}");
+    let connect = |link| Connect {
+        generation: 1,
+        host: &host,
+        link,
+        codecs: &[Codec::Av1],
+        policy: PeerPolicy::default(),
+    };
+    let alice = Connection::connect_with_roots(
+        CryptoHandle::start(crypto.clone(), directory.path().join("alice")),
+        connect(&owner),
+        roots.clone(),
+    )
+    .await
+    .unwrap();
+    let publisher = alice.welcome().peer;
+    let mut alice = alice
+        .into_media(MediaOptions {
+            executable: rtc.clone(),
+            sfu_port: sfu.media.port(),
+            publish: Some(Purpose::ScreenVideo),
+        })
+        .await
+        .unwrap();
+    let bob = Connection::connect_with_roots(
+        CryptoHandle::start(crypto, directory.path().join("bob")),
+        connect(&posted),
+        roots,
+    )
+    .await
+    .unwrap();
+    let mut bob = bob
+        .into_media(MediaOptions {
+            executable: rtc.clone(),
+            sfu_port: sfu.media.port(),
+            publish: None,
+        })
+        .await
+        .unwrap();
+
+    timeout(HANDSHAKE, async {
+        loop {
+            if matches!(alice.next().await.expect("publisher remains live").expect("RTC publisher"), MediaEvent::SendReady) {
+                break;
+            }
+        }
+        let mut frame = 0u64;
+        let mut tick = tokio::time::interval(Duration::from_millis(34));
+        loop {
+            tokio::select! {
+                _ = tick.tick() => {
+                    frame += 1;
+                    alice.send_video(frame * 3_060, true, VIDEO.to_vec()).unwrap();
+                }
+                event = bob.next() => {
+                    if let MediaEvent::Frame { publisher: sender, purpose, key_frame, data, .. } = event.expect("viewer remains live").expect("RTC viewer") {
+                        assert_eq!(sender, publisher);
+                        assert_eq!(purpose, Purpose::ScreenVideo);
+                        assert!(key_frame);
+                        assert_eq!(data, VIDEO);
+                        break;
+                    }
+                }
+            }
+        }
+    }).await.expect("a native frame crosses the owned SFU");
+    bob.stop().await.unwrap();
+    alice.stop().await.unwrap();
+    nuschl_testkit::none_running(&rtc, Duration::from_secs(3)).await;
+}
