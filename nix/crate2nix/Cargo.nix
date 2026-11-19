@@ -23128,7 +23128,7 @@ rec {
       };
       "nuschl" = rec {
         crateName = "nuschl";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         crateBin = [
           {
@@ -23273,7 +23273,7 @@ rec {
       };
       "nuschl-audio-jitter" = rec {
         crateName = "nuschl-audio-jitter";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/audio-jitter; };
         libName = "nuschl_audio_jitter";
@@ -23281,7 +23281,7 @@ rec {
       };
       "nuschl-audio-wasm" = rec {
         crateName = "nuschl-audio-wasm";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/audio-wasm; };
         libName = "nuschl_audio_wasm";type = [ "cdylib" "rlib" ];
@@ -23304,7 +23304,7 @@ rec {
       };
       "nuschl-cli" = rec {
         crateName = "nuschl-cli";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         crateBin = [
           {
@@ -23369,7 +23369,7 @@ rec {
       };
       "nuschl-client" = rec {
         crateName = "nuschl-client";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/client; };
         libName = "nuschl_client";
@@ -23457,7 +23457,7 @@ rec {
       };
       "nuschl-client-wasm" = rec {
         crateName = "nuschl-client-wasm";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/client-wasm; };
         libName = "nuschl_client_wasm";type = [ "cdylib" "rlib" ];
@@ -23589,7 +23589,7 @@ rec {
       };
       "nuschl-content" = rec {
         crateName = "nuschl-content";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/content; };
         libName = "nuschl_content";
@@ -23649,7 +23649,7 @@ rec {
       };
       "nuschl-content-wasm" = rec {
         crateName = "nuschl-content-wasm";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/content-wasm; };
         libName = "nuschl_content_wasm";type = [ "cdylib" "rlib" ];
@@ -23681,7 +23681,7 @@ rec {
       };
       "nuschl-content-worker" = rec {
         crateName = "nuschl-content-worker";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         crateBin = [
           {
@@ -23731,7 +23731,7 @@ rec {
       };
       "nuschl-core" = rec {
         crateName = "nuschl-core";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/core; };
         libName = "nuschl_core";
@@ -23777,7 +23777,7 @@ rec {
       };
       "nuschl-crypto-worker" = rec {
         crateName = "nuschl-crypto-worker";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         crateBin = [
           {
@@ -23863,7 +23863,7 @@ rec {
       };
       "nuschl-e2ee" = rec {
         crateName = "nuschl-e2ee";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/e2ee; };
         libName = "nuschl_e2ee";
@@ -23913,7 +23913,7 @@ rec {
       };
       "nuschl-files" = rec {
         crateName = "nuschl-files";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/files; };
         libName = "nuschl_files";
@@ -23941,7 +23941,7 @@ rec {
       };
       "nuschl-identity" = rec {
         crateName = "nuschl-identity";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/identity; };
         libName = "nuschl_identity";
@@ -24017,7 +24017,7 @@ rec {
       };
       "nuschl-ipc" = rec {
         crateName = "nuschl-ipc";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         crateBin = [
           {
@@ -24070,7 +24070,7 @@ rec {
       };
       "nuschl-kt" = rec {
         crateName = "nuschl-kt";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/kt; };
         libName = "nuschl_kt";
@@ -24154,7 +24154,7 @@ rec {
       };
       "nuschl-legacy-html" = rec {
         crateName = "nuschl-legacy-html";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/legacy-html; };
         libName = "nuschl_legacy_html";
@@ -24162,7 +24162,7 @@ rec {
       };
       "nuschl-link-preview" = rec {
         crateName = "nuschl-link-preview";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/link-preview; };
         libName = "nuschl_link_preview";
@@ -24197,7 +24197,7 @@ rec {
       };
       "nuschl-math" = rec {
         crateName = "nuschl-math";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/math; };
         libName = "nuschl_math";
@@ -24235,7 +24235,7 @@ rec {
       };
       "nuschl-math-worker" = rec {
         crateName = "nuschl-math-worker";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         crateBin = [
           {
@@ -24275,7 +24275,7 @@ rec {
       };
       "nuschl-media-worker" = rec {
         crateName = "nuschl-media-worker";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         crateBin = [
           {
@@ -24367,7 +24367,7 @@ rec {
       };
       "nuschl-musicbot" = rec {
         crateName = "nuschl-musicbot";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         crateBin = [
           {
@@ -24495,7 +24495,7 @@ rec {
       };
       "nuschl-musicbot-codec-worker" = rec {
         crateName = "nuschl-musicbot-codec-worker";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         crateBin = [
           {
@@ -24562,7 +24562,7 @@ rec {
       };
       "nuschl-protocol" = rec {
         crateName = "nuschl-protocol";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/protocol; };
         libName = "nuschl_protocol";
@@ -24598,7 +24598,7 @@ rec {
       };
       "nuschl-rtc" = rec {
         crateName = "nuschl-rtc";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/rtc; };
         libName = "nuschl_rtc";
@@ -24618,7 +24618,7 @@ rec {
       };
       "nuschl-rtc-probe" = rec {
         crateName = "nuschl-rtc-probe";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         crateBin = [
           {
@@ -24642,7 +24642,7 @@ rec {
       };
       "nuschl-sandbox" = rec {
         crateName = "nuschl-sandbox";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/sandbox; };
         libName = "nuschl_sandbox";
@@ -24666,7 +24666,7 @@ rec {
       };
       "nuschl-sandbox-windows" = rec {
         crateName = "nuschl-sandbox-windows";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/sandbox-windows; };
         libName = "nuschl_sandbox_windows";
@@ -24718,7 +24718,7 @@ rec {
       };
       "nuschl-session" = rec {
         crateName = "nuschl-session";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/session; };
         libName = "nuschl_session";
@@ -24839,7 +24839,7 @@ rec {
       };
       "nuschl-sframe" = rec {
         crateName = "nuschl-sframe";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/sframe; };
         libName = "nuschl_sframe";
@@ -24863,7 +24863,7 @@ rec {
       };
       "nuschl-storage" = rec {
         crateName = "nuschl-storage";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/storage; };
         libName = "nuschl_storage";
@@ -24910,7 +24910,7 @@ rec {
       };
       "nuschl-storage-worker" = rec {
         crateName = "nuschl-storage-worker";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         crateBin = [
           {
@@ -24960,7 +24960,7 @@ rec {
       };
       "nuschl-stream" = rec {
         crateName = "nuschl-stream";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/stream; };
         libName = "nuschl_stream";
@@ -25012,7 +25012,7 @@ rec {
       };
       "nuschl-stream-quality" = rec {
         crateName = "nuschl-stream-quality";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/stream-quality; };
         libName = "nuschl_stream_quality";
@@ -25020,7 +25020,7 @@ rec {
       };
       "nuschl-stream-sfu" = rec {
         crateName = "nuschl-stream-sfu";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         crateBin = [
           {
@@ -25136,7 +25136,7 @@ rec {
       };
       "nuschl-stream-wasm" = rec {
         crateName = "nuschl-stream-wasm";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/stream-wasm; };
         libName = "nuschl_stream_wasm";type = [ "cdylib" "rlib" ];
@@ -25180,7 +25180,7 @@ rec {
       };
       "nuschl-testkit" = rec {
         crateName = "nuschl-testkit";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/testkit; };
         libName = "nuschl_testkit";
@@ -25199,7 +25199,7 @@ rec {
       };
       "nuschl-transfer-worker" = rec {
         crateName = "nuschl-transfer-worker";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         crateBin = [
           {
@@ -25250,7 +25250,7 @@ rec {
       };
       "nuschl-tui" = rec {
         crateName = "nuschl-tui";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         crateBin = [
           {
@@ -25327,7 +25327,7 @@ rec {
       };
       "nuschl-update" = rec {
         crateName = "nuschl-update";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/update; };
         libName = "nuschl_update";
@@ -25400,7 +25400,7 @@ rec {
       };
       "nuschl-update-worker" = rec {
         crateName = "nuschl-update-worker";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         crateBin = [
           {
@@ -25516,7 +25516,7 @@ rec {
       };
       "nuschl-web-relay" = rec {
         crateName = "nuschl-web-relay";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         crateBin = [
           {
@@ -25631,7 +25631,7 @@ rec {
       };
       "nuschl-witness" = rec {
         crateName = "nuschl-witness";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         crateBin = [
           {
@@ -25724,7 +25724,7 @@ rec {
       };
       "nuschld" = rec {
         crateName = "nuschld";
-        version = "0.2.0";
+        version = "0.3.0";
         edition = "2024";
         crateBin = [
           {
