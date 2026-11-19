@@ -48,6 +48,7 @@ impl Leg {
                 command(
                     worker,
                     Command::OpenLeg {
+                        relayed: false,
                         leg: id,
                         local: socket.local_addr().unwrap(),
                         codec: Codec::Av1,

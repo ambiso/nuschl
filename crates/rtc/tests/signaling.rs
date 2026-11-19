@@ -60,6 +60,30 @@ fn relay_only_denies_the_direct_leg_before_binding() {
 }
 
 #[test]
+fn relay_offer_advertises_the_allocation_as_its_only_candidate() {
+    let mut peer = Peer::for_call(
+        "203.0.113.10:41100".parse().unwrap(),
+        Instant::now(),
+        VideoCodec::Av1,
+        1024 * 1024,
+        true,
+    )
+    .unwrap();
+    let offer = peer
+        .offer_publish(&[Purpose::ScreenVideo], SignalingId::new([1; 16]).unwrap())
+        .unwrap();
+    let candidates = offer
+        .sdp
+        .lines()
+        .filter(|line| line.starts_with("a=candidate:"))
+        .collect::<Vec<_>>();
+    let [candidate] = candidates.as_slice() else {
+        panic!("expected a single TURN candidate");
+    };
+    assert!(candidate.contains("203.0.113.10 41100 typ relay raddr 0.0.0.0 rport 0"));
+}
+
+#[test]
 fn descriptions_reject_duplicate_missing_or_cross_kind_roles_and_mids_before_mutation() {
     let offer = offer();
     let mut bad = Vec::new();

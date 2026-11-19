@@ -100,6 +100,8 @@ pub enum Command {
         local: SocketAddr,
         codec: Codec,
         role: LegRole,
+        #[serde(default)]
+        relayed: bool,
     },
     CloseLeg {
         leg: u32,

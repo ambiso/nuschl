@@ -188,15 +188,20 @@ impl Call {
                 local,
                 codec,
                 role,
+                relayed,
             } => {
-                if leg <= self.last_leg || self.legs.len() == MAX_LEGS {
+                if leg <= self.last_leg
+                    || self.legs.len() == MAX_LEGS
+                    || relayed && role == LegRole::Direct
+                {
                     return Err(());
                 }
                 let codec = match codec {
                     Codec::Av1 => VideoCodec::Av1,
                     Codec::Vp9 => VideoCodec::Vp9,
                 };
-                let peer = Peer::for_call(local, now, codec, MAX_WIRE_VIDEO).map_err(|_| ())?;
+                let peer =
+                    Peer::for_call(local, now, codec, MAX_WIRE_VIDEO, relayed).map_err(|_| ())?;
                 self.legs.insert(
                     leg,
                     Leg {

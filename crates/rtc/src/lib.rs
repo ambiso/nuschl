@@ -227,7 +227,7 @@ impl Peer {
     /// Configure the call's video codec while retaining Opus for audio. Socket
     /// adapters enforce the connection policy before creating a host candidate.
     pub fn with_video(address: SocketAddr, now: Instant, video: VideoCodec) -> Result<Self, Error> {
-        Self::build(address, now, video, None)
+        Self::build(address, now, video, None, false)
     }
 
     /// Video-call legs carry bounded encrypted frames and let the RTP pacer
@@ -237,8 +237,9 @@ impl Peer {
         now: Instant,
         video: VideoCodec,
         video_limit: usize,
+        relayed: bool,
     ) -> Result<Self, Error> {
-        Self::build(address, now, video, Some(video_limit))
+        Self::build(address, now, video, Some(video_limit), relayed)
     }
 
     fn build(
@@ -246,6 +247,7 @@ impl Peer {
         now: Instant,
         video: VideoCodec,
         call_video_limit: Option<usize>,
+        relayed: bool,
     ) -> Result<Self, Error> {
         if address.port() == 0 || address.ip().is_unspecified() || address.ip().is_multicast() {
             return Err(Error::Address);
@@ -282,7 +284,13 @@ impl Peer {
                 str0m::bwe::Bitrate::bps(CALL_MAX_BITRATE),
             );
         }
-        rtc.add_local_candidate(Candidate::host(address, "udp").map_err(|_| Error::Address)?)
+        let candidate = if relayed {
+            // The broker uses the allocation address as the RTC socket identity.
+            Candidate::relayed(address, address, "udp")
+        } else {
+            Candidate::host(address, "udp")
+        };
+        rtc.add_local_candidate(candidate.map_err(|_| Error::Address)?)
             .ok_or(Error::Address)?;
         Ok(Self {
             rtc,
