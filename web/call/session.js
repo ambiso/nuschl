@@ -204,9 +204,8 @@ export class Call extends EventTarget {
   /** Publishes `track`, from the user's own Start camera or Share screen, as this
    * page's `kind` source ("camera" or "screen"). */
   async publish(kind, track, tier) {
-    const pending = Promise.resolve(this.publishing).then(
-      () => this.publishTrack(kind, track, tier), () => this.publishTrack(kind, track, tier),
-    );
+    const pending = Promise.resolve(this.publishing).catch(() => {})
+      .then(() => this.publishTrack(kind, track, tier));
     this.publishing = pending;
     try {
       await pending;
