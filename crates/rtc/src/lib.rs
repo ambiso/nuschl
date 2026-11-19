@@ -182,6 +182,7 @@ pub struct Peer {
     rtc: Rtc,
     address: SocketAddr,
     video: VideoCodec,
+    subscription: bool,
     signaling: Signaling,
     tracks: Vec<TrackState>,
     now: Instant,
@@ -246,6 +247,7 @@ impl Peer {
             rtc,
             address,
             video,
+            subscription: false,
             signaling: Signaling::New,
             tracks: Vec::with_capacity(4),
             now,
@@ -264,7 +266,12 @@ impl Peer {
         };
         // Compatibility API has no semantic manifest on its wire. It is
         // deliberately restricted to the original one-audio/one-video layout.
-        let description = self.make_offer(purposes, SignalingId::new([1; 16])?, true)?;
+        let description = self.make_offer(
+            purposes,
+            SignalingId::new([1; 16])?,
+            true,
+            Direction::SendRecv,
+        )?;
         Ok(description.sdp)
     }
 
@@ -275,7 +282,16 @@ impl Peer {
         purposes: &[Purpose],
         id: SignalingId,
     ) -> Result<Description, Error> {
-        self.make_offer(purposes, id, false)
+        self.make_offer(purposes, id, false, Direction::SendRecv)
+    }
+
+    /// The publish leg sends the caller's tracks to its configured SFU.
+    pub fn offer_publish(
+        &mut self,
+        purposes: &[Purpose],
+        id: SignalingId,
+    ) -> Result<Description, Error> {
+        self.make_offer(purposes, id, false, Direction::SendOnly)
     }
 
     fn make_offer(
@@ -283,6 +299,7 @@ impl Peer {
         purposes: &[Purpose],
         id: SignalingId,
         legacy: bool,
+        direction: Direction,
     ) -> Result<Description, Error> {
         if self.closed || !matches!(self.signaling, Signaling::New) {
             return Err(Error::SignalingState);
@@ -303,7 +320,7 @@ impl Peer {
                 Kind::Audio => MediaKind::Audio,
                 Kind::Video => MediaKind::Video,
             };
-            let mid = api.add_media(kind, Direction::SendRecv, None, None, None);
+            let mid = api.add_media(kind, direction, None, None, None);
             bindings.push(TrackBinding {
                 mid: mid.to_string(),
                 purpose,
@@ -420,6 +437,31 @@ impl Peer {
             return Err(error.into());
         }
         Ok(())
+    }
+
+    /// Accept an authenticated SFU subscribe offer. Retired sections and its
+    /// control data channel stay available to str0m without becoming media routes.
+    pub fn accept_subscription(
+        &mut self,
+        sdp: &str,
+        bindings: &[TrackBinding],
+    ) -> Result<String, Error> {
+        if self.closed || (!matches!(self.signaling, Signaling::New) && !self.subscription) {
+            return Err(Error::SignalingState);
+        }
+        signaling::validate_subscription(sdp, bindings)?;
+        let offer = SdpOffer::from_sdp_string(sdp).map_err(|_| Error::Sdp)?;
+        let answer = match self.rtc.sdp_api().accept_offer(offer) {
+            Ok(answer) => answer,
+            Err(error) => {
+                self.close();
+                return Err(error.into());
+            }
+        };
+        self.bind_tracks(bindings);
+        self.subscription = true;
+        self.signaling = Signaling::Negotiated;
+        Ok(answer.to_sdp_string())
     }
 
     pub fn track(&self, kind: Kind) -> Option<Track> {
@@ -638,21 +680,29 @@ impl Peer {
                         } else {
                             Kind::Video
                         };
-                        if self
-                            .purpose(Track(media.mid))
-                            .is_none_or(|p| p.kind() != kind)
-                        {
+                        if self.purpose(Track(media.mid)).map(Purpose::kind) != Some(kind) {
+                            if self.subscription {
+                                continue;
+                            }
                             self.close();
                             return Err(Error::Frame);
                         }
                     }
                     RtcEvent::MediaData(media) => {
-                        let purpose = self.purpose(Track(media.mid)).ok_or(Error::Frame)?;
+                        let Some(purpose) = self.purpose(Track(media.mid)) else {
+                            if self.subscription {
+                                continue;
+                            }
+                            return Err(Error::Frame);
+                        };
                         let kind = purpose.kind();
                         if media.params.spec().codec != kind.codec(self.video)
                             || media.data.is_empty()
                             || media.data.len() > kind.limit()
                         {
+                            if self.subscription {
+                                continue;
+                            }
                             return Err(Error::Frame);
                         }
                         return Ok(Output::Event(Event::Frame(Frame {

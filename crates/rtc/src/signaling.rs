@@ -143,6 +143,63 @@ fn valid_mid(mid: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
 
+pub(crate) fn validate_subscription(sdp: &str, bindings: &[TrackBinding]) -> Result<(), Error> {
+    const MAX_SECTIONS: usize = 48;
+    if sdp.is_empty() || sdp.len() > MAX_SDP_BYTES || bindings.len() > MAX_SECTIONS {
+        return Err(Error::Sdp);
+    }
+    let mut seen = Vec::new();
+    let mut media = 0;
+    let mut control = false;
+    for section in sdp.split("\nm=").skip(1) {
+        let mut lines = section.lines();
+        let mut fields = lines.next().ok_or(Error::Sdp)?.split_ascii_whitespace();
+        let kind = fields.next().ok_or(Error::Sdp)?;
+        let port = fields
+            .next()
+            .and_then(|p| p.parse::<u16>().ok())
+            .ok_or(Error::Sdp)?;
+        let mut mid = None;
+        let mut inactive = port == 0;
+        for line in lines {
+            if let Some(label) = line.strip_prefix("a=mid:") {
+                if mid.is_some() || !valid_mid(label) {
+                    return Err(Error::Sdp);
+                }
+                mid = Some(label);
+            }
+            inactive |= line == "a=inactive";
+        }
+        let mid = mid.ok_or(Error::Sdp)?;
+        if seen.len() == MAX_SECTIONS || seen.contains(&mid) {
+            return Err(Error::Sdp);
+        }
+        seen.push(mid);
+        let kind = match kind {
+            "audio" => Kind::Audio,
+            "video" => Kind::Video,
+            "application" if !control => {
+                control = true;
+                continue;
+            }
+            _ => return Err(Error::Sdp),
+        };
+        if !inactive {
+            if !bindings
+                .iter()
+                .any(|b| b.mid == mid && b.purpose.kind() == kind)
+            {
+                return Err(Error::Description);
+            }
+            media += 1;
+        }
+    }
+    if seen.is_empty() || bindings.len() != media {
+        return Err(Error::Description);
+    }
+    Ok(())
+}
+
 pub(crate) fn validate(
     description: &Description,
     expected: SignalingId,

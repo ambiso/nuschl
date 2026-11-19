@@ -7636,6 +7636,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nuschl-rtc-worker"
+version = "0.2.0"
+dependencies = [
+ "nuschl-ipc",
+ "nuschl-rtc",
+ "nuschl-sframe",
+ "nuschl-testkit",
+ "tokio",
+]
+
+[[package]]
 name = "nuschl-sandbox"
 version = "0.2.0"
 dependencies = [
