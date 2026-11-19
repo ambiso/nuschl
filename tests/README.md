@@ -295,12 +295,26 @@ VoiceOver), Bluetooth, echo, and mobile background-call behavior still need nati
 platform testing. The macOS Seatbelt profiles have a macOS-only test that has not run;
 the Windows sandbox has run in the Windows 11 VM only (above).
 
+## Linux video encoder
+
+`cargo test -p nuschl-video-worker` starts the real encoder through bubblewrap
+and prlimit, kills it and verifies recovery on a later frame. It also runs
+the synthetic `nuschl-video-probe` and verifies the AV1 dimensions and pixels
+with FFmpeg's libdav1d decoder. It runs a separate private PipeWire daemon to
+deliver a synthetic video stream through the same inherited file-descriptor
+path that the portal capture probe uses. The flake's `nuschl-video-worker-unit`
+check runs the same test. `vaapi_capture_from_the_inherited_pipewire_connection`
+is local-only because it needs a DRM render node with AV1 hardware encode.
+Both capture tests feed synthetic frames, decode AV1, and verify that a new
+bitrate target persists across subsequent frames.
+
 ## WebRTC transport trial
 
 `cargo test -p nuschl-rtc` exchanges ICE/DTLS/SRTP datagrams in memory with a virtual
-clock. It checks bidirectional Opus/VP8 payloads and timestamps, video fragmentation
-and retransmission, audio progress during video loss, video backpressure, SDP/media
-limits, shutdown, fingerprint rejection, authenticated-packet tampering and replay.
+clock. It checks bidirectional Opus/VP8 payloads and timestamps, fragmented AV1 and
+VP9, retransmission, audio progress during video loss, video backpressure, SDP/media
+limits, relay-only rejection before socket binding, shutdown, fingerprint rejection,
+authenticated-packet tampering and replay.
 The harness drops an interior video packet; a missing first-ever RTP packet has no
 previous sequence number from which a receiver can infer the loss.
 

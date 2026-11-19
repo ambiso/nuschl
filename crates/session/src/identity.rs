@@ -16,7 +16,7 @@ use nuschl_ipc::{
     Envelope, MAX_FRAME_BYTES,
     crypto::{
         ContactView, CryptoRequest, CryptoResponse, CryptoServer, HeadOutcome, IdentityView,
-        KeyTransparencySettings, KtRecordBytes, MonitorOutcome,
+        KeyTransparencySettings, KtRecordBytes, MonitorOutcome, call,
     },
     read_frame_async, write_frame,
 };
@@ -24,15 +24,30 @@ use nuschl_protocol::nuschl::{
     kind,
     v1::{self, error::Code},
 };
-use nuschl_sandbox::{Role, Worker};
+use nuschl_sandbox::{Containment, Role, Worker};
 use prost::Message as _;
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 use tokio::{
     io::AsyncWriteExt,
-    process::Command,
+    process::{Child, ChildStdin, ChildStdout, Command},
     sync::{mpsc, oneshot},
     time::timeout,
 };
+
+#[cfg(target_os = "linux")]
+use std::{
+    os::{fd::OwnedFd, unix::net::UnixStream},
+    process::Stdio,
+};
+#[cfg(target_os = "linux")]
+use tokio::net::UnixStream as AsyncUnixStream;
 
 /// Request ids of the key-transparency driver (never used by the frontend).
 pub(crate) const KT_REQUEST: u64 = 1 << 62;
@@ -49,6 +64,8 @@ type Spawn = Box<dyn Fn() -> std::io::Result<Command> + Send + Sync>;
 
 struct Job {
     request: CryptoRequest,
+    #[cfg(target_os = "linux")]
+    endpoint: Option<OwnedFd>,
     reply: oneshot::Sender<Result<CryptoResponse, Error>>,
 }
 
@@ -57,39 +74,130 @@ struct Job {
 #[derive(Clone)]
 pub struct CryptoHandle {
     jobs: mpsc::Sender<Job>,
+    last_call_generation: Arc<AtomicU64>,
 }
 
 impl CryptoHandle {
     /// The worker in its sandbox (`nuschl_sandbox::Role::Crypto`), on
     /// `directory`, which is created owner-only.
     pub fn start(executable: PathBuf, directory: PathBuf) -> Self {
-        Self::start_with(Box::new(move || {
-            create_private_directory(&directory)?;
-            let role = Role::Crypto {
-                directory: &directory,
-            };
-            nuschl_sandbox::command(&executable, role)
-                .map_err(|error| std::io::Error::other(error.to_string()))
-        }))
+        Self::with_transport(
+            Box::new(move || {
+                create_private_directory(&directory)?;
+                let role = Role::Crypto {
+                    directory: &directory,
+                };
+                nuschl_sandbox::command(&executable, role)
+                    .map_err(|error| std::io::Error::other(error.to_string()))
+            }),
+            cfg!(target_os = "linux"),
+        )
     }
 
     /// The worker from a custom command (tests, platforms without a sandbox).
     pub fn start_with(spawn: Spawn) -> Self {
+        Self::with_transport(spawn, false)
+    }
+
+    fn with_transport(spawn: Spawn, capability_transport: bool) -> Self {
         let (jobs, receiver) = mpsc::channel(64);
-        tokio::spawn(supervise(Arc::new(spawn), receiver));
-        Self { jobs }
+        let last_call_generation = Arc::new(AtomicU64::new(0));
+        tokio::spawn(supervise(
+            Arc::new(spawn),
+            receiver,
+            last_call_generation.clone(),
+            capability_transport,
+        ));
+        Self {
+            jobs,
+            last_call_generation,
+        }
     }
 
     pub async fn request(&self, request: CryptoRequest) -> Result<CryptoResponse, Error> {
+        if matches!(request, CryptoRequest::Call(_)) {
+            return Err(Error::Worker("use the call signaling interface".into()));
+        }
+        self.submit(request).await
+    }
+
+    async fn submit(&self, request: CryptoRequest) -> Result<CryptoResponse, Error> {
         let (reply, answer) = oneshot::channel();
+        self.send(
+            Job {
+                request,
+                #[cfg(target_os = "linux")]
+                endpoint: None,
+                reply,
+            },
+            answer,
+        )
+        .await
+    }
+
+    /// Move one end of a connected local socket into the current call. The
+    /// supervisor transfers the other end to its RTC process.
+    #[cfg(target_os = "linux")]
+    pub async fn attach_media(&self, generation: u64, endpoint: OwnedFd) -> Result<(), Error> {
+        let (reply, answer) = oneshot::channel();
+        let request = CryptoRequest::Call(call::Request {
+            generation,
+            action: call::Action::AttachMedia,
+        });
+        self.send(
+            Job {
+                request,
+                endpoint: Some(endpoint),
+                reply,
+            },
+            answer,
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn send(
+        &self,
+        job: Job,
+        answer: oneshot::Receiver<Result<CryptoResponse, Error>>,
+    ) -> Result<CryptoResponse, Error> {
         self.jobs
-            .send(Job { request, reply })
+            .send(job)
             .await
             .map_err(|_| Error::Worker("the crypto worker is gone".into()))?;
         match answer.await {
             Ok(Ok(CryptoResponse::Rejected(reason))) => Err(Error::Worker(reason)),
             Ok(result) => result,
             Err(_) => Err(Error::Worker("the crypto worker is gone".into())),
+        }
+    }
+
+    /// Send a scoped call request to the worker using the existing supervisor.
+    pub async fn call_signal(&self, request: call::Request) -> Result<call::Reply, Error> {
+        if matches!(request.action, call::Action::Open { .. }) {
+            self.reserve_call_generation(request.generation)?;
+        }
+        self.call_signal_reserved(request).await
+    }
+
+    pub(crate) fn reserve_call_generation(&self, generation: u64) -> Result<(), Error> {
+        // Keep reservations for the life of the handle, across worker restarts.
+        let previous = self
+            .last_call_generation
+            .fetch_max(generation, Ordering::Relaxed);
+        if generation <= previous {
+            return Err(Error::Worker("call generation is already in use".into()));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn call_signal_reserved(
+        &self,
+        request: call::Request,
+    ) -> Result<call::Reply, Error> {
+        match self.submit(CryptoRequest::Call(request)).await? {
+            CryptoResponse::Call(reply) => Ok(reply),
+            _ => Err(Error::Worker("crypto worker call response mismatch".into())),
         }
     }
 }
@@ -102,12 +210,28 @@ fn create_private_directory(directory: &std::path::Path) -> std::io::Result<()> 
     builder.create(directory)
 }
 
-async fn supervise(spawn: Arc<Spawn>, mut jobs: mpsc::Receiver<Job>) {
-    let mut running: Option<Worker> = None;
+async fn supervise(
+    spawn: Arc<Spawn>,
+    mut jobs: mpsc::Receiver<Job>,
+    last_call_generation: Arc<AtomicU64>,
+    capability_transport: bool,
+) {
+    let mut running: Option<Running> = None;
     let mut next_id = 0_u64;
     while let Some(job) = jobs.recv().await {
+        if let CryptoRequest::Call(call::Request {
+            generation,
+            action: call::Action::Open { .. } | call::Action::AttachMedia,
+        }) = &job.request
+            && *generation != last_call_generation.load(Ordering::Relaxed)
+        {
+            let _ = job
+                .reply
+                .send(Err(Error::Worker("stale call generation".into())));
+            continue;
+        }
         if running.is_none() {
-            match start(&spawn).await {
+            match start(&spawn, capability_transport).await {
                 Ok(worker) => running = Some(worker),
                 Err(error) => {
                     let _ = job.reply.send(Err(error));
@@ -119,40 +243,134 @@ async fn supervise(spawn: Arc<Spawn>, mut jobs: mpsc::Receiver<Job>) {
             continue;
         };
         next_id += 1;
-        let result = match timeout(WORKER_TIMEOUT, exchange(worker, next_id, &job.request)).await {
+        let result = match timeout(WORKER_TIMEOUT, exchange(worker, next_id, &job)).await {
             Ok(result) => result,
             Err(_) => Err(Error::Timeout("waiting for the crypto worker")),
         };
         if result.is_err()
             && let Some(mut worker) = running.take()
         {
-            let _ = worker.child.kill().await;
+            nuschl_sandbox::reap(&mut worker.child).await;
         }
+        #[cfg(target_os = "linux")]
+        drop(job.endpoint);
         let _ = job.reply.send(result);
     }
     if let Some(mut worker) = running {
-        let _ = worker.child.kill().await;
+        nuschl_sandbox::reap(&mut worker.child).await;
     }
 }
 
-async fn start(spawn: &Spawn) -> Result<Worker, Error> {
-    let worker = nuschl_sandbox::spawn(spawn()?).await;
-    worker.map_err(|e| Error::Worker(e.to_string()))
+enum Input {
+    Pipe(ChildStdin),
+    #[cfg(target_os = "linux")]
+    Capabilities(AsyncUnixStream),
 }
 
-async fn exchange(
-    worker: &mut Worker,
-    id: u64,
-    request: &CryptoRequest,
-) -> Result<CryptoResponse, Error> {
+struct Running {
+    child: Child,
+    input: Input,
+    output: ChildStdout,
+    _containment: Containment,
+}
+
+async fn start(spawn: &Spawn, capability_transport: bool) -> Result<Running, Error> {
+    let command = spawn()?;
+    #[cfg(target_os = "linux")]
+    if capability_transport {
+        return start_with_capabilities(command).await;
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = capability_transport;
+    let Worker {
+        child,
+        input,
+        output,
+        containment,
+    } = nuschl_sandbox::spawn(command)
+        .await
+        .map_err(|error| Error::Worker(error.to_string()))?;
+    Ok(Running {
+        child,
+        input: Input::Pipe(input),
+        output,
+        _containment: containment,
+    })
+}
+
+#[cfg(target_os = "linux")]
+async fn start_with_capabilities(mut command: Command) -> Result<Running, Error> {
+    let (supervisor, worker) = UnixStream::pair()?;
+    supervisor.set_nonblocking(true)?;
+    let input = Input::Capabilities(AsyncUnixStream::from_std(supervisor)?);
+    let mut child = command
+        .stdin(Stdio::from(OwnedFd::from(worker)))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    let (_containment, output) = match (nuschl_sandbox::contain(&child), child.stdout.take()) {
+        (Ok(containment), Some(output)) => (containment, output),
+        _ => {
+            nuschl_sandbox::reap(&mut child).await;
+            return Err(Error::Worker(
+                "the crypto worker could not be contained".into(),
+            ));
+        }
+    };
+    Ok(Running {
+        child,
+        input,
+        output,
+        _containment,
+    })
+}
+
+async fn exchange(worker: &mut Running, id: u64, job: &Job) -> Result<CryptoResponse, Error> {
+    let request = &job.request;
     let mut bytes = Vec::new();
     write_frame(&mut bytes, &Envelope::new(id, request))?;
-    worker.input.write_all(&bytes).await?;
-    worker.input.flush().await?;
-    let envelope: Envelope<CryptoResponse> =
-        read_frame_async(&mut worker.output, MAX_FRAME_BYTES).await?;
+    match &mut worker.input {
+        Input::Pipe(input) => {
+            #[cfg(target_os = "linux")]
+            if job.endpoint.is_some() {
+                return Err(Error::Worker(
+                    "the crypto worker has no capability transport".into(),
+                ));
+            }
+            input.write_all(&bytes).await?;
+            input.flush().await?;
+        }
+        #[cfg(target_os = "linux")]
+        Input::Capabilities(input) => {
+            let body = if let Some(endpoint) = &job.endpoint {
+                let (&first, rest) = bytes
+                    .split_first()
+                    .ok_or_else(|| Error::Worker("empty crypto frame".into()))?;
+                nuschl_ipc::crypto::descriptor::send_first(input, first, endpoint).await?;
+                rest
+            } else {
+                &bytes
+            };
+            input.write_all(body).await?;
+        }
+    }
+    let bound = if matches!(request, CryptoRequest::Call(_)) {
+        nuschl_ipc::crypto::call::MAX_REPLY_FRAME_BYTES
+    } else {
+        MAX_FRAME_BYTES
+    };
+    let envelope: Envelope<CryptoResponse> = read_frame_async(&mut worker.output, bound).await?;
     if envelope.request_id != id {
         return Err(Error::Worker("crypto worker protocol mismatch".into()));
+    }
+    match (request, &envelope.payload) {
+        (CryptoRequest::Call(request), CryptoResponse::Call(reply)) if reply.matches(request) => {}
+        (CryptoRequest::Call(_), CryptoResponse::Rejected(_)) => {}
+        (CryptoRequest::Call(_), _) | (_, CryptoResponse::Call(_)) => {
+            return Err(Error::Worker("crypto worker call response mismatch".into()));
+        }
+        _ => {}
     }
     Ok(envelope.payload)
 }

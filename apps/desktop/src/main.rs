@@ -29,6 +29,8 @@ mod math;
 mod menus;
 mod motion;
 mod names;
+#[cfg(target_os = "linux")]
+mod native_call;
 mod notify;
 mod panels;
 mod picker;

@@ -78,6 +78,23 @@ tests for it. This check requires a working sandbox and rejects a substituted
 successful executable; it checks eventual cleanup, not atomic worker-tree exit
 or platform-wide confinement.
 
+The Linux video encoder diagnostic uses the fixed `--encode` sandbox role
+with generated I420 frames. Run `nix run .#video-probe` for a summary or
+`nix run .#video-probe -- --obu` for elementary AV1 on standard output.
+Use `--screen` or `--camera` to request one live frame through the portal.
+The probe prints the frame dimensions and encoded byte count. Nix builds try
+the isolated VA-API pipeline first and fall back to the software worker if
+hardware setup fails before opening the granted connection. Starting again
+after a running PipeWire stream fails requests a fresh portal connection.
+The native capture adapter applies live bitrate targets through its bounded
+socket protocol and coalesces pending targets to the latest value.
+The VA-API path emits keyframes and interframes. The software path encodes
+independent frames at up to 15 fps. The capture integration test opens one
+connection to a private PipeWire daemon with a synthetic video node. The local
+GPU variant checks interframes and recovery after a requested keyframe.
+The native SFU test encodes, sends and decodes AV1 in confined workers and
+checks the resulting pixels. Compositor DMA-BUF verification is tracked in #418.
+
 ## Continuous integration
 
 Pull requests to `main` and pushes to `main` run one command on the self-hosted
@@ -228,6 +245,19 @@ peers; no microphone, camera, public STUN service or external server is used. Th
 probe reports encoded-frame delivery delay and checks received bytes; it is not a
 microphone-to-speaker latency measurement. Video admission follows the bandwidth
 estimate, reserves room for audio and drops frames rather than accumulating a stale
-queue. Desktop video calls, authenticated server signaling, TURN, browser
-interoperability and adaptive playout remain future work
-([tests/README.md](../tests/README.md#webrtc-transport-trial), [clients.md](clients.md#video-queued)).
+queue. The transport test details are in [tests/README.md](../tests/README.md#webrtc-transport-trial).
+
+The native call tests use a loopback TLS terminator, a real SFU and two confined
+crypto workers. On Linux the media test starts a confined RTC worker for each
+participant and forwards a synthetic AV1 keyframe through the SFU. It checks the
+authenticated frame bytes, source identity and worker shutdown. Run the Nix
+`nuschl-session-unit` check, which supplies the crypto worker, RTC worker and SFU
+executables.
+The standalone `nuschl-rtc-worker-unit` check exercises SFrame and two UDP legs
+using a synthetic AV1 frame in the worker's confined role.
+
+The Linux SDK media API accepts independent video frames in a two-person
+publisher/viewer call. It uses the authenticated WSS peer address and the SFU's
+configured UDP port, which defaults to 3479. Relay-only native media needs a TURN
+adapter and returns an error before opening a media socket. Native capture and
+GPUI playback integration remain tracked in #419.

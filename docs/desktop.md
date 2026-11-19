@@ -196,16 +196,23 @@ without text.
 
 ## Calls
 
-In the channel you are in, **Start call** and **Share screen** start a call
-(one per channel) on a stock Mumble server or a compatible `nuschld`. Nuschl opens the call page in your browser,
-where you start your camera and share your screen, and posts the call to the
-channel:
+On a stock Mumble server or compatible `nuschld`, **Start call** opens the
+call page in your browser. You can start your camera and share your screen
+from the page. Nuschl posts the call to the channel:
 
 - Nuschl users in the channel see a card with **Join**, which opens the page
   for them. People who enter the channel later get the card
   too. The card goes when its creator ends the call or leaves the channel.
 - Everyone gets a message with the link, so stock Mumble users can open the
   page and share their camera and screen as well.
+
+On Linux with the video and RTC workers installed, **Start camera** and
+**Share screen** use the desktop portal. A monitor share hides Nuschl
+conversations behind a curtain until capture stops. Recipients can choose
+**Watch here** to play an incoming AV1 source inside Nuschl. The native path
+supports one publisher and one viewer. **Open in browser** opens the same
+room for group calls and other call modes. Relay-only calls use the browser
+and TURN. Voice stays in Mumble.
 
 In a direct conversation with someone online, the same buttons start a call
 with that person alone: the link goes to them as a private message, and the

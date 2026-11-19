@@ -303,6 +303,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "nuschl-rtc-worker" = rec {
+      packageId = "nuschl-rtc-worker";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "nuschl-rtc-worker";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "nuschl-sandbox" = rec {
       packageId = "nuschl-sandbox";
       build = internal.buildRustCrateWithFeatures {
@@ -447,6 +457,16 @@ rec {
       packageId = "nuschl-update-worker";
       build = internal.buildRustCrateWithFeatures {
         packageId = "nuschl-update-worker";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
+    "nuschl-video-worker" = rec {
+      packageId = "nuschl-video-worker";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "nuschl-video-worker";
       };
 
       # Debug support which might change between releases.
@@ -1082,7 +1102,7 @@ rec {
           }
           {
             name = "zerocopy";
-            packageId = "zerocopy";
+            packageId = "zerocopy 0.8.63";
             usesDefaultFeatures = false;
             features = [ "simd" ];
           }
@@ -1906,7 +1926,7 @@ rec {
           "wayland-client" = [ "dep:wayland-client" ];
           "wayland-protocols" = [ "dep:wayland-protocols" ];
         };
-        resolvedDefaultFeatures = [ "async-io" "file_chooser" "global_shortcuts" "inhibit" "open_uri" "secret" "settings" "wayland" "wayland-backend" "wayland-client" "wayland-protocols" ];
+        resolvedDefaultFeatures = [ "async-io" "camera" "file_chooser" "global_shortcuts" "inhibit" "open_uri" "screencast" "secret" "settings" "wayland" "wayland-backend" "wayland-client" "wayland-protocols" ];
       };
       "asn1-rs" = rec {
         crateName = "asn1-rs";
@@ -2025,6 +2045,16 @@ rec {
             name = "syn";
             packageId = "syn 2.0.119";
           }
+        ];
+
+      };
+      "assert_matches" = rec {
+        crateName = "assert_matches";
+        version = "1.5.0";
+        edition = "2015";
+        sha256 = "1a9b3p9vy0msylyr2022sk5flid37ini1dxji5l3vwxsvw4xcd4v";
+        authors = [
+          "Murarth <murarth@gmail.com>"
         ];
 
       };
@@ -2718,6 +2748,68 @@ rec {
           "portable-atomic" = [ "dep:portable-atomic" ];
         };
       };
+      "atomic_refcell" = rec {
+        crateName = "atomic_refcell";
+        version = "0.1.14";
+        edition = "2021";
+        sha256 = "193ijlkf4lyi7mpds3izvyn9p06dw31yd5injh2l5zxyg5rj5r11";
+        authors = [
+          "Bobby Holley <bobbyholley@gmail.com>"
+        ];
+        features = {
+          "portable-atomic" = [ "dep:portable-atomic" ];
+          "serde" = [ "dep:serde" ];
+        };
+        resolvedDefaultFeatures = [ "default" ];
+      };
+      "atomig" = rec {
+        crateName = "atomig";
+        version = "0.4.3";
+        edition = "2021";
+        sha256 = "0qwqky8p5y72bs2z6m0v311d18y4g3xq7qi50d2wdxc9pgs423yd";
+        authors = [
+          "Lukas Kalbertodt <lukas.kalbertodt@gmail.com>"
+        ];
+        dependencies = [
+          {
+            name = "atomig-macro";
+            packageId = "atomig-macro";
+            optional = true;
+          }
+        ];
+        features = {
+          "atomig-macro" = [ "dep:atomig-macro" ];
+          "derive" = [ "atomig-macro" ];
+          "serde" = [ "dep:serde" ];
+        };
+        resolvedDefaultFeatures = [ "atomig-macro" "derive" ];
+      };
+      "atomig-macro" = rec {
+        crateName = "atomig-macro";
+        version = "0.4.0";
+        edition = "2021";
+        sha256 = "1xd4nm7k61j5as71kmjzvvxakrpi4g66lgynwy6mh85r0sx8vja9";
+        procMacro = true;
+        libName = "atomig_macro";
+        authors = [
+          "Lukas Kalbertodt <lukas.kalbertodt@gmail.com>"
+        ];
+        dependencies = [
+          {
+            name = "proc-macro2";
+            packageId = "proc-macro2";
+          }
+          {
+            name = "quote";
+            packageId = "quote";
+          }
+          {
+            name = "syn";
+            packageId = "syn 2.0.119";
+          }
+        ];
+
+      };
       "atspi" = rec {
         crateName = "atspi";
         version = "0.29.0";
@@ -2946,6 +3038,39 @@ rec {
         sha256 = "0lqasy5i30flcgih1b50kvsk6z32g09r1q4ql7q81pj6228jy0zj";
         authors = [
           "Josh Stone <cuviper@gmail.com>"
+        ];
+
+      };
+      "av-data" = rec {
+        crateName = "av-data";
+        version = "0.4.4";
+        edition = "2021";
+        sha256 = "13ih12xbhjykwrncdsvnibjanjymmxbn2mqc3014r4hpsfjpp9pw";
+        libName = "av_data";
+        authors = [
+          "Luca Barbato <lu_zero@gentoo.org>"
+        ];
+        dependencies = [
+          {
+            name = "byte-slice-cast";
+            packageId = "byte-slice-cast";
+          }
+          {
+            name = "bytes";
+            packageId = "bytes";
+          }
+          {
+            name = "num-derive";
+            packageId = "num-derive";
+          }
+          {
+            name = "num-rational";
+            packageId = "num-rational";
+          }
+          {
+            name = "num-traits";
+            packageId = "num-traits";
+          }
         ];
 
       };
@@ -4108,6 +4233,20 @@ rec {
           "Matt Brubeck <mbrubeck@limpet.net>"
         ];
 
+      };
+      "byte-slice-cast" = rec {
+        crateName = "byte-slice-cast";
+        version = "1.2.3";
+        edition = "2018";
+        sha256 = "178c6ghnqwq472xypxabk27kjid01qxifw3bff8nj63jf8pihxbm";
+        libName = "byte_slice_cast";
+        authors = [
+          "Sebastian Dröge <sebastian@centricular.com>"
+        ];
+        features = {
+          "default" = [ "std" ];
+        };
+        resolvedDefaultFeatures = [ "default" "std" ];
       };
       "bytecodec" = rec {
         crateName = "bytecodec";
@@ -11323,7 +11462,7 @@ rec {
           "default" = [ "std" ];
           "std" = [ "alloc" ];
         };
-        resolvedDefaultFeatures = [ "alloc" "std" ];
+        resolvedDefaultFeatures = [ "alloc" "default" "std" ];
       };
       "futures-task" = rec {
         crateName = "futures-task";
@@ -11808,6 +11947,61 @@ rec {
         };
         resolvedDefaultFeatures = [ "read" "read-core" ];
       };
+      "gio-sys" = rec {
+        crateName = "gio-sys";
+        version = "0.22.11";
+        edition = "2024";
+        sha256 = "0sg6d7kg924ihh0spgxphv8yj1y4d35nrgq9y53m0iws1x4m7hmr";
+        libName = "gio_sys";
+        authors = [
+          "The gtk-rs Project Developers"
+        ];
+        dependencies = [
+          {
+            name = "glib-sys";
+            packageId = "glib-sys";
+          }
+          {
+            name = "gobject-sys";
+            packageId = "gobject-sys";
+          }
+          {
+            name = "libc";
+            packageId = "libc";
+          }
+          {
+            name = "windows-sys";
+            packageId = "windows-sys 0.61.2";
+            target = { target, features }: (target."windows" or false);
+            features = [ "Win32_Networking_WinSock" ];
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "system-deps";
+            packageId = "system-deps 9.0.1";
+          }
+        ];
+        features = {
+          "v2_60" = [ "v2_58" ];
+          "v2_62" = [ "v2_60" ];
+          "v2_64" = [ "v2_62" ];
+          "v2_66" = [ "v2_64" ];
+          "v2_68" = [ "v2_66" ];
+          "v2_70" = [ "v2_68" ];
+          "v2_72" = [ "v2_70" ];
+          "v2_74" = [ "v2_72" ];
+          "v2_76" = [ "v2_74" ];
+          "v2_78" = [ "v2_76" ];
+          "v2_80" = [ "v2_78" ];
+          "v2_82" = [ "v2_80" ];
+          "v2_84" = [ "v2_82" ];
+          "v2_86" = [ "v2_84" ];
+          "v2_88" = [ "v2_86" ];
+          "v2_90" = [ "v2_88" ];
+          "v2_92" = [ "v2_90" ];
+        };
+      };
       "gl_generator" = rec {
         crateName = "gl_generator";
         version = "0.14.0";
@@ -11834,6 +12028,189 @@ rec {
           }
         ];
         features = {
+        };
+      };
+      "glib" = rec {
+        crateName = "glib";
+        version = "0.22.11";
+        edition = "2024";
+        sha256 = "1nh4yridkf1pn3w17iszfilzq3m9hajj76yfwld781rajzqwpi69";
+        authors = [
+          "The gtk-rs Project Developers"
+        ];
+        dependencies = [
+          {
+            name = "bitflags";
+            packageId = "bitflags 2.13.2";
+          }
+          {
+            name = "futures-channel";
+            packageId = "futures-channel";
+            optional = true;
+          }
+          {
+            name = "futures-core";
+            packageId = "futures-core";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "futures-executor";
+            packageId = "futures-executor";
+            optional = true;
+          }
+          {
+            name = "futures-task";
+            packageId = "futures-task";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "futures-util";
+            packageId = "futures-util";
+            optional = true;
+          }
+          {
+            name = "gio-sys";
+            packageId = "gio-sys";
+            optional = true;
+          }
+          {
+            name = "glib-macros";
+            packageId = "glib-macros";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "glib-sys";
+            packageId = "glib-sys";
+          }
+          {
+            name = "gobject-sys";
+            packageId = "gobject-sys";
+          }
+          {
+            name = "libc";
+            packageId = "libc";
+          }
+          {
+            name = "memchr";
+            packageId = "memchr";
+          }
+          {
+            name = "smallvec";
+            packageId = "smallvec";
+            features = [ "union" "const_generics" "const_new" ];
+          }
+        ];
+        features = {
+          "default" = [ "gio" "futures" ];
+          "futures" = [ "futures-core" "futures-task" "futures-executor" "futures-channel" "futures-util" ];
+          "futures-channel" = [ "dep:futures-channel" ];
+          "futures-core" = [ "dep:futures-core" ];
+          "futures-executor" = [ "dep:futures-executor" ];
+          "futures-task" = [ "dep:futures-task" ];
+          "futures-util" = [ "dep:futures-util" ];
+          "gio" = [ "gio-sys" "futures" ];
+          "gio-sys" = [ "dep:gio-sys" ];
+          "log" = [ "rs-log" ];
+          "log_kv" = [ "log" "rs-log/kv" ];
+          "log_macros" = [ "log" ];
+          "rs-log" = [ "dep:rs-log" ];
+          "v2_58" = [ "glib-sys/v2_58" "gobject-sys/v2_58" ];
+          "v2_60" = [ "v2_58" "glib-sys/v2_60" ];
+          "v2_62" = [ "v2_60" "glib-sys/v2_62" "gobject-sys/v2_62" ];
+          "v2_64" = [ "v2_62" "glib-sys/v2_64" ];
+          "v2_66" = [ "v2_64" "glib-sys/v2_66" "gobject-sys/v2_66" ];
+          "v2_68" = [ "v2_66" "glib-sys/v2_68" "gobject-sys/v2_68" ];
+          "v2_70" = [ "v2_68" "glib-sys/v2_70" "gobject-sys/v2_70" ];
+          "v2_72" = [ "v2_70" "glib-sys/v2_72" "gobject-sys/v2_72" ];
+          "v2_74" = [ "v2_72" "glib-sys/v2_74" "gobject-sys/v2_74" ];
+          "v2_76" = [ "v2_74" "glib-sys/v2_76" "gobject-sys/v2_76" ];
+          "v2_78" = [ "v2_76" "glib-sys/v2_78" "gobject-sys/v2_78" ];
+          "v2_80" = [ "v2_78" "glib-sys/v2_80" "gobject-sys/v2_80" ];
+          "v2_82" = [ "v2_80" "glib-sys/v2_82" "gobject-sys/v2_82" ];
+          "v2_84" = [ "v2_82" "glib-sys/v2_84" "gobject-sys/v2_84" ];
+          "v2_86" = [ "v2_84" "glib-sys/v2_86" "gobject-sys/v2_86" ];
+          "v2_88" = [ "v2_86" "glib-sys/v2_88" ];
+          "v2_90" = [ "v2_88" "glib-sys/v2_90" ];
+          "v2_92" = [ "v2_90" "glib-sys/v2_92" ];
+        };
+        resolvedDefaultFeatures = [ "default" "futures" "futures-channel" "futures-core" "futures-executor" "futures-task" "futures-util" "gio" "gio-sys" ];
+      };
+      "glib-macros" = rec {
+        crateName = "glib-macros";
+        version = "0.22.11";
+        edition = "2024";
+        sha256 = "14shqf60k8nz4md4b6z00aa8947li57bcy7j7k4hi484w9a4w0fl";
+        procMacro = true;
+        libName = "glib_macros";
+        authors = [
+          "The gtk-rs Project Developers"
+        ];
+        dependencies = [
+          {
+            name = "heck";
+            packageId = "heck 0.5.0";
+          }
+          {
+            name = "proc-macro2";
+            packageId = "proc-macro2";
+          }
+          {
+            name = "quote";
+            packageId = "quote";
+          }
+          {
+            name = "syn";
+            packageId = "syn 3.0.9";
+            features = [ "full" ];
+          }
+        ];
+        features = {
+          "default" = [ "proc_macro_crate" ];
+          "proc-macro-crate" = [ "dep:proc-macro-crate" ];
+          "proc_macro_crate" = [ "proc-macro-crate" ];
+        };
+      };
+      "glib-sys" = rec {
+        crateName = "glib-sys";
+        version = "0.22.11";
+        edition = "2024";
+        sha256 = "0pblkq0kd4xa748mvqn1jmhvf0g0y63vhrgpk25nkhi98nwyh0cb";
+        libName = "glib_sys";
+        authors = [
+          "The gtk-rs Project Developers"
+        ];
+        dependencies = [
+          {
+            name = "libc";
+            packageId = "libc";
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "system-deps";
+            packageId = "system-deps 9.0.1";
+          }
+        ];
+        features = {
+          "v2_60" = [ "v2_58" ];
+          "v2_62" = [ "v2_60" ];
+          "v2_64" = [ "v2_62" ];
+          "v2_66" = [ "v2_64" ];
+          "v2_68" = [ "v2_66" ];
+          "v2_70" = [ "v2_68" ];
+          "v2_72" = [ "v2_70" ];
+          "v2_74" = [ "v2_72" ];
+          "v2_76" = [ "v2_74" ];
+          "v2_78" = [ "v2_76" ];
+          "v2_80" = [ "v2_78" ];
+          "v2_82" = [ "v2_80" ];
+          "v2_84" = [ "v2_82" ];
+          "v2_86" = [ "v2_84" ];
+          "v2_88" = [ "v2_86" ];
+          "v2_90" = [ "v2_88" ];
+          "v2_92" = [ "v2_90" ];
         };
       };
       "glidesort" = rec {
@@ -12029,6 +12406,46 @@ rec {
           }
         ];
 
+      };
+      "gobject-sys" = rec {
+        crateName = "gobject-sys";
+        version = "0.22.9";
+        edition = "2024";
+        sha256 = "0d1q0p19512mvm9f13shg7b3v3q712gz73barccrigcnlsdmqn87";
+        libName = "gobject_sys";
+        authors = [
+          "The gtk-rs Project Developers"
+        ];
+        dependencies = [
+          {
+            name = "glib-sys";
+            packageId = "glib-sys";
+          }
+          {
+            name = "libc";
+            packageId = "libc";
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "system-deps";
+            packageId = "system-deps 9.0.1";
+          }
+        ];
+        features = {
+          "v2_62" = [ "v2_58" ];
+          "v2_66" = [ "v2_62" ];
+          "v2_68" = [ "v2_66" ];
+          "v2_70" = [ "v2_68" ];
+          "v2_72" = [ "v2_70" ];
+          "v2_74" = [ "v2_72" ];
+          "v2_76" = [ "v2_74" ];
+          "v2_78" = [ "v2_74" ];
+          "v2_80" = [ "v2_78" ];
+          "v2_82" = [ "v2_80" ];
+          "v2_84" = [ "v2_82" ];
+          "v2_86" = [ "v2_84" ];
+        };
       };
       "gpu-allocator" = rec {
         crateName = "gpu-allocator";
@@ -14389,6 +14806,342 @@ rec {
         };
         resolvedDefaultFeatures = [ "alloc" ];
       };
+      "gstreamer" = rec {
+        crateName = "gstreamer";
+        version = "0.25.4";
+        edition = "2024";
+        sha256 = "1ijpk2ngh3jnindpkfb50a91a1p315j0cv5yaizcnpm2cqh7w8zl";
+        authors = [
+          "Sebastian Dröge <sebastian@centricular.com>"
+        ];
+        dependencies = [
+          {
+            name = "cfg-if";
+            packageId = "cfg-if";
+          }
+          {
+            name = "futures-channel";
+            packageId = "futures-channel";
+          }
+          {
+            name = "futures-core";
+            packageId = "futures-core";
+          }
+          {
+            name = "futures-util";
+            packageId = "futures-util";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "glib";
+            packageId = "glib";
+          }
+          {
+            name = "gstreamer-sys";
+            packageId = "gstreamer-sys";
+          }
+          {
+            name = "itertools";
+            packageId = "itertools 0.15.0";
+          }
+          {
+            name = "kstring";
+            packageId = "kstring";
+          }
+          {
+            name = "libc";
+            packageId = "libc";
+          }
+          {
+            name = "muldiv";
+            packageId = "muldiv";
+          }
+          {
+            name = "num-integer";
+            packageId = "num-integer";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "num-rational";
+            packageId = "num-rational";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "option-operations";
+            packageId = "option-operations";
+            rename = "opt-ops";
+          }
+          {
+            name = "pastey";
+            packageId = "pastey 0.2.3";
+          }
+          {
+            name = "pin-project-lite";
+            packageId = "pin-project-lite";
+          }
+          {
+            name = "smallvec";
+            packageId = "smallvec";
+            features = [ "write" ];
+          }
+          {
+            name = "thiserror";
+            packageId = "thiserror 2.0.21";
+          }
+        ];
+        features = {
+          "log" = [ "dep:log" ];
+          "serde" = [ "num-rational/serde" "dep:serde" "serde_bytes" ];
+          "serde_bytes" = [ "dep:serde_bytes" ];
+          "v1_16" = [ "gstreamer-sys/v1_16" ];
+          "v1_18" = [ "gstreamer-sys/v1_18" "v1_16" ];
+          "v1_20" = [ "gstreamer-sys/v1_20" "v1_18" ];
+          "v1_22" = [ "gstreamer-sys/v1_22" "v1_20" ];
+          "v1_24" = [ "gstreamer-sys/v1_24" "v1_22" ];
+          "v1_26" = [ "gstreamer-sys/v1_26" "v1_24" ];
+          "v1_28" = [ "gstreamer-sys/v1_28" "v1_26" ];
+          "v1_30" = [ "gstreamer-sys/v1_30" "v1_28" ];
+        };
+        resolvedDefaultFeatures = [ "default" "v1_16" "v1_18" "v1_20" "v1_22" "v1_24" "v1_26" "v1_28" ];
+      };
+      "gstreamer-app" = rec {
+        crateName = "gstreamer-app";
+        version = "0.25.2";
+        edition = "2024";
+        sha256 = "04604lzx4613nmhc3ika46prjw1zvwldx160vjc26df2729axy4p";
+        libName = "gstreamer_app";
+        authors = [
+          "Sebastian Dröge <sebastian@centricular.com>"
+        ];
+        dependencies = [
+          {
+            name = "futures-core";
+            packageId = "futures-core";
+          }
+          {
+            name = "futures-sink";
+            packageId = "futures-sink";
+          }
+          {
+            name = "glib";
+            packageId = "glib";
+          }
+          {
+            name = "gstreamer";
+            packageId = "gstreamer";
+            rename = "gst";
+          }
+          {
+            name = "gstreamer-app-sys";
+            packageId = "gstreamer-app-sys";
+          }
+          {
+            name = "gstreamer-base";
+            packageId = "gstreamer-base";
+            rename = "gst-base";
+          }
+          {
+            name = "libc";
+            packageId = "libc";
+          }
+        ];
+        features = {
+          "v1_16" = [ "gst/v1_16" "gst-base/v1_16" "gstreamer-app-sys/v1_16" ];
+          "v1_18" = [ "gst/v1_18" "gst-base/v1_18" "gstreamer-app-sys/v1_18" "v1_16" ];
+          "v1_20" = [ "gst/v1_20" "gst-base/v1_20" "gstreamer-app-sys/v1_20" "v1_18" ];
+          "v1_22" = [ "gst/v1_22" "gst-base/v1_22" "gstreamer-app-sys/v1_22" "v1_20" ];
+          "v1_24" = [ "gst/v1_24" "gst-base/v1_24" "gstreamer-app-sys/v1_24" "v1_22" ];
+          "v1_26" = [ "gst/v1_26" "gst-base/v1_26" "gstreamer-app-sys/v1_26" "v1_24" ];
+          "v1_28" = [ "gst/v1_28" "gst-base/v1_28" "gstreamer-app-sys/v1_28" "v1_26" ];
+          "v1_30" = [ "gst/v1_30" "gst-base/v1_30" "gstreamer-app-sys/v1_30" "v1_28" ];
+        };
+        resolvedDefaultFeatures = [ "v1_16" "v1_18" "v1_20" "v1_22" "v1_24" "v1_26" "v1_28" ];
+      };
+      "gstreamer-app-sys" = rec {
+        crateName = "gstreamer-app-sys";
+        version = "0.25.4";
+        edition = "2024";
+        sha256 = "0hz7y9xvp8ygv12hz7wznnbbhyc9kxsxq7mq1ga42hv9yspbi607";
+        libName = "gstreamer_app_sys";
+        authors = [
+          "Sebastian Dröge <sebastian@centricular.com>"
+        ];
+        dependencies = [
+          {
+            name = "glib-sys";
+            packageId = "glib-sys";
+          }
+          {
+            name = "gstreamer-base-sys";
+            packageId = "gstreamer-base-sys";
+          }
+          {
+            name = "gstreamer-sys";
+            packageId = "gstreamer-sys";
+          }
+          {
+            name = "libc";
+            packageId = "libc";
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "system-deps";
+            packageId = "system-deps 9.0.1";
+          }
+        ];
+        features = {
+          "v1_18" = [ "v1_16" ];
+          "v1_20" = [ "v1_18" ];
+          "v1_22" = [ "v1_20" ];
+          "v1_24" = [ "v1_22" ];
+          "v1_26" = [ "v1_24" ];
+          "v1_28" = [ "v1_26" ];
+          "v1_30" = [ "v1_28" ];
+        };
+        resolvedDefaultFeatures = [ "v1_16" "v1_18" "v1_20" "v1_22" "v1_24" "v1_26" "v1_28" ];
+      };
+      "gstreamer-base" = rec {
+        crateName = "gstreamer-base";
+        version = "0.25.4";
+        edition = "2024";
+        sha256 = "0pi6k6m5yz4frp6h6mfgnf3r57ngc4x2y3ab1p26k8w6jpsxijqp";
+        libName = "gstreamer_base";
+        authors = [
+          "Sebastian Dröge <sebastian@centricular.com>"
+        ];
+        dependencies = [
+          {
+            name = "atomic_refcell";
+            packageId = "atomic_refcell";
+          }
+          {
+            name = "cfg-if";
+            packageId = "cfg-if";
+          }
+          {
+            name = "glib";
+            packageId = "glib";
+          }
+          {
+            name = "gstreamer";
+            packageId = "gstreamer";
+            rename = "gst";
+          }
+          {
+            name = "gstreamer-base-sys";
+            packageId = "gstreamer-base-sys";
+          }
+          {
+            name = "libc";
+            packageId = "libc";
+          }
+        ];
+        features = {
+          "v1_14_1" = [ "gstreamer-base-sys/v1_14_1" ];
+          "v1_16" = [ "gst/v1_16" "gstreamer-base-sys/v1_16" "v1_14_1" ];
+          "v1_18" = [ "gst/v1_18" "gstreamer-base-sys/v1_18" "v1_16" ];
+          "v1_20" = [ "gst/v1_20" "gstreamer-base-sys/v1_20" "v1_18" ];
+          "v1_22" = [ "gst/v1_22" "gstreamer-base-sys/v1_22" "v1_20" ];
+          "v1_24" = [ "gst/v1_24" "gstreamer-base-sys/v1_24" "v1_22" ];
+          "v1_26" = [ "gst/v1_26" "gstreamer-base-sys/v1_26" "v1_24" ];
+          "v1_28" = [ "gst/v1_28" "gstreamer-base-sys/v1_28" "v1_26" ];
+          "v1_30" = [ "gst/v1_30" "gstreamer-base-sys/v1_30" "v1_28" ];
+        };
+        resolvedDefaultFeatures = [ "default" "v1_14_1" "v1_16" "v1_18" "v1_20" "v1_22" "v1_24" "v1_26" "v1_28" ];
+      };
+      "gstreamer-base-sys" = rec {
+        crateName = "gstreamer-base-sys";
+        version = "0.25.4";
+        edition = "2024";
+        sha256 = "0cjw73349ppk41sx3l7qbj5h3xga36p7vhi9dgpazdbnzmxzf19v";
+        libName = "gstreamer_base_sys";
+        authors = [
+          "Sebastian Dröge <sebastian@centricular.com>"
+        ];
+        dependencies = [
+          {
+            name = "glib-sys";
+            packageId = "glib-sys";
+          }
+          {
+            name = "gobject-sys";
+            packageId = "gobject-sys";
+          }
+          {
+            name = "gstreamer-sys";
+            packageId = "gstreamer-sys";
+          }
+          {
+            name = "libc";
+            packageId = "libc";
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "system-deps";
+            packageId = "system-deps 9.0.1";
+          }
+        ];
+        features = {
+          "v1_14_3" = [ "v1_14_1" ];
+          "v1_16" = [ "v1_14_3" ];
+          "v1_18" = [ "v1_16" ];
+          "v1_20" = [ "v1_18" ];
+          "v1_22" = [ "v1_20" ];
+          "v1_24" = [ "v1_22" ];
+          "v1_26" = [ "v1_24" ];
+          "v1_28" = [ "v1_26" ];
+          "v1_30" = [ "v1_28" ];
+        };
+        resolvedDefaultFeatures = [ "v1_14_1" "v1_14_3" "v1_16" "v1_18" "v1_20" "v1_22" "v1_24" "v1_26" "v1_28" ];
+      };
+      "gstreamer-sys" = rec {
+        crateName = "gstreamer-sys";
+        version = "0.25.4";
+        edition = "2024";
+        sha256 = "1f91ypkf0llv2nmw5zbpywc2mhb20xkw7f2pbllai2blhhr9ava3";
+        libName = "gstreamer_sys";
+        authors = [
+          "Sebastian Dröge <sebastian@centricular.com>"
+        ];
+        dependencies = [
+          {
+            name = "cfg-if";
+            packageId = "cfg-if";
+          }
+          {
+            name = "glib-sys";
+            packageId = "glib-sys";
+          }
+          {
+            name = "gobject-sys";
+            packageId = "gobject-sys";
+          }
+          {
+            name = "libc";
+            packageId = "libc";
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "system-deps";
+            packageId = "system-deps 9.0.1";
+          }
+        ];
+        features = {
+          "v1_18" = [ "v1_16" ];
+          "v1_18_3" = [ "v1_18" ];
+          "v1_20" = [ "v1_18_3" ];
+          "v1_20_4" = [ "v1_20" ];
+          "v1_22" = [ "v1_20_4" ];
+          "v1_24" = [ "v1_22" ];
+          "v1_26" = [ "v1_24" ];
+          "v1_28" = [ "v1_26" ];
+          "v1_30" = [ "v1_28" ];
+        };
+        resolvedDefaultFeatures = [ "v1_16" "v1_18" "v1_18_3" "v1_20" "v1_20_4" "v1_22" "v1_24" "v1_26" "v1_28" ];
+      };
       "guillotiere" = rec {
         crateName = "guillotiere";
         version = "0.7.0";
@@ -14438,7 +15191,7 @@ rec {
           }
           {
             name = "zerocopy";
-            packageId = "zerocopy";
+            packageId = "zerocopy 0.8.63";
             usesDefaultFeatures = false;
             features = [ "derive" "simd" ];
           }
@@ -17996,6 +18749,27 @@ rec {
         };
         resolvedDefaultFeatures = [ "default" "use_alloc" "use_std" ];
       };
+      "itertools 0.15.0" = rec {
+        crateName = "itertools";
+        version = "0.15.0";
+        edition = "2018";
+        sha256 = "1p412hriqm4kxn7x1539vz2p5c5s1v2m36m4kis2ai4dyn9syjwb";
+        authors = [
+          "bluss"
+        ];
+        dependencies = [
+          {
+            name = "either";
+            packageId = "either";
+            usesDefaultFeatures = false;
+          }
+        ];
+        features = {
+          "default" = [ "use_std" ];
+          "use_std" = [ "use_alloc" "either/use_std" ];
+        };
+        resolvedDefaultFeatures = [ "default" "use_alloc" "use_std" ];
+      };
       "itoa" = rec {
         crateName = "itoa";
         version = "1.0.18";
@@ -18627,6 +19401,27 @@ rec {
           "Pierre Krieger <pierre.krieger1708@gmail.com>"
         ];
 
+      };
+      "kstring" = rec {
+        crateName = "kstring";
+        version = "2.0.2";
+        edition = "2021";
+        sha256 = "1lfvqlqkg2x23nglznb7ah6fk3vv3y5i759h5l2151ami98gk2sm";
+        authors = [
+          "Ed Page <eopage@gmail.com>"
+        ];
+        dependencies = [
+          {
+            name = "static_assertions";
+            packageId = "static_assertions";
+          }
+        ];
+        features = {
+          "default" = [ "std" "unsafe" ];
+          "document-features" = [ "dep:document-features" ];
+          "serde" = [ "dep:serde" ];
+        };
+        resolvedDefaultFeatures = [ "default" "std" "unsafe" ];
       };
       "kurbo" = rec {
         crateName = "kurbo";
@@ -20256,7 +21051,7 @@ rec {
           }
           {
             name = "system-deps";
-            packageId = "system-deps";
+            packageId = "system-deps 7.0.8";
           }
         ];
         features = {
@@ -20295,7 +21090,7 @@ rec {
           }
           {
             name = "system-deps";
-            packageId = "system-deps";
+            packageId = "system-deps 7.0.8";
           }
         ];
         features = {
@@ -21860,6 +22655,16 @@ rec {
         };
         resolvedDefaultFeatures = [ "avx" "avx_luts" "avx_shaper_fixed_point_paths" "avx_shaper_paths" "default" "lut" "neon" "neon_luts" "neon_shaper_fixed_point_paths" "neon_shaper_paths" "sse" "sse_luts" "sse_shaper_fixed_point_paths" "sse_shaper_paths" ];
       };
+      "muldiv" = rec {
+        crateName = "muldiv";
+        version = "1.0.1";
+        edition = "2018";
+        sha256 = "1c6ljsp41n8ijsx7zicwfm135drgyhcms12668ivvsbm1r98frwm";
+        authors = [
+          "Sebastian Dröge <sebastian@centricular.com>"
+        ];
+
+      };
       "multimap" = rec {
         crateName = "multimap";
         version = "0.10.1";
@@ -22058,6 +22863,36 @@ rec {
           "serialize" = [ "dep:serde" "indexmap/serde" ];
         };
         resolvedDefaultFeatures = [ "std" ];
+      };
+      "nasm-rs" = rec {
+        crateName = "nasm-rs";
+        version = "0.3.2";
+        edition = "2018";
+        sha256 = "0jd1z9s5rn3qqq7c5x7h2zgbrx11plqisaf3528vkpf8x2jzhsvh";
+        libName = "nasm_rs";
+        authors = [
+          "Allen Goodman <allen@goodman.io>"
+          "Gavin Massey <mdk@mystacktrace.org>"
+          "Jerome Rasky <jyrome.112@gmail.com>"
+          "Justinas Stankevičius <justinas@users.noreply.github.com>"
+          "Kornel Lesinski <kornel@geekhood.net>"
+        ];
+        dependencies = [
+          {
+            name = "jobserver";
+            packageId = "jobserver";
+            optional = true;
+          }
+          {
+            name = "log";
+            packageId = "log";
+          }
+        ];
+        features = {
+          "jobserver" = [ "dep:jobserver" ];
+          "parallel" = [ "jobserver" ];
+        };
+        resolvedDefaultFeatures = [ "jobserver" "parallel" ];
       };
       "ndk" = rec {
         crateName = "ndk";
@@ -23203,6 +24038,7 @@ rec {
           {
             name = "nuschl-ipc";
             packageId = "nuschl-ipc";
+            features = [ "video-portal" ];
           }
           {
             name = "nuschl-legacy-html";
@@ -23790,6 +24626,11 @@ rec {
         libName = "nuschl_crypto_worker";
         dependencies = [
           {
+            name = "getrandom";
+            packageId = "getrandom 0.4.3";
+            features = [ "sys_rng" ];
+          }
+          {
             name = "hex";
             packageId = "hex";
           }
@@ -23813,6 +24654,10 @@ rec {
             name = "nuschl-sandbox-windows";
             packageId = "nuschl-sandbox-windows";
             target = { target, features }: (target."windows" or false);
+          }
+          {
+            name = "nuschl-stream";
+            packageId = "nuschl-stream";
           }
           {
             name = "serde";
@@ -23840,6 +24685,10 @@ rec {
           {
             name = "nuschl-session";
             packageId = "nuschl-session";
+          }
+          {
+            name = "nuschl-testkit";
+            packageId = "nuschl-testkit";
           }
           {
             name = "nuschl-witness";
@@ -24030,8 +24879,22 @@ rec {
         libName = "nuschl_ipc";
         dependencies = [
           {
+            name = "ashpd";
+            packageId = "ashpd";
+            optional = true;
+            usesDefaultFeatures = false;
+            target = { target, features }: ("linux" == target."os" or null);
+            features = [ "async-io" "camera" "screencast" ];
+          }
+          {
             name = "base64";
             packageId = "base64 0.22.1";
+          }
+          {
+            name = "futures-util";
+            packageId = "futures-util";
+            optional = true;
+            target = { target, features }: ("linux" == target."os" or null);
           }
           {
             name = "nuschl-core";
@@ -24040,6 +24903,12 @@ rec {
           {
             name = "nuschl-sandbox";
             packageId = "nuschl-sandbox";
+          }
+          {
+            name = "rustix";
+            packageId = "rustix 1.1.6";
+            target = { target, features }: ("linux" == target."os" or null);
+            features = [ "net" "pipe" ];
           }
           {
             name = "serde";
@@ -24059,6 +24928,16 @@ rec {
             packageId = "tokio";
             features = [ "io-util" "macros" "process" "time" "rt" "sync" ];
           }
+          {
+            name = "tokio";
+            packageId = "tokio";
+            target = { target, features }: ("linux" == target."os" or null);
+            features = [ "net" ];
+          }
+          {
+            name = "zeroize";
+            packageId = "zeroize";
+          }
         ];
         devDependencies = [
           {
@@ -24066,7 +24945,10 @@ rec {
             packageId = "nuschl-testkit";
           }
         ];
-
+        features = {
+          "video-portal" = [ "dep:ashpd" "dep:futures-util" ];
+        };
+        resolvedDefaultFeatures = [ "video-portal" ];
       };
       "nuschl-kt" = rec {
         crateName = "nuschl-kt";
@@ -24577,12 +25459,21 @@ rec {
             packageId = "bytes";
           }
           {
+            name = "hex";
+            packageId = "hex";
+          }
+          {
             name = "prost";
             packageId = "prost";
           }
           {
             name = "semver";
             packageId = "semver";
+          }
+          {
+            name = "serde";
+            packageId = "serde";
+            features = [ "derive" ];
           }
           {
             name = "thiserror";
@@ -24595,6 +25486,12 @@ rec {
             packageId = "prost-build";
           }
         ];
+        devDependencies = [
+          {
+            name = "serde_json";
+            packageId = "serde_json";
+          }
+        ];
 
       };
       "nuschl-rtc" = rec {
@@ -24604,6 +25501,10 @@ rec {
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/rtc; };
         libName = "nuschl_rtc";
         dependencies = [
+          {
+            name = "nuschl-core";
+            packageId = "nuschl-core";
+          }
           {
             name = "str0m";
             packageId = "str0m";
@@ -24635,8 +25536,54 @@ rec {
             packageId = "hex";
           }
           {
+            name = "nuschl-core";
+            packageId = "nuschl-core";
+          }
+          {
             name = "nuschl-rtc";
             packageId = "nuschl-rtc";
+          }
+        ];
+
+      };
+      "nuschl-rtc-worker" = rec {
+        crateName = "nuschl-rtc-worker";
+        version = "0.2.0";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "nuschl-rtc-worker";
+            path = "src/main.rs";
+            requiredFeatures = [ ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../apps/rtc-worker; };
+        dependencies = [
+          {
+            name = "nuschl-ipc";
+            packageId = "nuschl-ipc";
+            target = { target, features }: ("linux" == target."os" or null);
+          }
+          {
+            name = "nuschl-rtc";
+            packageId = "nuschl-rtc";
+            target = { target, features }: ("linux" == target."os" or null);
+          }
+          {
+            name = "nuschl-sframe";
+            packageId = "nuschl-sframe";
+            target = { target, features }: ("linux" == target."os" or null);
+          }
+        ];
+        devDependencies = [
+          {
+            name = "nuschl-testkit";
+            packageId = "nuschl-testkit";
+          }
+          {
+            name = "tokio";
+            packageId = "tokio";
+            features = [ "macros" "rt" "net" "time" ];
           }
         ];
 
@@ -24733,6 +25680,12 @@ rec {
             packageId = "directories";
           }
           {
+            name = "futures-util";
+            packageId = "futures-util";
+            usesDefaultFeatures = false;
+            features = [ "sink" "std" ];
+          }
+          {
             name = "hex";
             packageId = "hex";
           }
@@ -24816,6 +25769,10 @@ rec {
             features = [ "ring" "tls12" ];
           }
           {
+            name = "tokio-tungstenite";
+            packageId = "tokio-tungstenite";
+          }
+          {
             name = "uuid";
             packageId = "uuid";
             features = [ "v4" ];
@@ -24826,6 +25783,10 @@ rec {
           }
         ];
         devDependencies = [
+          {
+            name = "nuschl-testkit";
+            packageId = "nuschl-testkit";
+          }
           {
             name = "tempfile";
             packageId = "tempfile";
@@ -24988,6 +25949,10 @@ rec {
             packageId = "libcrux-hkdf 0.0.9";
           }
           {
+            name = "libcrux-hmac";
+            packageId = "libcrux-hmac 0.0.9";
+          }
+          {
             name = "libcrux-kem";
             packageId = "libcrux-kem";
             usesDefaultFeatures = false;
@@ -25071,6 +26036,10 @@ rec {
             features = [ "std" ];
           }
           {
+            name = "nuschl-protocol";
+            packageId = "nuschl-protocol";
+          }
+          {
             name = "nuschl-stream-quality";
             packageId = "nuschl-stream-quality";
           }
@@ -25145,10 +26114,6 @@ rec {
           {
             name = "hex";
             packageId = "hex";
-          }
-          {
-            name = "libcrux-hmac";
-            packageId = "libcrux-hmac 0.0.9";
           }
           {
             name = "nuschl-sframe";
@@ -25514,6 +26479,92 @@ rec {
           "signer" = [ "ed25519" "mldsa44" "dep:getrandom" "ml-dsa/rand_core" ];
         };
         resolvedDefaultFeatures = [ "default" "ed25519" "mldsa44" "runtime-fixture" "signer" ];
+      };
+      "nuschl-video-worker" = rec {
+        crateName = "nuschl-video-worker";
+        version = "0.2.0";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "nuschl-video-probe";
+            path = "src/bin/nuschl-video-probe.rs";
+            requiredFeatures = [ ];
+          }
+          {
+            name = "nuschl-video-worker";
+            path = "src/main.rs";
+            requiredFeatures = [ ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../apps/video-worker; };
+        dependencies = [
+          {
+            name = "gstreamer";
+            packageId = "gstreamer";
+            optional = true;
+            usesDefaultFeatures = false;
+            target = { target, features }: ("linux" == target."os" or null);
+            features = [ "v1_28" ];
+          }
+          {
+            name = "gstreamer-app";
+            packageId = "gstreamer-app";
+            optional = true;
+            usesDefaultFeatures = false;
+            target = { target, features }: ("linux" == target."os" or null);
+            features = [ "v1_28" ];
+          }
+          {
+            name = "nuschl-ipc";
+            packageId = "nuschl-ipc";
+            target = { target, features }: ("linux" == target."os" or null);
+            features = [ "video-portal" ];
+          }
+          {
+            name = "nuschl-sandbox";
+            packageId = "nuschl-sandbox";
+            target = { target, features }: ("linux" == target."os" or null);
+          }
+          {
+            name = "pipewire";
+            packageId = "pipewire";
+            usesDefaultFeatures = false;
+            target = { target, features }: ("linux" == target."os" or null);
+          }
+          {
+            name = "rav1d";
+            packageId = "rav1d";
+            usesDefaultFeatures = false;
+            target = { target, features }: ("linux" == target."os" or null);
+            features = [ "bitdepth_8" "bitdepth_16" ];
+          }
+          {
+            name = "rav1e";
+            packageId = "rav1e";
+            usesDefaultFeatures = false;
+            target = { target, features }: ("linux" == target."os" or null);
+          }
+          {
+            name = "tokio";
+            packageId = "tokio";
+            target = { target, features }: ("linux" == target."os" or null);
+            features = [ "macros" "rt" ];
+          }
+        ];
+        devDependencies = [
+          {
+            name = "nuschl-testkit";
+            packageId = "nuschl-testkit";
+          }
+          {
+            name = "serde_json";
+            packageId = "serde_json";
+          }
+        ];
+        features = {
+          "vaapi" = [ "dep:gstreamer" "dep:gstreamer-app" ];
+        };
+        resolvedDefaultFeatures = [ "vaapi" ];
       };
       "nuschl-web-relay" = rec {
         crateName = "nuschl-web-relay";
@@ -29805,6 +30856,26 @@ rec {
         ];
 
       };
+      "option-operations" = rec {
+        crateName = "option-operations";
+        version = "0.6.1";
+        edition = "2018";
+        sha256 = "0m17ykxb3w68ymirnc096hsw78rf71b9psvfq40889h35gsrr8xc";
+        libName = "option_operations";
+        authors = [
+          "François Laignel <fengalin@free.fr>"
+        ];
+        dependencies = [
+          {
+            name = "pastey";
+            packageId = "pastey 0.2.3";
+          }
+        ];
+        features = {
+          "default" = [ "std" ];
+        };
+        resolvedDefaultFeatures = [ "default" "std" ];
+      };
       "opus-rs" = rec {
         crateName = "opus-rs";
         version = "0.1.42";
@@ -31691,7 +32762,7 @@ rec {
           }
           {
             name = "system-deps";
-            packageId = "system-deps";
+            packageId = "system-deps 7.0.8";
           }
         ];
 
@@ -32386,7 +33457,7 @@ rec {
         dependencies = [
           {
             name = "zerocopy";
-            packageId = "zerocopy";
+            packageId = "zerocopy 0.8.63";
             features = [ "simd" ];
           }
         ];
@@ -34122,6 +35193,96 @@ rec {
           "unstable" = [ "unstable-rendered-line-info" ];
         };
         resolvedDefaultFeatures = [ "std" ];
+      };
+      "rav1d" = rec {
+        crateName = "rav1d";
+        version = "1.1.1";
+        edition = "2021";
+        workspace_member = null;
+        src = pkgs.fetchgit {
+          url = "https://github.com/memorysafety/rav1d";
+          rev = "2e7216c20ac2a75de204d6c8d7268b75a45959b4";
+          sha256 = "1llirkmg890d4r0pwx0flbbix9lk5qhk7jy1lqzk56k1hw3h3n5g";
+        };type = [ "staticlib" "rlib" ];
+        authors = [
+          "Rav1d Developers"
+          "Prossimo"
+        ];
+        dependencies = [
+          {
+            name = "assert_matches";
+            packageId = "assert_matches";
+          }
+          {
+            name = "atomig";
+            packageId = "atomig";
+            features = [ "derive" ];
+          }
+          {
+            name = "av-data";
+            packageId = "av-data";
+          }
+          {
+            name = "bitflags";
+            packageId = "bitflags 2.13.2";
+          }
+          {
+            name = "cfg-if";
+            packageId = "cfg-if";
+          }
+          {
+            name = "libc";
+            packageId = "libc";
+          }
+          {
+            name = "parking_lot";
+            packageId = "parking_lot";
+          }
+          {
+            name = "paste";
+            packageId = "paste";
+          }
+          {
+            name = "raw-cpuid";
+            packageId = "raw-cpuid";
+          }
+          {
+            name = "static_assertions";
+            packageId = "static_assertions";
+          }
+          {
+            name = "strum";
+            packageId = "strum 0.27.2";
+            features = [ "derive" ];
+          }
+          {
+            name = "to_method";
+            packageId = "to_method";
+          }
+          {
+            name = "zerocopy";
+            packageId = "zerocopy 0.7.35";
+            features = [ "derive" ];
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "cc";
+            packageId = "cc";
+          }
+          {
+            name = "nasm-rs";
+            packageId = "nasm-rs";
+            features = [ "parallel" ];
+          }
+        ];
+        features = {
+          "asm_arm64_dotprod" = [ "asm" ];
+          "asm_arm64_i8mm" = [ "asm" ];
+          "asm_arm64_sve2" = [ "asm" ];
+          "default" = [ "asm" "asm_arm64_dotprod" "asm_arm64_i8mm" "asm_arm64_sve2" "bitdepth_8" "bitdepth_16" ];
+        };
+        resolvedDefaultFeatures = [ "bitdepth_16" "bitdepth_8" ];
       };
       "rav1e" = rec {
         crateName = "rav1e";
@@ -41049,7 +42210,7 @@ rec {
         };
         resolvedDefaultFeatures = [ "component" "default" "disk" "multithread" "network" "system" "user" "windows" ];
       };
-      "system-deps" = rec {
+      "system-deps 7.0.8" = rec {
         crateName = "system-deps";
         version = "7.0.8";
         edition = "2018";
@@ -41085,6 +42246,52 @@ rec {
           }
         ];
 
+      };
+      "system-deps 9.0.1" = rec {
+        crateName = "system-deps";
+        version = "9.0.1";
+        edition = "2018";
+        sha256 = "0zf60c6fww4mjljs1di39rf13qrv2sqfw3iy6khdaqdcib9ilmfv";
+        libName = "system_deps";
+        authors = [
+          "Guillaume Desmottes <guillaume.desmottes@collabora.com>"
+          "Josh Triplett <josh@joshtriplett.org>"
+        ];
+        dependencies = [
+          {
+            name = "cfg-expr";
+            packageId = "cfg-expr";
+            features = [ "targets" ];
+          }
+          {
+            name = "heck";
+            packageId = "heck 0.5.0";
+          }
+          {
+            name = "pkg-config";
+            packageId = "pkg-config";
+          }
+          {
+            name = "toml";
+            packageId = "toml 1.2.1+spec-1.1.0";
+            usesDefaultFeatures = false;
+            features = [ "parse" "std" ];
+          }
+          {
+            name = "version-compare";
+            packageId = "version-compare";
+          }
+        ];
+        features = {
+          "binary" = [ "system-deps-meta/binary" "dep:which" "toml/serde" ];
+          "gz" = [ "system-deps-meta/gz" ];
+          "inno" = [ "system-deps-meta/inno" ];
+          "pkg" = [ "system-deps-meta/pkg" ];
+          "system-deps-meta" = [ "dep:system-deps-meta" ];
+          "xz" = [ "system-deps-meta/xz" ];
+          "zip" = [ "system-deps-meta/zip" ];
+        };
+        resolvedDefaultFeatures = [ "default" ];
       };
       "taffy" = rec {
         crateName = "taffy";
@@ -42218,6 +43425,16 @@ rec {
           "default" = [ "std" ];
         };
         resolvedDefaultFeatures = [ "default" "std" ];
+      };
+      "to_method" = rec {
+        crateName = "to_method";
+        version = "1.1.0";
+        edition = "2018";
+        sha256 = "1s72l06fnb5kv6vm5ds0lilg1dyciyyis09ypi5kij0mrbpcxi67";
+        authors = [
+          "muvlon <muvlon@hentzes.de>"
+        ];
+
       };
       "tokio" = rec {
         crateName = "tokio";
@@ -55027,7 +56244,49 @@ rec {
         };
         resolvedDefaultFeatures = [ "eval" "std" ];
       };
-      "zerocopy" = rec {
+      "zerocopy 0.7.35" = rec {
+        crateName = "zerocopy";
+        version = "0.7.35";
+        edition = "2018";
+        sha256 = "1w36q7b9il2flg0qskapgi9ymgg7p985vniqd09vi0mwib8lz6qv";
+        authors = [
+          "Joshua Liebow-Feeser <joshlf@google.com>"
+        ];
+        dependencies = [
+          {
+            name = "byteorder";
+            packageId = "byteorder";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "zerocopy-derive";
+            packageId = "zerocopy-derive 0.7.35";
+            optional = true;
+          }
+          {
+            name = "zerocopy-derive";
+            packageId = "zerocopy-derive 0.7.35";
+            target = { target, features }: false;
+          }
+        ];
+        devDependencies = [
+          {
+            name = "zerocopy-derive";
+            packageId = "zerocopy-derive 0.7.35";
+          }
+        ];
+        features = {
+          "__internal_use_only_features_that_work_on_stable" = [ "alloc" "derive" "simd" ];
+          "byteorder" = [ "dep:byteorder" ];
+          "default" = [ "byteorder" ];
+          "derive" = [ "zerocopy-derive" ];
+          "simd-nightly" = [ "simd" ];
+          "zerocopy-derive" = [ "dep:zerocopy-derive" ];
+        };
+        resolvedDefaultFeatures = [ "byteorder" "default" "derive" "zerocopy-derive" ];
+      };
+      "zerocopy 0.8.63" = rec {
         crateName = "zerocopy";
         version = "0.8.63";
         edition = "2021";
@@ -55035,19 +56294,19 @@ rec {
         dependencies = [
           {
             name = "zerocopy-derive";
-            packageId = "zerocopy-derive";
+            packageId = "zerocopy-derive 0.8.63";
             optional = true;
           }
           {
             name = "zerocopy-derive";
-            packageId = "zerocopy-derive";
+            packageId = "zerocopy-derive 0.8.63";
             target = { target, features }: false;
           }
         ];
         devDependencies = [
           {
             name = "zerocopy-derive";
-            packageId = "zerocopy-derive";
+            packageId = "zerocopy-derive 0.8.63";
           }
         ];
         features = {
@@ -55059,7 +56318,33 @@ rec {
         };
         resolvedDefaultFeatures = [ "derive" "simd" "zerocopy-derive" ];
       };
-      "zerocopy-derive" = rec {
+      "zerocopy-derive 0.7.35" = rec {
+        crateName = "zerocopy-derive";
+        version = "0.7.35";
+        edition = "2018";
+        sha256 = "0gnf2ap2y92nwdalzz3x7142f2b83sni66l39vxp2ijd6j080kzs";
+        procMacro = true;
+        libName = "zerocopy_derive";
+        authors = [
+          "Joshua Liebow-Feeser <joshlf@google.com>"
+        ];
+        dependencies = [
+          {
+            name = "proc-macro2";
+            packageId = "proc-macro2";
+          }
+          {
+            name = "quote";
+            packageId = "quote";
+          }
+          {
+            name = "syn";
+            packageId = "syn 2.0.119";
+          }
+        ];
+
+      };
+      "zerocopy-derive 0.8.63" = rec {
         crateName = "zerocopy-derive";
         version = "0.8.63";
         edition = "2021";

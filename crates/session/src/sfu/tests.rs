@@ -1,0 +1,521 @@
+// SPDX-License-Identifier: EUPL-1.2
+
+use super::*;
+use nuschl_protocol::sfu::Role;
+use tokio::net::TcpListener;
+
+const CA: &str = "127.0.0.1";
+const LINK: &str = "v=1&k=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&h=8FkoEkvVnGXqAGKF9u7ezIde49CL2ZPe5AQZJ3_d3tQ";
+const OWNER: &str = "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8";
+
+fn fixture(name: &str) -> std::path::PathBuf {
+    // Cargo's workspace test builds standalone binaries beside the deps folder.
+    // The Nix unit leaf supplies the same binaries on PATH.
+    let current = std::env::current_exe().unwrap();
+    if let Some(built) = current
+        .parent()
+        .and_then(|deps| deps.parent())
+        .map(|bin| bin.join(name))
+        && built.is_file()
+    {
+        return built;
+    }
+    nuschl_testkit::program(name)
+}
+
+/// Owned loopback TLS terminator in front of the real SFU's HTTP listener.
+async fn tls_proxy(sfu: &nuschl_testkit::sfu::Sfu) -> (String, rustls::RootCertStore) {
+    let upstream: std::net::SocketAddr = sfu
+        .url
+        .strip_prefix("ws://")
+        .unwrap()
+        .strip_suffix("/sfu")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let listener = TcpListener::bind((CA, 0)).await.unwrap();
+    let host = listener.local_addr().unwrap().to_string();
+    let cert = rcgen::generate_simple_self_signed(vec![CA.into()]).unwrap();
+    let der = cert.cert.der().clone();
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(der.clone()).unwrap();
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![der],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()).into(),
+    )
+    .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+    tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                if let Ok(mut tls) = acceptor.accept(socket).await {
+                    let mut plain = TcpStream::connect(upstream).await.unwrap();
+                    let _ = tokio::io::copy_bidirectional(&mut tls, &mut plain).await;
+                }
+            });
+        }
+    });
+    (host, roots)
+}
+
+async fn next_key(connection: &mut Connection) -> Outcome {
+    timeout(HANDSHAKE, async {
+        loop {
+            if let ServerMessage::Key { from, data } = connection.next().await.unwrap() {
+                return connection
+                    .signal(Action::Key {
+                        peer: from,
+                        data: hex::decode(data).unwrap(),
+                    })
+                    .await
+                    .unwrap();
+            }
+        }
+    })
+    .await
+    .unwrap()
+}
+
+async fn retired(worker: &CryptoHandle, generation: u64) {
+    timeout(HANDSHAKE, async {
+        loop {
+            let response = worker
+                .call_signal(Request {
+                    generation,
+                    action: Action::Admit { nonce: [0; 32] },
+                })
+                .await;
+            if let Err(error) = response {
+                assert!(error.to_string().contains("no open call"), "{error}");
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn two_native_peers_admit_and_signal_through_the_sfu_over_wss() {
+    nuschl_testkit::sandbox();
+    let worker = fixture("nuschl-crypto-worker");
+    let sfu = nuschl_testkit::sfu::start(fixture("nuschl-stream-sfu"), "");
+    let (host, roots) = tls_proxy(&sfu).await;
+    let directory = nuschl_testkit::temp_dir();
+    let alice = CryptoHandle::start(worker.clone(), directory.path().join("alice"));
+    let bob_worker = CryptoHandle::start(worker, directory.path().join("bob"));
+    let posted = format!("https://{host}/call#{LINK}");
+    let owner = format!("{posted}&p={OWNER}");
+    let connect = |generation, link| Connect {
+        generation,
+        host: &host,
+        link,
+        codecs: &[Codec::Av1, Codec::Vp9],
+        policy: PeerPolicy::default(),
+    };
+    assert!(matches!(
+        Connection::connect(alice.clone(), connect(1, &owner)).await,
+        Err(Error::Io(_))
+    ));
+    let mut alice = Connection::connect_with_roots(alice, connect(2, &owner), roots.clone())
+        .await
+        .unwrap();
+    let mut bob =
+        Connection::connect_with_roots(bob_worker.clone(), connect(1, &posted), roots.clone())
+            .await
+            .unwrap();
+    let (a, b) = (alice.welcome().peer, bob.welcome().peer);
+    assert_eq!(alice.welcome().role, Role::Host);
+    assert_eq!(bob.welcome().role, Role::Participant);
+
+    alice
+        .signal(Action::Pair {
+            peer: b,
+            publisher: true,
+        })
+        .await
+        .unwrap();
+    bob.signal(Action::Pair {
+        peer: a,
+        publisher: false,
+    })
+    .await
+    .unwrap();
+    assert!(
+        matches!(next_key(&mut alice).await, Outcome::Send { peer, ready: false, .. } if peer == b)
+    );
+    assert!(
+        matches!(next_key(&mut bob).await, Outcome::Send { peer, ready: true, .. } if peer == a)
+    );
+    assert!(matches!(next_key(&mut alice).await, Outcome::Ready { peer } if peer == b));
+
+    let candidate = b"a=candidate:1 1 UDP 1 127.0.0.1 54321 typ host";
+    alice
+        .signal(Action::Seal {
+            peer: b,
+            data: candidate.to_vec(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(next_key(&mut bob).await, Outcome::Signal { peer, data } if peer == a && data == candidate)
+    );
+    drop(bob);
+    retired(&bob_worker, 1).await;
+    let bob = Connection::connect_with_roots(bob_worker.clone(), connect(2, &posted), roots)
+        .await
+        .unwrap();
+    assert_eq!(bob.welcome().role, Role::Participant);
+    bob.close().await.unwrap();
+    alice.close().await.unwrap();
+
+    let listener = TcpListener::bind((CA, 0)).await.unwrap();
+    let stalled_host = listener.local_addr().unwrap().to_string();
+    let attempt = tokio::spawn({
+        let worker = bob_worker.clone();
+        async move {
+            let link = format!("https://{stalled_host}/call#{LINK}");
+            Connection::connect(
+                worker,
+                Connect {
+                    generation: 3,
+                    host: &stalled_host,
+                    link: &link,
+                    codecs: &[Codec::Av1],
+                    policy: PeerPolicy::default(),
+                },
+            )
+            .await
+        }
+    });
+    // A connection attempt opens the worker slot before dialing the SFU.
+    let _stalled = timeout(HANDSHAKE, listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    attempt.abort();
+    assert!(matches!(attempt.await, Err(error) if error.is_cancelled()));
+    retired(&bob_worker, 3).await;
+}
+
+async fn red_keyframe(executable: std::path::PathBuf) -> Vec<u8> {
+    use nuschl_ipc::video::{Encoder, Output, Settings, Source};
+
+    let mut encoder = Encoder::start(
+        executable,
+        Settings {
+            source: Source::Screen,
+            width: 32,
+            height: 32,
+            fps: 30,
+            bitrate: 256_000,
+        },
+    )
+    .unwrap();
+    // Limited-range I420 for a uniform red picture.
+    let mut pixels = vec![81; 32 * 32];
+    pixels.extend([90; 16 * 16]);
+    pixels.extend([240; 16 * 16]);
+    let Output::Keyframe(red) = encoder.encode(pixels).await.unwrap() else {
+        panic!("expected a synthetic red keyframe");
+    };
+    encoder.stop().await.unwrap();
+    red
+}
+
+#[tokio::test]
+#[ignore = "runs under vm-call-page with the stream host and Chromium"]
+async fn native_publisher_in_call_page_vm() {
+    use rustls::pki_types::{CertificateDer, pem::PemObject as _};
+    use std::{env, fs, path::PathBuf};
+
+    nuschl_testkit::sandbox();
+    let host = env::var("NUSCHL_NATIVE_CALL_HOST").unwrap();
+    let link = env::var("NUSCHL_NATIVE_CALL_LINK").unwrap();
+    let sfu_port = env::var("NUSCHL_NATIVE_CALL_PORT")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let state = PathBuf::from(env::var_os("NUSCHL_NATIVE_CALL_STATE").unwrap());
+    let mut roots = rustls::RootCertStore::empty();
+    roots
+        .add(CertificateDer::from_pem_file(env::var_os("NUSCHL_NATIVE_CALL_CA").unwrap()).unwrap())
+        .unwrap();
+    let directory = nuschl_testkit::temp_dir();
+    let red = red_keyframe(fixture("nuschl-video-worker")).await;
+    let call = Connection::connect_with_roots(
+        CryptoHandle::start(
+            fixture("nuschl-crypto-worker"),
+            directory.path().join("keys"),
+        ),
+        Connect {
+            generation: 1,
+            host: &host,
+            link: &link,
+            codecs: &[Codec::Av1],
+            policy: PeerPolicy::default(),
+        },
+        roots,
+    )
+    .await
+    .unwrap();
+    let peer = call.welcome().peer;
+    let mut media = call
+        .into_media(MediaOptions {
+            executable: fixture("nuschl-rtc-worker"),
+            sfu_port,
+            publish: Some(Purpose::ScreenVideo),
+        })
+        .await
+        .unwrap();
+    fs::write(state.join("peer"), peer.to_string()).unwrap();
+
+    let mut tick = tokio::time::interval(Duration::from_millis(34));
+    let mut timestamp = 0;
+    let mut ready = false;
+    let stop = state.join("stop");
+    timeout(Duration::from_secs(180), async {
+        loop {
+            tokio::select! {
+                _ = tick.tick() => {
+                    if stop.exists() { break; }
+                    if ready {
+                        timestamp += 3_060;
+                        media.send_keyframe(timestamp, red.clone()).unwrap();
+                    }
+                }
+                event = media.next() => {
+                    ready |= matches!(event.expect("publisher remains live").expect("RTC publisher"), MediaEvent::SendReady);
+                }
+            }
+        }
+    }).await.expect("browser observed the native publisher");
+    media.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
+    use nuschl_ipc::video::{Decoder, Source};
+
+    // Successive AV1 packets from a synthetic 32×32 color source.
+    const KEY: [u8; 30] = [
+        0x12, 0x00, 0x0a, 0x0a, 0x00, 0x00, 0x00, 0x02, 0x27, 0xfe, 0x6d, 0x7c, 0x80, 0x20, 0x32,
+        0x0e, 0x10, 0x00, 0x8c, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x3e, 0xfc, 0xc1, 0x08,
+    ];
+    const DELTAS: [[u8; 21]; 3] = [
+        [
+            0x12, 0, 0x32, 0x11, 0x30, 3, 0xc0, 0x80, 0, 0, 0x46, 0xb8, 0, 0, 2, 0x40, 0, 0x20, 0,
+            0x8c, 0x70,
+        ],
+        [
+            0x12, 0, 0x32, 0x11, 0x30, 4, 1, 4, 0, 0, 0x46, 0xb8, 0, 0, 2, 0x40, 0, 0x20, 0, 0x89,
+            0x40,
+        ],
+        [
+            0x12, 0, 0x32, 0x11, 0x30, 6, 2, 8, 0x80, 0, 0x46, 0xb8, 0, 0, 2, 0x40, 0, 0x20, 0,
+            0x86, 0x80,
+        ],
+    ];
+    async fn rendered(media: &mut Media, publisher: u64, key: bool) -> Vec<u8> {
+        loop {
+            if let MediaEvent::Frame {
+                publisher: sender,
+                purpose,
+                key_frame,
+                data,
+                ..
+            } = media
+                .next()
+                .await
+                .expect("viewer remains live")
+                .expect("RTC viewer")
+            {
+                assert_eq!(sender, publisher);
+                assert_eq!(purpose, Purpose::ScreenVideo);
+                if key_frame == key {
+                    return data;
+                }
+            }
+        }
+    }
+    nuschl_testkit::sandbox();
+    let crypto = fixture("nuschl-crypto-worker");
+    let rtc = fixture("nuschl-rtc-worker");
+    let video = fixture("nuschl-video-worker");
+    let sfu = nuschl_testkit::sfu::start(fixture("nuschl-stream-sfu"), "");
+    let (host, roots) = tls_proxy(&sfu).await;
+    let directory = nuschl_testkit::temp_dir();
+    let posted = format!("https://{host}/call#{LINK}");
+    let owner = format!("{posted}&p={OWNER}");
+    let connect = |link| Connect {
+        generation: 1,
+        host: &host,
+        link,
+        codecs: &[Codec::Av1],
+        policy: PeerPolicy::default(),
+    };
+    let alice = Connection::connect_with_roots(
+        CryptoHandle::start(crypto.clone(), directory.path().join("alice")),
+        connect(&owner),
+        roots.clone(),
+    )
+    .await
+    .unwrap();
+    let publisher = alice.welcome().peer;
+    let mut alice = alice
+        .into_media(MediaOptions {
+            executable: rtc.clone(),
+            sfu_port: sfu.media.port(),
+            publish: Some(Purpose::ScreenVideo),
+        })
+        .await
+        .unwrap();
+    let bob = Connection::connect_with_roots(
+        CryptoHandle::start(crypto, directory.path().join("bob")),
+        connect(&posted),
+        roots,
+    )
+    .await
+    .unwrap();
+    let mut bob = bob
+        .into_media(MediaOptions {
+            executable: rtc.clone(),
+            sfu_port: sfu.media.port(),
+            publish: None,
+        })
+        .await
+        .unwrap();
+
+    let mut decoder = Decoder::start(video.clone(), Source::Screen).unwrap();
+    let red = red_keyframe(video.clone()).await;
+
+    timeout(HANDSHAKE, async {
+        loop {
+            if matches!(
+                alice
+                    .next()
+                    .await
+                    .expect("publisher remains live")
+                    .expect("RTC publisher"),
+                MediaEvent::SendReady
+            ) {
+                break;
+            }
+        }
+        let mut frame = 0u64;
+        let mut tick = tokio::time::interval(Duration::from_millis(34));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let initial = loop {
+            tokio::select! {
+                _ = tick.tick() => {
+                    frame += 1;
+                    alice.send_keyframe(frame * 3_060, KEY.to_vec()).unwrap();
+                }
+                data = rendered(&mut bob, publisher, true) => {
+                    assert_eq!(data, KEY);
+                    if let Some(frame) = decoder.decode(true, data).await.unwrap() {
+                        break frame;
+                    }
+                }
+            }
+        };
+        tick.tick().await;
+        frame += 1;
+        assert!(
+            alice
+                .send_frame(frame * 3_060, false, DELTAS[0].to_vec())
+                .unwrap()
+        );
+        assert!(
+            !alice
+                .send_frame((frame + 1) * 3_060, false, DELTAS[1].to_vec())
+                .unwrap()
+        );
+        let delta = rendered(&mut bob, publisher, false).await;
+        assert_eq!(delta, DELTAS[0]);
+        let next = decoder
+            .decode(false, delta)
+            .await
+            .unwrap()
+            .expect("decoded interframe");
+        assert_eq!((initial.width, initial.height), (32, 32));
+        assert_eq!(next.bgra, initial.bgra);
+
+        // Dropping an input frame invalidates later dependent frames until a
+        // fresh keyframe. The RTC worker remains live through the recovery.
+        tick.tick().await;
+        frame += 2;
+        assert!(
+            alice
+                .send_frame(frame * 3_060, false, DELTAS[2].to_vec())
+                .unwrap()
+        );
+        assert!(
+            timeout(
+                Duration::from_millis(200),
+                rendered(&mut bob, publisher, false)
+            )
+            .await
+            .is_err()
+        );
+        loop {
+            if matches!(
+                alice
+                    .next()
+                    .await
+                    .expect("publisher remains live")
+                    .expect("RTC publisher"),
+                MediaEvent::KeyframeRequired
+            ) {
+                break;
+            }
+        }
+        frame += 1;
+        assert!(alice.send_keyframe(frame * 3_060, KEY.to_vec()).unwrap());
+        assert_eq!(rendered(&mut bob, publisher, true).await, KEY);
+        tick.tick().await;
+        frame += 1;
+        assert!(
+            alice
+                .send_frame(frame * 3_060, false, DELTAS[0].to_vec())
+                .unwrap()
+        );
+        assert_eq!(rendered(&mut bob, publisher, false).await, DELTAS[0]);
+
+        tick.tick().await;
+        frame += 1;
+        assert!(alice.send_keyframe(frame * 3_060, red.clone()).unwrap());
+        let packet = rendered(&mut bob, publisher, true).await;
+        assert_eq!(packet, red);
+        let decoded = decoder
+            .decode(true, packet)
+            .await
+            .unwrap()
+            .expect("decoded red keyframe");
+        assert_eq!((decoded.width, decoded.height), (32, 32));
+        assert_eq!(decoded.bgra.len(), 32 * 32 * 4);
+        assert!(
+            decoded
+                .bgra
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|&[b, g, r, a]| b < 45 && g < 45 && r > 200 && a == 255)
+        );
+    })
+    .await
+    .expect("a native frame crosses the owned SFU");
+    decoder.stop().await.unwrap();
+    bob.stop().await.unwrap();
+    alice.stop().await.unwrap();
+    nuschl_testkit::none_running(&video, Duration::from_secs(3)).await;
+    nuschl_testkit::none_running(&rtc, Duration::from_secs(3)).await;
+}

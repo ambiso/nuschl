@@ -20,7 +20,7 @@ image = { version = "0.25", default-features = false }
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo", "tzdb-bundle-platform"] }
 nuschl-client.workspace = true
 nuschl-core.workspace = true
-nuschl-ipc.workspace = true
+nuschl-ipc = { workspace = true, features = ["video-portal"] }
 nuschl-legacy-html.workspace = true
 nuschl-protocol.workspace = true
 nuschl-sandbox.workspace = true

@@ -345,8 +345,13 @@ with a call link opens it ([desktop](desktop.md#calls)); the creator's link adds
   keys arrive. Camera tiles fill a grid; a shared screen or a pinned camera
   takes the large view. The roster lists everyone in the call, and a host
   (P) gets End call and Remove.
-- **Relay only:** `/call?relay#…` connects with `iceTransportPolicy: 'relay'`
-  through the TURN server the SFU names, and fails closed without one.
+- **Connection path:** Two participants can move video to a direct WebRTC
+  connection when the measured outgoing bitrate covers the selected quality
+  with 20% headroom. Pairwise keys protect the ICE candidates in transit.
+  The participants learn their peer's address on this path. The page moves
+  video back to the SFU when the direct connection falls behind or fails.
+  `/call?relay#…` skips direct negotiation and uses the call host's TURN
+  server, failing closed when the host offers none.
 - **Bounds:** SFU messages are checked against the page's limits before use
   (`signal.js`: 256 KiB, 256 peers, three tracks per peer, 16 KiB key
   messages); the stream worker bounds its own requests.
@@ -361,12 +366,13 @@ with a call link opens it ([desktop](desktop.md#calls)); the creator's link adds
   source. `/call` alone may ask for camera and display capture
   (Permissions-Policy). A browser that cannot encode the call codec shows
   "Can't send AV1" (or VP9).
-- **Quality:** Auto lets the SFU select video quality. The call page applies
-  the SFU's publisher limits to the matching encoder's resolution, frame rate
-  and bitrate. Open **Video stats** on a remote tile to see its received
+- **Quality:** The selectors beside the capture buttons set each source's
+  maximum resolution and frame rate. The encoder also follows SFU bandwidth
+  limits. Open **Video stats** on a remote tile to choose its receive quality
+  or leave it at Auto to follow the tile size. The panel shows the received
   resolution, decoded and presented frame rates, receive bitrate, and mean
-  time in the receiver's jitter buffer. Embedding the call view in the web
-  client is a follow-up.
+  time in the receiver's jitter buffer. Browsers with a supported scalable
+  AV1 encoder let the SFU forward different layers to different viewers.
 - **Tests:** `checks.call-page` runs `web/call/call.test.js` against the
   stream worker's wasm; `checks.vm-call-page` (`nix/call-page-vm.nix`,
   `tests/call_page.py`) runs headless Chromium and Firefox against the SFU and

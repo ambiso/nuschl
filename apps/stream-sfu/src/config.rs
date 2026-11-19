@@ -110,7 +110,7 @@ impl Default for Config {
             max_sources_per_peer: 3,
             room_lifetime_secs: 4 * 3600,
             lease_secs: 30,
-            max_message_bytes: 256 * 1024,
+            max_message_bytes: crate::protocol::MAX_MESSAGE_BYTES,
             messages_per_second: 32,
             creations_per_hour: 20,
             receiver_bitrate: 25_000_000,

@@ -38,10 +38,15 @@ change alone is no reason to change a cryptographic protocol.
 | `akd` | Key transparency with VRF and audit proofs | Through `nuschl-kt` only, in the crypto worker, `nuschld` and `nuschl-witness`. akd_core enables ed25519-dalek's `legacy_compatibility` binary-wide, so `nuschl-kt` checks `s < ℓ` itself and `nuschl-identity` verifies with libcrux. Verifiers run under `catch_unwind` behind a strict decoder ([e2ee §5.2](docs/e2ee.md)). |
 | libcrux and OpenMLS (with `rayon`) | Post-quantum MLS and identity signatures (X-Wing HPKE, ML-KEM, ML-DSA); no memory-safe Rust alternative | In the crypto worker, `nuschld` and `nuschl-witness`; in the desktop, `nuschl-stream` only parses call links and derives `stream_id` and `host_key` (HKDF and SHA-256) from secrets the desktop made itself. OpenMLS only through `nuschl-e2ee` (crypto worker, `nuschld`): every key package, tree and message is checked structurally first, and calls run under `catch_unwind`. Patched versions: `vendor/*/NUSCHEL-PATCH.md`. |
 | libcrux's portable wasm32 build with hpke-rs (X-Wing, HKDF, HMAC, SHA-256, ChaCha20-Poly1305), and `aes-gcm` through `nuschl-sframe` | Call keys and SFrame in the browser (docs/video-plan.md §4) | `nuschl-stream-wasm` only, in the call page's dedicated stream worker, which is also its encoded-transform worker. It holds S, P and every key and draws randomness from `crypto.getRandomValues`; the page receives the SFU's join fields and proofs, key messages and frames, the last two encrypted. Requests are bounded before parsing (key messages 16 KiB, 256 peers); `nuschl-stream` and `nuschl-sframe` bound pending requests and replay windows. |
+| str0m and `aes-gcm` through `nuschl-sframe` | Native call transport and media encryption | Linux RTC worker. The worker gets current call media epochs, bounded encoded frames and brokered UDP datagrams. The crypto worker holds key exchange and pairwise signaling keys. |
+| PipeWire video bindings | Capture Linux portal video buffers | Capture worker only, through an inherited file descriptor from a fresh screen or camera grant. The desktop and diagnostic probe share the ashpd grant adapter. |
 | Global shortcuts (`ashpd`; `global-hotkey` on Windows and macOS) | System-wide push-to-talk | Desktop shell; press and release of one bound key. |
 | Typst (`typst`, `typst-render`) | LaTeX formulas; Typst scripts can reach files, packages, plugins and data | Math worker only. It receives code-free math markup from Nuschl's converter, in a one-file world without packages, clock or system fonts, with a library stripped of file, plugin, image, data, `eval` and `std` access, under per-formula limits ([math](docs/math.md)). |
 | `psm` (assembly, through `stacker`) | Stack growth in Typst's evaluator | Through `stacker` and `typst-eval` only, in the math worker. |
 | Symphonia, rubato, audioadapter-buffers, opus-rs (with `fearless_simd`), nnnoiseless in `nuschl-musicbot-codec-worker` | Music decoding, resampling, Opus encoding, voice ducking | That executable's fixed decode, encode and duck roles, sandboxed on Linux only; elsewhere and without confinement it fails to start. cargo-deny keeps these crates out of `nuschl-musicbot`, which starts the worker from its fixed libexec path, moves opaque bytes, validates bounded replies and makes no codec or DSP call ([music bot](docs/musicbot.md#security-and-codec-roles)). |
+| GStreamer and VA-API | AV1 hardware encoding, decoding and DMA-BUF video import | Confined Linux video worker only. Loads fixed core, app, PipeWire, VA and AV1 parser plugins. VA gets one verified DRM render device, its read-only sysfs directory and read-only system video driver libraries. |
+| rav1e with defaults disabled | Local AV1 encoding of I420 frames, alongside its existing AVIF use through ravif | Linux video encoder worker for video, content worker for image codecs. The video roles use the scalar Rust kernels. |
+| rav1d with defaults and assembly disabled | Decode AV1 in software through the upstream Rust API | Confined Linux video decoder. Its AV1 frame and pixel limits apply before the UI receives packed BGRA. Cargo.lock pins the revision with the Rust API. |
 | OS sandbox and process APIs (`nuschl-sandbox`) | Starting confined workers | Supervisor adapter; prefer safe wrappers (`win32job` for job objects). |
 | `nuschl-sandbox-windows` (`windows-sys`) | AppContainer launch with an explicit handle list and job limits, which no maintained safe wrapper offers | The worker executables' launch stage, before any input is read; cargo-deny admits only the worker crates. One trait method per Win32 function with Microsoft's documented contract as its `# Safety` (cross-checked with ReactOS); unsafe calls only in `os.rs`, one per block with a `SAFETY:` comment; guards release Windows allocations exactly once; no `as` casts; launch steps tested under Miri against a mock that fails each call in turn ([Windows sandbox](docs/windows-sandbox.md)). |
 
@@ -52,9 +57,10 @@ allowance narrow, and name the safer alternative that is missing.
 ## Worker contract
 
 Trusted supervisors start workers from fixed paths with fixed arguments. Workers
-exchange versioned, size-bounded messages over inherited pipes. They hold no TLS
-keys, passwords or session credentials; `nuschld`'s storage worker holds only the
-database credential. A worker cannot name an executable, choose a database,
+exchange versioned, size-bounded messages over inherited pipes and socket pairs.
+Worker roles use the credentials listed below. Server TLS identity and passwords
+stay with the session authority. `nuschld`'s storage worker holds the database
+credential. A worker cannot name an executable, choose a database,
 request a URL fetch or send SQL. Content replies carry only inert text, style data and validated
 pixels or masks. Supervisors kill and reap failed and stuck workers. Startup fails
 closed when a sandbox helper or platform policy is unavailable.
@@ -74,6 +80,10 @@ add only:
 | media | PipeWire and PulseAudio sockets, ALSA devices, sound sysfs and procfs, `/usr/share/pipewire`, `/usr/share/alsa` | 1 GiB |
 | transfer | network and resolver files; the offered file, read-only | 1 GiB |
 | music-bot codec, Linux only | none | 1 GiB |
+| video encode, Linux only | none | 1 GiB, 120 s CPU over its life, 5 s wall time per exchange |
+| video capture, Linux only | one portal-granted PipeWire connection inherited as standard input, a private inherited socket for AV1 and versioned bitrate commands, read-only system PipeWire configuration, one optional DRM render device with read-only sysfs metadata and the hardware codec's driver libraries | 1 GiB, 1 h CPU over its life, 15 s to first frame, 5 s to read a started frame |
+| video decode, Linux only | bounded encoded AV1 input and BGRA output pipes, one optional DRM render device with read-only sysfs metadata and the hardware codec's driver libraries | 1 GiB, 1 h CPU over its life, bounded exchange deadline |
+| RTC, Linux only | private IPC sockets for call media, UDP datagrams and media epoch updates | 1 GiB, 1 h CPU over its life |
 
 Rules for every platform:
 
@@ -226,7 +236,29 @@ Mumble servers can show it to other clients. RTC adapters apply
 `nuschl_core::network::PeerPolicy` before gathering or dialing and advertise only
 relay candidates in relay-only mode, on every application call path.
 
-**Companion SFU** (`nuschl-stream-sfu`, [protocol](apps/stream-sfu/src/protocol.rs)).
+**Native call signaling.** The session's crypto worker holds the link's ephemeral
+key-exchange state in memory. It exposes room metadata, SFU challenge proofs, opaque
+key messages and direct signaling authenticated with the pairwise key. Replies bind
+to the current call generation and its selected peer. Relay-only sessions reject
+direct signals. Pairwise keys stay in the crypto worker. The RTC process receives
+active call media epochs through a private worker-to-worker socket. The desktop
+is the trusted launcher and handle broker. It assigns the endpoints to the two
+workers and releases its copies. The creator's reply
+carries the two credentials the configured SFU needs to create its room.
+The session authenticates that host over WSS using WebPKI roots before requesting
+the proofs and sending the join. The WebSocket handshake uses the configured host
+and `/sfu`, and caps frames and messages at 256 KiB. Key messages share the SFU's
+16 KiB binary limit.
+
+**Native call media.** Each Linux RTC worker handles one call. It keeps the
+SFrame counter and replay state for the call and receives only the media epochs
+the call needs. The video workers encode and decode media. The SDK applies
+`PeerPolicy` before network setup, then validates the destination and length of
+datagrams it routes. The RTC worker uses a private network namespace and
+communicates through inherited IPC. Ending the call closes its worker and
+releases the process slot after reaping.
+
+**Companion SFU** (`nuschl-stream-sfu`, [protocol](crates/protocol/src/sfu.rs)).
 A network service under its hardened systemd unit; its state lives in memory,
 except its traffic count per billing period, kept in its state directory. A
 room holds the `admit_key` and `host_key` its creator hands over. Media keys stay

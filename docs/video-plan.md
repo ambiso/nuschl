@@ -38,16 +38,24 @@ decisions (§11).
 
 ## 1. What exists
 
-- `nuschl-rtc`: a str0m 0.25 trial with Opus and VP8, one offer/answer, host
-  candidates only, and bounds too small for 4K. str0m packetizes AV1 and finds
-  AV1 key frames; Dependency Descriptor (DD) parsing, layer selection and
-  sequence rewriting are Nuschl code.
-- `crates/stream` and `crates/sframe` (#267, in review): link parsing, the key
-  schedule, the HPKE-PSK exchange, rekeying and RFC 9605 SFrame.
-- Still to build: capture, encoders, decoders and video worker roles. The media
-  worker holds the microphone and audio socket, so video gets its own roles.
-- The browser client does voice only; RTCPeerConnection, camera capture and
-  getDisplayMedia are still to build.
+- `nuschl-rtc` negotiates Opus and the call's video codec (AV1 or VP9).
+  Its encoded-media loopback probe also supports VP8. The SFU uses Dependency
+  Descriptors to select layers and rewrites sequence numbers for each viewer.
+- `crates/stream` and `crates/sframe` implement call links, key exchange, media
+  rekeying and RFC 9605 SFrame. The native crypto worker supports SFU
+  admission and sealed pairwise signaling. The Linux RTC worker receives media
+  epochs directly from the crypto worker. Two native SDK participants can send
+  and receive authenticated AV1 keyframes and interframes through the SFU.
+- On Linux the desktop can publish a camera or screen source or play incoming
+  AV1. A fresh portal grant supplies one PipeWire FD to the capture worker.
+  VA-API handles encoding and decoding where available. The software fallbacks
+  are rav1e and rav1d. The decoder returns bounded BGRA to GPUI.
+- The native path uses the SFU and supports one publisher and one viewer.
+  The browser handles group calls or relay-only connections while native TURN
+  and direct paths remain open. Receiver limits currently adjust native bitrate.
+- The companion browser page captures camera and screen, sets receive
+  quality per tile and switches two-person video between the SFU and a direct
+  connection. The chat web app uses the companion page for video.
 - `privacy/1` relay-only and `PeerPolicy` exist; `rtc/1` is still to build
   (#141).
 - Voice playout knows its per-talker delay, which video playout can follow.
@@ -162,11 +170,11 @@ participant, which the roster shows; with the stream host's help it can
 intercept participants unseen. Identity-bound keys (Phase 2, #139 B) detect a
 substituted pk_v ("Identity check failed").
 
-**Where keys live.** Natively the crypto worker runs the exchange and hands
-K_epoch and channel keys to the SDK driver, which does SFrame. In the browser a
-dedicated stream worker, which is also the encoded-transform worker, holds all
-keys, using libcrux's portable wasm32 build under a narrow SECURITY.md row
-(Owner: libcrux with hpke-rs on both targets).
+**Where keys live.** Natively the crypto worker runs the exchange and sends
+media epochs over a private socket to one confined RTC worker per call. The RTC
+worker runs SFrame and str0m. The SDK brokers UDP outside that process. In the
+browser a dedicated stream worker, which is also the encoded-transform worker,
+holds the keys using libcrux's portable wasm32 build (SECURITY.md).
 
 ## 5. Quality, bandwidth and paths
 
@@ -196,6 +204,22 @@ Grid tiles request 360p, the large view 720p or more. Cameras need several
 resolutions at once, so cameras publish three spatial layers (SVC) or three
 simulcast encodings, chosen by S0f; screens use temporal layers and, where the
 encoder offers them, spatial layers.
+
+Local S0f throughput sample on a Radeon RX 7900 XTX with Mesa 26.3.0 and
+FFmpeg 9.0.2. The input is ten seconds of moving `testsrc2` with one
+key frame per second. The encoding rate includes generating and uploading
+NV12 frames. The decoding rate measures VA-API output surfaces.
+
+| Input | Encoder target | AV1 payload | Encode | Decode | Largest key frame |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 3440×1440 at 100 fps | 20 Mbit/s | 23.74 Mbit/s | 319 fps | — | 75 KiB |
+| 3440×1440 at 100 fps | 25 Mbit/s | 29.68 Mbit/s | 320 fps | 448 fps | 86 KiB |
+| 3840×2160 at 60 fps | 15 Mbit/s | 17.92 Mbit/s | 198 fps | 293 fps | 112 KiB |
+
+These figures measure the codec on one device. The browser and SFU use the
+tiers above, and end-to-end tests measure capture, transport and playout
+separately. Payload exceeded the encoder target in each sample. Admission
+and pacing use measured payload rates.
 
 ### 5.2 Bounds
 
@@ -247,8 +271,8 @@ Owner rule (2026-11-18):
   authenticates keys (§7). A Friends Direct mode, direct only with friends or
   verified contacts, is a proposal (#444).
 - Candidates travel to the peer sealed under the pairwise channel key.
-- Phase 1 relays every source through the SFU; X1 adds direct paths, starting
-  with two-person calls.
+- The browser call starts on the SFU. Two-person calls can move video to a
+  direct path. The SFU connection remains available for fallback.
 - Path switches (Owner) are quick and keep the keys: the new path is set up
   and ICE-connected in the background without media, media moves in one step
   with a key frame on the new path, and the old path closes at once. Media
@@ -365,7 +389,7 @@ Owner rule (2026-11-18):
   stream id, epoch, request}.
 - **Isolation:** codecs run in `nuschl-video-worker` roles, encoding and
   decoding in separate roles; decoding happens in the decode role and the
-  browser; keys stay in the crypto worker, the SDK driver and the browser stream
+  browser; keys stay in the crypto worker, the native RTC worker and the browser stream
   worker. Worker credit is held until the process is reaped.
 - **Bounds:** §5.2; key messages ≤16 KiB, ≤32 pending key requests, ≥1 s
   between epochs, bounded replay windows, fixed-size quality messages.

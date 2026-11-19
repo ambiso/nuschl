@@ -17,7 +17,10 @@
 //! (docs/web.md, "The call page").
 use crate::{services::ServiceEvent, state::Desktop};
 use gpui_kit::Context;
-use nuschl_core::call::DEFAULT_HOST;
+use nuschl_core::{
+    call::{DEFAULT_HOST, page_url},
+    model::TextTarget,
+};
 use nuschl_stream::Link;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
@@ -136,20 +139,24 @@ impl Desktop {
         target: nuschl_core::model::TextTarget,
         cx: &mut Context<Self>,
     ) {
-        let host = match self.settings.call_host.as_str() {
-            "" => DEFAULT_HOST,
-            host => host,
-        };
-        let started = Link::generate(host, &mut getrandom::SysRng)
-            .map_err(|error| format!("No call: {error}"))
-            .and_then(|link| {
-                self.client.start_call(index, target, link.url())?;
-                Ok(link)
-            });
-        match started {
+        match self.create_call(index, target) {
             Ok(link) => self.open_call(link, "Call", cx),
             Err(error) => self.client.servers[index].set_notice(error),
         }
+    }
+
+    pub fn call_host(&self) -> &str {
+        match self.settings.call_host.as_str() {
+            "" => DEFAULT_HOST,
+            host => host,
+        }
+    }
+
+    pub fn create_call(&mut self, index: usize, target: TextTarget) -> Result<Link, String> {
+        let link = Link::generate(self.call_host(), &mut getrandom::SysRng)
+            .map_err(|error| format!("No call: {error}"))?;
+        self.client.start_call(index, target, link.url())?;
+        Ok(link)
     }
 
     /// Our call gets a new link; the page opens again on it.
@@ -170,6 +177,10 @@ impl Desktop {
     fn open_call(&mut self, link: Link, label: &str, cx: &mut Context<Self>) {
         let url = link.creator_url().expect("the creator's link");
         cx.open_url(&page_url(&url, self.settings.relay_only));
+        self.announce_call(link, label);
+    }
+
+    pub fn announce_call(&mut self, link: Link, label: &str) {
         let _ = self.client.send_text(format!("{label}: {}", link.url()));
         let (url, body) = lease_request(&link);
         self.call_leases += 1;
@@ -183,6 +194,8 @@ impl Desktop {
     }
 
     pub fn end_call(&mut self) {
+        #[cfg(target_os = "linux")]
+        self.stop_native_owner();
         if self.client.own_call().is_some() {
             self.client.end_call();
             let _ = self.client.send_text("Call ended".into());
@@ -208,15 +221,6 @@ impl Desktop {
             self.call = None;
             self.client.end_call();
         }
-    }
-}
-
-/// The call page for a call link: `/call?relay#…` for relay-only users.
-pub fn page_url(link: &str, relay_only: bool) -> String {
-    if relay_only {
-        link.replacen("/call#", "/call?relay#", 1)
-    } else {
-        link.to_owned()
     }
 }
 
@@ -269,16 +273,6 @@ mod tests {
         );
         assert!(join_link(&link.url().replace("&h=", "&x=")).is_none());
         assert!(join_link("https://stream.example/call#v=1").is_none());
-    }
-
-    #[test]
-    fn relay_only_users_open_the_page_with_relay() {
-        let link = "https://stream.example/call#v=1&k=a&h=b";
-        assert_eq!(page_url(link, false), link);
-        assert_eq!(
-            page_url(link, true),
-            "https://stream.example/call?relay#v=1&k=a&h=b"
-        );
     }
 
     #[test]

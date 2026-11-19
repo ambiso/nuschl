@@ -12,6 +12,8 @@ use std::{
 
 pub use tempfile::TempDir;
 
+pub mod sfu;
+
 /// The external program `name` on `PATH`.
 pub fn program(name: &str) -> PathBuf {
     std::env::var_os("PATH")

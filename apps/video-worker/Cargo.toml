@@ -1,0 +1,28 @@
+[package]
+name = "nuschl-video-worker"
+description = "Isolated video capture, encoding and decoding process"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+vaapi = ["dep:gstreamer", "dep:gstreamer-app"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gstreamer = { version = "0.25.4", default-features = false, optional = true, features = ["v1_28"] }
+gstreamer-app = { version = "0.25.2", default-features = false, optional = true, features = ["v1_28"] }
+nuschl-ipc = { workspace = true, features = ["video-portal"] }
+nuschl-sandbox.workspace = true
+pipewire = { version = "0.10.1", default-features = false }
+rav1d = { git = "https://github.com/memorysafety/rav1d", rev = "2e7216c20ac2a75de204d6c8d7268b75a45959b4", version = "1.1.1", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }
+rav1e = { version = "0.8.1", default-features = false }
+tokio = { version = "1.54.1", features = ["macros", "rt"] }
+
+[dev-dependencies]
+nuschl-testkit.workspace = true
+serde_json = "1.0.154"
+
+[lints]
+workspace = true

@@ -6,7 +6,9 @@ Three synthetic publishers (tests/call_publisher.js, Chromium) join a call on th
 stream host: the creator and a second participant publish a camera each, a third
 a shared screen. A Chromium subscriber and a relay-only Firefox subscriber show
 every source decrypted, in its colour, the screen in the large view, and the full
-roster. The screen exposes receiver video statistics. A pinned camera takes
+roster. The creator and first Chromium subscriber move from the SFU to direct
+video and back as the publisher's bandwidth estimate changes. The screen exposes
+receiver video statistics. A pinned camera takes
 the large view; a publisher leaving takes its tile
 and roster row along. A page user then publishes Chromium's fake camera and
 screen with Start camera and Share screen: nothing is captured before the
@@ -26,12 +28,14 @@ import json
 import os
 import secrets
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import Select
 
 ORIGIN = "https://stream.test"
 OUT = Path(sys.argv[1])
@@ -49,8 +53,12 @@ def b64(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
+def fragment(secret, publisher):
+    return f"#v=1&k={b64(secret)}&h={b64(hashlib.sha256(hkdf(publisher, 'host', 32)).digest())}"
+
+
 S, P = secrets.token_bytes(32), secrets.token_bytes(32)
-LINK = f"#v=1&k={b64(S)}&h={b64(hashlib.sha256(hkdf(P, 'host', 32)).digest())}"
+LINK = fragment(S, P)
 CREATOR = f"{LINK}&p={b64(P)}"
 
 
@@ -68,6 +76,16 @@ for (const name of ['getUserMedia', 'getDisplayMedia']) {
   };
 }
 """
+# Record quality messages sent by a viewer to the real SFU.
+RECORD_QUALITY = """
+window.qualityRequests = [];
+const send = WebSocket.prototype.send;
+WebSocket.prototype.send = function (data) {
+  const message = JSON.parse(data);
+  if (message.type === 'quality') window.qualityRequests.push(message.request);
+  send.call(this, data);
+};
+"""
 # A browser that decodes VP9 and no AV1.
 WITHOUT_AV1 = """
 const capabilities = RTCRtpReceiver.getCapabilities;
@@ -78,8 +96,20 @@ RTCRtpReceiver.getCapabilities = (kind) => {
 };
 """
 
+# Keep the browser's real candidate-pair identities while controlling its
+# upload estimate so both paths can be exercised on any VM host.
+DIRECT_UPLOAD = """
+window.uploadEstimate = 1;
+const getStats = RTCPeerConnection.prototype.getStats;
+RTCPeerConnection.prototype.getStats = async function (...args) {
+  const stats = await getStats.apply(this, args);
+  return new Map([...stats].map(([id, entry]) => [id, entry.type === 'candidate-pair'
+    ? {...entry, availableOutgoingBitrate: window.uploadEstimate} : entry]));
+};
+"""
 
-def chromium(*, script=None, devices=False):
+
+def chromium(*, script=None, devices=False, direct=False):
     """Headless Chromium; `script` runs before every page's own, `devices` gives it
     Chromium's fake camera and screen without permission prompts."""
     options = webdriver.ChromeOptions()
@@ -91,6 +121,9 @@ def chromium(*, script=None, devices=False):
     if devices:
         options.add_argument("--use-fake-device-for-media-stream")
         options.add_argument("--use-fake-ui-for-media-stream")
+    if direct:
+        # These two profiles exchange host IP candidates inside the isolated VM network.
+        options.add_argument("--disable-features=WebRtcHideLocalIpsWithMdns")
     driver = webdriver.Chrome(options=options, service=webdriver.ChromeService(shutil.which("chromedriver")))
     if script:
         driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": script})
@@ -178,6 +211,58 @@ def heading(driver):
                 "refusal")
 
 
+def direct_video(publisher, viewer, peer):
+    publisher.execute_script("publish([{color: 'rgb(220,40,40)', label: 'Camera A'}])")
+    tracks = {(peer, False): (COLOURS["a"], False)}
+    direct = "document.getElementById('status').textContent.includes('Direct video')"
+    showing(viewer, tracks, "initial SFU video decoded")
+    publisher.execute_script("window.uploadEstimate = 20_000_000")
+    wait(viewer, f"return {direct}", "direct video connected", timeout=40)
+    showing(viewer, tracks, "direct video decoded")
+    assert publisher.execute_script("return call.sources.get('camera').transceiver.sender.track === null")
+
+    publisher.execute_script("window.uploadEstimate = 1")
+    wait(viewer, f"return !{direct}", "direct video falls back on reduced upload", timeout=20)
+    wait(publisher, "return Boolean(call.sources.get('camera').transceiver.sender.track)",
+         "the SFU sender regained the capture", timeout=20)
+    showing(viewer, tracks, "SFU video decoded after fallback")
+
+
+def native_video(viewer):
+    secret, publisher = secrets.token_bytes(32), secrets.token_bytes(32)
+    posted = fragment(secret, publisher)
+    state = OUT / "native"
+    state.mkdir()
+    log = state / "publisher.log"
+    env = dict(os.environ, NUSCHL_NATIVE_CALL_HOST=ORIGIN.removeprefix("https://"),
+               NUSCHL_NATIVE_CALL_STATE=str(state),
+               NUSCHL_NATIVE_CALL_LINK=f"{ORIGIN}/call{posted}&p={b64(publisher)}")
+    with log.open("w") as output:
+        native = subprocess.Popen([os.environ["NUSCHL_NATIVE_CALL_TEST"], "--ignored", "--exact",
+                                   "sfu::tests::native_publisher_in_call_page_vm"], env=env,
+                                  stdout=output, stderr=subprocess.STDOUT)
+        peer_file = state / "peer"
+        try:
+            for _ in range(150):
+                if peer_file.exists() and (peer := peer_file.read_text()).isdigit():
+                    break
+                assert native.poll() is None, log.read_text()
+                time.sleep(0.1)
+            else:
+                raise AssertionError(f"native publisher did not join: {log.read_text()}")
+            viewer.get(f"{ORIGIN}/call{posted}")
+            showing(viewer, {(int(peer), True): ((255, 0, 0), True)}, "native screen decoded in Chromium")
+        finally:
+            (state / "stop").touch()
+            try:
+                assert native.wait(timeout=15) == 0, log.read_text()
+            except subprocess.TimeoutExpired:
+                native.kill()
+                native.wait()
+                raise
+    viewer.get("about:blank")
+
+
 drivers = []
 try:
     # Every browser starts first, before the media load: a busy host slows startup most.
@@ -185,16 +270,18 @@ try:
     vp9 = chromium(script=WITHOUT_AV1)
     plain = chromium(script="delete window.RTCRtpScriptTransform")
     drivers += [user, vp9, plain]
+    native_video(user)
     publishers, pages = {}, {}
     for name, fragment in [("a", CREATOR), ("b", LINK), ("c", LINK)]:
-        driver = pages[name] = chromium()
+        driver = pages[name] = chromium(script=DIRECT_UPLOAD if name == "a" else None, direct=name == "a")
         drivers.append(driver)
         driver.get(f"{ORIGIN}/call_publisher.html{fragment}")
         publishers[name] = wait(driver, "return window.peer && window.peer()", f"publisher {name} joined")
         if name == "a":
-            chrome, fox = chromium(), firefox()
+            chrome, fox = chromium(script=RECORD_QUALITY, direct=True), firefox()
             drivers += [chrome, fox]
             chrome.get(f"{ORIGIN}/call{LINK}")
+            direct_video(driver, chrome, publishers[name])
             fox.get(f"{ORIGIN}/call?relay{LINK}")
     a, b, c = (publishers[name] for name in "abc")
     for driver in [chrome, fox]:
@@ -206,7 +293,6 @@ try:
     codec = chrome.find_element(By.ID, "status").text.split(" · ")[0]
     assert codec in ("AV1", "VP9") and fox.find_element(By.ID, "status").text.startswith(codec), codec
 
-    pages["a"].execute_script("publish([{color: 'rgb(220,40,40)', label: 'Camera A'}])")
     pages["b"].execute_script("publish([{color: 'rgb(40,190,70)', label: 'Camera B'}])")
     cameras = {(a, False): (COLOURS["a"], False), (b, False): (COLOURS["b"], False)}
     for driver in [chrome, fox]:
@@ -223,6 +309,12 @@ try:
     # Actual receiver measurements become available on the selected tile.
     screen_stats = chrome.find_element(By.CSS_SELECTOR, "#large .video-stats")
     screen_stats.find_element(By.TAG_NAME, "summary").click()
+    quality = Select(screen_stats.find_element(By.TAG_NAME, "select"))
+    assert quality.first_selected_option.text == "Auto"
+    quality.select_by_value("2")
+    request = f"01{c:016x}0102"
+    wait(chrome, f"return window.qualityRequests.includes('{request}')", "explicit receive quality")
+    quality.select_by_value("")
     wait(chrome, """
       const panel = document.querySelector('#large .video-stats[open]');
       if (!panel) return false;

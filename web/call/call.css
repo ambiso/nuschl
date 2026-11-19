@@ -33,7 +33,7 @@ header h1 { font-size: 1.1rem; margin: 0; }
 footer { grid-area: footer; border-top: 1px solid var(--border); }
 footer a { margin-left: auto; color: var(--muted); font-size: 0.85rem; }
 #controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-#controls select { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; }
+select { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; }
 #controls button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #0e1220; }
 button:disabled { opacity: 0.5; cursor: default; }
 #notice { color: var(--muted); }
@@ -72,6 +72,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 .video-stats[open] { max-width: calc(100% - 16px); }
 .video-stats summary { cursor: pointer; display: list-item; padding: 10px 8px; }
 .video-stats summary:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.viewer-quality { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 0 8px 6px; }
 .video-stats p { color: var(--muted); margin: 0; padding: 0 8px; }
 .video-stats dl { display: grid; grid-template-columns: auto auto; gap: 2px 8px; margin: 0; padding: 0 8px 6px; }
 .video-stats dt { color: var(--muted); }
@@ -89,7 +90,7 @@ button {
   border-radius: 6px; padding: 4px 10px; cursor: pointer;
 }
 #end-call { color: var(--danger); }
-a:focus-visible, button:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+a:focus-visible, button:focus-visible, select:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 #ending { height: 100%; display: grid; place-content: center; text-align: center; gap: 8px; padding: 16px; }
 #ending h1 { margin: 0; font-size: 1.4rem; }
 #ending p { margin: 0; color: var(--muted); }

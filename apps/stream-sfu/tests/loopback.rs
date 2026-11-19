@@ -15,9 +15,7 @@ use nuschl_stream_sfu::quality::{DESCRIPTOR_ID, Descriptor, descriptor_extension
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
-    io::{BufRead, BufReader},
     net::UdpSocket,
-    process::{Child, Command, Stdio},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -36,60 +34,8 @@ const ADMIT: [u8; 32] = [1; 32];
 const HOST: [u8; 32] = [2; 32];
 const ROOM: [u8; 16] = [3; 16];
 
-struct Sfu {
-    child: Child,
-    url: String,
-    directory: nuschl_testkit::TempDir,
-}
-
-impl Drop for Sfu {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-/// The SFU with `settings` added to its configuration; `{directory}` in them
-/// names its temporary directory.
-fn start(settings: &str) -> Sfu {
-    let directory = nuschl_testkit::temp_dir();
-    let secret = directory.path().join("turn-secret");
-    std::fs::write(&secret, "test-secret\n").expect("secret");
-    let config = directory.path().join("sfu.toml");
-    std::fs::write(
-        &config,
-        format!(
-            r#"
-            listen = "127.0.0.1:0"
-            media_listen = "127.0.0.1:0"
-            media_addresses = ["127.0.0.1"]
-            max_peers_per_room = 6
-            {}
-            [turn]
-            urls = ["turn:turn.test:3478?transport=udp"]
-            secret_file = "{}"
-            "#,
-            settings.replace("{directory}", &directory.path().display().to_string()),
-            secret.display()
-        ),
-    )
-    .expect("config");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_nuschl-stream-sfu"))
-        .arg("--config")
-        .arg(&config)
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("start the SFU");
-    let mut line = String::new();
-    BufReader::new(child.stdout.take().expect("stdout"))
-        .read_line(&mut line)
-        .expect("ready line");
-    let signalling = line.split_whitespace().nth(2).expect("signalling address");
-    Sfu {
-        child,
-        url: format!("ws://{signalling}/sfu"),
-        directory,
-    }
+fn start(settings: &str) -> nuschl_testkit::sfu::Sfu {
+    nuschl_testkit::sfu::start(env!("CARGO_BIN_EXE_nuschl-stream-sfu"), settings)
 }
 
 /// `POST` or `DELETE /sfu/lease`; returns the status code.
@@ -237,6 +183,8 @@ struct Peer {
     /// Payloads and descriptors sent.
     sent: Vec<(Vec<u8>, Option<Descriptor>)>,
     seq: u64,
+    frame: u32,
+    frame_packets: usize,
     last_frame: Option<Instant>,
     messages: Vec<Value>,
 }
@@ -325,6 +273,8 @@ async fn join_decoding(
         received: HashMap::new(),
         sent: Vec::new(),
         seq: 0,
+        frame: 0,
+        frame_packets: 1,
         last_frame: None,
         messages: Vec::new(),
     };
@@ -416,8 +366,7 @@ impl Peer {
         }
     }
 
-    /// Sends one synthetic encrypted frame in one packet, once connected, at 30
-    /// frames a second.
+    /// Sends a synthetic encrypted frame once connected, at 30 frames a second.
     fn send_frame(&mut self) {
         let Some((leg, None, mid, codec)) = &mut self.publish else {
             return;
@@ -439,37 +388,55 @@ impl Peer {
             .find(|p| p.spec().codec == *codec && media.remote_pts().contains(&p.pt()))
             .expect("negotiated codec")
             .pt();
-        self.seq += 1;
-        // An AV1 aggregation header, then bytes that stand in for SFrame ciphertext.
-        let mut payload = vec![if self.seq % 10 == 1 { 0x18 } else { 0x10 }];
-        payload.extend_from_slice(&self.id.to_be_bytes());
-        payload.extend_from_slice(&self.seq.to_be_bytes());
-        payload.extend((0..600).map(|i| (i as u64 * 31 + self.seq) as u8));
-        // AV1 frames carry an L1T3 Dependency Descriptor: T0 T2 T1 T2, with the
-        // template structure on every T0 frame.
-        let number = (self.seq - 1) as u16;
-        let template = [0, 2, 1, 2][usize::from(number) % 4];
-        let descriptor =
-            (*codec == Codec::Av1).then(|| Descriptor(l1t3(template, number, template == 0)));
-        let mut values = ExtensionValues::default();
-        if let Some(descriptor) = &descriptor {
-            values.user_values.set(descriptor.clone());
-        }
+        // The one-packet fixture sends T0 T2 T1 T2. Multi-packet frames
+        // all belong to the base target, like a high-rate single-layer share.
+        let number = self.frame as u16;
+        self.frame += 1;
+        let template = if self.frame_packets == 1 {
+            [0, 2, 1, 2][usize::from(number) % 4]
+        } else {
+            0
+        };
+        let timestamp = self.frame * 3000;
         let mut api = leg.rtc.direct_api();
         let stream = api.stream_tx_by_mid(*mid, None).expect("stream");
-        stream.write_rtp(
-            RtpWrite::new(
-                pt,
-                self.seq.into(),
-                (self.seq * 3000) as u32,
-                Instant::now(),
-                payload.clone(),
-            )
-            .marker(true)
-            .ext_vals(values)
-            .nackable(true),
-        );
-        self.sent.push((payload, descriptor));
+        for index in 0..self.frame_packets {
+            self.seq += 1;
+            let first = index == 0;
+            let last = index + 1 == self.frame_packets;
+            // An AV1 aggregation header with bytes standing in for SFrame ciphertext.
+            let header = if first && number.is_multiple_of(10) {
+                0x18
+            } else {
+                0x10
+            };
+            let mut payload = vec![header];
+            payload.extend_from_slice(&self.id.to_be_bytes());
+            payload.extend_from_slice(&self.seq.to_be_bytes());
+            payload.extend((0..600).map(|i| (i as u64 * 31 + self.seq) as u8));
+            let descriptor = (*codec == Codec::Av1).then(|| {
+                let mut bytes = l1t3(template, number, template == 0 && first);
+                bytes[0] = (bytes[0] & 0x3f) | (u8::from(first) << 7) | (u8::from(last) << 6);
+                Descriptor(bytes)
+            });
+            let mut values = ExtensionValues::default();
+            if let Some(descriptor) = &descriptor {
+                values.user_values.set(descriptor.clone());
+            }
+            stream.write_rtp(
+                RtpWrite::new(
+                    pt,
+                    self.seq.into(),
+                    timestamp,
+                    Instant::now(),
+                    payload.clone(),
+                )
+                .marker(last)
+                .ext_vals(values)
+                .nackable(true),
+            );
+            self.sent.push((payload, descriptor));
+        }
     }
 
     fn count(&self, from: u64) -> usize {
@@ -888,6 +855,61 @@ async fn paced_video_sustains_small_packet_bursts() {
         "received {received} of {} RTP packets",
         FRAMES * PACKETS
     );
+}
+
+/// Publishes about 3 Mbit/s in the base target and lets the SFU measure it.
+async fn active_high_bitrate_host(url: &str) -> Peer {
+    let (mut host, _) = join(url, &ADMIT, true, true).await;
+    host.frame_packets = 24;
+    host.start_publishing(Codec::Av1);
+    publish_for(&mut host, Duration::from_secs(3)).await;
+    host
+}
+
+async fn publish_for(host: &mut Peer, duration: Duration) {
+    let deadline = Instant::now() + duration;
+    while Instant::now() < deadline {
+        host.step();
+        host.send_frame();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// Late subscribers receive an active base target above the congestion
+/// estimator's 2 Mbit/s startup rate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn joins_an_active_high_bitrate_stream() {
+    let sfu = start("");
+    let url = sfu.url.as_str();
+    let mut host = active_high_bitrate_host(url).await;
+    let (mut viewer, welcome) = join(url, &ADMIT, false, false).await;
+    assert_eq!(welcome["type"], "welcome", "{welcome}");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while viewer.count(host.id) < host.frame_packets * 60 {
+        assert!(
+            Instant::now() < deadline,
+            "timed out after receiving {} RTP packets",
+            viewer.count(host.id)
+        );
+        host.step();
+        viewer.step();
+        host.send_frame();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_forwarded(&viewer, &host, Codec::Av1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn admits_a_base_layer_when_it_fits_the_room_budget() {
+    let sfu = start("room_bitrate = 1800000");
+    let mut host = active_high_bitrate_host(&sfu.url).await;
+    let (_, refused) = join(&sfu.url, &ADMIT, false, false).await;
+    assert_eq!(refused, json!({"type": "error", "reason": "bandwidth"}));
+
+    host.frame_packets = 8;
+    publish_for(&mut host, Duration::from_secs(3)).await;
+    let (_, welcome) = join(&sfu.url, &ADMIT, false, false).await;
+    assert_eq!(welcome["type"], "welcome", "{welcome}");
 }
 
 /// At its traffic budget the SFU refuses new peers, and the count is on disk.

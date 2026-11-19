@@ -100,6 +100,7 @@
             || lib.hasSuffix ".sql" path
             || lib.hasSuffix ".json" path
             || lib.hasSuffix ".vp8" path
+            || lib.hasSuffix "/apps/rtc-worker/tests/fixtures/screen.av1" path
             || lib.hasSuffix ".svg" path
             # The Windows icon and the resource script embed-resource compiles.
             || lib.hasSuffix ".ico" path
@@ -291,6 +292,28 @@
               mkdir -p "$out/share/licenses/nuschl"
               cp -R ${rtcNotices.bundle}/share/licenses/nuschl/. "$out/share/licenses/nuschl/"
             '';
+        videoWorker = crates.project.workspaceMembers.nuschl-video-worker.build.override {
+          features = [ "vaapi" ];
+        };
+        videoProbeNoticeScope = "video-probe-${pkgs.stdenv.hostPlatform.rust.rustcTarget}";
+        videoProbe =
+          pkgs.runCommand "nuschl-video-probe"
+            {
+              nativeBuildInputs = [ pkgs.makeWrapper ];
+              meta.mainProgram = "nuschl-video-probe";
+            }
+            ''
+              mkdir -p "$out/bin"
+              cp ${videoWorker}/bin/nuschl-video-{worker,probe} "$out/bin/"
+              install -Dm644 ${./LICENSE} "$out/share/licenses/nuschl/EUPL-1.2"
+              ${installNotices (releaseNotices.forScope videoProbeNoticeScope).bundle}
+              wrapProgram "$out/bin/nuschl-video-probe" --prefix PATH : ${
+                lib.makeBinPath [
+                  pkgs.bubblewrap
+                  pkgs.util-linux
+                ]
+              }
+            '';
         serverPackage =
           pkgs.runCommand "nuschld-${common.version}"
             {
@@ -331,7 +354,9 @@
               }")
             mkdir -p "$out/libexec/nuschl"
             mv "$out/bin/nuschl" "$out/libexec/nuschl/nuschl"
-            for worker in nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-media-worker nuschl-storage-worker nuschl-transfer-worker nuschl-update-verify-ed25519 nuschl-update-verify-mldsa44; do
+            install -Dm755 ${videoWorker}/bin/nuschl-video-worker "$out/bin/nuschl-video-worker"
+            install -Dm755 ${crates.project.workspaceMembers.nuschl-rtc-worker.build}/bin/nuschl-rtc-worker "$out/bin/nuschl-rtc-worker"
+            for worker in nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-media-worker nuschl-storage-worker nuschl-transfer-worker nuschl-video-worker nuschl-rtc-worker nuschl-update-verify-ed25519 nuschl-update-verify-mldsa44; do
               test -f "$out/bin/$worker"
               ln -s "../../bin/$worker" "$out/libexec/nuschl/$worker"
             done
@@ -391,6 +416,19 @@
             pkgs.bubblewrap
             pkgs.util-linux
           ];
+          nuschl-rtc-worker.testInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            pkgs.bubblewrap
+            pkgs.util-linux
+          ];
+          nuschl-video-worker = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+            features = [ "vaapi" ];
+            testInputs = [
+              pkgs.bubblewrap
+              pkgs.util-linux
+              pkgs.ffmpeg-headless
+              pkgs.pipewire
+            ];
+          };
           # The math worker's confinement tests spawn sandboxed workers, and
           # the CLI's e2ee tests run the crypto worker through the sandbox.
           nuschl-math-worker.testInputs = [
@@ -404,6 +442,16 @@
           nuschl-crypto-worker.testInputs = [
             pkgs.bubblewrap
             pkgs.util-linux
+          ];
+          nuschl-session.testInputs = [
+            pkgs.bubblewrap
+            pkgs.util-linux
+            crates.project.workspaceMembers.nuschl-crypto-worker.build
+            crates.project.workspaceMembers.nuschl-stream-sfu.build
+          ]
+          ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            crates.project.workspaceMembers.nuschl-rtc-worker.build
+            videoWorker
           ];
           # The signer's tests need its feature; the default build has none.
           nuschl-update-worker.features = [ "signer" ];
@@ -829,6 +877,7 @@
         packages.macos-app = macApp;
         packages.macos-aarch64 = macSlice "aarch64";
         packages.rtc-probe = rtcPackage;
+        packages.${if pkgs.stdenv.hostPlatform.isLinux then "video-probe" else null} = videoProbe;
         # The web client's tunnel relay and its probe (docs/web.md), from cached crates.
         packages.web-relay = crates.project.workspaceMembers."nuschl-web-relay".build;
         packages.stream-sfu = crates.project.workspaceMembers."nuschl-stream-sfu".build;
@@ -1097,6 +1146,12 @@
               turnModule = self.nixosModules.turn;
               streamModule = self.nixosModules.stream;
               callSite = self.packages.${system}.call-site;
+              nativeCallTest = crates.sessionTest;
+              nativeCallWorkers = [
+                crates.project.workspaceMembers.nuschl-crypto-worker.build
+                crates.project.workspaceMembers.nuschl-rtc-worker.build
+                videoWorker
+              ];
             };
             # The music bot under its module, against Murmur and a fake library
             # (`nix build .#checks.x86_64-linux.vm-musicbot`).
@@ -1121,22 +1176,7 @@
               nuschl = package;
               sourceIdentity = self.rev or self.outPath;
               contentWorker = crates.project.workspaceMembers."nuschl-content-worker".build;
-              # Export the actual cached test ELF without running its private
-              # network fixture in a build sandbox or rewriting its bytes.
-              nativeFetchTest =
-                (crates.project.workspaceMembers."nuschl-session".build.override {
-                  runTests = true;
-                  testPreRun = ''
-                    case "$f" in
-                      */nuschl_session-*)
-                        test ! -e "$out/bin/nuschl-preview-fetch-test"
-                        install -Dm0555 "$f" "$out/bin/nuschl-preview-fetch-test"
-                        ;;
-                    esac
-                    continue
-                  '';
-                }).test.overrideAttrs
-                  { dontFixup = true; };
+              nativeFetchTest = crates.sessionTest;
             };
           }
         );
@@ -1162,6 +1202,7 @@
             ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
               pkgs.bubblewrap
               pkgs.util-linux
+              pkgs.ffmpeg-headless
             ];
           LD_LIBRARY_PATH = lib.optionalString pkgs.stdenv.hostPlatform.isLinux (
             lib.makeLibraryPath buildInputs

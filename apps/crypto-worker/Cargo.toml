@@ -15,11 +15,13 @@ name = "nuschl-crypto-worker"
 path = "src/main.rs"
 
 [dependencies]
+getrandom = { version = "0.4.3", features = ["sys_rng"] }
 hex = "0.4.3"
 nuschl-identity.workspace = true
 nuschl-ipc.workspace = true
 nuschl-kt.workspace = true
 nuschl-e2ee.workspace = true
+nuschl-stream = { path = "../../crates/stream", version = "0.2.0" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 zeroize = "1.9.1"
@@ -30,6 +32,7 @@ nuschld = { path = "../server", version = "0.2.0" }
 nuschl-session.workspace = true
 nuschl-protocol.workspace = true
 nuschl-sandbox.workspace = true
+nuschl-testkit.workspace = true
 # The project auditor, in process, for the loopback test of witnessing.
 nuschl-witness = { path = "../witness", version = "0.2.0" }
 tempfile = "3.27.0"

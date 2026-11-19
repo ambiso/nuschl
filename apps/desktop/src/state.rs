@@ -200,6 +200,10 @@ pub struct Desktop {
     /// Our call's creator link and lease, and the last lease's id.
     pub call: Option<crate::call::Creator>,
     pub call_leases: u64,
+    #[cfg(target_os = "linux")]
+    pub native_call: Option<crate::native_call::Active>,
+    #[cfg(target_os = "linux")]
+    pub native_call_generation: u64,
     pub link_preview: crate::link_preview::ComposerPreview,
     pub profile: Profile,
     pub form: Option<ServerForm>,
@@ -526,6 +530,10 @@ impl Desktop {
             services,
             call: None,
             call_leases: 0,
+            #[cfg(target_os = "linux")]
+            native_call: None,
+            #[cfg(target_os = "linux")]
+            native_call_generation: 0,
             link_preview: crate::link_preview::ComposerPreview::default(),
             profile,
             form: None,
@@ -1576,6 +1584,8 @@ impl Desktop {
         self.driver.apply_settings(settings.clone());
         self.client.preferences = nuschl_client::native::preferences(&settings);
         self.settings = settings;
+        #[cfg(target_os = "linux")]
+        self.sync_native_call();
         self.sync_global_shortcuts();
     }
     /// A slider's value, heard but not saved (`commit_settings` saves): memory
@@ -2454,6 +2464,8 @@ impl Desktop {
         self.expire_typing(cx);
         self.flush_outgoing(cx);
         self.sync_call();
+        #[cfg(target_os = "linux")]
+        self.sync_native_call();
     }
     /// Follow what the client says changed.
     pub fn apply_updates(&mut self, cx: &mut Context<Self>) {
@@ -2703,6 +2715,12 @@ impl Desktop {
             }
             ServiceEvent::Prepared { id, result } => self.prepared(id, result, cx),
             ServiceEvent::CallLeaseEnded { id } => self.call_lease_ended(id),
+            #[cfg(target_os = "linux")]
+            ServiceEvent::NativeCurtain { generation, ready } => {
+                self.native_curtain(generation, ready);
+            }
+            #[cfg(target_os = "linux")]
+            ServiceEvent::NativeFinished { generation } => self.native_finished(generation, cx),
             ServiceEvent::ServerIcon { server, icon } => {
                 if let Some(server) = self
                     .client

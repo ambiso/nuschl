@@ -113,13 +113,43 @@ impl FrameDecryptor {
 
     /// Returns whether the frame is a key frame, and the frame.
     pub fn decrypt(&mut self, data: &[u8], now: u64) -> Result<(bool, Vec<u8>), Error> {
+        let (&envelope, ciphertext) = data.split_first().ok_or(Error::Malformed("frame"))?;
+        self.open(envelope, ciphertext, now)
+    }
+
+    /// Opens one negotiated encoding. AV1 depacketizers restore the OBU size
+    /// field, so this verifies its length and uses the original envelope as AAD.
+    pub fn decrypt_encoding(
+        &mut self,
+        encoding: u8,
+        data: &[u8],
+        now: u64,
+    ) -> Result<(bool, Vec<u8>), Error> {
+        let (&envelope, mut ciphertext) = data.split_first().ok_or(Error::Malformed("frame"))?;
+        let mut envelope = envelope;
+        if matches!(envelope, 0x0a | 0x2a) {
+            envelope &= !2;
+            ciphertext = sized_obu_payload(ciphertext)?;
+        }
+        let (kid, _, _) = rfc9605::decode_header(ciphertext)?;
+        if kid & 0xff != u64::from(encoding) {
+            return Err(Error::UnknownKey);
+        }
+        self.open(envelope, ciphertext, now)
+    }
+
+    fn open(
+        &mut self,
+        envelope: u8,
+        ciphertext: &[u8],
+        now: u64,
+    ) -> Result<(bool, Vec<u8>), Error> {
         if let Some((previous, since)) = self.previous
             && (now < since || now - since >= PREVIOUS_EPOCH_MS)
         {
             self.remove(previous);
             self.previous = None;
         }
-        let (&envelope, ciphertext) = data.split_first().ok_or(Error::Malformed("frame"))?;
         if envelope != KEY_FRAME && envelope != DELTA_FRAME {
             return Err(Error::Malformed("frame envelope"));
         }
@@ -132,6 +162,21 @@ impl FrameDecryptor {
             self.keys.remove(kid(epoch, encoding));
         }
     }
+}
+
+fn sized_obu_payload(data: &[u8]) -> Result<&[u8], Error> {
+    let mut size = 0_usize;
+    for (index, byte) in data.iter().copied().take(4).enumerate() {
+        size |= usize::from(byte & 0x7f) << (index * 7);
+        if byte & 0x80 == 0 {
+            let body = &data[index + 1..];
+            if size == body.len() {
+                return Ok(body);
+            }
+            break;
+        }
+    }
+    Err(Error::Malformed("AV1 OBU size"))
 }
 
 #[cfg(test)]
@@ -247,5 +292,33 @@ pub(crate) mod tests {
                 .decrypt(&e4.encrypt(false, b"x").unwrap(), T0 - 3_600_000)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn reassembled_av1_authenticates_its_envelope_and_encoding() {
+        let [_, mut sender, ..] = encryptors(1, &[1; 32]);
+        let mut receiver = FrameDecryptor::new();
+        receiver.install(1, &[1; 32], T0).unwrap();
+        let frame = sender.encrypt(true, b"screen picture").unwrap();
+        let sized = [
+            &[0x0a, (frame.len() - 1).try_into().unwrap()][..],
+            &frame[1..],
+        ]
+        .concat();
+        assert_eq!(
+            receiver.decrypt_encoding(0, &sized, T0),
+            Err(Error::UnknownKey)
+        );
+        let mut broken = sized.clone();
+        broken[1] -= 1;
+        assert_eq!(
+            receiver.decrypt_encoding(1, &broken, T0),
+            Err(Error::Malformed("AV1 OBU size"))
+        );
+        assert_eq!(
+            receiver.decrypt_encoding(1, &sized, T0),
+            Ok((true, b"screen picture".to_vec()))
+        );
+        assert_eq!(receiver.decrypt_encoding(1, &frame, T0), Err(Error::Replay));
     }
 }

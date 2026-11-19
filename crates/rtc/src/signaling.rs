@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-use crate::{Error, Kind, MAX_SDP_BYTES};
+use crate::{Error, Kind, MAX_SDP_BYTES, VideoCodec};
 use std::fmt;
 
 /// Semantic identity supplied by the authenticated call protocol, never by SDP
@@ -73,8 +73,8 @@ pub(crate) struct Section {
 }
 
 /// Bound allocation before handing SDP to the third-party parser. We support
-/// exactly one Opus/VP8 stream per m-line, no application, simulcast or RID.
-pub(crate) fn sections(sdp: &str) -> Result<Vec<Section>, Error> {
+/// one stream per m-line, with Opus for audio and the call's codec for video.
+fn sections(sdp: &str, video: VideoCodec) -> Result<Vec<Section>, Error> {
     if sdp.is_empty() || sdp.len() > MAX_SDP_BYTES || sdp.lines().count() > 512 {
         return Err(Error::Sdp);
     }
@@ -109,9 +109,8 @@ pub(crate) fn sections(sdp: &str) -> Result<Vec<Section>, Error> {
             let (_, codec) = mapping.split_once(' ').ok_or(Error::Sdp)?;
             let expected = match section.kind {
                 Kind::Audio => codec.eq_ignore_ascii_case("opus/48000/2"),
-                Kind::Video => codec.eq_ignore_ascii_case("VP8/90000"),
+                Kind::Video => codec.eq_ignore_ascii_case(video.rtpmap()),
             };
-            // RTX is a retransmission of VP8, never an independent semantic track.
             if !expected
                 && !(section.kind == Kind::Video && codec.eq_ignore_ascii_case("rtx/90000"))
             {
@@ -144,14 +143,75 @@ fn valid_mid(mid: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
 
-pub(crate) fn validate(description: &Description, expected: SignalingId) -> Result<(), Error> {
+pub(crate) fn validate_subscription(sdp: &str, bindings: &[TrackBinding]) -> Result<(), Error> {
+    const MAX_SECTIONS: usize = 48;
+    if sdp.is_empty() || sdp.len() > MAX_SDP_BYTES || bindings.len() > MAX_SECTIONS {
+        return Err(Error::Sdp);
+    }
+    let mut seen = Vec::new();
+    let mut media = 0;
+    let mut control = false;
+    for section in sdp.split("\nm=").skip(1) {
+        let mut lines = section.lines();
+        let mut fields = lines.next().ok_or(Error::Sdp)?.split_ascii_whitespace();
+        let kind = fields.next().ok_or(Error::Sdp)?;
+        let port = fields
+            .next()
+            .and_then(|p| p.parse::<u16>().ok())
+            .ok_or(Error::Sdp)?;
+        let mut mid = None;
+        let mut inactive = port == 0;
+        for line in lines {
+            if let Some(label) = line.strip_prefix("a=mid:") {
+                if mid.is_some() || !valid_mid(label) {
+                    return Err(Error::Sdp);
+                }
+                mid = Some(label);
+            }
+            inactive |= line == "a=inactive";
+        }
+        let mid = mid.ok_or(Error::Sdp)?;
+        if seen.len() == MAX_SECTIONS || seen.contains(&mid) {
+            return Err(Error::Sdp);
+        }
+        seen.push(mid);
+        let kind = match kind {
+            "audio" => Kind::Audio,
+            "video" => Kind::Video,
+            "application" if !control => {
+                control = true;
+                continue;
+            }
+            _ => return Err(Error::Sdp),
+        };
+        if !inactive {
+            if !bindings
+                .iter()
+                .any(|b| b.mid == mid && b.purpose.kind() == kind)
+            {
+                return Err(Error::Description);
+            }
+            media += 1;
+        }
+    }
+    if seen.is_empty() || bindings.len() != media {
+        return Err(Error::Description);
+    }
+    Ok(())
+}
+
+pub(crate) fn validate(
+    description: &Description,
+    expected: SignalingId,
+    video: VideoCodec,
+) -> Result<(), Error> {
     if description.id != expected
         || description.bindings.is_empty()
         || description.bindings.len() > 4
     {
         return Err(Error::Description);
     }
-    let media = sections(&description.sdp)?;
+    let media = sections(&description.sdp, video)?;
     if media.len() != description.bindings.len() {
         return Err(Error::Description);
     }
@@ -170,8 +230,8 @@ pub(crate) fn validate(description: &Description, expected: SignalingId) -> Resu
     Ok(())
 }
 
-pub(crate) fn legacy_bindings(sdp: &str) -> Result<Vec<TrackBinding>, Error> {
-    let media = sections(sdp)?;
+pub(crate) fn legacy_bindings(sdp: &str, video: VideoCodec) -> Result<Vec<TrackBinding>, Error> {
+    let media = sections(sdp, video)?;
     if media.iter().filter(|m| m.kind == Kind::Audio).count() != 1
         || media.iter().filter(|m| m.kind == Kind::Video).count() > 1
     {

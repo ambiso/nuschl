@@ -1,0 +1,550 @@
+// SPDX-License-Identifier: EUPL-1.2
+//! One call's transport state. The supervisor owns UDP and authenticates SDP.
+
+use nuschl_ipc::{
+    crypto::epoch::{self, Direction, Update},
+    rtc::{
+        self as wire, Codec, Command, Description, Event, LegRole, Packet, Purpose, Reply, Track,
+    },
+};
+use nuschl_rtc::{self as rtc, Output, Peer, SignalingId, TrackBinding, VideoCodec};
+use nuschl_sframe::{FrameDecryptor, FrameEncryptor, MAX_ENCODINGS, encryptors};
+use std::{
+    collections::BTreeMap,
+    io,
+    net::{Shutdown, SocketAddr},
+    os::{fd::AsFd, unix::net::UnixStream},
+    sync::mpsc::{self, SyncSender},
+    thread,
+    time::Instant,
+};
+
+const MAX_LEGS: usize = 4;
+const MAX_WIRE_VIDEO: usize = wire::MAX_VIDEO + 64;
+
+enum Input {
+    Commands(Packet<Command>),
+    Key(Update),
+    End,
+}
+
+pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let keys = UnixStream::from(io::stdin().as_fd().try_clone_to_owned()?);
+    let mut control = UnixStream::from(io::stdout().as_fd().try_clone_to_owned()?);
+    let Some(Packet {
+        id,
+        kind: Command::Start { generation },
+        ..
+    }) = wire::read_request(&mut control)?
+    else {
+        return Err("expected call start".into());
+    };
+    let mut last_id = id;
+    let (send, inbox) = mpsc::sync_channel(1);
+    let mut commands = control.try_clone()?;
+    let revoke = control.try_clone()?;
+    let command_events = send.clone();
+    thread::Builder::new().spawn(move || {
+        input(
+            command_events,
+            || {
+                wire::read_request(&mut commands)
+                    .ok()
+                    .flatten()
+                    .map(Input::Commands)
+            },
+            || {},
+        )
+    })?;
+    let mut keys = keys;
+    thread::Builder::new().spawn(move || {
+        input(
+            send,
+            || epoch::read(&mut keys).ok().flatten().map(Input::Key),
+            || {
+                let _ = revoke.shutdown(Shutdown::Both);
+            },
+        )
+    })?;
+    reply(&mut control, id, Reply::Done, Vec::new())?;
+    let mut call = Call::new(generation);
+    while let Ok(event) = inbox.recv() {
+        match event {
+            Input::Commands(request) if request.id > last_id => {
+                last_id = request.id;
+                let (kind, data) = call
+                    .handle(request.kind, request.data)
+                    .unwrap_or((Reply::Rejected, Vec::new()));
+                reply(&mut control, last_id, kind, data)?;
+            }
+            Input::Key(update) => call.install(update).map_err(|()| "invalid call epoch")?,
+            Input::End => return Ok(()),
+            _ => return Err("invalid request order".into()),
+        }
+    }
+    Ok(())
+}
+
+fn input(events: SyncSender<Input>, mut next: impl FnMut() -> Option<Input>, end: impl FnOnce()) {
+    while let Some(event) = next() {
+        if events.send(event).is_err() {
+            return;
+        }
+    }
+    end();
+    let _ = events.send(Input::End);
+}
+
+fn reply(
+    output: &mut UnixStream,
+    id: u64,
+    kind: Reply,
+    data: Vec<u8>,
+) -> Result<(), nuschl_ipc::Error> {
+    wire::write_reply(output, &Packet { id, kind, data })
+}
+
+struct Leg {
+    peer: Peer,
+    role: LegRole,
+    wake: Instant,
+    local: SocketAddr,
+    from: Vec<Track>,
+    discontinuous: [bool; MAX_ENCODINGS as usize],
+}
+
+struct Sending {
+    recipient: u64,
+    epoch: u32,
+    keys: [FrameEncryptor; MAX_ENCODINGS as usize],
+}
+
+struct Call {
+    generation: u64,
+    origin: Instant,
+    legs: BTreeMap<u32, Leg>,
+    last_leg: u32,
+    sending: Option<Sending>,
+    receiving: Option<(u64, FrameDecryptor)>,
+    active: Option<u32>,
+    keyframe: [bool; MAX_ENCODINGS as usize],
+}
+
+impl Call {
+    fn new(generation: u64) -> Self {
+        Self {
+            generation,
+            origin: Instant::now(),
+            legs: BTreeMap::new(),
+            last_leg: 0,
+            sending: None,
+            receiving: None,
+            active: None,
+            keyframe: [false; MAX_ENCODINGS as usize],
+        }
+    }
+
+    fn install(&mut self, update: Update) -> Result<(), ()> {
+        if update.generation != self.generation {
+            return Err(());
+        }
+        let now = self.millis();
+        match update.direction {
+            Direction::Send => {
+                if self
+                    .sending
+                    .as_ref()
+                    .is_some_and(|s| s.recipient != update.peer || s.epoch >= update.epoch)
+                {
+                    return Err(());
+                }
+                self.sending = Some(Sending {
+                    recipient: update.peer,
+                    epoch: update.epoch,
+                    keys: encryptors(update.epoch, &update.key),
+                });
+            }
+            Direction::Receive => {
+                let (publisher, decryptor) = self
+                    .receiving
+                    .get_or_insert_with(|| (update.peer, FrameDecryptor::new()));
+                if *publisher != update.peer {
+                    return Err(());
+                }
+                decryptor
+                    .install(update.epoch, &update.key, now)
+                    .map_err(|_| ())?;
+            }
+        }
+        Ok(())
+    }
+
+    fn handle(&mut self, command: Command, data: Vec<u8>) -> Result<(Reply, Vec<u8>), ()> {
+        let now = Instant::now();
+        let kind = match command {
+            Command::Start { .. } => return Err(()),
+            Command::OpenLeg {
+                leg,
+                local,
+                codec,
+                role,
+            } => {
+                if leg <= self.last_leg || self.legs.len() == MAX_LEGS {
+                    return Err(());
+                }
+                let codec = match codec {
+                    Codec::Av1 => VideoCodec::Av1,
+                    Codec::Vp9 => VideoCodec::Vp9,
+                };
+                let peer = Peer::for_call(local, now, codec, MAX_WIRE_VIDEO).map_err(|_| ())?;
+                self.legs.insert(
+                    leg,
+                    Leg {
+                        peer,
+                        role,
+                        wake: now,
+                        local,
+                        from: Vec::new(),
+                        discontinuous: [false; MAX_ENCODINGS as usize],
+                    },
+                );
+                self.last_leg = leg;
+                Reply::Done
+            }
+            Command::CloseLeg { leg } => {
+                self.legs.remove(&leg).ok_or(())?;
+                if self.active == Some(leg) {
+                    self.active = None;
+                }
+                Reply::Done
+            }
+            Command::Offer { leg, id, purposes } => {
+                let live = self.legs.get_mut(&leg).ok_or(())?;
+                let purposes: Vec<_> = purposes.into_iter().map(to_purpose).collect();
+                let id = SignalingId::new(id).map_err(|_| ())?;
+                let description = match live.role {
+                    LegRole::Direct => live.peer.offer_tracks(&purposes, id),
+                    LegRole::SfuPublish => live.peer.offer_publish(&purposes, id),
+                    LegRole::SfuSubscribe => return Err(()),
+                }
+                .map_err(|_| ())?;
+                Reply::Description {
+                    leg,
+                    description: from_description(description),
+                }
+            }
+            Command::AcceptOffer { leg, description } => {
+                let live = self.legs.get_mut(&leg).ok_or(())?;
+                let description = live.offer(description)?;
+                Reply::Description { leg, description }
+            }
+            Command::AcceptAnswer { leg, description } => {
+                self.legs.get_mut(&leg).ok_or(())?.answer(description)?;
+                Reply::Done
+            }
+            Command::Datagram { leg, source } => {
+                self.legs
+                    .get_mut(&leg)
+                    .ok_or(())?
+                    .peer
+                    .receive(source, now, &data)
+                    .map_err(|_| ())?;
+                Reply::Done
+            }
+            Command::Poll { leg } => return self.poll(leg, now),
+            Command::SetSendLeg { leg } => {
+                let live = self.legs.get(&leg).ok_or(())?;
+                let keys = self.sending.as_ref().ok_or(())?;
+                if live.role == LegRole::SfuSubscribe
+                    || !live.peer.is_connected()
+                    || (live.role == LegRole::Direct
+                        && !live
+                            .from
+                            .iter()
+                            .all(|track| track.publisher == Some(keys.recipient)))
+                {
+                    return Err(());
+                }
+                if self.active != Some(leg) {
+                    if let Some(previous) = self.active.replace(leg) {
+                        self.legs.remove(&previous);
+                    }
+                    self.keyframe = [false; MAX_ENCODINGS as usize];
+                }
+                Reply::Done
+            }
+            Command::Write {
+                purpose,
+                timestamp,
+                key_frame,
+            } => {
+                self.write(purpose, timestamp, key_frame, now, &data)?;
+                Reply::Done
+            }
+            Command::RequestKeyframe { leg, purpose } => {
+                let live = self.legs.get_mut(&leg).ok_or(())?;
+                if live
+                    .from
+                    .iter()
+                    .filter(|track| track.purpose == purpose)
+                    .count()
+                    != 1
+                {
+                    return Err(());
+                }
+                let track = live.peer.track_for(to_purpose(purpose)).ok_or(())?;
+                live.peer.request_keyframe(track).map_err(|_| ())?;
+                Reply::Done
+            }
+        };
+        Ok((kind, Vec::new()))
+    }
+
+    fn write(
+        &mut self,
+        purpose: Purpose,
+        timestamp: u64,
+        key_frame: bool,
+        now: Instant,
+        data: &[u8],
+    ) -> Result<(), ()> {
+        let leg = self.legs.get_mut(&self.active.ok_or(())?).ok_or(())?;
+        let track = leg.peer.track_for(to_purpose(purpose)).ok_or(())?;
+        let index = usize::from(encoding(purpose));
+        if matches!(purpose, Purpose::Camera | Purpose::ScreenVideo)
+            && !self.keyframe[index]
+            && !key_frame
+        {
+            return Err(());
+        }
+        let sender = self.sending.as_mut().ok_or(())?;
+        let encrypted = sender.keys[index]
+            .encrypt(key_frame, data)
+            .map_err(|_| ())?;
+        if leg
+            .peer
+            .write(track, timestamp, now, encrypted.into())
+            .is_err()
+        {
+            self.keyframe[index] = false;
+            return Err(());
+        }
+        if key_frame {
+            self.keyframe[index] = true;
+        }
+        Ok(())
+    }
+
+    fn poll(&mut self, id: u32, now: Instant) -> Result<(Reply, Vec<u8>), ()> {
+        let millis = self.millis();
+        let leg = self.legs.get_mut(&id).ok_or(())?;
+        if now >= leg.wake {
+            leg.peer.timeout(now).map_err(|_| ())?;
+        }
+        for _ in 0..32 {
+            match leg.peer.poll().map_err(|_| ())? {
+                Output::WakeAt(at) => {
+                    leg.wake = at;
+                    let after_millis = at
+                        .saturating_duration_since(now)
+                        .as_nanos()
+                        .div_ceil(1_000_000)
+                        .min(60_000) as u64;
+                    return Ok((
+                        Reply::Wake {
+                            leg: id,
+                            after_millis,
+                        },
+                        Vec::new(),
+                    ));
+                }
+                Output::Datagram {
+                    source,
+                    destination,
+                    data,
+                } => {
+                    if source != leg.local {
+                        return Err(());
+                    }
+                    return Ok((
+                        Reply::Datagram {
+                            leg: id,
+                            destination,
+                        },
+                        data,
+                    ));
+                }
+                Output::Event(event) => {
+                    let event = match event {
+                        rtc::Event::Connected => Event::Connected,
+                        rtc::Event::Disconnected => Event::Disconnected,
+                        rtc::Event::BandwidthEstimate(bitrate) => {
+                            Event::BandwidthEstimate { bitrate }
+                        }
+                        rtc::Event::RequestKeyframe(track) => {
+                            let purpose = from_purpose(leg.peer.purpose(track).ok_or(())?);
+                            Event::Keyframe { purpose }
+                        }
+                        rtc::Event::Frame(frame) => {
+                            let Some((publisher, decryptor)) = self.receiving.as_mut() else {
+                                continue;
+                            };
+                            let mid = frame.track.mid();
+                            if !leg.from.iter().any(|track| {
+                                track.mid == mid && track.publisher == Some(*publisher)
+                            }) {
+                                continue;
+                            }
+                            let purpose = from_purpose(frame.purpose);
+                            let lost = &mut leg.discontinuous[usize::from(encoding(purpose))];
+                            let Ok((key_frame, data)) =
+                                decryptor.decrypt_encoding(encoding(purpose), &frame.data, millis)
+                            else {
+                                *lost = true;
+                                continue;
+                            };
+                            if data.is_empty() || data.len() > purpose.frame_limit() {
+                                *lost = true;
+                                continue;
+                            }
+                            let event = Event::Frame {
+                                publisher: *publisher,
+                                purpose,
+                                timestamp: frame.timestamp,
+                                contiguous: !std::mem::take(lost) && frame.contiguous,
+                                key_frame,
+                            };
+                            return Ok((Reply::Event { leg: id, event }, data));
+                        }
+                    };
+                    return Ok((Reply::Event { leg: id, event }, Vec::new()));
+                }
+            }
+        }
+        Ok((
+            Reply::Wake {
+                leg: id,
+                after_millis: 0,
+            },
+            Vec::new(),
+        ))
+    }
+
+    fn millis(&self) -> u64 {
+        self.origin
+            .elapsed()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX)
+    }
+}
+
+impl Leg {
+    fn offer(&mut self, description: Description) -> Result<Description, ()> {
+        let rtc = to_description(&description)?;
+        if self.role == LegRole::SfuPublish
+            || description.tracks.iter().any(|t| t.publisher.is_none())
+        {
+            return Err(());
+        }
+        let answer = match self.role {
+            LegRole::Direct => self.peer.accept_offer_tracks(&rtc, rtc.id).map(|d| d.sdp),
+            LegRole::SfuSubscribe => self.peer.accept_subscription(&rtc.sdp, &rtc.bindings),
+            LegRole::SfuPublish => return Err(()),
+        }
+        .map_err(|_| ())?;
+        self.from = description.tracks;
+        Ok(Description {
+            id: description.id,
+            sdp: answer,
+            tracks: self
+                .from
+                .iter()
+                .cloned()
+                .map(|mut t| {
+                    t.publisher = None;
+                    t
+                })
+                .collect(),
+        })
+    }
+
+    fn answer(&mut self, description: Description) -> Result<(), ()> {
+        let expected = match self.role {
+            LegRole::Direct => true,
+            LegRole::SfuPublish => false,
+            LegRole::SfuSubscribe => return Err(()),
+        };
+        if !description
+            .tracks
+            .iter()
+            .all(|t| t.publisher.is_some() == expected)
+        {
+            return Err(());
+        }
+        let rtc = to_description(&description)?;
+        self.peer
+            .accept_answer_tracks(&rtc, rtc.id)
+            .map_err(|_| ())?;
+        self.from = description.tracks;
+        Ok(())
+    }
+}
+
+fn to_description(description: &Description) -> Result<rtc::Description, ()> {
+    Ok(rtc::Description {
+        id: SignalingId::new(description.id).map_err(|_| ())?,
+        sdp: description.sdp.clone(),
+        bindings: description
+            .tracks
+            .iter()
+            .map(|t| TrackBinding {
+                mid: t.mid.clone(),
+                purpose: to_purpose(t.purpose),
+            })
+            .collect(),
+    })
+}
+
+fn from_description(description: rtc::Description) -> Description {
+    Description {
+        id: description.id.bytes(),
+        sdp: description.sdp,
+        tracks: description
+            .bindings
+            .into_iter()
+            .map(|t| Track {
+                mid: t.mid,
+                purpose: from_purpose(t.purpose),
+                publisher: None,
+            })
+            .collect(),
+    }
+}
+
+fn encoding(purpose: Purpose) -> u8 {
+    match purpose {
+        Purpose::Camera => 0,
+        Purpose::ScreenVideo => 1,
+        Purpose::Microphone => 2,
+        Purpose::SystemAudio => 3,
+    }
+}
+
+fn to_purpose(purpose: Purpose) -> rtc::Purpose {
+    match purpose {
+        Purpose::Camera => rtc::Purpose::Camera,
+        Purpose::ScreenVideo => rtc::Purpose::ScreenVideo,
+        Purpose::Microphone => rtc::Purpose::Microphone,
+        Purpose::SystemAudio => rtc::Purpose::SystemAudio,
+    }
+}
+
+fn from_purpose(purpose: rtc::Purpose) -> Purpose {
+    match purpose {
+        rtc::Purpose::Camera => Purpose::Camera,
+        rtc::Purpose::ScreenVideo => Purpose::ScreenVideo,
+        rtc::Purpose::Microphone => Purpose::Microphone,
+        rtc::Purpose::SystemAudio => Purpose::SystemAudio,
+    }
+}

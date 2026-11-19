@@ -58,6 +58,14 @@ pub enum Role<'a> {
     Update { post_quantum: bool },
     /// The music bot's codec children, started as `--codec-worker operation`.
     MusicbotCodec { operation: &'static str },
+    /// Video encoding, with the source supplied over its input pipe.
+    VideoEncode,
+    /// Video capture from an inherited portal-granted PipeWire connection.
+    VideoCapture { node: Option<u32>, vaapi: bool },
+    /// AV1 video decoding from the input pipe, with an optional DRM render node.
+    VideoDecode { vaapi: bool },
+    /// Encoded call media and opaque datagrams over inherited IPC.
+    Rtc,
     /// History storage: only `directory`, writable.
     Storage { directory: &'a Path },
     /// The crypto worker: only `directory`, writable.
@@ -132,6 +140,10 @@ impl<'a> Role<'a> {
             Role::Update { post_quantum: true } => Capabilities { name: "update.mldsa44", memory: 256 * MIB, cpu_seconds: Some(5), ..NOTHING },
             Role::Update { post_quantum: false } => Capabilities { name: "update.ed25519", memory: 256 * MIB, cpu_seconds: Some(5), ..NOTHING },
             Role::MusicbotCodec { .. } => Capabilities { name: "musicbot-codec", linux_only: true, ..NOTHING },
+            Role::VideoEncode => Capabilities { name: "video-encode", cpu_seconds: Some(120), linux_only: true, ..NOTHING },
+            Role::VideoCapture { .. } => Capabilities { name: "video-capture", cpu_seconds: Some(3600), linux_only: true, ..NOTHING },
+            Role::VideoDecode { .. } => Capabilities { name: "video-decode", cpu_seconds: Some(3600), linux_only: true, ..NOTHING },
+            Role::Rtc => Capabilities { name: "rtc", cpu_seconds: Some(3600), linux_only: true, ..NOTHING },
             Role::Storage { directory } => Capabilities { name: "storage", writable: Some(directory), ..NOTHING },
             Role::Crypto { directory } => Capabilities { name: "crypto", writable: Some(directory), ..NOTHING },
             Role::Media => Capabilities { name: "media", audio: true, lpac: false, ..NOTHING },
@@ -151,6 +163,11 @@ impl<'a> Role<'a> {
             } => vec!["--preview-fetch".into()],
             Role::Content { arguments, .. } => arguments.to_vec(),
             Role::MusicbotCodec { operation } => vec!["--codec-worker".into(), operation.into()],
+            Role::VideoEncode => vec!["--encode".into()],
+            Role::VideoCapture { .. } => vec!["--encode".into(), "--capture".into()],
+            Role::VideoDecode { vaapi: false } => vec!["--decode".into()],
+            Role::VideoDecode { vaapi: true } => vec!["--decode-vaapi".into()],
+            Role::Rtc => vec!["--call".into()],
             Role::Storage { .. } => vec!["--database".into(), data.join("history.sqlite3").into()],
             Role::Crypto { .. } => vec!["--data".into(), data.into()],
             Role::Media => vec!["--live".into()],
@@ -244,7 +261,7 @@ pub async fn spawn(command: Command) -> Result<Worker, Error> {
 }
 
 /// Start a fixed role with its trusted Linux namespace-init receipt piped on
-/// standard error (the preview and media roles). Its owner acquires the
+/// standard error (preview, audio, video and RTC). Its owner acquires the
 /// receipt before input and waits for the whole sandbox to exit.
 pub async fn spawn_receipted(executable: &Path, role: Role<'_>) -> Result<Worker, Error> {
     let stderr = if cfg!(target_os = "linux") {

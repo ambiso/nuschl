@@ -12,8 +12,10 @@
 //! This is an encoded-media transport foundation, not a capture, calling,
 //! ownership/consent, relay, or end-to-end media encryption implementation.
 
+use nuschl_core::network::{Destination, PeerPolicy};
 use std::{
-    net::SocketAddr,
+    io,
+    net::{SocketAddr, UdpSocket},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -29,6 +31,10 @@ pub const MAX_DATAGRAM_BYTES: usize = 2048;
 pub const MAX_OPUS_BYTES: usize = 1275;
 pub const MAX_VIDEO_BYTES: usize = 256 * 1024;
 const INITIAL_BITRATE: u64 = 2_000_000;
+const CALL_INITIAL_BITRATE: u64 = 5_000_000;
+const CALL_MAX_BITRATE: u64 = 25_000_000;
+const CALL_VIDEO_WINDOW: Duration = Duration::from_millis(300);
+const CALL_RTP_PACKETS: usize = 1024;
 /// The microphone role's reservation, including the overhead `write` charges:
 /// the largest frame the voice admission accepts at the highest selectable
 /// target (640 bytes per 20 ms at 256 kb/s, `nuschl_core::bitrate`) plus
@@ -46,16 +52,42 @@ pub enum Kind {
 }
 
 impl Kind {
-    fn codec(self) -> Codec {
+    fn codec(self, video: VideoCodec) -> Codec {
         match self {
             Self::Audio => Codec::Opus,
-            Self::Video => Codec::Vp8,
+            Self::Video => video.codec(),
         }
     }
-    fn limit(self) -> usize {
+    fn limit(self, video_limit: usize) -> usize {
         match self {
             Self::Audio => MAX_OPUS_BYTES,
-            Self::Video => MAX_VIDEO_BYTES,
+            Self::Video => video_limit,
+        }
+    }
+}
+
+/// The codec selected for a call before negotiating its tracks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VideoCodec {
+    Av1,
+    Vp9,
+    Vp8,
+}
+
+impl VideoCodec {
+    fn codec(self) -> Codec {
+        match self {
+            Self::Av1 => Codec::Av1,
+            Self::Vp9 => Codec::Vp9,
+            Self::Vp8 => Codec::Vp8,
+        }
+    }
+
+    fn rtpmap(self) -> &'static str {
+        match self {
+            Self::Av1 => "AV1/90000",
+            Self::Vp9 => "VP9/90000",
+            Self::Vp8 => "VP8/90000",
         }
     }
 }
@@ -121,6 +153,10 @@ pub enum Error {
     Description,
     #[error("invalid local UDP address")]
     Address,
+    #[error("direct peers are disabled by the connection policy")]
+    DirectDenied,
+    #[error("could not bind the ICE socket: {0}")]
+    Bind(#[source] io::Error),
     #[error("invalid or oversized datagram")]
     Datagram,
     #[error("invalid track, codec, encoded frame length, or RTP timestamp")]
@@ -149,48 +185,118 @@ enum Signaling {
 pub struct Peer {
     rtc: Rtc,
     address: SocketAddr,
+    video: VideoCodec,
+    subscription: bool,
     signaling: Signaling,
     tracks: Vec<TrackState>,
     now: Instant,
     closed: bool,
     bandwidth_bps: u64,
+    call_video_limit: Option<usize>,
     total_budget: Bucket,
     video_budget: Bucket,
 }
 
 impl Peer {
+    /// Open a nonblocking direct UDP leg on a selected local interface. An
+    /// ephemeral port is chosen when `address` has port zero.
+    pub fn bind_direct(
+        policy: PeerPolicy,
+        address: SocketAddr,
+        now: Instant,
+        video: VideoCodec,
+    ) -> Result<(Peer, UdpSocket), Error> {
+        if !policy.permits(Destination::DirectPeer) {
+            return Err(Error::DirectDenied);
+        }
+        if address.ip().is_unspecified() || address.ip().is_multicast() {
+            return Err(Error::Address);
+        }
+        let socket = UdpSocket::bind(address).map_err(Error::Bind)?;
+        socket.set_nonblocking(true).map_err(Error::Bind)?;
+        let peer = Self::with_video(socket.local_addr().map_err(Error::Bind)?, now, video)?;
+        Ok((peer, socket))
+    }
+
     /// Use an explicitly bound, reachable host address. TURN and interface
     /// discovery are separate future adapters, never implicit public services.
     pub fn new(address: SocketAddr, now: Instant) -> Result<Self, Error> {
+        Self::with_video(address, now, VideoCodec::Vp8)
+    }
+
+    /// Configure the call's video codec while retaining Opus for audio. Socket
+    /// adapters enforce the connection policy before creating a host candidate.
+    pub fn with_video(address: SocketAddr, now: Instant, video: VideoCodec) -> Result<Self, Error> {
+        Self::build(address, now, video, None)
+    }
+
+    /// Video-call legs carry bounded encrypted frames and let the RTP pacer
+    /// spread a keyframe across the send interval of subsequent frames.
+    pub fn for_call(
+        address: SocketAddr,
+        now: Instant,
+        video: VideoCodec,
+        video_limit: usize,
+    ) -> Result<Self, Error> {
+        Self::build(address, now, video, Some(video_limit))
+    }
+
+    fn build(
+        address: SocketAddr,
+        now: Instant,
+        video: VideoCodec,
+        call_video_limit: Option<usize>,
+    ) -> Result<Self, Error> {
         if address.port() == 0 || address.ip().is_unspecified() || address.ip().is_multicast() {
             return Err(Error::Address);
         }
+        let (initial, reorder, send, window) = if call_video_limit.is_some() {
+            (
+                CALL_INITIAL_BITRATE,
+                CALL_RTP_PACKETS,
+                CALL_RTP_PACKETS,
+                CALL_VIDEO_WINDOW,
+            )
+        } else {
+            (INITIAL_BITRATE, 64, 512, WINDOW)
+        };
         let mut rtc = Rtc::builder()
             .set_crypto_provider(Arc::new(str0m::crypto::from_feature_flags()))
             .clear_codecs()
             .enable_opus(true, false)
-            .enable_vp8(true)
+            .enable_av1(video == VideoCodec::Av1)
+            .enable_vp9(video == VideoCodec::Vp9)
+            .enable_vp8(video == VideoCodec::Vp8)
             .set_fingerprint_verification(true)
             .set_mtu(1200..=1200)
             .set_reordering_size_audio(8)
             .set_reordering_timeout_audio(Some(Duration::from_millis(20)))
-            .set_reordering_size_video(64)
+            .set_reordering_size_video(reorder)
             .set_send_buffer_audio(32)
-            .set_send_buffer_video(512)
-            .enable_bwe(Some(str0m::bwe::Bitrate::bps(INITIAL_BITRATE)))
+            .set_send_buffer_video(send)
+            .enable_bwe(Some(str0m::bwe::Bitrate::bps(initial)))
             .build(now);
+        if call_video_limit.is_some() {
+            rtc.bwe().set_bitrate(
+                str0m::bwe::Bitrate::ZERO,
+                str0m::bwe::Bitrate::bps(CALL_MAX_BITRATE),
+            );
+        }
         rtc.add_local_candidate(Candidate::host(address, "udp").map_err(|_| Error::Address)?)
             .ok_or(Error::Address)?;
         Ok(Self {
             rtc,
             address,
+            video,
+            subscription: false,
             signaling: Signaling::New,
             tracks: Vec::with_capacity(4),
             now,
             closed: false,
-            bandwidth_bps: INITIAL_BITRATE,
-            total_budget: Bucket::new(now),
-            video_budget: Bucket::new(now),
+            bandwidth_bps: initial,
+            call_video_limit,
+            total_budget: Bucket::new(now, window),
+            video_budget: Bucket::new(now, window),
         })
     }
 
@@ -202,7 +308,12 @@ impl Peer {
         };
         // Compatibility API has no semantic manifest on its wire. It is
         // deliberately restricted to the original one-audio/one-video layout.
-        let description = self.make_offer(purposes, SignalingId::new([1; 16])?, true)?;
+        let description = self.make_offer(
+            purposes,
+            SignalingId::new([1; 16])?,
+            true,
+            Direction::SendRecv,
+        )?;
         Ok(description.sdp)
     }
 
@@ -213,7 +324,16 @@ impl Peer {
         purposes: &[Purpose],
         id: SignalingId,
     ) -> Result<Description, Error> {
-        self.make_offer(purposes, id, false)
+        self.make_offer(purposes, id, false, Direction::SendRecv)
+    }
+
+    /// The publish leg sends the caller's tracks to its configured SFU.
+    pub fn offer_publish(
+        &mut self,
+        purposes: &[Purpose],
+        id: SignalingId,
+    ) -> Result<Description, Error> {
+        self.make_offer(purposes, id, false, Direction::SendOnly)
     }
 
     fn make_offer(
@@ -221,6 +341,7 @@ impl Peer {
         purposes: &[Purpose],
         id: SignalingId,
         legacy: bool,
+        direction: Direction,
     ) -> Result<Description, Error> {
         if self.closed || !matches!(self.signaling, Signaling::New) {
             return Err(Error::SignalingState);
@@ -241,7 +362,7 @@ impl Peer {
                 Kind::Audio => MediaKind::Audio,
                 Kind::Video => MediaKind::Video,
             };
-            let mid = api.add_media(kind, Direction::SendRecv, None, None, None);
+            let mid = api.add_media(kind, direction, None, None, None);
             bindings.push(TrackBinding {
                 mid: mid.to_string(),
                 purpose,
@@ -253,7 +374,7 @@ impl Peer {
             sdp: offer.to_sdp_string(),
             bindings,
         };
-        signaling::validate(&description, id)?;
+        signaling::validate(&description, id, self.video)?;
         self.bind_tracks(&description.bindings);
         self.signaling = Signaling::Offering {
             pending,
@@ -266,7 +387,7 @@ impl Peer {
     /// SDP fingerprints must arrive over authenticated signaling before use in a
     /// real call. Successful DTLS verifies that fingerprint, not a user identity.
     pub fn accept_offer(&mut self, sdp: &str) -> Result<String, Error> {
-        let bindings = signaling::legacy_bindings(sdp)?;
+        let bindings = signaling::legacy_bindings(sdp, self.video)?;
         let description = Description {
             id: SignalingId::new([1; 16])?,
             sdp: sdp.to_owned(),
@@ -285,7 +406,7 @@ impl Peer {
         if self.closed || !matches!(self.signaling, Signaling::New) {
             return Err(Error::SignalingState);
         }
-        signaling::validate(description, expected)?;
+        signaling::validate(description, expected, self.video)?;
         let offer = SdpOffer::from_sdp_string(&description.sdp).map_err(|_| Error::Sdp)?;
         let answer = self.rtc.sdp_api().accept_offer(offer)?;
         let answer = Description {
@@ -293,7 +414,7 @@ impl Peer {
             sdp: answer.to_sdp_string(),
             bindings: description.bindings.clone(),
         };
-        if let Err(error) = signaling::validate(&answer, expected) {
+        if let Err(error) = signaling::validate(&answer, expected, self.video) {
             self.close();
             return Err(error);
         }
@@ -311,7 +432,7 @@ impl Peer {
         else {
             return Err(Error::SignalingState);
         };
-        let bindings = signaling::legacy_bindings(sdp)?;
+        let bindings = signaling::legacy_bindings(sdp, self.video)?;
         let answer = Description {
             id: description.id,
             sdp: sdp.to_owned(),
@@ -337,7 +458,7 @@ impl Peer {
         else {
             return Err(Error::SignalingState);
         };
-        signaling::validate(description, expected)?;
+        signaling::validate(description, expected, self.video)?;
         if offered.id != expected
             || offered.bindings.len() != description.bindings.len()
             || !offered
@@ -358,6 +479,31 @@ impl Peer {
             return Err(error.into());
         }
         Ok(())
+    }
+
+    /// Accept an authenticated SFU subscribe offer. Retired sections and its
+    /// control data channel stay available to str0m without becoming media routes.
+    pub fn accept_subscription(
+        &mut self,
+        sdp: &str,
+        bindings: &[TrackBinding],
+    ) -> Result<String, Error> {
+        if self.closed || (!matches!(self.signaling, Signaling::New) && !self.subscription) {
+            return Err(Error::SignalingState);
+        }
+        signaling::validate_subscription(sdp, bindings)?;
+        let offer = SdpOffer::from_sdp_string(sdp).map_err(|_| Error::Sdp)?;
+        let answer = match self.rtc.sdp_api().accept_offer(offer) {
+            Ok(answer) => answer,
+            Err(error) => {
+                self.close();
+                return Err(error.into());
+            }
+        };
+        self.bind_tracks(bindings);
+        self.subscription = true;
+        self.signaling = Signaling::Negotiated;
+        Ok(answer.to_sdp_string())
     }
 
     pub fn track(&self, kind: Kind) -> Option<Track> {
@@ -386,7 +532,14 @@ impl Peer {
             .map(|b| TrackState {
                 track: Track(Mid::from(b.mid.as_str())),
                 purpose: b.purpose,
-                bucket: Bucket::new(self.now),
+                bucket: Bucket::new(
+                    self.now,
+                    if self.call_video_limit.is_some() && b.purpose.kind() == Kind::Video {
+                        CALL_VIDEO_WINDOW
+                    } else {
+                        WINDOW
+                    },
+                ),
                 next: self.now,
                 timestamp: None,
             })
@@ -440,7 +593,7 @@ impl Peer {
             .ok_or(Error::Frame)?;
         let kind = self.tracks[index].purpose.kind();
         if data.is_empty()
-            || data.len() > kind.limit()
+            || data.len() > self.frame_limit(kind)
             || self.tracks[index]
                 .timestamp
                 .is_some_and(|last| timestamp <= last)
@@ -466,6 +619,23 @@ impl Peer {
         // Spacing each frame by its own size would refuse on-time frames.
         let interval = if kind == Kind::Audio {
             Duration::from_micros(2500)
+        } else if self.call_video_limit.is_some() {
+            let queued = self
+                .rtc
+                .direct_api()
+                .stream_tx_by_mid(track.0, None)
+                .and_then(|stream| {
+                    stream
+                        .queue_info()
+                        .map(|q| (q.byte_size(), q.first_unsent()))
+                });
+            if let Some((bytes, oldest)) = queued
+                && (oldest.is_some_and(|at| now.saturating_duration_since(at) >= CALL_VIDEO_WINDOW)
+                    || (bits + bytes as f64 * 8.0) / rate as f64 > CALL_VIDEO_WINDOW.as_secs_f64())
+            {
+                return Err(Error::Backpressure);
+            }
+            Duration::from_millis(1)
         } else {
             Duration::from_secs_f64(bits / rate as f64).max(Duration::from_millis(1))
         };
@@ -475,7 +645,7 @@ impl Peer {
         let writer = self.rtc.writer(track.0).ok_or(Error::Frame)?;
         let params = *writer
             .payload_params()
-            .find(|p| p.spec().codec == kind.codec())
+            .find(|p| p.spec().codec == kind.codec(self.video))
             .ok_or(Error::Frame)?;
         writer.write(
             params.pt(),
@@ -495,7 +665,12 @@ impl Peer {
     }
 
     fn rates(&self, purpose: Purpose) -> (u64, u64, u64) {
-        let total = self.bandwidth_bps.min(10_000_000) * 4 / 5;
+        let maximum = if self.call_video_limit.is_some() {
+            CALL_MAX_BITRATE
+        } else {
+            10_000_000
+        };
+        let total = self.bandwidth_bps.min(maximum) * 4 / 5;
         let microphone = if self.track_for(Purpose::Microphone).is_some() {
             MICROPHONE_RESERVE_BPS
         } else {
@@ -523,6 +698,10 @@ impl Peer {
             }
         };
         (total, video, role_rate)
+    }
+
+    fn frame_limit(&self, kind: Kind) -> usize {
+        kind.limit(self.call_video_limit.unwrap_or(MAX_VIDEO_BYTES))
     }
 
     /// Malformed datagrams return an error; a socket adapter may discard them
@@ -576,25 +755,29 @@ impl Peer {
                         } else {
                             Kind::Video
                         };
-                        if self
-                            .purpose(Track(media.mid))
-                            .is_none_or(|p| p.kind() != kind)
-                        {
+                        if self.purpose(Track(media.mid)).map(Purpose::kind) != Some(kind) {
+                            if self.subscription {
+                                continue;
+                            }
                             self.close();
                             return Err(Error::Frame);
                         }
                     }
                     RtcEvent::MediaData(media) => {
-                        let kind = match media.params.spec().codec {
-                            Codec::Opus => Kind::Audio,
-                            Codec::Vp8 => Kind::Video,
-                            _ => return Err(Error::Frame),
+                        let Some(purpose) = self.purpose(Track(media.mid)) else {
+                            if self.subscription {
+                                continue;
+                            }
+                            return Err(Error::Frame);
                         };
-                        let purpose = self.purpose(Track(media.mid)).ok_or(Error::Frame)?;
-                        if purpose.kind() != kind
+                        let kind = purpose.kind();
+                        if media.params.spec().codec != kind.codec(self.video)
                             || media.data.is_empty()
-                            || media.data.len() > kind.limit()
+                            || media.data.len() > self.frame_limit(kind)
                         {
+                            if self.subscription {
+                                continue;
+                            }
                             return Err(Error::Frame);
                         }
                         return Ok(Output::Event(Event::Frame(Frame {

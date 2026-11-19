@@ -8,6 +8,7 @@ pub mod link_preview;
 pub mod mls;
 pub mod model;
 mod rename;
+pub mod sfu;
 pub mod sticky;
 mod tls;
 pub mod udp;
