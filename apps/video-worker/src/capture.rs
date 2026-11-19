@@ -21,7 +21,7 @@ use std::{
     os::{fd::AsFd as _, unix::net::UnixStream},
     sync::{
         Arc,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::sync_channel,
     },
     time::{Duration, Instant},
@@ -35,6 +35,11 @@ struct Picture {
     i420: Vec<u8>,
 }
 
+struct Control {
+    bitrate: AtomicU32,
+    keyframe: AtomicBool,
+}
+
 pub fn run() -> Result<(), Failure> {
     let target = std::env::var("NUSCHL_VIDEO_NODE")
         .ok()
@@ -44,12 +49,12 @@ pub fn run() -> Result<(), Failure> {
         Some(_) => (Source::Screen, "Screen"),
         None => (Source::Camera, "Camera"),
     };
-    let bitrate = start_control()?;
+    let control = start_control()?;
     #[cfg(feature = "vaapi")]
     if std::env::var_os("NUSCHL_VIDEO_VAAPI").is_some()
-        && let Ok(pipeline) = vaapi::prepare(target)
+        && let Ok(pipeline) = vaapi::prepare(target, control.bitrate.load(Ordering::Relaxed))
     {
-        return vaapi::run(pipeline, source, &bitrate);
+        return vaapi::run(pipeline, source, &control);
     }
     let remote = io::stdin().as_fd().try_clone_to_owned()?;
     pw::init();
@@ -100,7 +105,7 @@ pub fn run() -> Result<(), Failure> {
                 let capture_time_us = u64::try_from(captured_at.as_micros())
                     .unwrap_or(u64::MAX)
                     .max(1);
-                settings.bitrate = target_bitrate(&bitrate, settings.bitrate);
+                settings.bitrate = control.bitrate.load(Ordering::Relaxed);
                 let packet =
                     match super::linux::encode(&super::linux::config(settings), settings, &i420) {
                         Ok(packet) => packet,
@@ -114,6 +119,7 @@ pub fn run() -> Result<(), Failure> {
                     Kind::CaptureFrame,
                     settings,
                     capture_time_us,
+                    true,
                     &packet,
                 ) {
                     let _ = done.send(());
@@ -225,14 +231,15 @@ fn write_frame(
     kind: Kind,
     settings: Settings,
     timestamp_us: u64,
+    keyframe: bool,
     av1: &[u8],
 ) -> io::Result<()> {
-    if av1.is_empty() || av1.len() > settings.packet_limit(true) {
+    if av1.is_empty() || av1.len() > settings.packet_limit(keyframe) {
         return Ok(());
     }
     let header = Header {
         kind,
-        key: true,
+        key: keyframe,
         id: timestamp_us,
         bytes: av1.len() as u32,
     };
@@ -242,52 +249,63 @@ fn write_frame(
     output.flush()
 }
 
-fn target_bitrate(control: &AtomicU32, default: u32) -> u32 {
-    match control.load(Ordering::Relaxed) {
-        0 => default,
-        bitrate => bitrate,
-    }
-}
-
-fn start_control() -> io::Result<Arc<AtomicU32>> {
+fn start_control() -> io::Result<Arc<Control>> {
     // Standard output is a private full-duplex socket. Writes return video;
     // reads carry settings from the supervisor.
     let mut input = UnixStream::from(io::stdout().as_fd().try_clone_to_owned()?);
     let mut header = [0; HEADER_BYTES];
     input.read_exact(&mut header)?;
-    if Header::from_bytes(header)? != Header::empty(Kind::CaptureStart, 0) {
+    let start = Header {
+        bytes: 4,
+        ..Header::empty(Kind::CaptureStart, 0)
+    };
+    if Header::from_bytes(header)? != start {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "expected capture start",
         ));
     }
 
-    let bitrate = Arc::new(AtomicU32::new(0));
-    let value = Arc::clone(&bitrate);
+    let mut target = [0; 4];
+    input.read_exact(&mut target)?;
+    let bitrate = u32::from_be_bytes(target);
+    if !Settings::valid_bitrate(bitrate) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid capture bitrate",
+        ));
+    }
+    let control = Arc::new(Control {
+        bitrate: AtomicU32::new(bitrate),
+        keyframe: AtomicBool::new(false),
+    });
+    let values = Arc::clone(&control);
     std::thread::Builder::new().spawn(move || {
         let update = Header {
             bytes: 4,
             ..Header::empty(Kind::SetBitrate, 0)
         };
         let mut header = [0; HEADER_BYTES];
-        let mut target = [0; 4];
         loop {
             if let Err(error) = input.read_exact(&mut header) {
                 std::process::exit(i32::from(error.kind() != io::ErrorKind::UnexpectedEof));
             }
-            if Header::from_bytes(header).ok() != Some(update)
-                || input.read_exact(&mut target).is_err()
-            {
+            let header = Header::from_bytes(header).ok();
+            if header == Some(Header::empty(Kind::CaptureKeyframe, 0)) {
+                values.keyframe.store(true, Ordering::Relaxed);
+                continue;
+            }
+            if header != Some(update) || input.read_exact(&mut target).is_err() {
                 std::process::exit(1);
             }
             let target = u32::from_be_bytes(target);
             if !Settings::valid_bitrate(target) {
                 std::process::exit(1);
             }
-            value.store(target, Ordering::Relaxed);
+            values.bitrate.store(target, Ordering::Relaxed);
         }
     })?;
-    Ok(bitrate)
+    Ok(control)
 }
 
 fn video_format() -> io::Result<Vec<u8>> {

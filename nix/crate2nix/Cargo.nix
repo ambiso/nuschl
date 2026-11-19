@@ -23903,6 +23903,7 @@ rec {
           {
             name = "nuschl-ipc";
             packageId = "nuschl-ipc";
+            features = [ "video-portal" ];
           }
           {
             name = "nuschl-legacy-html";
@@ -24743,8 +24744,22 @@ rec {
         libName = "nuschl_ipc";
         dependencies = [
           {
+            name = "ashpd";
+            packageId = "ashpd";
+            optional = true;
+            usesDefaultFeatures = false;
+            target = { target, features }: ("linux" == target."os" or null);
+            features = [ "async-io" "camera" "screencast" ];
+          }
+          {
             name = "base64";
             packageId = "base64 0.22.1";
+          }
+          {
+            name = "futures-util";
+            packageId = "futures-util";
+            optional = true;
+            target = { target, features }: ("linux" == target."os" or null);
           }
           {
             name = "nuschl-core";
@@ -24795,7 +24810,10 @@ rec {
             packageId = "nuschl-testkit";
           }
         ];
-
+        features = {
+          "video-portal" = [ "dep:ashpd" "dep:futures-util" ];
+        };
+        resolvedDefaultFeatures = [ "video-portal" ];
       };
       "nuschl-kt" = rec {
         crateName = "nuschl-kt";
@@ -26346,18 +26364,6 @@ rec {
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../apps/video-worker; };
         dependencies = [
           {
-            name = "ashpd";
-            packageId = "ashpd";
-            usesDefaultFeatures = false;
-            target = { target, features }: ("linux" == target."os" or null);
-            features = [ "async-io" "camera" "screencast" ];
-          }
-          {
-            name = "futures-util";
-            packageId = "futures-util";
-            target = { target, features }: ("linux" == target."os" or null);
-          }
-          {
             name = "gstreamer";
             packageId = "gstreamer";
             optional = true;
@@ -26377,6 +26383,7 @@ rec {
             name = "nuschl-ipc";
             packageId = "nuschl-ipc";
             target = { target, features }: ("linux" == target."os" or null);
+            features = [ "video-portal" ];
           }
           {
             name = "nuschl-sandbox";

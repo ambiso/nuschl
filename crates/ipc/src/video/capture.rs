@@ -26,6 +26,7 @@ pub struct VideoFrame {
     /// Microseconds since this capture began, on the worker's monotonic clock.
     pub capture_time_us: u64,
     pub av1: Vec<u8>,
+    pub keyframe: bool,
     pub hardware: bool,
     pub bitrate_bps: u32,
     received: Instant,
@@ -34,8 +35,19 @@ pub struct VideoFrame {
 pub struct Capture {
     frames: mpsc::Receiver<Result<VideoFrame, Error>>,
     task: JoinHandle<()>,
-    bitrate: watch::Sender<Option<u32>>,
+    control: watch::Sender<Control>,
+    waiting_for_key: bool,
+    #[cfg(feature = "video-portal")]
+    grant: Option<ashpd::zbus::Connection>,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Control {
+    bitrate: u32,
+    key_request: u64,
+}
+
+const MAX_AGE: Duration = Duration::from_millis(250);
 
 impl Capture {
     /// The remote is the connected PipeWire FD granted by the Linux portal.
@@ -45,7 +57,7 @@ impl Capture {
         source: Source,
         node_id: Option<u32>,
     ) -> Result<Self, Error> {
-        Self::start_inner(executable, remote, source, node_id, false)
+        Self::start_inner(executable, remote, source, node_id, false, 2_000_000)
     }
 
     /// Prefer the isolated VA-API path when its fixed render device exists.
@@ -55,28 +67,43 @@ impl Capture {
         source: Source,
         node_id: Option<u32>,
     ) -> Result<Self, Error> {
-        Self::start_inner(executable, remote, source, node_id, true)
+        Self::start_inner(executable, remote, source, node_id, true, 20_000_000)
     }
 
-    fn start_inner(
+    pub(super) fn start_inner(
         executable: PathBuf,
         remote: OwnedFd,
         source: Source,
         node_id: Option<u32>,
         vaapi: bool,
+        bitrate: u32,
     ) -> Result<Self, Error> {
-        if (source == Source::Screen) != node_id.is_some() || matches!(node_id, Some(0 | u32::MAX))
+        if (source == Source::Screen) != node_id.is_some()
+            || matches!(node_id, Some(0 | u32::MAX))
+            || !Settings::valid_bitrate(bitrate)
         {
             return Err(invalid().into());
         }
         let permit = SOURCES.try_acquire().map_err(|_| Error::Busy)?;
         let (sender, frames) = mpsc::channel(1);
-        let (bitrate, updates) = watch::channel(None);
+        let (control, updates) = watch::channel(Control {
+            bitrate,
+            key_request: 0,
+        });
+        let requests = control.clone();
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| Error::Runtime)?;
         let task = runtime.spawn(async move {
             let _permit = permit;
-            if let Err(error) =
-                capture(executable, remote, source, node_id, vaapi, &sender, updates).await
+            if let Err(error) = capture(
+                executable,
+                remote,
+                source,
+                node_id,
+                vaapi,
+                &sender,
+                (updates, requests),
+            )
+            .await
             {
                 let _ = sender.try_send(Err(error));
             }
@@ -84,8 +111,16 @@ impl Capture {
         Ok(Self {
             frames,
             task,
-            bitrate,
+            control,
+            waiting_for_key: true,
+            #[cfg(feature = "video-portal")]
+            grant: None,
         })
+    }
+
+    #[cfg(feature = "video-portal")]
+    pub(super) fn retain_grant(&mut self, connection: ashpd::zbus::Connection) {
+        self.grant = Some(connection);
     }
 
     /// Update the target bitrate. The latest request replaces pending requests.
@@ -93,15 +128,28 @@ impl Capture {
         if !Settings::valid_bitrate(bitrate_bps) {
             return Err(invalid().into());
         }
-        self.bitrate
-            .send(Some(bitrate_bps))
-            .map_err(|_| Error::Stopped)
+        if self.control.is_closed() {
+            return Err(Error::Stopped);
+        }
+        self.control.send_if_modified(|control| {
+            std::mem::replace(&mut control.bitrate, bitrate_bps) != bitrate_bps
+        });
+        Ok(())
+    }
+
+    /// Request a new independently decodable frame after a receiver loss report.
+    pub fn request_keyframe(&self) {
+        request_keyframe(&self.control);
     }
 
     pub async fn next(&mut self) -> Result<VideoFrame, Error> {
         loop {
             let frame = self.frames.recv().await.ok_or(Error::Stopped)??;
-            if frame.received.elapsed() <= Duration::from_millis(250) {
+            if frame.received.elapsed() > MAX_AGE {
+                self.waiting_for_key = true;
+                self.request_keyframe();
+            } else if frame.keyframe || !self.waiting_for_key {
+                self.waiting_for_key = false;
                 return Ok(frame);
             }
         }
@@ -109,8 +157,14 @@ impl Capture {
 
     pub async fn stop(self) -> Result<(), Error> {
         drop(self.frames);
+        #[cfg(feature = "video-portal")]
+        drop(self.grant);
         self.task.await.map_err(|_| Error::Stopped)
     }
+}
+
+fn request_keyframe(control: &watch::Sender<Control>) {
+    control.send_modify(|value| value.key_request = value.key_request.wrapping_add(1));
 }
 
 async fn capture(
@@ -120,7 +174,7 @@ async fn capture(
     node: Option<u32>,
     vaapi: bool,
     sender: &mpsc::Sender<Result<VideoFrame, Error>>,
-    mut updates: watch::Receiver<Option<u32>>,
+    (mut updates, requests): (watch::Receiver<Control>, watch::Sender<Control>),
 ) -> Result<(), Error> {
     let (supervisor, worker) = Socket::pair()?;
     supervisor.set_nonblocking(true)?;
@@ -135,14 +189,17 @@ async fn capture(
     let mut retirement = Retirement::new(&mut child);
     let result = async {
         retirement.ready().await.map_err(|_| Error::Confinement)?;
-        let start = Header::empty(Kind::CaptureStart, 0).to_bytes();
-        timeout(DEADLINE, control.write_all(&start))
-            .await
-            .map_err(|_| Error::Timeout)??;
+        let initial = *updates.borrow_and_update();
+        send_control(
+            &mut control,
+            Kind::CaptureStart,
+            &initial.bitrate.to_be_bytes(),
+        )
+        .await?;
         tokio::select! {
             _ = sender.closed() => Ok(()),
-            result = receive_frames(&mut output, source, sender) => result,
-            result = send_updates(&mut control, &mut updates) => result,
+            result = receive_frames(&mut output, source, sender, &requests) => result,
+            result = send_updates(&mut control, &mut updates, initial) => result,
         }
     }
     .await;
@@ -155,23 +212,37 @@ async fn capture(
 
 async fn send_updates(
     socket: &mut (impl AsyncWrite + Unpin),
-    updates: &mut watch::Receiver<Option<u32>>,
+    updates: &mut watch::Receiver<Control>,
+    mut previous: Control,
 ) -> Result<(), Error> {
     while updates.changed().await.is_ok() {
         let target = *updates.borrow_and_update();
-        if let Some(bitrate) = target {
-            let header = Header {
-                bytes: 4,
-                ..Header::empty(Kind::SetBitrate, 0)
-            };
-            let mut control = [0; HEADER_BYTES + 4];
-            control[..HEADER_BYTES].copy_from_slice(&header.to_bytes());
-            control[HEADER_BYTES..].copy_from_slice(&bitrate.to_be_bytes());
-            timeout(DEADLINE, socket.write_all(&control))
-                .await
-                .map_err(|_| Error::Timeout)??;
+        if target.bitrate != previous.bitrate {
+            send_control(socket, Kind::SetBitrate, &target.bitrate.to_be_bytes()).await?;
         }
+        if target.key_request != previous.key_request {
+            send_control(socket, Kind::CaptureKeyframe, &[]).await?;
+        }
+        previous = target;
     }
+    Ok(())
+}
+
+async fn send_control(
+    socket: &mut (impl AsyncWrite + Unpin),
+    kind: Kind,
+    body: &[u8],
+) -> Result<(), Error> {
+    let header = Header {
+        bytes: body.len() as u32,
+        ..Header::empty(kind, 0)
+    };
+    timeout(DEADLINE, async {
+        socket.write_all(&header.to_bytes()).await?;
+        socket.write_all(body).await
+    })
+    .await
+    .map_err(|_| Error::Timeout)??;
     Ok(())
 }
 
@@ -179,14 +250,20 @@ async fn receive_frames(
     output: &mut (impl AsyncRead + Unpin),
     source: Source,
     sender: &mpsc::Sender<Result<VideoFrame, Error>>,
+    control: &watch::Sender<Control>,
 ) -> Result<(), Error> {
     let mut frame = timeout(Duration::from_secs(15), read_frame(output, source, 0))
         .await
         .map_err(|_| Error::Timeout)??;
+    let mut waiting_for_key = true;
     loop {
         let previous = frame.capture_time_us;
-        // Each frame is independent, so a slow consumer can skip frames.
-        let _ = sender.try_send(Ok(frame));
+        if frame.keyframe || !waiting_for_key {
+            waiting_for_key = sender.try_send(Ok(frame)).is_err();
+            if waiting_for_key {
+                request_keyframe(control);
+            }
+        }
         frame = read_frame(output, source, previous).await?;
     }
 }
@@ -201,9 +278,7 @@ async fn read_frame(
     timeout(DEADLINE, async {
         input.read_exact(&mut bytes[1..]).await?;
         let header = Header::from_bytes(bytes)?;
-        if !matches!(header.kind, Kind::CaptureFrame | Kind::HardwareFrame)
-            || !header.key
-            || header.id <= previous
+        if !matches!(header.kind, Kind::CaptureFrame | Kind::HardwareFrame) || header.id <= previous
         {
             return Err(invalid().into());
         }
@@ -211,7 +286,7 @@ async fn read_frame(
         input.read_exact(&mut settings).await?;
         let settings = Settings::from_bytes(settings)?;
         let size = header.bytes as usize;
-        if settings.source != source || size == 0 || size > settings.packet_limit(true) {
+        if settings.source != source || size == 0 || size > settings.packet_limit(header.key) {
             return Err(invalid().into());
         }
         let mut av1 = vec![0; size];
@@ -221,6 +296,7 @@ async fn read_frame(
             height: settings.height,
             capture_time_us: header.id,
             av1,
+            keyframe: header.key,
             hardware: header.kind == Kind::HardwareFrame,
             bitrate_bps: settings.bitrate,
             received: Instant::now(),

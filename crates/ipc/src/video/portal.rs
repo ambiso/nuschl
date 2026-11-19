@@ -2,6 +2,7 @@
 //! Linux capture authorization. Portal grants live only as long as the
 //! desktop holds this private D-Bus connection.
 
+use super::{Capture, Source};
 use ashpd::{
     Error, WindowIdentifier,
     desktop::{
@@ -12,25 +13,31 @@ use ashpd::{
     zbus,
 };
 use futures_util::FutureExt as _;
-use nuschl_ipc::video::Source;
-use std::{
-    os::fd::{AsFd as _, BorrowedFd, OwnedFd},
-    panic::AssertUnwindSafe,
-};
+use std::{os::fd::OwnedFd, panic::AssertUnwindSafe, path::PathBuf};
 
 pub struct Grant {
     remote: OwnedFd,
     node_id: Option<u32>,
-    _connection: zbus::Connection,
+    connection: zbus::Connection,
+    source: Source,
 }
 
 impl Grant {
-    pub fn remote(&self) -> BorrowedFd<'_> {
-        self.remote.as_fd()
+    pub fn source(&self) -> Source {
+        self.source
     }
 
-    pub fn node_id(&self) -> Option<u32> {
-        self.node_id
+    pub fn start(self, executable: PathBuf, bitrate_bps: u32) -> Result<Capture, super::Error> {
+        let mut capture = Capture::start_inner(
+            executable,
+            self.remote,
+            self.source,
+            self.node_id,
+            true,
+            bitrate_bps,
+        )?;
+        capture.retain_grant(self.connection);
+        Ok(capture)
     }
 }
 
@@ -95,6 +102,7 @@ pub async fn request(source: Source, parent: Option<&WindowIdentifier>) -> Resul
     Ok(Grant {
         remote,
         node_id,
-        _connection: connection,
+        connection,
+        source,
     })
 }

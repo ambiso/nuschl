@@ -2,10 +2,6 @@
 //! Encode a synthetic test pattern through the confined video worker.
 
 #[cfg(target_os = "linux")]
-#[path = "video_probe/portal.rs"]
-mod portal;
-
-#[cfg(target_os = "linux")]
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use nuschl_ipc::video::{Encoder, Output, Settings, Source};
@@ -70,19 +66,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(target_os = "linux")]
 async fn portal_probe(source: nuschl_ipc::video::Source) -> Result<(), Box<dyn std::error::Error>> {
-    let grant = portal::request(source, None).await?;
-    #[cfg(feature = "vaapi")]
-    let start = nuschl_ipc::video::Capture::start_vaapi;
-    #[cfg(not(feature = "vaapi"))]
-    let start = nuschl_ipc::video::Capture::start;
-    let mut capture = start(
-        nuschl_sandbox::sibling("nuschl-video-worker")?,
-        grant.remote().try_clone_to_owned()?,
-        source,
-        grant.node_id(),
-    )?;
+    let grant = nuschl_ipc::video::portal::request(source, None).await?;
+    let mut capture = grant.start(nuschl_sandbox::sibling("nuschl-video-worker")?, 4_000_000)?;
     let result = tokio::time::timeout(std::time::Duration::from_secs(20), capture.next()).await;
-    drop(grant);
     let stopped = tokio::time::timeout(std::time::Duration::from_secs(2), capture.stop()).await;
     let frame = result??;
     stopped??;

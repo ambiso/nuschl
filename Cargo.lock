@@ -7464,7 +7464,9 @@ dependencies = [
 name = "nuschl-ipc"
 version = "0.2.0"
 dependencies = [
+ "ashpd",
  "base64 0.22.1",
+ "futures-util",
  "nuschl-core",
  "nuschl-sandbox",
  "nuschl-testkit",
@@ -7881,8 +7883,6 @@ dependencies = [
 name = "nuschl-video-worker"
 version = "0.2.0"
 dependencies = [
- "ashpd",
- "futures-util",
  "gstreamer",
  "gstreamer-app",
  "nuschl-ipc",

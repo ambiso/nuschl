@@ -3,6 +3,8 @@
 //! the local worker pipe; encoded AV1 is the only output.
 
 mod capture;
+#[cfg(feature = "video-portal")]
+pub mod portal;
 mod supervisor;
 
 pub use capture::{Capture, VideoFrame};
@@ -101,6 +103,7 @@ pub enum Kind {
     HardwareFrame,
     SetBitrate,
     CaptureStart,
+    CaptureKeyframe = 20,
 }
 
 /// Each reply carries the ID from its request.
@@ -155,6 +158,7 @@ impl Header {
             7 => Kind::HardwareFrame,
             8 => Kind::SetBitrate,
             9 => Kind::CaptureStart,
+            20 => Kind::CaptureKeyframe,
             _ => return Err(invalid()),
         };
         let key = flags == KEY;
