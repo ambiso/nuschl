@@ -11,7 +11,7 @@ use crate::{
 use gpui_kit::{prelude::*, *};
 use nuschl_client::native::sfu::{Connect, Connection, Media, MediaEvent, MediaOptions, Purpose};
 use nuschl_core::{call::page_url, model::TextTarget, network::PeerPolicy};
-use nuschl_ipc::video::{Capture, DecodedFrame, Decoder, Source, portal};
+use nuschl_ipc::video::{Capture, DecodeError, DecodedFrame, Decoder, Source, portal};
 use nuschl_protocol::sfu::Codec;
 use nuschl_session::{config::ClientSettings, identity::CryptoHandle};
 use std::{
@@ -707,8 +707,13 @@ async fn receive_video(
             if !contiguous {
                 decoder.reset();
             }
-            if let Some(frame) = decoder.decode(key_frame, data).await.map_err(text)? {
-                updates.frame(frame);
+            match decoder.decode(key_frame, data).await {
+                Ok(Some(frame)) => updates.frame(frame),
+                Ok(None) => {}
+                Err(DecodeError::Io(_) | DecodeError::Timeout | DecodeError::Busy) => {
+                    updates.status("Waiting for a fresh video frame");
+                }
+                Err(error) => return Err(text(error)),
             }
         }
         Ok(())
