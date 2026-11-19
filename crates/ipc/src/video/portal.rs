@@ -20,11 +20,17 @@ pub struct Grant {
     node_id: Option<u32>,
     connection: zbus::Connection,
     source: Source,
+    monitor: bool,
 }
 
 impl Grant {
     pub fn source(&self) -> Source {
         self.source
+    }
+
+    /// A whole monitor or an unspecified screen source requires the privacy curtain.
+    pub fn requires_curtain(&self) -> bool {
+        self.monitor
     }
 
     pub fn start(self, executable: PathBuf, bitrate_bps: u32) -> Result<Capture, super::Error> {
@@ -47,7 +53,7 @@ pub async fn request(source: Source, parent: Option<&WindowIdentifier>) -> Resul
         // On Flatpak and newer portals the application can already be known.
         let _ = ashpd::register_host_app_with_connection(connection.clone(), app).await;
     }
-    let (remote, node_id) = match source {
+    let (remote, node_id, monitor) = match source {
         Source::Camera => {
             let portal = Camera::with_connection(connection.clone()).await?;
             portal
@@ -57,6 +63,7 @@ pub async fn request(source: Source, parent: Option<&WindowIdentifier>) -> Resul
             (
                 portal.open_pipe_wire_remote(Default::default()).await?,
                 None,
+                false,
             )
         }
         Source::Screen => {
@@ -96,7 +103,11 @@ pub async fn request(source: Source, parent: Option<&WindowIdentifier>) -> Resul
             let remote = portal
                 .open_pipe_wire_remote(&session, Default::default())
                 .await?;
-            (remote, Some(stream.pipe_wire_node_id()))
+            (
+                remote,
+                Some(stream.pipe_wire_node_id()),
+                stream.source_type() != Some(SourceType::Window),
+            )
         }
     };
     Ok(Grant {
@@ -104,5 +115,6 @@ pub async fn request(source: Source, parent: Option<&WindowIdentifier>) -> Resul
         node_id,
         connection,
         source,
+        monitor,
     })
 }

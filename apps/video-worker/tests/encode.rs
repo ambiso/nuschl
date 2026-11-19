@@ -215,6 +215,7 @@ context.objects = [
         .await
         .expect("the worker returns bounded AV1");
     assert!(!frame.av1.is_empty());
+    assert!(frame.keyframe);
     assert_eq!(frame.hardware, hardware);
     assert!(frame.width >= 16 && frame.height >= 16);
     assert!(frame.capture_time_us > 0);
@@ -223,6 +224,33 @@ context.objects = [
         raw.len(),
         usize::from(frame.width) * usize::from(frame.height) * 3 / 2
     );
+    if hardware {
+        let mut sequence = frame.av1;
+        tokio::time::timeout(Duration::from_secs(6), async {
+            loop {
+                let frame = capture.next().await.unwrap();
+                sequence.extend_from_slice(&frame.av1);
+                if !frame.keyframe {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("VA-API generates interframes");
+        assert!(decode_av1(&sequence).len() >= 2 * raw.len());
+        capture.request_keyframe();
+        tokio::time::timeout(Duration::from_millis(800), async {
+            loop {
+                let frame = capture.next().await.unwrap();
+                if frame.keyframe {
+                    assert_eq!(decode_av1(&frame.av1).len(), raw.len());
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("VA-API generates a prompt keyframe on request");
+    }
     assert!(capture.set_bitrate(1).is_err());
     capture.set_bitrate(900_000).unwrap();
     let updated_at = tokio::time::timeout(Duration::from_secs(12), async {
