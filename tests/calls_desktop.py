@@ -135,6 +135,11 @@ class CallTest(VoiceTest):
             self.press(andi, "Start camera")
             self.inline(andi)
             self.control(andi, "Open in browser", shown=False)
+            self.press(andi, "Quality · Auto")
+            self.press(andi, "720p30")
+            self.control(andi, "Quality · 720p30")
+            self.press(andi, "Hide video stats")
+            self.control(andi, "Video stats")
             assert self.witness_link()["target"] == {"kind": "channel", "id": 1}
             self.invitation(bea)
             self.control(bea, "Open in browser", shown=False)
@@ -143,6 +148,8 @@ class CallTest(VoiceTest):
             self.inline(bea)
             self.press(bea, "Full screen")
             self.control(bea, "Exit full screen")
+            eventually(lambda: not self.find(bea, "list", "Messages in #Lobby"),
+                       "full screen kept the inline chat tree", timeout=15)
             self.press(bea, "Exit full screen")
             self.inline(bea)
             self.press(bea, "Minimize call")
