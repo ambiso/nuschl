@@ -46,6 +46,9 @@ impl Channel {
     }
 
     pub(crate) fn seal(&mut self, body: &[u8]) -> Result<Vec<u8>, Error> {
+        if body.is_empty() {
+            return Err(Error::Malformed("direct signal"));
+        }
         if body.len() > MAX_DIRECT_SIGNAL {
             return Err(Error::TooLong);
         }
@@ -66,7 +69,7 @@ impl Channel {
         }
         let (header, ciphertext) = message
             .split_at_checked(HEADER)
-            .filter(|(_, ciphertext)| ciphertext.len() >= TAG)
+            .filter(|(_, ciphertext)| ciphertext.len() > TAG)
             .ok_or(Error::Malformed("direct signal"))?;
         if header[0] != VERSION {
             return Err(Error::UnsupportedVersion);

@@ -228,6 +228,12 @@ Mumble servers can show it to other clients. RTC adapters apply
 `nuschl_core::network::PeerPolicy` before gathering or dialing and advertise only
 relay candidates in relay-only mode, on every application call path.
 
+**Native call signaling.** The session's crypto worker holds the link's ephemeral
+key-exchange state in memory. It exposes room metadata, SFU challenge proofs, opaque
+key messages and direct signaling authenticated with the pairwise key. Replies bind
+to the current call generation and its selected peer. Relay-only sessions reject
+direct signals. Call keys remain in the worker.
+
 **Companion SFU** (`nuschl-stream-sfu`, [protocol](apps/stream-sfu/src/protocol.rs)).
 A network service under its hardened systemd unit; its state lives in memory,
 except its traffic count per billing period, kept in its state directory. A

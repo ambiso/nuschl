@@ -76,6 +76,7 @@ pub struct Worker {
     pub(crate) mls: crate::mls::Mls,
     /// A device link in progress (crate::link), in memory only.
     pub(crate) link: crate::link::Pending,
+    call: crate::call::Signaling,
 }
 
 fn now_ms() -> u64 {
@@ -111,6 +112,7 @@ impl Worker {
             clock: Box::new(now_ms),
             mls,
             link: crate::link::Pending::default(),
+            call: Default::default(),
         })
     }
 
@@ -153,6 +155,10 @@ impl Worker {
 
     fn dispatch(&mut self, request: CryptoRequest) -> Result<CryptoResponse, String> {
         Ok(match request {
+            CryptoRequest::Call(request) => {
+                let now = self.now();
+                CryptoResponse::Call(self.call.handle(request, now)?)
+            }
             CryptoRequest::Identity => CryptoResponse::Identity(self.identity_view(false)),
             CryptoRequest::CreateIdentity { device_name } => {
                 let created = self.ensure_identity(&device_name)?;

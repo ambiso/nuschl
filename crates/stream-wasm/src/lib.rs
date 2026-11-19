@@ -87,8 +87,6 @@ pub const MAX_REQUEST: usize = 2 * MAX_KEY_MESSAGE + 1024;
 pub const MAX_PEERS: usize = 256;
 /// The periodic rekey (docs/video-plan.md §4, "Rekeying").
 pub const REKEY_INTERVAL_MS: u64 = 15 * 60 * 1000;
-const ADMIT_LABEL: &[u8] = b"nuschl/stream/v2 sfu admit";
-const HOST_LABEL: &[u8] = b"nuschl/stream/v2 sfu host";
 
 #[derive(Deserialize)]
 struct Envelope {
@@ -310,9 +308,10 @@ impl<R: TryCryptoRng> Worker<R> {
         hex::decode_to_slice(nonce, &mut bytes).map_err(|_| "malformed nonce")?;
         let keys = link.keys();
         let host_key = link.publisher().map(nuschl_stream::host_key);
+        let (admit, host) = link.admission_proofs(&bytes);
         Ok(Reply::Admitted {
-            proof: proof(keys.admit_key(), ADMIT_LABEL, &bytes),
-            host_proof: host_key.map(|key| proof(&key, HOST_LABEL, &bytes)),
+            proof: hex::encode(admit),
+            host_proof: host.map(hex::encode),
             create: host_key.map(|host_key| Create {
                 admit_key: hex::encode(keys.admit_key()),
                 host_key: hex::encode(host_key),
@@ -539,13 +538,6 @@ fn message(to: u64, data: &[u8]) -> Message {
         to,
         data: hex::encode(data),
     }
-}
-
-/// `HMAC-SHA256(key, label || nonce)`, the SFU's admission proofs.
-fn proof(key: &[u8; 32], label: &[u8], nonce: &[u8; 32]) -> String {
-    let mut tag = [0; 32];
-    libcrux_hmac::hmac_sha2_256(&mut tag, key, &[label, nonce].concat());
-    hex::encode(tag)
 }
 
 fn text(error: impl Display) -> String {

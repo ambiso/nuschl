@@ -12,6 +12,8 @@
 //! [`crate::MAX_FRAME_BYTES`] before they are parsed.
 use serde::{Deserialize, Serialize};
 
+pub mod call;
+
 /// Bytes as a base64 string.
 pub mod base64_bytes {
     use base64::Engine as _;
@@ -226,10 +228,13 @@ pub struct KtRecordBytes {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CryptoRequest {
+    Call(call::Request),
     /// The identity, if any: `Identity`.
     Identity,
     /// Creates the identity unless there is one: `Identity`.
-    CreateIdentity { device_name: String },
+    CreateIdentity {
+        device_name: String,
+    },
     /// The recovery key made with the identity, which this device keeps:
     /// `RecoveryKey`.
     ShowRecoveryKey,
@@ -265,7 +270,10 @@ pub enum CryptoRequest {
     },
     /// What to publish for our account on this server (creating the identity on
     /// first need): `Bundle`.
-    PublishBundle { server: String, device_name: String },
+    PublishBundle {
+        server: String,
+        device_name: String,
+    },
     /// The server accepted our publication (`KtPublished`): `Done`.
     Published {
         server: String,
@@ -360,7 +368,10 @@ pub enum CryptoRequest {
         account: Vec<u8>,
     },
     /// What the schedule of docs/e2ee.md §5.4 asks for now: `Due`.
-    Due { server: String, connected: bool },
+    Due {
+        server: String,
+        connected: bool,
+    },
     /// The newest head of this server, to gossip in a conversation once a day:
     /// `Gossip`.
     MakeGossip {
@@ -375,9 +386,13 @@ pub enum CryptoRequest {
         gossip: Vec<u8>,
     },
     /// The user saw an own-key or misbehaviour alarm of this server (`Identity`).
-    AcknowledgeAlarm { server: String },
+    AcknowledgeAlarm {
+        server: String,
+    },
     /// The user reset this server's key-transparency pin (after a log change).
-    ForgetServer { server: String },
+    ForgetServer {
+        server: String,
+    },
 
     // ---- MLS (`mls/1`, docs/e2ee.md §6, §7) ----
     // Conversations are named by the server's sticky key and the 16-byte
@@ -617,6 +632,7 @@ impl CryptoRequest {
                 .try_for_each(|bytes| at_most(bytes.len(), MAX_MLS_KEY_PACKAGE, "key package"))
         };
         match self {
+            Self::Call(request) => request.check(),
             Self::Identity | Self::ShowRecoveryKey => Ok(()),
             Self::CreateIdentity { device_name, .. } => {
                 at_most(device_name.len(), MAX_DEVICE_NAME, "device name")
@@ -1077,6 +1093,7 @@ pub struct Due {
     deny_unknown_fields
 )]
 pub enum CryptoResponse {
+    Call(call::Reply),
     Identity(IdentityView),
     /// Shown once; 14 groups of 4 characters.
     RecoveryKey(String),

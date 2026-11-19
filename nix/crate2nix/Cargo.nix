@@ -23800,6 +23800,11 @@ rec {
         libName = "nuschl_crypto_worker";
         dependencies = [
           {
+            name = "getrandom";
+            packageId = "getrandom 0.4.3";
+            features = [ "sys_rng" ];
+          }
+          {
             name = "hex";
             packageId = "hex";
           }
@@ -23823,6 +23828,10 @@ rec {
             name = "nuschl-sandbox-windows";
             packageId = "nuschl-sandbox-windows";
             target = { target, features }: (target."windows" or false);
+          }
+          {
+            name = "nuschl-stream";
+            packageId = "nuschl-stream";
           }
           {
             name = "serde";
@@ -23850,6 +23859,10 @@ rec {
           {
             name = "nuschl-session";
             packageId = "nuschl-session";
+          }
+          {
+            name = "nuschl-testkit";
+            packageId = "nuschl-testkit";
           }
           {
             name = "nuschl-witness";
@@ -25006,6 +25019,10 @@ rec {
             packageId = "libcrux-hkdf 0.0.9";
           }
           {
+            name = "libcrux-hmac";
+            packageId = "libcrux-hmac 0.0.9";
+          }
+          {
             name = "libcrux-kem";
             packageId = "libcrux-kem";
             usesDefaultFeatures = false;
@@ -25163,10 +25180,6 @@ rec {
           {
             name = "hex";
             packageId = "hex";
-          }
-          {
-            name = "libcrux-hmac";
-            packageId = "libcrux-hmac 0.0.9";
           }
           {
             name = "nuschl-sframe";

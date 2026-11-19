@@ -92,6 +92,17 @@ impl CryptoHandle {
             Err(_) => Err(Error::Worker("the crypto worker is gone".into())),
         }
     }
+
+    /// Send a scoped call request to the worker using the existing supervisor.
+    pub async fn call_signal(
+        &self,
+        request: nuschl_ipc::crypto::call::Request,
+    ) -> Result<nuschl_ipc::crypto::call::Reply, Error> {
+        match self.request(CryptoRequest::Call(request)).await? {
+            CryptoResponse::Call(reply) => Ok(reply),
+            _ => Err(Error::Worker("crypto worker call response mismatch".into())),
+        }
+    }
 }
 
 fn create_private_directory(directory: &std::path::Path) -> std::io::Result<()> {
@@ -149,10 +160,21 @@ async fn exchange(
     write_frame(&mut bytes, &Envelope::new(id, request))?;
     worker.input.write_all(&bytes).await?;
     worker.input.flush().await?;
-    let envelope: Envelope<CryptoResponse> =
-        read_frame_async(&mut worker.output, MAX_FRAME_BYTES).await?;
+    let bound = if matches!(request, CryptoRequest::Call(_)) {
+        nuschl_ipc::crypto::call::MAX_REPLY_FRAME_BYTES
+    } else {
+        MAX_FRAME_BYTES
+    };
+    let envelope: Envelope<CryptoResponse> = read_frame_async(&mut worker.output, bound).await?;
     if envelope.request_id != id {
         return Err(Error::Worker("crypto worker protocol mismatch".into()));
+    }
+    if let CryptoRequest::Call(request) = request {
+        match &envelope.payload {
+            CryptoResponse::Rejected(_) => {}
+            CryptoResponse::Call(reply) if reply.matches(request) => {}
+            _ => return Err(Error::Worker("crypto worker call response mismatch".into())),
+        }
     }
     Ok(envelope.payload)
 }
