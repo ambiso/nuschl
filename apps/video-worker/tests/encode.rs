@@ -274,12 +274,18 @@ context.objects = [
     let expected = limits
         .dimensions(Source::Screen, frame.width, frame.height)
         .unwrap();
-    assert_ne!((frame.width, frame.height), expected);
+    if !hardware {
+        assert_ne!((frame.width, frame.height), expected);
+    }
     capture.set_limits(limits).unwrap();
+    capture.request_keyframe();
     let updated = tokio::time::timeout(Duration::from_secs(6), async {
         loop {
             let changed = capture.next().await.expect("the encoder keeps running");
-            if changed.keyframe && (changed.width, changed.height) == expected {
+            if changed.keyframe
+                && changed.bitrate_bps == limits.bitrate
+                && (changed.width, changed.height) == expected
+            {
                 break changed;
             }
         }

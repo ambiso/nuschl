@@ -115,9 +115,11 @@ impl Scale {
             return Ok(false);
         };
         let size = dimensions(input.structure(0).ok_or("missing PipeWire video format")?)?;
-        let (width, height) = limits
-            .dimensions(source, size.0, size.1)
-            .ok_or("invalid captured video dimensions")?;
+        let Some((width, height)) = limits.dimensions(source, size.0, size.1) else {
+            // Some PipeWire nodes produce dimensions below the VA encoder's
+            // minimum. Retain the legal format chosen by the existing filter.
+            return Ok(self.size.take().is_some());
+        };
         if self.size == Some((width, height)) {
             return Ok(false);
         }
@@ -191,7 +193,9 @@ fn write_frames(
                 (rate.numer() / rate.denom().max(1)).clamp(1, 120)
             });
         let (width, height) = dimensions(format)?;
-        if scale.size != Some((width, height)) {
+        if scale.size.is_some_and(|wanted| wanted != (width, height))
+            || width.min(height) > limits.height
+        {
             continue;
         }
         let settings = Settings {
