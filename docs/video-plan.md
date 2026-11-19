@@ -197,6 +197,22 @@ resolutions at once, so cameras publish three spatial layers (SVC) or three
 simulcast encodings, chosen by S0f; screens use temporal layers and, where the
 encoder offers them, spatial layers.
 
+Local S0f throughput sample on AMD render device `1002:744c`, Mesa 26.3.0
+and FFmpeg 9.0.2. The input is ten seconds of moving `testsrc2` with one
+key frame per second. The encoding rate includes generating and uploading
+NV12 frames. The decoding rate measures VA-API output surfaces.
+
+| Input | Encoder target | AV1 payload | Encode | Decode | Largest key frame |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 3440×1440 at 100 fps | 20 Mbit/s | 23.74 Mbit/s | 319 fps | — | 75 KiB |
+| 3440×1440 at 100 fps | 25 Mbit/s | 29.68 Mbit/s | 320 fps | 448 fps | 86 KiB |
+| 3840×2160 at 60 fps | 15 Mbit/s | 17.92 Mbit/s | 198 fps | 293 fps | 112 KiB |
+
+These figures measure the codec on one device. The browser and SFU use the
+tiers above, and end-to-end tests measure capture, transport and playout
+separately. Payload exceeded the encoder target in each sample. Admission
+and pacing use measured payload rates.
+
 ### 5.2 Bounds
 
 - Encoder caps: screen key frames ≤1 MiB from 1440p up, ≤512 KiB below; camera
