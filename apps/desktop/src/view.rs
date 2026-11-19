@@ -2413,9 +2413,10 @@ fn conversation(
         .map(|view| {
             #[cfg(target_os = "linux")]
             let view = view.when(this.native_call_in(&server.id, &channel.target), |view| {
-                view.when_some(crate::native_call::panel(this, cx), |view, panel| {
-                    view.child(panel)
-                })
+                view.when_some(
+                    crate::native_call::panel(this, window, cx),
+                    |view, panel| view.child(panel),
+                )
             });
             view
         })

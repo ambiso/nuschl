@@ -104,6 +104,10 @@ pub(super) struct Snapshot {
 }
 
 impl Snapshot {
+    pub(super) fn resolution(self) -> Option<(u16, u16)> {
+        self.resolution
+    }
+
     pub(super) fn rows(self, owned: bool) -> impl Iterator<Item = (&'static str, String)> {
         let resolution = self
             .resolution
