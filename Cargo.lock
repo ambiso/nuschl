@@ -7423,6 +7423,7 @@ dependencies = [
 name = "nuschl-rtc"
 version = "0.2.0"
 dependencies = [
+ "nuschl-core",
  "str0m",
  "thiserror 2.0.21",
 ]
@@ -7432,6 +7433,7 @@ name = "nuschl-rtc-probe"
 version = "0.2.0"
 dependencies = [
  "hex",
+ "nuschl-core",
  "nuschl-rtc",
 ]
 

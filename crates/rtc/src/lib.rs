@@ -12,8 +12,10 @@
 //! This is an encoded-media transport foundation, not a capture, calling,
 //! ownership/consent, relay, or end-to-end media encryption implementation.
 
+use nuschl_core::network::{Destination, PeerPolicy};
 use std::{
-    net::SocketAddr,
+    io,
+    net::{SocketAddr, UdpSocket},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -147,6 +149,10 @@ pub enum Error {
     Description,
     #[error("invalid local UDP address")]
     Address,
+    #[error("direct peers are disabled by the connection policy")]
+    DirectDenied,
+    #[error("could not bind the ICE socket: {0}")]
+    Bind(#[source] io::Error),
     #[error("invalid or oversized datagram")]
     Datagram,
     #[error("invalid track, codec, encoded frame length, or RTP timestamp")]
@@ -186,13 +192,34 @@ pub struct Peer {
 }
 
 impl Peer {
+    /// Open a nonblocking direct UDP leg on a selected local interface. An
+    /// ephemeral port is chosen when `address` has port zero.
+    pub fn bind_direct(
+        policy: PeerPolicy,
+        address: SocketAddr,
+        now: Instant,
+        video: VideoCodec,
+    ) -> Result<(Peer, UdpSocket), Error> {
+        if !policy.permits(Destination::DirectPeer) {
+            return Err(Error::DirectDenied);
+        }
+        if address.ip().is_unspecified() || address.ip().is_multicast() {
+            return Err(Error::Address);
+        }
+        let socket = UdpSocket::bind(address).map_err(Error::Bind)?;
+        socket.set_nonblocking(true).map_err(Error::Bind)?;
+        let peer = Self::with_video(socket.local_addr().map_err(Error::Bind)?, now, video)?;
+        Ok((peer, socket))
+    }
+
     /// Use an explicitly bound, reachable host address. TURN and interface
     /// discovery are separate future adapters, never implicit public services.
     pub fn new(address: SocketAddr, now: Instant) -> Result<Self, Error> {
         Self::with_video(address, now, VideoCodec::Vp8)
     }
 
-    /// Configure the call's video codec while retaining Opus for audio.
+    /// Configure the call's video codec while retaining Opus for audio. Socket
+    /// adapters enforce the connection policy before creating a host candidate.
     pub fn with_video(address: SocketAddr, now: Instant, video: VideoCodec) -> Result<Self, Error> {
         if address.port() == 0 || address.ip().is_unspecified() || address.ip().is_multicast() {
             return Err(Error::Address);

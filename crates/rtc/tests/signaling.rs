@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 //! Structured values stand in for a caller-authenticated signaling envelope.
 //! These tests do not pretend that an SDP fingerprint establishes user identity.
+use nuschl_core::network::PeerPolicy;
 use nuschl_rtc::{Description, Error, MAX_SDP_BYTES, Peer, Purpose, SignalingId, VideoCodec};
+use std::net::UdpSocket;
 use std::time::Instant;
 
 const ROLES: &[Purpose] = &[
@@ -34,6 +36,26 @@ fn remote_sdp_must_use_the_locally_selected_video_codec() {
     assert!(matches!(
         peer().accept_offer_tracks(&offer, id),
         Err(Error::Sdp)
+    ));
+}
+
+#[test]
+fn relay_only_denies_the_direct_leg_before_binding() {
+    let occupied = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let address = occupied.local_addr().unwrap();
+    let now = Instant::now();
+    assert!(matches!(
+        Peer::bind_direct(
+            PeerPolicy { relay_only: true },
+            address,
+            now,
+            VideoCodec::Av1
+        ),
+        Err(Error::DirectDenied)
+    ));
+    assert!(matches!(
+        Peer::bind_direct(PeerPolicy::default(), address, now, VideoCodec::Av1),
+        Err(Error::Bind(error)) if error.kind() == std::io::ErrorKind::AddrInUse
     ));
 }
 

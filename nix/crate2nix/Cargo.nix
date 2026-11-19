@@ -24615,6 +24615,10 @@ rec {
         libName = "nuschl_rtc";
         dependencies = [
           {
+            name = "nuschl-core";
+            packageId = "nuschl-core";
+          }
+          {
             name = "str0m";
             packageId = "str0m";
             usesDefaultFeatures = false;
@@ -24643,6 +24647,10 @@ rec {
           {
             name = "hex";
             packageId = "hex";
+          }
+          {
+            name = "nuschl-core";
+            packageId = "nuschl-core";
           }
           {
             name = "nuschl-rtc";

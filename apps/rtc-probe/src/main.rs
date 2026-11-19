@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 //! Two local UDP endpoints; synthetic encoded media only, no capture or public services.
-use nuschl_rtc::{Error, Event, Kind, MAX_DATAGRAM_BYTES, MAX_OPUS_BYTES, Output, Peer};
+use nuschl_core::network::PeerPolicy;
+use nuschl_rtc::{
+    Error, Event, Kind, MAX_DATAGRAM_BYTES, MAX_OPUS_BYTES, Output, Peer, VideoCodec,
+};
 use std::{
     io,
     net::UdpSocket,
@@ -27,9 +30,12 @@ struct Endpoint {
 
 impl Endpoint {
     fn new(now: Instant) -> Result<Self> {
-        let socket = UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
-        socket.set_nonblocking(true)?;
-        let peer = Peer::new(socket.local_addr()?, now)?;
+        let (peer, socket) = Peer::bind_direct(
+            PeerPolicy::default(),
+            (std::net::Ipv4Addr::LOCALHOST, 0).into(),
+            now,
+            VideoCodec::Vp8,
+        )?;
         Ok(Self {
             peer,
             socket,

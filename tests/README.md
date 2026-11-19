@@ -306,9 +306,10 @@ runs the same test.
 ## WebRTC transport trial
 
 `cargo test -p nuschl-rtc` exchanges ICE/DTLS/SRTP datagrams in memory with a virtual
-clock. It checks bidirectional Opus/VP8 payloads and timestamps, video fragmentation
-and retransmission, audio progress during video loss, video backpressure, SDP/media
-limits, shutdown, fingerprint rejection, authenticated-packet tampering and replay.
+clock. It checks bidirectional Opus/VP8 payloads and timestamps, fragmented AV1 and
+VP9, retransmission, audio progress during video loss, video backpressure, SDP/media
+limits, relay-only rejection before socket binding, shutdown, fingerprint rejection,
+authenticated-packet tampering and replay.
 The harness drops an interior video packet; a missing first-ever RTP packet has no
 previous sequence number from which a receiver can infer the loss.
 
