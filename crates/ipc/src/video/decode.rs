@@ -52,15 +52,8 @@ pub fn decode_packet_limit(source: Source, keyframe: bool) -> usize {
     if keyframe { key_limit } else { key_limit / 2 }
 }
 
-fn dimensions(source: Source) -> (u16, u16) {
-    match source {
-        Source::Camera => (1920, 1080),
-        Source::Screen => (3840, 2160),
-    }
-}
-
 pub fn decode_frame_bytes(source: Source, width: u16, height: u16) -> io::Result<usize> {
-    let (long, short) = dimensions(source);
+    let (long, short) = source.max_dimensions();
     if width.min(height) == 0 || width.min(height) > short || width.max(height) > long {
         return Err(invalid());
     }
@@ -271,7 +264,7 @@ async fn decode_one(
     if reply == Header::empty(Kind::Dropped, id) {
         return Ok(None);
     }
-    let (long, short) = dimensions(source);
+    let (long, short) = source.max_dimensions();
     let max = usize::from(long) * usize::from(short) * 4 + 4;
     if reply.kind != Kind::Decoded || reply.id != id || !(4..=max).contains(&(reply.bytes as usize))
     {

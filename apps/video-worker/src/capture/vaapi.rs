@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub fn prepare(node: Option<u32>, bitrate: u32) -> Result<gst::Pipeline, Failure> {
+pub fn prepare(source: Source, node: Option<u32>, bitrate: u32) -> Result<gst::Pipeline, Failure> {
     let plugins = option_env!("NUSCHL_VIDEO_GST_PLUGINS")
         .ok_or("the VA-API GStreamer plugin list is missing")?;
     gst::init()?;
@@ -25,17 +25,20 @@ pub fn prepare(node: Option<u32>, bitrate: u32) -> Result<gst::Pipeline, Failure
     }
 
     let target = node.map_or_else(String::new, |node| format!("path={node}"));
+    let (width, height) = source.max_dimensions();
     let description = format!(
         concat!(
             "pipewiresrc fd=0 {target} ! ",
             "queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! ",
-            "vapostproc ! video/x-raw(memory:VAMemory),format=NV12,width=[16,3840],height=[16,2160] ! ",
+            "vapostproc ! video/x-raw(memory:VAMemory),format=NV12,width=[16,{width}],height=[16,{height}] ! ",
             "vaav1enc name=encoder bitrate={bitrate} rate-control=cbr hierarchical-level=1 ",
             "ref-frames=1 key-int-max=60 ! ",
             "av1parse ! video/x-av1,stream-format=obu-stream,alignment=tu ! ",
             "appsink name=encoded max-buffers=1 sync=false",
         ),
         target = target,
+        width = width,
+        height = height,
         bitrate = bitrate / 1000,
     );
     let pipeline = gst::parse::launch(&description)?;

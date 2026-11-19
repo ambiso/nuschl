@@ -25,6 +25,15 @@ pub enum Source {
     Screen,
 }
 
+impl Source {
+    pub fn max_dimensions(self) -> (u16, u16) {
+        match self {
+            Self::Camera => (1920, 1080),
+            Self::Screen => (3840, 2160),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Settings {
     pub source: Source,
@@ -38,8 +47,9 @@ impl Settings {
     pub const BYTES: usize = 11;
 
     pub fn frame_bytes(self) -> io::Result<usize> {
-        if !(16..=3840).contains(&self.width)
-            || !(16..=2160).contains(&self.height)
+        let (width, height) = self.source.max_dimensions();
+        if !(16..=width).contains(&self.width)
+            || !(16..=height).contains(&self.height)
             || !self.width.is_multiple_of(2)
             || !self.height.is_multiple_of(2)
             || !(1..=120).contains(&self.fps)

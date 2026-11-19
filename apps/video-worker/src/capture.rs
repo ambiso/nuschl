@@ -52,7 +52,8 @@ pub fn run() -> Result<(), Failure> {
     let control = start_control()?;
     #[cfg(feature = "vaapi")]
     if std::env::var_os("NUSCHL_VIDEO_VAAPI").is_some()
-        && let Ok(pipeline) = vaapi::prepare(target, control.bitrate.load(Ordering::Relaxed))
+        && let Ok(pipeline) =
+            vaapi::prepare(source, target, control.bitrate.load(Ordering::Relaxed))
     {
         return vaapi::run(pipeline, source, &control);
     }
@@ -208,7 +209,7 @@ pub fn run() -> Result<(), Failure> {
                 });
             })
             .register()?;
-        let format = video_format()?;
+        let format = video_format(source)?;
         let format =
             Pod::from_bytes(&format).ok_or("could not construct the PipeWire video format")?;
         stream.connect(
@@ -308,7 +309,8 @@ fn start_control() -> io::Result<Arc<Control>> {
     Ok(control)
 }
 
-fn video_format() -> io::Result<Vec<u8>> {
+fn video_format(source: Source) -> io::Result<Vec<u8>> {
+    let (width, height) = source.max_dimensions();
     let format = object!(
         SpaTypes::ObjectParamFormat,
         ParamType::EnumFormat,
@@ -342,8 +344,8 @@ fn video_format() -> io::Result<Vec<u8>> {
                 height: 16
             },
             Rectangle {
-                width: 3840,
-                height: 2160
+                width: width.into(),
+                height: height.into()
             }
         ),
         property!(
