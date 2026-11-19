@@ -15,7 +15,7 @@ use tokio::{
     net::UdpSocket,
     sync::mpsc,
     task::JoinHandle,
-    time::{Instant, sleep_until},
+    time::{Instant, sleep, sleep_until, timeout},
 };
 
 pub use rtc::Purpose;
@@ -56,7 +56,6 @@ pub enum MediaEvent {
 
 struct Video {
     timestamp: u64,
-    key_frame: bool,
     data: Vec<u8>,
 }
 
@@ -68,25 +67,16 @@ pub struct Media {
 }
 
 impl Media {
-    /// Submit an encoded access unit. A full queue drops this frame. RTP
-    /// timestamps use the 90 kHz video clock and increase for the source.
-    pub fn send_video(
-        &self,
-        timestamp: u64,
-        key_frame: bool,
-        data: Vec<u8>,
-    ) -> Result<bool, Error> {
+    /// Submit an independent encoded frame after [`MediaEvent::SendReady`].
+    /// A full queue drops this frame. RTP timestamps use the 90 kHz clock.
+    pub fn send_keyframe(&self, timestamp: u64, data: Vec<u8>) -> Result<bool, Error> {
         let source = self
             .source
             .ok_or(Error::Protocol("call has no publisher"))?;
         if data.is_empty() || data.len() > source.frame_limit() {
             return Err(Error::Protocol("invalid encoded frame size"));
         }
-        match self.input.try_send(Video {
-            timestamp,
-            key_frame,
-            data,
-        }) {
+        match self.input.try_send(Video { timestamp, data }) {
             Ok(()) => Ok(true),
             Err(mpsc::error::TrySendError::Full(_)) => Ok(false),
             Err(mpsc::error::TrySendError::Closed(_)) => Err(Error::Protocol("media ended")),
@@ -125,10 +115,8 @@ impl Connection {
         if self.welcome.peers.len() > 1 {
             return Err(Error::Protocol("native media requires a two-person call"));
         }
-        let destination = SocketAddr::new(
-            self.socket.get_ref().get_ref().0.peer_addr()?.ip(),
-            options.sfu_port,
-        );
+        let mut destination = self.socket.get_ref().get_ref().0.peer_addr()?;
+        destination.set_port(options.sfu_port);
         let (epochs, key_receiver) = UnixStream::pair()?;
         let mut worker = Worker::start(
             options.executable,
@@ -328,6 +316,7 @@ async fn run(
     }
 
     let mut offered = None;
+    let mut publish_mid = None;
     let mut publish = if let Some(purpose) = source {
         let leg = Leg::open(worker, PUBLISH, destination, codec, LegRole::SfuPublish).await?;
         let mut description = describe(
@@ -340,12 +329,17 @@ async fn run(
         )
         .await?;
         let sdp = std::mem::take(&mut description.sdp);
-        let screens = description
-            .tracks
-            .iter()
-            .filter(|track| track.purpose == Purpose::ScreenVideo)
-            .map(|track| track.mid.clone())
-            .collect();
+        let [track] = description.tracks.as_slice() else {
+            return Err(Error::Protocol("invalid publish track"));
+        };
+        if track.purpose != purpose || track.publisher.is_some() {
+            return Err(Error::Protocol("invalid publish track"));
+        }
+        publish_mid = Some(track.mid.clone());
+        let screens = match purpose {
+            Purpose::ScreenVideo => vec![track.mid.clone()],
+            _ => Vec::new(),
+        };
         write(
             &mut connection.socket,
             &ClientMessage::Offer { sdp, screens },
@@ -394,8 +388,8 @@ async fn run(
                     if let Some(leg) = &mut publish { leg.wake = Some(Instant::now()); }
                 }
                 ServerMessage::Key { from, data } => pair.key(connection, from, &data).await,
-                ServerMessage::Quality { max_height, max_fps, max_bitrate, .. }
-                    if (16..=2160).contains(&max_height) && (1..=120).contains(&max_fps) && (64_000..=50_000_000).contains(&max_bitrate) => {
+                ServerMessage::Quality { source, max_height, max_fps, max_bitrate, .. }
+                    if publish_mid.as_ref() == Some(&source) && (16..=2160).contains(&max_height) && (1..=120).contains(&max_fps) && (64_000..=50_000_000).contains(&max_bitrate) => {
                     let _ = events.try_send(Ok(MediaEvent::EncoderLimits { height: max_height, fps: max_fps, bitrate: max_bitrate }));
                 }
                 ServerMessage::Codec { codec: changed } if changed != connection.welcome.codec => return Err(Error::Protocol("native call codec changed")),
@@ -403,9 +397,9 @@ async fn run(
                 _ => {}
             },
             frame = frames.recv() => {
-                let Some(Video { timestamp, key_frame, data }) = frame else { return Ok(()); };
+                let Some(Video { timestamp, data }) = frame else { return Ok(()); };
                 if let (Some(purpose), Some(publish), true) = (source, &mut publish, sending) {
-                    worker.exchange(Command::Write { purpose, timestamp, key_frame }, data).await?;
+                    worker.exchange(Command::Write { purpose, timestamp, key_frame: true }, data).await?;
                     publish.wake = Some(Instant::now());
                 }
             }
@@ -419,7 +413,24 @@ async fn run(
             () = wake(Some(&subscribe)) => { drain(worker, &mut subscribe, other, events).await?; }
         }
         if !sending && connected && pair.ready && publishing {
-            done(worker, Command::SetSendLeg { leg: PUBLISH }).await?;
+            // The crypto worker sent the epoch on a separate socket. Wait for
+            // the RTC process to install it before admitting frames.
+            timeout(Duration::from_secs(1), async {
+                loop {
+                    if matches!(
+                        worker
+                            .exchange(Command::SetSendLeg { leg: PUBLISH }, Vec::new())
+                            .await?
+                            .kind,
+                        Reply::Done
+                    ) {
+                        return Ok::<(), Error>(());
+                    }
+                    sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .map_err(|_| Error::Timeout)??;
             sending = true;
             if events.send(Ok(MediaEvent::SendReady)).await.is_err() {
                 return Ok(());

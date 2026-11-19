@@ -272,7 +272,7 @@ async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
             tokio::select! {
                 _ = tick.tick() => {
                     frame += 1;
-                    alice.send_video(frame * 3_060, true, VIDEO.to_vec()).unwrap();
+                    alice.send_keyframe(frame * 3_060, VIDEO.to_vec()).unwrap();
                 }
                 event = bob.next() => {
                     if let MediaEvent::Frame { publisher: sender, purpose, key_frame, data, .. } = event.expect("viewer remains live").expect("RTC viewer") {
