@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 #![cfg(target_os = "linux")]
 
+use nuschl_ipc::crypto::CryptoRequest;
 use nuschl_ipc::crypto::call::{Action, Outcome, Request};
 use nuschl_session::identity::CryptoHandle;
 use nuschl_stream::Link;
@@ -51,6 +52,15 @@ async fn native_call_signaling_keeps_keys_in_two_confined_workers() {
                 if room == *link.keys().stream_id() && verifier == *link.room_check()
         ));
         let nonce = [9; 32];
+        assert!(
+            handle
+                .request(CryptoRequest::Call(Request {
+                    generation: 1,
+                    action: Action::Admit { nonce },
+                }))
+                .await
+                .is_err()
+        );
         let reply = handle
             .call_signal(Request {
                 generation: 1,

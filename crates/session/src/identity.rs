@@ -81,6 +81,13 @@ impl CryptoHandle {
     }
 
     pub async fn request(&self, request: CryptoRequest) -> Result<CryptoResponse, Error> {
+        if matches!(request, CryptoRequest::Call(_)) {
+            return Err(Error::Worker("use the call signaling interface".into()));
+        }
+        self.submit(request).await
+    }
+
+    async fn submit(&self, request: CryptoRequest) -> Result<CryptoResponse, Error> {
         let (reply, answer) = oneshot::channel();
         self.jobs
             .send(Job { request, reply })
@@ -98,7 +105,7 @@ impl CryptoHandle {
         &self,
         request: nuschl_ipc::crypto::call::Request,
     ) -> Result<nuschl_ipc::crypto::call::Reply, Error> {
-        match self.request(CryptoRequest::Call(request)).await? {
+        match self.submit(CryptoRequest::Call(request)).await? {
             CryptoResponse::Call(reply) => Ok(reply),
             _ => Err(Error::Worker("crypto worker call response mismatch".into())),
         }
@@ -186,12 +193,13 @@ async fn exchange(
     if envelope.request_id != id {
         return Err(Error::Worker("crypto worker protocol mismatch".into()));
     }
-    if let CryptoRequest::Call(request) = request {
-        match &envelope.payload {
-            CryptoResponse::Rejected(_) => {}
-            CryptoResponse::Call(reply) if reply.matches(request) => {}
-            _ => return Err(Error::Worker("crypto worker call response mismatch".into())),
+    match (request, &envelope.payload) {
+        (CryptoRequest::Call(request), CryptoResponse::Call(reply)) if reply.matches(request) => {}
+        (CryptoRequest::Call(_), CryptoResponse::Rejected(_)) => {}
+        (CryptoRequest::Call(_), _) | (_, CryptoResponse::Call(_)) => {
+            return Err(Error::Worker("crypto worker call response mismatch".into()));
         }
+        _ => {}
     }
     Ok(envelope.payload)
 }
