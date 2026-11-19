@@ -223,6 +223,14 @@ impl Call {
                 }
                 Reply::Done
             }
+            Command::AddReflexive { leg, address } => {
+                let live = self.legs.get_mut(&leg).ok_or(())?;
+                if live.role != LegRole::Direct {
+                    return Err(());
+                }
+                live.peer.add_call_reflexive(address).map_err(|_| ())?;
+                Reply::Done
+            }
             Command::Offer { leg, id, purposes } => {
                 let live = self.legs.get_mut(&leg).ok_or(())?;
                 let purposes: Vec<_> = purposes.into_iter().map(to_purpose).collect();

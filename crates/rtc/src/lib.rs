@@ -185,6 +185,7 @@ enum Signaling {
 pub struct Peer {
     rtc: Rtc,
     address: SocketAddr,
+    reflexive: bool,
     video: VideoCodec,
     subscription: bool,
     signaling: Signaling,
@@ -295,6 +296,7 @@ impl Peer {
         Ok(Self {
             rtc,
             address,
+            reflexive: false,
             video,
             subscription: false,
             signaling: Signaling::New,
@@ -306,6 +308,21 @@ impl Peer {
             total_budget: Bucket::new(now, window),
             video_budget: Bucket::new(now, window),
         })
+    }
+
+    /// Add the mapping observed by the configured STUN service to this call's host socket.
+    pub fn add_call_reflexive(&mut self, address: SocketAddr) -> Result<(), Error> {
+        if self.reflexive || !matches!(self.signaling, Signaling::New) || address == self.address {
+            return Err(Error::Address);
+        }
+        self.rtc
+            .add_local_candidate(
+                Candidate::server_reflexive(address, self.address, "udp")
+                    .map_err(|_| Error::Address)?,
+            )
+            .ok_or(Error::Address)?;
+        self.reflexive = true;
+        Ok(())
     }
 
     pub fn offer(&mut self, video: bool) -> Result<String, Error> {
