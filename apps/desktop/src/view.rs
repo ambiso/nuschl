@@ -1986,10 +1986,12 @@ fn conversation_header(
         .items_center()
         .gap_1()
         .when(pane.sidebar.is_none(), |controls| {
-            controls.child(styled_button(
+            controls.child(icon_button(
                 "open-channels",
+                "hash",
                 "Channels",
-                Tone::Secondary,
+                TEXT_MUTED,
+                None,
                 |this, _, cx| {
                     this.channels_open = true;
                     cx.notify();
