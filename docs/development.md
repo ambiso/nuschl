@@ -95,6 +95,12 @@ GPU variant checks interframes and recovery after a requested keyframe.
 The native SFU test encodes, sends and decodes AV1 in confined workers and
 checks the resulting pixels. Compositor DMA-BUF verification is tracked in #418.
 
+The VA-API decoder writes mapped BGRA directly into the bounded worker pipe.
+The client reads those bytes into the frame allocation, and compatible BGRA
+atlases stage them directly in wgpu. The vendored atlas GPU readback tests
+run locally because they require a Vulkan device. The NixOS desktop tests
+exercise image rendering in the packaged app.
+
 ## Continuous integration
 
 Pull requests to `main` and pushes to `main` run one command on the self-hosted
