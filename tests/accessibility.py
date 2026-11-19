@@ -130,7 +130,7 @@ class Node:
 
 def snapshot(application):
     """(depth, node, role, name) for the whole tree. A node that disappears while
-    the UI updates raises Stale, so eventually() takes a fresh snapshot."""
+    the UI updates raises Stale, and the walk starts again within eventually()'s bound."""
     entries = []
 
     def visit(node, depth):
@@ -145,8 +145,12 @@ def snapshot(application):
             raise
         for child in children:
             visit(child, depth + 1)
-    visit(application, 0)
-    return entries
+
+    def walk():
+        entries.clear()
+        visit(application, 0)
+        return entries
+    return eventually(walk, "the accessibility tree kept changing during every walk")
 
 
 def items(application):
@@ -174,13 +178,12 @@ def start_registry(at_spi, env, spawn):
     spawn([str(at_spi / "libexec/at-spi-bus-launcher")], env | {"GSETTINGS_BACKEND": "memory"},
           "bus-launcher.log")
     eventually(lambda: AccessibilityTest.try_call(session, "call", "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Bus",
-                                                  "GetAddress"), "the accessibility bus did not start", timeout=15)
+                                                  "GetAddress"), "the accessibility bus did not start")
     session("set-property", "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Status", "IsEnabled", "b", "true")
     a11y = Bus(session("call", "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Bus", "GetAddress")[0], busctl)
     spawn([str(at_spi / "libexec/at-spi2-registryd")], env, "registry.log")
     registry = Node(a11y, "org.a11y.atspi.Registry", "/org/a11y/atspi/accessible/root")
-    eventually(lambda: AccessibilityTest.try_call(registry.children), "the accessibility registry did not start",
-               timeout=15)
+    eventually(lambda: AccessibilityTest.try_call(registry.children), "the accessibility registry did not start")
     return registry
 
 
@@ -254,8 +257,7 @@ class AccessibilityTest:
                         return node
                 return None
             try:
-                nuschl = eventually(application, "Nuschl did not register with the accessibility registry",
-                                     timeout=45)
+                nuschl = eventually(application, "Nuschl did not register with the accessibility registry")
             except AssertionError as error:
                 names = [node.name for node in registry.children()]
                 logs = "\n".join(f"--- {name}\n" + (self.root / name).read_text()[-1500:]
@@ -286,7 +288,7 @@ class AccessibilityTest:
                     and {"Send", "Disconnect from Accessible server (voice and chat)"} <= names \
                     and any(name.startswith("Accessible server #Development: ") for name in voice) \
                     and not any(name.endswith(" · awaiting server") for name in voice) else None
-            nodes = eventually(ready, "the accessibility tree did not fill in and settle", timeout=30)
+            nodes = eventually(ready, "the accessibility tree did not fill in and settle")
             self.write_tree(nodes, "tree.txt")
             self.check_tree(nodes)
             print(f"Accessibility tree: {len(nodes)} nodes; window controls, voice controls, channel tree, "
@@ -303,9 +305,9 @@ class AccessibilityTest:
                       and not e["user"]["self_muted"], timeout=15)
             eventually(lambda: any(role == "push button" and name == "Mute"
                                    for _, _, role, name in snapshot(nuschl)),
-                       "the button did not change to Mute", timeout=10)
+                       "the button did not change to Mute")
             eventually(lambda: any(name in ("Accessible server #Development: Microphone destination · enabled", "Accessible server #Development: Speaking")
-                       for _, _, _, name in snapshot(nuschl)), "the voice card did not expose the acknowledged microphone destination", timeout=10)
+                       for _, _, _, name in snapshot(nuschl)), "the voice card did not expose the acknowledged microphone destination")
             print("Unmuted through the AT-SPI Action interface; the server saw it and the button became Mute.",
                   flush=True)
             self.check_shortcuts(nuschl)
@@ -324,7 +326,7 @@ class AccessibilityTest:
                     fields = [name for _, _, role, name in nodes
                               if role in ("text", "entry") and name.startswith("Find a channel or person: ")]
                     return (nodes, fields[0]) if fields and "1 result" in fields[0] else None
-                nodes, field = eventually(switcher, "the switcher did not announce its results", timeout=10)
+                nodes, field = eventually(switcher, "the switcher did not announce its results")
                 self.write_tree(nodes, "switcher-tree.txt")
                 assert "Development (channel) highlighted" in field, field
                 results = self.find(nodes, "list box", "1 result")
@@ -361,7 +363,7 @@ class AccessibilityTest:
                 self.shell.chord("Control_L", "equal")
                 time.sleep(0.1)
             row = eventually(lambda: (node := named("tree item", "Music")) and node.extents()[3] == 32 * scale
-                             and node, f"the channel rows did not reach {scale * 100} % zoom", timeout=10)
+                             and node, f"the channel rows did not reach {scale * 100} % zoom")
             # At 200 % the row sits below the drawer's visible part: wheel it into view.
             tree = named("tree", "Channels").extents()
 
@@ -370,7 +372,7 @@ class AccessibilityTest:
                     return True
                 self.shell.wheel(origin[0] + tree[0] + tree[2] // 2, origin[1] + tree[1] + tree[3] // 2, 2)
                 time.sleep(0.3)
-            eventually(visible, f"Music did not scroll into the channel list at {scale * 100} % zoom", timeout=10)
+            eventually(visible, f"Music did not scroll into the channel list at {scale * 100} % zoom")
             time.sleep(0.5)
             rx, ry, rw, rh = row.extents()
             zone = named("push button", "Toggle Music").extents()
@@ -384,18 +386,18 @@ class AccessibilityTest:
                 self.shell.click(origin[0] + x, origin[1] + y)
                 eventually(lambda: listening() == expanded,
                            f"a click at {(x, y)} in Toggle Music {zone} did not "
-                           f"{'expand' if expanded else 'collapse'} it at {scale * 100} % zoom", timeout=10)
+                           f"{'expand' if expanded else 'collapse'} it at {scale * 100} % zoom")
                 self.shell.screenshot(self.args.output / f"branch-{scale * 100}-{'expanded' if expanded else 'collapsed'}.png")
                 time.sleep(0.5)
         self.shell.chord("Control_L", "0")
-        eventually(lambda: named("tree item", "Music").extents()[3] == 32, "the zoom did not reset", timeout=10)
+        eventually(lambda: named("tree item", "Music").extents()[3] == 32, "the zoom did not reset")
         print("A click beside the chevron expanded and collapsed Music at 100 % and 200 % zoom.", flush=True)
 
         def state(name):
             node = named("tree item", name)
             return node.call("Accessible", "GetState")[0][0] if node else 0
         named("tree item", "Music").call("Component", "GrabFocus")
-        eventually(lambda: state("Music") & FOCUSED, "GrabFocus did not focus Music", timeout=10)
+        eventually(lambda: state("Music") & FOCUSED, "GrabFocus did not focus Music")
         # Right opens Music, then moves into it; Left moves back out, closes
         # it, then moves to its parent.
         for key, done, what in (
@@ -405,7 +407,7 @@ class AccessibilityTest:
                 ("Left", lambda: not listening(), "close Music"),
                 ("Left", lambda: state("Root") & FOCUSED, "move to Root")):
             self.shell.key(key)
-            eventually(done, f"{key} did not {what}", timeout=10)
+            eventually(done, f"{key} did not {what}")
         print("Right and Left opened, entered, left and closed Music, then moved to Root.", flush=True)
 
     def check_attachments(self, nuschl):
@@ -425,7 +427,7 @@ class AccessibilityTest:
             nodes = snapshot(nuschl)
             return nodes if any(role == "list item" and name == "Image Pasted image 1"
                                 for _, _, role, name in nodes) else None
-        nodes = eventually(attached, "the pasted image is not in the composer's tray", timeout=30)
+        nodes = eventually(attached, "the pasted image is not in the composer's tray")
         self.write_tree(nodes, "tree-attached.txt")
         self.find(nodes, "list", "1 attachment")
         unnamed = [role for _, _, role, name in nodes if role in INTERACTIVE and not name.strip()]
@@ -433,7 +435,7 @@ class AccessibilityTest:
         remove = self.find(nodes, "push button", "Remove Pasted image 1")
         assert remove.call("Action", "DoAction", "i", "0")[0] is not False
         eventually(lambda: not any(name == "Remove Pasted image 1" for _, _, _, name in snapshot(nuschl)),
-                   "the image stayed after Remove", timeout=10)
+                   "the image stayed after Remove")
         print("A pasted image showed in the tray as a named item and was removed through AT-SPI.", flush=True)
 
     def check_word_deletion(self, nuschl, peer):
@@ -463,7 +465,7 @@ class AccessibilityTest:
             nodes = snapshot(nuschl)
             names = {name for _, _, _, name in nodes}
             return nodes if all(f"Record {action} shortcut" in names for action in actions) else None
-        nodes = eventually(rows, "the shortcut rows did not appear in Settings", timeout=15)
+        nodes = eventually(rows, "the shortcut rows did not appear in Settings")
         self.write_tree(nodes, "settings-tree.txt")
         for action in actions:
             assert any(name == f"{action} shortcut" for _, _, _, name in nodes), f"no group for {action}"
@@ -486,10 +488,10 @@ class AccessibilityTest:
                 for inner_depth, _, _, name in takewhile(lambda entry: entry[0] > depth, nodes[index + 1:]))
                 for index, (depth, _, role, _) in enumerate(nodes))
             return cancel[0] if cancel and announced else None
-        cancel = eventually(recording, "recording a shortcut was not announced", timeout=10)
+        cancel = eventually(recording, "recording a shortcut was not announced")
         cancel.call("Action", "DoAction", "i", "0")
         eventually(lambda: any(name == "Record Toggle mute shortcut" for _, _, _, name in snapshot(nuschl)),
-                   "cancelling did not restore the Record button", timeout=10)
+                   "cancelling did not restore the Record button")
         # Like the pointer and keys, a screen reader cannot press a button behind the dialog.
         self.find(snapshot(nuschl), "push button", "Server settings").call("Action", "DoAction", "i", "0")
         time.sleep(1)
@@ -497,7 +499,7 @@ class AccessibilityTest:
                        for _, _, role, name in snapshot(nuschl)), "Server settings acted behind Settings"
         self.find(snapshot(nuschl), "push button", "Close dialog").call("Action", "DoAction", "i", "0")
         eventually(lambda: not any(name == "Close dialog" for _, _, _, name in snapshot(nuschl)),
-                   "Settings did not close", timeout=10)
+                   "Settings did not close")
         print("Settings: every shortcut row has a named Record button; recording is announced as a status.",
               flush=True)
 
@@ -523,7 +525,7 @@ class AccessibilityTest:
         def shown(role, name, message):
             """The node, or a failure that says whether it came later."""
             try:
-                return eventually(lambda: named(role, name), message, timeout=15)
+                return eventually(lambda: named(role, name), message)
             except AssertionError:
                 started = time.monotonic()
                 while time.monotonic() - started < 30 and not named(role, name):
@@ -536,20 +538,20 @@ class AccessibilityTest:
         named("push button", "Settings").press()
         shown("push button", "Export…", "Settings has no Export… button").press()
         shown("dialog", "Input", "the export prompt did not open over Settings")
-        eventually(in_prompt, "the prompt's field did not take the focus", timeout=10)
+        eventually(in_prompt, "the prompt's field did not take the focus")
         if self.shell:
             self.shell.chord("Shift_L", "Tab")
             time.sleep(1)
-            eventually(in_prompt, "Shift+Tab took the focus out of the prompt", timeout=10)
+            eventually(in_prompt, "Shift+Tab took the focus out of the prompt")
         self.check_single_focus()
         # Settings' Done is behind the prompt.
         named("push button", "Close dialog").press()
         time.sleep(1)
         assert named("dialog", "Settings"), "Done acted behind the prompt"
         self.find(prompt(), "push button", "Cancel").press()
-        eventually(lambda: not named("dialog", "Input"), "Cancel did not close the prompt", timeout=10)
+        eventually(lambda: not named("dialog", "Input"), "Cancel did not close the prompt")
         named("push button", "Close dialog").press()
-        eventually(lambda: not named("dialog", "Settings"), "Done did not close Settings", timeout=10)
+        eventually(lambda: not named("dialog", "Settings"), "Done did not close Settings")
         print("A prompt over Settings kept the focus and the presses.", flush=True)
 
     def check_single_focus(self):
@@ -566,7 +568,7 @@ class AccessibilityTest:
             nodes = snapshot(nuschl)
             found = {name for _, _, role, name in nodes if role == "math"}
             return (nodes, found) if {"$\\pi r^2$", "$$\\sum_{i=1}^n i$$"} <= found else None
-        nodes, found = eventually(formulas, "the formulas are not math nodes named by their source", timeout=20)
+        nodes, found = eventually(formulas, "the formulas are not math nodes named by their source")
         self.write_tree(nodes, "math-tree.txt")
         print(f"Formulas are math nodes named by their source: {sorted(found)}.", flush=True)
 
@@ -620,8 +622,8 @@ class AccessibilityTest:
         print(f"All {HISTORY} messages are list items; the oldest, not laid out, reads {oldest.name!r}.", flush=True)
 
         def focus_on(item, after):
-            eventually(lambda: item.focused, f"{item.name!r} was not focused after {after}", timeout=10)
-            eventually(lambda: in_view(item), f"{item.name!r} did not scroll into view after {after}", timeout=10)
+            eventually(lambda: item.focused, f"{item.name!r} was not focused after {after}")
+            eventually(lambda: in_view(item), f"{item.name!r} did not scroll into view after {after}")
         if self.shell:
             # One tab stop for the timeline, its newest message first; the
             # arrow keys and Home walk from there.
@@ -658,15 +660,15 @@ class AccessibilityTest:
                 return any(role == "status bar" and name.startswith(f"Link {number} of 2: https://example.org/")
                            for _, _, role, name in snapshot(nuschl))
             self.shell.key("Tab")
-            eventually(lambda: link_status(1), "Tab did not reach the first link", timeout=10)
+            eventually(lambda: link_status(1), "Tab did not reach the first link")
             self.shell.key("Tab")
-            eventually(lambda: link_status(2), "Tab did not reach the second link", timeout=10)
+            eventually(lambda: link_status(2), "Tab did not reach the second link")
             self.shell.chord("Shift_L", "Tab")
-            eventually(lambda: link_status(1), "Shift+Tab did not go back to the first link", timeout=10)
+            eventually(lambda: link_status(1), "Shift+Tab did not go back to the first link")
             assert newest.focused, "the message lost focus while Tab walked its links"
             self.shell.type("x")
             composer = self.find(snapshot(nuschl), "entry", "Message")
-            eventually(lambda: composer.focused, "typing in the timeline did not move to the composer", timeout=10)
+            eventually(lambda: composer.focused, "typing in the timeline did not move to the composer")
             # Sent from there: the letter reached the composer.
             self.shell.key("Return")
             peer.wait(lambda event: event["kind"] == "text" and event["body"] == "x" and not event["outgoing"],
@@ -679,7 +681,7 @@ class AccessibilityTest:
         middle = numbered[HISTORY // 3]
         assert not middle.children(), "a message far above the viewport is laid out"
         middle.call("Component", "ScrollTo", "u", "0")
-        eventually(lambda: in_view(middle), f"{middle.name!r} did not scroll into view after ScrollTo", timeout=10)
+        eventually(lambda: in_view(middle), f"{middle.name!r} did not scroll into view after ScrollTo")
         oldest.call("Component", "GrabFocus")
         focus_on(oldest, "GrabFocus")
         print("ScrollTo brought a message into view; GrabFocus on the oldest focused it and scrolled it there.",

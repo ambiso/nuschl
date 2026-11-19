@@ -10,6 +10,10 @@ let
   python = "${pkgs.python3}/bin/python3";
   fixture = "${fixtureTests}/link_previews_desktop.py";
   nativeDirectory = "/var/lib/nuschl-preview-native";
+  # Hang guard for one desktop scenario: about three times the 485 s one took
+  # at 54 % stolen CPU time. The peers serve both scenarios.
+  scenarioSeconds = 1500;
+  peerSeconds = 2 * scenarioSeconds + 60;
   setupPeers = pkgs.writeShellScript "nuschl-preview-test-peers-setup" ''
     set -eu
     test -f /run/nuschl-preview-dedicated-vm
@@ -143,8 +147,8 @@ pkgs.testers.runNixOSTest {
       serviceConfig = {
         Type = "simple";
         ExecStartPre = setupPeers;
-        ExecStart = "${python} ${fixture} peers --directory /var/lib/nuschl-preview-peers";
-        RuntimeMaxSec = 750;
+        ExecStart = "${python} ${fixture} peers --directory /var/lib/nuschl-preview-peers --lifetime ${toString peerSeconds}";
+        RuntimeMaxSec = peerSeconds + 30;
         TimeoutStopSec = 35;
         KillMode = "control-group";
         Restart = "no";
@@ -301,9 +305,9 @@ pkgs.testers.runNixOSTest {
                 "GSETTINGS_BACKEND=memory", "LIBGL_ALWAYS_SOFTWARE=1",
                 "MAGICK=${pkgs.imagemagick}/bin/magick",
             ] + args)
-            # 600 s guards against a hang; within 300 s is timing (quarantined, #376).
+            # ${toString scenarioSeconds} s guards against a hang; within 300 s is timing (quarantined, #376).
             started = time.monotonic()
-            status, scenario_log = machine.execute(command, timeout=timedelta(seconds=600))
+            status, scenario_log = machine.execute(command, timeout=timedelta(seconds=${toString scenarioSeconds}))
             seconds = time.monotonic() - started
             machine.succeed("install -d /tmp/preview-evidence/" + server)
             # Never export the retained profile, test TLS private keys or CA key.
