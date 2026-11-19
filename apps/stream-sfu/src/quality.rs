@@ -75,8 +75,8 @@ impl View {
             .map(|c| c.layer.spatial)
     }
 
-    pub fn shed(&mut self, timestamp: u64) {
-        self.backlog.shed(timestamp);
+    pub fn shed(&mut self, timestamp: u64, pause: Option<Instant>) {
+        self.backlog.shed(timestamp, pause);
         // Re-enter the decode target at a switch point after dropping a picture.
         let target = self.selector.current();
         self.selector = Selector::default();
@@ -93,6 +93,26 @@ pub struct Backlog {
     overloaded: bool,
     steps: usize,
     recover_at: Option<Instant>,
+    recovery: Recovery,
+}
+
+#[derive(Clone, Copy, Default)]
+enum Recovery {
+    #[default]
+    Live,
+    Paused(Instant),
+    Requested(u64),
+    Picture {
+        timestamp: u64,
+        bytes: u64,
+    },
+}
+
+pub enum VideoAdmission {
+    Regular,
+    Pause,
+    RequestKeyframe,
+    Burst(u64),
 }
 
 impl Backlog {
@@ -100,13 +120,27 @@ impl Backlog {
         self.dropped_through.is_some_and(|last| timestamp <= last)
     }
 
-    fn shed(&mut self, timestamp: u64) {
+    fn shed(&mut self, timestamp: u64, pause: Option<Instant>) {
         self.dropped_through = Some(timestamp.max(self.dropped_through.unwrap_or(0)));
         self.overloaded();
+        self.recovery = pause.map_or(Recovery::Live, |now| {
+            Recovery::Paused(now + Duration::from_secs(1))
+        });
     }
 
     pub fn overloaded(&mut self) {
         self.overloaded = true;
+    }
+
+    fn queued_bytes(&mut self, queue: Option<&dyn StreamTxQueueInfo>) -> usize {
+        let sampled_at = queue.map(StreamTxQueueInfo::created_at);
+        if self.sampled_at != sampled_at {
+            self.sampled_at = sampled_at;
+            self.unsampled_bytes = 0;
+        }
+        queue
+            .map_or(0, StreamTxQueueInfo::byte_size)
+            .saturating_add(self.unsampled_bytes)
     }
 
     pub fn full(
@@ -116,23 +150,77 @@ impl Backlog {
         payload: usize,
         now: Instant,
     ) -> bool {
-        let sampled_at = queue.map(StreamTxQueueInfo::created_at);
-        if self.sampled_at != sampled_at {
-            self.sampled_at = sampled_at;
-            self.unsampled_bytes = 0;
-        }
         let limit = (bitrate / 8 * 3 / 10).clamp(MIN_QUEUE_BYTES, MAX_QUEUE_BYTES);
-        let bytes = queue.map_or(0, StreamTxQueueInfo::byte_size);
         let oldest = queue.and_then(StreamTxQueueInfo::first_unsent);
-        bytes
-            .saturating_add(self.unsampled_bytes)
-            .saturating_add(payload) as u64
-            > limit
+        self.queued_bytes(queue).saturating_add(payload) as u64 > limit
             || oldest.is_some_and(|at| now.saturating_duration_since(at) >= QUEUE_AGE)
     }
 
-    pub fn enqueued(&mut self, payload: usize) {
+    pub fn enqueued(&mut self, payload: usize, cost: u64, marker: bool) {
         self.unsampled_bytes += payload;
+        if let Recovery::Picture { timestamp, bytes } = self.recovery {
+            self.recovery = if marker {
+                Recovery::Live
+            } else {
+                Recovery::Picture {
+                    timestamp,
+                    bytes: bytes + cost,
+                }
+            };
+        }
+    }
+
+    pub fn recovering(&self) -> bool {
+        !matches!(self.recovery, Recovery::Live)
+    }
+
+    /// Reserve the next picture after a PLI while the video queue drains and
+    /// the configured one-second media credit replenishes.
+    pub fn admission(
+        &mut self,
+        timestamp: u64,
+        queue: Option<&dyn StreamTxQueueInfo>,
+        can_request: bool,
+        now: Instant,
+    ) -> VideoAdmission {
+        let recovery = self.recovery;
+        match recovery {
+            Recovery::Live => VideoAdmission::Regular,
+            Recovery::Paused(until)
+                if now >= until && can_request && self.queued_bytes(queue) == 0 =>
+            {
+                self.recovery = Recovery::Requested(timestamp);
+                VideoAdmission::RequestKeyframe
+            }
+            Recovery::Requested(previous) if timestamp > previous => {
+                self.recovery = Recovery::Picture {
+                    timestamp,
+                    bytes: 0,
+                };
+                VideoAdmission::Burst(0)
+            }
+            Recovery::Picture {
+                timestamp: stamp,
+                bytes,
+            } if timestamp == stamp => VideoAdmission::Burst(bytes),
+            Recovery::Picture {
+                timestamp: stamp, ..
+            } if timestamp > stamp => {
+                self.shed(stamp, Some(now));
+                VideoAdmission::Pause
+            }
+            _ => VideoAdmission::Pause,
+        }
+    }
+
+    pub fn burst_full(
+        &mut self,
+        queue: Option<&dyn StreamTxQueueInfo>,
+        cost: u64,
+        burst: u64,
+    ) -> bool {
+        let burst = burst.min(MAX_QUEUE_BYTES);
+        cost > burst || self.queued_bytes(queue) as u64 > burst
     }
 
     pub fn tick(&mut self, now: Instant) {
@@ -308,7 +396,7 @@ mod tests {
             bytes: 74_000,
         };
         assert!(!backlog.full(Some(&sample), 2_000_000, 1000, now));
-        backlog.enqueued(1000);
+        backlog.enqueued(1000, 1000, false);
         assert!(backlog.full(Some(&sample), 2_000_000, 1, now));
         assert!(backlog.full(Some(&sample), 15_000_000, 1000, now + QUEUE_AGE));
         assert!(!backlog.full(None, 2_000_000, 1000, now));
@@ -318,13 +406,13 @@ mod tests {
     fn video_shedding_covers_the_whole_remainder_and_recovers_slowly() {
         let now = Instant::now();
         let mut backlog = Backlog::default();
-        backlog.shed(12);
+        backlog.shed(12, None);
         assert!(backlog.dropped(11));
         assert!(backlog.dropped(12));
         assert!(!backlog.dropped(13));
         backlog.tick(now);
         assert_eq!(backlog.tier(3), 2);
-        backlog.shed(14);
+        backlog.shed(14, None);
         let latest = now + Duration::from_secs(1);
         backlog.tick(latest);
         assert_eq!(backlog.tier(3), 1);
@@ -334,6 +422,54 @@ mod tests {
         assert_eq!(backlog.tier(3), 2);
         backlog.tick(latest + RECOVERY_INTERVAL * 2);
         assert_eq!(backlog.tier(3), 3);
+    }
+
+    #[test]
+    fn unlayered_recovery_reserves_one_bounded_picture_after_pli() {
+        let now = Instant::now();
+        let mut backlog = Backlog::default();
+        backlog.shed(12, Some(now));
+        assert!(matches!(
+            backlog.admission(13, None, true, now),
+            VideoAdmission::Pause
+        ));
+        let ready = now + Duration::from_secs(1);
+        let queued = Queue {
+            oldest: now,
+            bytes: 500,
+        };
+        assert!(matches!(
+            backlog.admission(14, Some(&queued), true, ready),
+            VideoAdmission::Pause
+        ));
+        assert!(matches!(
+            backlog.admission(14, None, false, ready),
+            VideoAdmission::Pause
+        ));
+        assert!(matches!(
+            backlog.admission(14, None, true, ready),
+            VideoAdmission::RequestKeyframe
+        ));
+        assert!(matches!(
+            backlog.admission(14, None, true, ready),
+            VideoAdmission::Pause
+        ));
+        assert!(matches!(
+            backlog.admission(15, None, true, ready),
+            VideoAdmission::Burst(0)
+        ));
+        assert!(!backlog.burst_full(None, 125_000, 125_000));
+        assert!(backlog.burst_full(None, 125_001, 125_000));
+        backlog.enqueued(1200, 1248, false);
+        assert!(matches!(
+            backlog.admission(15, None, true, ready),
+            VideoAdmission::Burst(1248)
+        ));
+        backlog.enqueued(1000, 1048, true);
+        assert!(matches!(
+            backlog.admission(16, None, true, ready),
+            VideoAdmission::Regular
+        ));
     }
 
     #[test]

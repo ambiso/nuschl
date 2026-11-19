@@ -11,7 +11,7 @@
 use crate::{
     config::Config,
     protocol::{self, ClientMessage, Decoders, PeerInfo, ServerMessage, Track, TurnCredentials},
-    quality,
+    quality::{self, VideoAdmission},
     rooms::{self, Bucket, Join, Nonce, PeerId, Refusal, RoomId, Rooms},
     routing::Routing,
     traffic::Traffic,
@@ -835,7 +835,11 @@ impl Core {
                 let Some(peer) = self.peers.get(&id) else {
                     return;
                 };
-                if let Some(forward) = peer.forwards.iter().find(|f| f.mid == Some(request.mid)) {
+                if let Some(forward) = peer
+                    .forwards
+                    .iter()
+                    .find(|f| f.mid == Some(request.mid) && !f.view.backlog.recovering())
+                {
                     let (from, source) = (forward.from, forward.source);
                     self.keyframe(from, source, now);
                 }
@@ -966,7 +970,12 @@ impl Core {
         }
         let video = source.kind == MediaKind::Video;
         let timestamp = packet.time.numer();
-        let size = (packet.payload.len() + PACKET_OVERHEAD) as f64;
+        let payload = packet.payload.len();
+        let cost = (payload + PACKET_OVERHEAD) as u64;
+        let can_request = source
+            .keyframe_asked
+            .is_none_or(|at| now.saturating_duration_since(at) >= KEYFRAME_INTERVAL);
+        let recovery_burst = self.config.receiver_bitrate.min(self.config.room_bitrate) / 8;
         let receivers: Vec<PeerId> = self.rooms.get(&room).map_or_else(Vec::new, |r| {
             r.peers
                 .iter()
@@ -991,7 +1000,8 @@ impl Core {
             };
             let view = &mut forward.view;
             if video && view.backlog.dropped(timestamp) {
-                dropped = true;
+                view.rewrite.skip(*packet.seq_no);
+                dropped |= frame.is_some();
                 continue;
             }
             let keep = match &frame {
@@ -1022,26 +1032,45 @@ impl Core {
             let Some(stream) = api.stream_tx_by_mid(out_mid, None) else {
                 continue;
             };
-            let full = video
-                && view.backlog.full(
-                    stream.queue_info(),
-                    peer.estimate.min(self.config.receiver_bitrate),
-                    packet.payload.len(),
-                    now,
-                );
-            let room_budget = &mut self.rooms.get_mut(&room).expect("room").budget;
-            if full || !peer.budget.take(size, now) || !room_budget.take(size, now) {
-                if video {
-                    view.shed(timestamp);
+            let full = if video {
+                let queue = stream.queue_info();
+                match view.backlog.admission(timestamp, queue, can_request, now) {
+                    VideoAdmission::Regular => view.backlog.full(
+                        queue,
+                        peer.estimate.min(self.config.receiver_bitrate),
+                        payload,
+                        now,
+                    ),
+                    VideoAdmission::Burst(bytes) => {
+                        view.backlog.burst_full(queue, bytes + cost, recovery_burst)
+                    }
+                    VideoAdmission::Pause => {
+                        view.rewrite.skip(*packet.seq_no);
+                        continue;
+                    }
+                    VideoAdmission::RequestKeyframe => {
+                        view.rewrite.skip(*packet.seq_no);
+                        dropped = true;
+                        continue;
+                    }
                 }
-                dropped = true;
+            } else {
+                false
+            };
+            let room_budget = &mut self.rooms.get_mut(&room).expect("room").budget;
+            if full || !peer.budget.take(cost as f64, now) || !room_budget.take(cost as f64, now) {
+                if video {
+                    view.rewrite.skip(*packet.seq_no);
+                    view.shed(timestamp, frame.is_none().then_some(now));
+                }
+                dropped |= frame.is_some();
                 continue;
             }
             let Some(seq) = view.rewrite.forward(*packet.seq_no) else {
                 continue;
             };
             if video {
-                view.backlog.enqueued(packet.payload.len());
+                view.backlog.enqueued(payload, cost, marker);
             }
             stream.write_rtp(
                 RtpWrite::new(
