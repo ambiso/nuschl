@@ -362,7 +362,7 @@ async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
         codecs: &[Codec::Av1],
         policy: PeerPolicy::default(),
     };
-    let alice = Connection::connect_with_roots(
+    let mut alice = Connection::connect_with_roots(
         CryptoHandle::start(crypto.clone(), directory.path().join("alice")),
         connect(&owner),
         roots.clone(),
@@ -370,6 +370,22 @@ async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
     .await
     .unwrap();
     let publisher = alice.welcome().peer;
+    let bob = Connection::connect_with_roots(
+        CryptoHandle::start(crypto, directory.path().join("bob")),
+        connect(&posted),
+        roots,
+    )
+    .await
+    .unwrap();
+    // The viewer can join the room while its owner is choosing a screen.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while alice.welcome().peers.is_empty() {
+            alice.poll_idle().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(alice.welcome().peers[0].id, bob.welcome().peer);
     let mut alice = alice
         .into_media(MediaOptions {
             executable: rtc.clone(),
@@ -378,13 +394,6 @@ async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
         })
         .await
         .unwrap();
-    let bob = Connection::connect_with_roots(
-        CryptoHandle::start(crypto, directory.path().join("bob")),
-        connect(&posted),
-        roots,
-    )
-    .await
-    .unwrap();
     let mut bob = bob
         .into_media(MediaOptions {
             executable: rtc.clone(),

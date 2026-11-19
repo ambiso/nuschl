@@ -196,23 +196,21 @@ without text.
 
 ## Calls
 
-On a stock Mumble server or compatible `nuschld`, **Start call** opens the
-call page in your browser. You can start your camera and share your screen
-from the page. Nuschl posts the call to the channel:
+On Linux with the video and RTC workers installed, **Start call** opens an
+in-app video call. **Start camera** and **Share screen** request capture
+through the desktop portal. The call card offers **Join video call** for
+native playback, and everyone in the channel gets a browser link in chat.
+People who enter the channel later also receive the card. The card disappears
+when its creator ends the call or leaves the channel.
 
-- Nuschl users in the channel see a card with **Join**, which opens the page
-  for them. People who enter the channel later get the card
-  too. The card goes when its creator ends the call or leaves the channel.
-- Everyone gets a message with the link, so stock Mumble users can open the
-  page and share their camera and screen as well.
+**Minimize call** lets you browse while the call continues. **Return to
+call** takes you back to its conversation. A monitor share initially covers
+Nuschl conversations. Choose **Show app while sharing** to reveal the app in
+the share, and **Return to call** to cover it again.
 
-On Linux with the video and RTC workers installed, **Start camera** and
-**Share screen** use the desktop portal. A monitor share hides Nuschl
-conversations behind a curtain until capture stops. Recipients can choose
-**Watch here** to play an incoming AV1 source inside Nuschl. The native path
-supports one publisher and one viewer. **Open in browser** opens the same
-room for group calls and other call modes. Relay-only calls use the browser
-and TURN. Voice stays in Mumble.
+The native path supports one publisher and one viewer. **Open in browser**
+opens the same room for group calls and other call modes. Voice stays in
+Mumble.
 
 In a direct conversation with someone online, the same buttons start a call
 with that person alone: the link goes to them as a private message, and the
