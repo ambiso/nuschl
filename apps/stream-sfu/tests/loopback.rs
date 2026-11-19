@@ -766,6 +766,130 @@ async fn a_receiver_budget_limits_its_layers() {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_overloaded_single_layer_publisher_receives_lower_encoder_limits() {
+    let sfu = start("receiver_bitrate = 40000");
+    let (mut host, _) = join(&sfu.url, &ADMIT, true, true).await;
+    let (mut viewer, _) = join(&sfu.url, &ADMIT, false, false).await;
+    // VP9 carries no dependency descriptor in this fixture.
+    host.start_publishing(Codec::Vp9);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut began = false;
+    loop {
+        host.step();
+        viewer.step();
+        if began {
+            host.send_frame();
+        }
+        if let Some(index) = host
+            .messages
+            .iter()
+            .position(|msg| msg["type"] == "quality")
+        {
+            let message = host.messages.remove(index);
+            let bytes = hex::decode(message["request"].as_str().expect("hex")).expect("request");
+            let demand = QualityRequest::from_bytes(&bytes).expect("demand");
+            assert_eq!((demand.publisher, demand.kind), (host.id, Kind::Camera));
+            let (_, _, mid, _) = host.publish.as_ref().expect("publisher");
+            assert_eq!(message["source"], mid.to_string());
+            let tier = usize::from(demand.tier);
+            let cap = demand.kind.ladder()[tier];
+            assert_eq!(message["max_height"], cap.height);
+            assert_eq!(message["max_fps"], cap.fps);
+            assert_eq!(message["max_bitrate"], cap.ceiling);
+            if began && tier < demand.kind.top() {
+                assert!((1..host.sent.len()).contains(&viewer.count(host.id)));
+                break;
+            }
+            assert_eq!(tier, demand.kind.top());
+            began = true;
+        }
+        assert!(Instant::now() < deadline, "no lower encoder limits");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn paced_video_sustains_small_packet_bursts() {
+    const FRAMES: u32 = 120;
+    const PACKETS: u32 = 48;
+    const INTERVAL: Duration = Duration::from_millis(25);
+    let sfu = start("");
+    let (mut host, _) = join(&sfu.url, &ADMIT, true, true).await;
+    let (mut viewer, _) = join(&sfu.url, &ADMIT, false, false).await;
+    host.start_publishing(Codec::Vp9);
+    let connect = Instant::now() + Duration::from_secs(5);
+    loop {
+        host.step();
+        viewer.step();
+        if host
+            .publish
+            .as_ref()
+            .expect("publisher")
+            .0
+            .rtc
+            .is_connected()
+            && viewer
+                .subscribe
+                .as_ref()
+                .is_some_and(|leg| leg.rtc.is_connected())
+            && viewer.tracks.values().any(|&id| id == host.id)
+        {
+            break;
+        }
+        assert!(Instant::now() < connect, "media legs did not connect");
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+
+    let (leg, _, mid, _) = host.publish.as_ref().expect("publisher");
+    let remote = leg.rtc.media(*mid).expect("video").remote_pts();
+    let pt = leg
+        .rtc
+        .codec_config()
+        .params()
+        .iter()
+        .find(|params| params.spec().codec == Codec::Vp9 && remote.contains(&params.pt()))
+        .expect("negotiated VP9")
+        .pt();
+    // This packet rate exercises the pacer while the small payload fits its
+    // starting bitrate. Large RTP packets hit the same limit at about 10 Mb/s.
+    let start = Instant::now();
+    for frame in 0..FRAMES {
+        let due = start + INTERVAL * frame;
+        while Instant::now() < due {
+            host.step();
+            viewer.step();
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let (leg, _, mid, _) = host.publish.as_mut().expect("publisher");
+        let mut api = leg.rtc.direct_api();
+        let stream = api.stream_tx_by_mid(*mid, None).expect("video sender");
+        let now = Instant::now();
+        for packet in 0..PACKETS {
+            let seq = u64::from(frame * PACKETS + packet + 1);
+            stream.write_rtp(
+                RtpWrite::new(pt, seq.into(), (frame + 1) * 2250, now, vec![0x10; 64])
+                    .marker(packet + 1 == PACKETS),
+            );
+        }
+        host.step();
+        viewer.step();
+    }
+    let minimum = (FRAMES * PACKETS * 4 / 5) as usize;
+    let deadline = start + INTERVAL * FRAMES + Duration::from_secs(1);
+    while viewer.count(host.id) < minimum && Instant::now() < deadline {
+        host.step();
+        viewer.step();
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let received = viewer.count(host.id);
+    assert!(
+        received >= minimum,
+        "received {received} of {} RTP packets",
+        FRAMES * PACKETS
+    );
+}
+
 /// At its traffic budget the SFU refuses new peers, and the count is on disk.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_traffic_budget_refuses_new_video() {

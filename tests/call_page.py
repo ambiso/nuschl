@@ -6,7 +6,8 @@ Three synthetic publishers (tests/call_publisher.js, Chromium) join a call on th
 stream host: the creator and a second participant publish a camera each, a third
 a shared screen. A Chromium subscriber and a relay-only Firefox subscriber show
 every source decrypted, in its colour, the screen in the large view, and the full
-roster; a pinned camera takes the large view; a publisher leaving takes its tile
+roster. The screen exposes receiver video statistics. A pinned camera takes
+the large view; a publisher leaving takes its tile
 and roster row along. A page user then publishes Chromium's fake camera and
 screen with Start camera and Share screen: nothing is captured before the
 buttons, no audio is asked for, the subscribers show both, a participant without
@@ -218,6 +219,23 @@ try:
         showing(driver, shared, "the screen in the large view")
     chrome.save_screenshot(str(OUT / "large-screen.png"))
     fox.save_screenshot(str(OUT / "large-screen-firefox.png"))
+
+    # Actual receiver measurements become available on the selected tile.
+    screen_stats = chrome.find_element(By.CSS_SELECTOR, "#large .video-stats")
+    screen_stats.find_element(By.TAG_NAME, "summary").click()
+    wait(chrome, """
+      const panel = document.querySelector('#large .video-stats[open]');
+      if (!panel) return false;
+      const video = panel.parentElement.querySelector('video');
+      const [resolution, decoded, presented, bitrate, jitter] =
+        Array.from(panel.querySelectorAll('dd'), node => node.textContent);
+      return resolution === [video.videoWidth, video.videoHeight].join(' × ') &&
+        [decoded, presented, bitrate].every(value => parseFloat(value) > 0) && parseFloat(jitter) >= 0;
+    """, "received screen stats", timeout=25)
+    chrome.find_element(By.CSS_SELECTOR, "#grid .video-stats > summary").click()
+    wait(chrome, "return document.querySelectorAll('.video-stats[open]').length === 1 && "
+                 "document.querySelector('#grid .video-stats[open]')", "one stats panel at a time")
+    chrome.find_element(By.CSS_SELECTOR, "#grid .video-stats[open] > summary").click()
 
     # The full roster on both subscribers: themselves, the other subscriber and the publishers.
     for driver in [chrome, fox]:

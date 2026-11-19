@@ -11,7 +11,7 @@
 use crate::{
     config::Config,
     protocol::{self, ClientMessage, Decoders, PeerInfo, ServerMessage, Track, TurnCredentials},
-    quality,
+    quality::{self, VideoAdmission},
     rooms::{self, Bucket, Join, Nonce, PeerId, Refusal, RoomId, Rooms},
     routing::Routing,
     traffic::Traffic,
@@ -27,7 +27,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 use str0m::{
-    Candidate, Event, IceConnectionState, Input, Output, Rtc,
+    Candidate, Event, IceConnectionState, Input, Output, PacerReason, Reason, Rtc,
     bwe::{Bitrate, BweKind},
     change::{SdpAnswer, SdpOffer, SdpPendingOffer},
     format::{Codec, CodecConfig, FormatParams, PayloadParams},
@@ -51,6 +51,10 @@ const PACKET_OVERHEAD: usize = 48;
 pub const MAX_DATAGRAM: usize = 2048;
 /// A subscribe connection's bandwidth estimate before its first measurement.
 const INITIAL_ESTIMATE: u64 = 2_000_000;
+/// Immediate sends a connection may service before returning to socket and signalling I/O.
+const PACER_BATCH: usize = 16;
+/// Heap entries serviced before the event loop checks the other inputs again.
+const TIMEOUT_BATCH: usize = 32;
 
 pub enum Command {
     Join {
@@ -701,7 +705,10 @@ impl Core {
     }
 
     fn timeouts(&mut self, now: Instant) {
-        while let Some(&Reverse((at, id, leg))) = self.timers.peek() {
+        for _ in 0..TIMEOUT_BATCH {
+            let Some(&Reverse((at, id, leg))) = self.timers.peek() else {
+                break;
+            };
             if at > now {
                 break;
             }
@@ -743,7 +750,8 @@ impl Core {
 
     /// Polls one connection until it waits: sends its datagrams and handles
     /// its events.
-    fn drain(&mut self, id: PeerId, leg: Leg, now: Instant) {
+    fn drain(&mut self, id: PeerId, leg: Leg, mut now: Instant) {
+        let mut immediate = 0;
         loop {
             let Some(peer) = self.peers.get_mut(&id) else {
                 return;
@@ -761,6 +769,23 @@ impl Core {
                     return;
                 }
                 Ok(Output::Timeout(at)) => {
+                    // str0m asks for a new clock reading after each paced send.
+                    // Service due work here because Tokio timers run in milliseconds.
+                    if leg == Leg::Subscribe
+                        && immediate < PACER_BATCH
+                        && rtc.last_timeout_reason() == Reason::Pacer(PacerReason::Immediate)
+                    {
+                        let current = Instant::now();
+                        if at <= current {
+                            if rtc.handle_input(Input::Timeout(current)).is_err() {
+                                self.kicks.push((id, "media"));
+                                return;
+                            }
+                            now = current;
+                            immediate += 1;
+                            continue;
+                        }
+                    }
                     if peer.deadlines[leg as usize] != Some(at) {
                         peer.deadlines[leg as usize] = Some(at);
                         self.timers.push(Reverse((at, id, leg as u8)));
@@ -810,7 +835,11 @@ impl Core {
                 let Some(peer) = self.peers.get(&id) else {
                     return;
                 };
-                if let Some(forward) = peer.forwards.iter().find(|f| f.mid == Some(request.mid)) {
+                if let Some(forward) = peer
+                    .forwards
+                    .iter()
+                    .find(|f| f.mid == Some(request.mid) && !f.view.backlog.recovering())
+                {
                     let (from, source) = (forward.from, forward.source);
                     self.keyframe(from, source, now);
                 }
@@ -940,7 +969,13 @@ impl Core {
             return;
         }
         let video = source.kind == MediaKind::Video;
-        let size = (packet.payload.len() + PACKET_OVERHEAD) as f64;
+        let timestamp = packet.time.numer();
+        let payload = packet.payload.len();
+        let cost = (payload + PACKET_OVERHEAD) as u64;
+        let can_request = source
+            .keyframe_asked
+            .is_none_or(|at| now.saturating_duration_since(at) >= KEYFRAME_INTERVAL);
+        let recovery_burst = self.config.receiver_bitrate.min(self.config.room_bitrate) / 8;
         let receivers: Vec<PeerId> = self.rooms.get(&room).map_or_else(Vec::new, |r| {
             r.peers
                 .iter()
@@ -964,6 +999,11 @@ impl Core {
                 continue;
             };
             let view = &mut forward.view;
+            if video && view.backlog.dropped(timestamp) {
+                view.rewrite.skip(*packet.seq_no);
+                dropped |= frame.is_some();
+                continue;
+            }
             let keep = match &frame {
                 None => true,
                 Some(None) => false,
@@ -988,18 +1028,50 @@ impl Core {
             else {
                 continue;
             };
-            let room_budget = &mut self.rooms.get_mut(&room).expect("room").budget;
-            if !peer.budget.take(size, now) || !room_budget.take(size, now) {
-                dropped = true;
-                continue;
-            }
-            let Some(seq) = forward.view.rewrite.forward(*packet.seq_no) else {
-                continue;
-            };
             let mut api = peer.subscribe.direct_api();
             let Some(stream) = api.stream_tx_by_mid(out_mid, None) else {
                 continue;
             };
+            let full = if video {
+                let queue = stream.queue_info();
+                match view.backlog.admission(timestamp, queue, can_request, now) {
+                    VideoAdmission::Regular => view.backlog.full(
+                        queue,
+                        peer.estimate.min(self.config.receiver_bitrate),
+                        payload,
+                        now,
+                    ),
+                    VideoAdmission::Burst(bytes) => {
+                        view.backlog.burst_full(queue, bytes + cost, recovery_burst)
+                    }
+                    VideoAdmission::Pause => {
+                        view.rewrite.skip(*packet.seq_no);
+                        continue;
+                    }
+                    VideoAdmission::RequestKeyframe => {
+                        view.rewrite.skip(*packet.seq_no);
+                        dropped = true;
+                        continue;
+                    }
+                }
+            } else {
+                false
+            };
+            let room_budget = &mut self.rooms.get_mut(&room).expect("room").budget;
+            if full || !peer.budget.take(cost as f64, now) || !room_budget.take(cost as f64, now) {
+                if video {
+                    view.rewrite.skip(*packet.seq_no);
+                    view.shed(timestamp, frame.is_none().then_some(now));
+                }
+                dropped |= frame.is_some();
+                continue;
+            }
+            let Some(seq) = view.rewrite.forward(*packet.seq_no) else {
+                continue;
+            };
+            if video {
+                view.backlog.enqueued(payload, cost, marker);
+            }
             stream.write_rtp(
                 RtpWrite::new(
                     pt,
@@ -1019,10 +1091,9 @@ impl Core {
         }
     }
 
-    /// The decode targets each receiver's tier allows of each layered source,
-    /// and the largest tier asked of each video source.
-    fn plan(&self) -> (Vec<Planned>, HashMap<(PeerId, Mid), usize>) {
-        let mut demands: HashMap<(PeerId, Mid), usize> = HashMap::new();
+    /// The decode targets and publisher demands for each video source.
+    fn plan(&self) -> (Vec<Planned>, HashMap<(PeerId, Mid), Demand>) {
+        let mut demands: HashMap<(PeerId, Mid), Demand> = HashMap::new();
         let mut planned = Vec::new();
         for (&id, peer) in &self.peers {
             for (index, forward) in peer.forwards.iter().enumerate() {
@@ -1034,19 +1105,28 @@ impl Core {
                 }) else {
                     continue;
                 };
-                let tier = quality::tier(video.kind, &forward.view, peer.decode, self.step);
+                let requested = quality::tier(video.kind, &forward.view, peer.decode, self.step);
+                let tier = forward.view.backlog.tier(requested);
                 let mut choices = video.layers.choices(video.kind, tier);
                 // Past the lowest tier the traffic budget leaves base layers only.
                 if self.step > video.kind.top() as u64 {
                     choices.truncate(1);
                 }
                 let demand = demands.entry((forward.from, forward.source)).or_default();
-                *demand = (*demand).max(tier);
+                demand.tier = demand.tier.max(tier);
+                if forward.view.backlog.limited()
+                    && video.layers.choices(video.kind, video.kind.top()).len() <= 1
+                {
+                    let configured = self.config.receiver_bitrate.min(self.config.room_bitrate);
+                    demand.shared_cap = demand
+                        .shared_cap
+                        .min(tier.min(video.kind.affordable(configured)));
+                }
                 planned.push(Planned {
                     receiver: id,
                     forward: index,
                     choices,
-                    ceiling: video.kind.ladder()[tier].ceiling,
+                    ceiling: video.kind.ladder()[requested].ceiling,
                 });
             }
         }
@@ -1095,8 +1175,7 @@ impl Core {
     /// receiver's layered sources, moves each receiver's decode target toward
     /// its share at Q1's `Stepper` pace, asks each subscribe connection's
     /// bandwidth estimator to probe for the receiver's tiers, and tells each
-    /// publisher the largest tier asked of each of its video sources, when it
-    /// changed.
+    /// publisher the new demand for each of its sources that changed.
     fn quality(&mut self, now: Instant) {
         let since = now.saturating_duration_since(self.origin);
         if let Some(traffic) = &mut self.traffic {
@@ -1107,6 +1186,11 @@ impl Core {
             }
             if let Err(error) = traffic.save() {
                 tracing::warn!("saving the traffic count: {error}");
+            }
+        }
+        for peer in self.peers.values_mut() {
+            for forward in &mut peer.forwards {
+                forward.view.backlog.tick(now);
             }
         }
         let (planned, demands) = self.plan();
@@ -1122,6 +1206,9 @@ impl Core {
                 .expect("listed")
                 .forwards[planned.forward]
                 .view;
+            if share == 0 && !planned.choices.is_empty() {
+                view.backlog.overloaded();
+            }
             let target = share.checked_sub(1).map(|ceiling| {
                 let resolutions: Vec<u32> = planned
                     .choices
@@ -1151,20 +1238,32 @@ impl Core {
                 let Some(video) = &mut source.video else {
                     continue;
                 };
-                let demand = demands.get(&(id, source.mid)).copied();
-                if demand.is_some() && demand != video.demand && video.throttle.allow(since) {
-                    video.demand = demand;
-                    let request = QualityRequest {
-                        publisher: id,
-                        kind: video.kind,
-                        tier: demand.unwrap_or(0) as u8,
-                    };
-                    messages.push((id, hex::encode(request.to_bytes())));
+                if let Some(demand) = demands.get(&(id, source.mid)) {
+                    let tier = demand.tier.min(demand.shared_cap);
+                    if Some(tier) != video.demand && video.throttle.allow(since) {
+                        video.demand = Some(tier);
+                        let request = QualityRequest {
+                            publisher: id,
+                            kind: video.kind,
+                            tier: tier as u8,
+                        };
+                        let cap = video.kind.ladder()[tier];
+                        messages.push((
+                            id,
+                            ServerMessage::Quality {
+                                request: hex::encode(request.to_bytes()),
+                                source: source.mid.to_string(),
+                                max_height: cap.height,
+                                max_fps: cap.fps,
+                                max_bitrate: cap.ceiling,
+                            },
+                        ));
+                    }
                 }
             }
         }
-        for (id, request) in messages {
-            self.send(id, ServerMessage::Quality { request });
+        for (id, message) in messages {
+            self.send(id, message);
         }
     }
 
@@ -1210,6 +1309,21 @@ struct Planned {
     choices: Vec<Choice>,
     /// The most its tier needs, bits per second.
     ceiling: u64,
+}
+
+/// Maximum receiver demand with a shared cap when the publisher sends one layer.
+struct Demand {
+    tier: usize,
+    shared_cap: usize,
+}
+
+impl Default for Demand {
+    fn default() -> Self {
+        Self {
+            tier: 0,
+            shared_cap: usize::MAX,
+        }
+    }
 }
 
 fn rates(planned: &[Planned]) -> Vec<Vec<u64>> {

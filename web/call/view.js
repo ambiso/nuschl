@@ -4,6 +4,8 @@
 // strings (the stream host requires Trusted Types). This page's own sources show as
 // tiles too; `controls.js` starts and stops them.
 
+import { ReceiverStats } from "./receiver-stats.js";
+
 const endings = {
   transforms: ["Browser not supported", "Use a current Firefox or Chromium."],
   codecs: ["Browser not supported", "No AV1 or VP9 video. Use a current Firefox or Chromium."],
@@ -39,6 +41,7 @@ export class View {
   constructor(document, call) {
     this.document = document;
     this.call = call;
+    this.stats = new ReceiverStats(document);
     const $ = (id) => document.getElementById(id);
     this.nodes = {
       status: $("status"), stage: $("stage"), large: $("large"), grid: $("grid"), empty: $("empty"),
@@ -57,6 +60,7 @@ export class View {
   showEnding(reason) {
     const [title, detail] = endings[reason] ?? ["Disconnected", ""];
     const { ending, main } = this.nodes;
+    this.stats.close();
     main.hidden = true;
     const actions = [];
     if (rejoin.has(reason) || !(reason in endings)) {
@@ -83,8 +87,14 @@ export class View {
       { peer: call.self, screen: kind === "screen", stream: source.stream, own: true },
     ]);
     const videos = [...call.tracks].filter(([, track]) => track.kind === "video").concat(own);
-    const shown = new Set(videos.map(([key]) => key));
-    for (const [key, tile] of this.tiles) if (!shown.has(key)) { tile.remove(); this.tiles.delete(key); }
+    const shown = new Map(videos);
+    for (const [key, tile] of this.tiles) {
+      if (shown.get(key)?.stream === tile.querySelector("video").srcObject) continue;
+      const stats = tile.querySelector(".video-stats");
+      if (stats) this.stats.close(stats);
+      tile.remove();
+      this.tiles.delete(key);
+    }
     // A pin stays while its source is away, as during an encoder restart.
     const pinned = videos.find(([, track]) => pin(track) === this.pinned)?.[0];
     const featured = pinned ?? videos.find(([, track]) => track.screen && !track.own)?.[0] ?? null;
@@ -122,9 +132,30 @@ export class View {
       video, element(this.document, "figcaption", {}, label), toggle);
     if (track.screen) tile.dataset.screen = "";
     if (track.own) tile.dataset.own = "";
+    else if (track.receiver) tile.append(this.videoStats(video, track.receiver, label));
     video.addEventListener("loadeddata", () => { tile.dataset.state = "playing"; });
     this.tiles.set(mid, tile);
     return tile;
+  }
+
+  videoStats(video, receiver, label) {
+    const doc = this.document;
+    const details = element(doc, "details", { class: "video-stats" });
+    const list = element(doc, "dl");
+    const jitter = { title: "Average time a frame spent in the receiver’s jitter buffer" };
+    const values = ["Resolution", "Decoded frame rate", "Presented frame rate", "Receive bitrate", "Jitter buffer delay"]
+      .map(name => {
+        const value = element(doc, "dd", {}, "—");
+        list.append(element(doc, "dt", name === "Jitter buffer delay" ? jitter : {}, name), value);
+        return value;
+      });
+    const message = element(doc, "p", { hidden: "" });
+    details.append(element(doc, "summary", { "aria-label": `Video stats for ${label}` }, "Video stats"), message, list);
+    details.addEventListener("toggle", () => {
+      if (details.open && details.isConnected) this.stats.open({ details, receiver, video, message, values });
+      else this.stats.close(details);
+    });
+    return details;
   }
 
   person(id, role) {

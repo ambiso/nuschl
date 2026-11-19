@@ -23,7 +23,7 @@ export class Call extends EventTarget {
   /** Publishers asked for their keys: id → {keyed, asked}. */
   keys = new Map();
   /** This page's sources: "camera" or "screen" → {track, transceiver, stream, quality}.
-   * `quality` is "auto"; Q1 (#414) adds the tier ladder and caps the encoding here. */
+   * `quality` is "auto"; the SFU sends the encoder limits for each source. */
   sources = new Map();
   self = null;
   role = null;
@@ -126,6 +126,9 @@ export class Call extends EventTarget {
           () => ({ send: [], events: [] }),
         ));
         break;
+      case "quality":
+        await this.capSource(message);
+        return;
       case "error":
         return this.end(message.reason);
       default:
@@ -223,6 +226,26 @@ export class Call extends EventTarget {
     });
     transceiver.codec = this.codec;
     return transceiver;
+  }
+
+  /** Apply the SFU's limits to the encoder for this publish MID. */
+  async capSource({ source: mid, max_height: heightLimit, max_fps: fpsLimit, max_bitrate: bitrateLimit }) {
+    const source = [...this.sources.values()].find(({ transceiver }) => transceiver.mid === mid);
+    if (!source) return;
+    const { sender } = source.transceiver;
+    const parameters = sender.getParameters();
+    const encoding = parameters.encodings?.[0];
+    if (!encoding) return;
+    const { width, height } = source.track.getSettings();
+    const shortSide = Math.min(width ?? 0, height ?? 0);
+    encoding.scaleResolutionDownBy = Math.max(1, shortSide / heightLimit);
+    encoding.maxFramerate = fpsLimit;
+    encoding.maxBitrate = bitrateLimit;
+    try {
+      await sender.setParameters(parameters);
+    } catch {
+      // A stopped sender or a browser with fewer encoding controls keeps its settings.
+    }
   }
 
   /** Restarts each source's encoder in the new call codec on a new transceiver: the

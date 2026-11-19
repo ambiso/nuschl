@@ -63,6 +63,19 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .tile .pin { position: absolute; top: 8px; right: 8px; opacity: 0.8; }
 .tile .pin[aria-pressed="true"] { background: var(--accent); color: #0e1220; }
+.video-stats {
+  position: absolute; z-index: 1; top: 8px; left: 8px;
+  max-width: calc(100% - 5rem); max-height: calc(100% - 16px); overflow: auto;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  font-size: 0.85rem;
+}
+.video-stats[open] { max-width: calc(100% - 16px); }
+.video-stats summary { cursor: pointer; display: list-item; padding: 10px 8px; }
+.video-stats summary:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.video-stats p { color: var(--muted); margin: 0; padding: 0 8px; }
+.video-stats dl { display: grid; grid-template-columns: auto auto; gap: 2px 8px; margin: 0; padding: 0 8px 6px; }
+.video-stats dt { color: var(--muted); }
+.video-stats dd { margin: 0; min-width: 0; text-align: right; overflow-wrap: anywhere; }
 aside { grid-area: people; border-left: 1px solid var(--border); padding: 8px 16px; overflow: auto; }
 aside h2 { font-size: 0.95rem; margin: 4px 0 8px; }
 #count { color: var(--muted); font-weight: normal; }

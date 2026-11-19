@@ -9,6 +9,8 @@ import { join as joinPath } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { unsized } from "./frames.js";
+import { receiverRates } from "./receiver-stats.js";
+import { Call } from "./session.js";
 import { MAX_MESSAGE, MAX_PEERS, join, linkOf, parse } from "./signal.js";
 import { preferences, sendCodecs, support } from "./support.js";
 
@@ -142,6 +144,33 @@ test("SFU messages: the page's bounds", () => {
   assert.throws(() => parse("{"));
 });
 
+test("publisher quality applies bounded encoder limits to the matching MID", async () => {
+  const request = "0100000000000000040100";
+  const quality = { type: "quality", request, source: "3", max_height: 720, max_fps: 15, max_bitrate: 800_000 };
+  assert.equal(parse(JSON.stringify({ type: "quality", request })), null);
+  for (const limits of [{ source: "x".repeat(17) }, { max_height: 0 }, { max_fps: 61 }, { max_bitrate: 1.5 }]) {
+    assert.throws(() => parse(JSON.stringify({ ...quality, ...limits })), /malformed quality/);
+  }
+
+  const call = new Call({}, { codecs: ["av1"] });
+  const applied = [];
+  const sender = {
+    getParameters: () => ({ encodings: [{}] }),
+    setParameters: async ({ encodings }) => applied.push(encodings[0]),
+  };
+  const transceiver = { mid: "3", sender };
+  const track = { getSettings: () => ({ width: 3440, height: 1440 }) };
+  call.sources.set("screen", { transceiver, track });
+
+  await call.receive(parse(JSON.stringify(quality)));
+  assert.deepEqual(applied, [{ scaleResolutionDownBy: 2, maxFramerate: 15, maxBitrate: 800_000 }]);
+  transceiver.mid = "4";
+  await call.receive(quality);
+  assert.equal(applied.length, 1);
+  await call.receive({ ...quality, source: "4", max_height: 2160, max_fps: 60, max_bitrate: 15_000_000 });
+  assert.deepEqual(applied[1], { scaleResolutionDownBy: 1, maxFramerate: 60, maxBitrate: 15_000_000 });
+});
+
 test("support: encoded transforms and AV1 or VP9, AV1 first", () => {
   const scope = (mimeTypes, transform = class {}) => ({
     RTCRtpScriptTransform: transform,
@@ -175,5 +204,38 @@ test("frames: the AV1 depacketizer's size field comes off again", () => {
   for (const other of [[0x08, 1, 2], [0x28], [0x0a, 3, 1], [0x0a, 0x80], [0x2a]]) {
     const frame = Uint8Array.from(other);
     assert.deepEqual([...unsized(frame)], other, String(other));
+  }
+});
+
+test("receiver stats use interval frame, byte and jitter buffer counters", () => {
+  const previous = {
+    id: "video", timestamp: 4000, framesDecoded: 120, presentedFrames: 118,
+    bytesReceived: 500_000, jitterBufferDelay: 0.5, jitterBufferEmittedCount: 60,
+  };
+  const current = {
+    id: "video", timestamp: 5000, framesDecoded: 150, presentedFrames: 146,
+    bytesReceived: 625_000, jitterBufferDelay: 1, jitterBufferEmittedCount: 80,
+  };
+  assert.deepEqual(receiverRates(previous, current), {
+    decoded: 30, presented: 28, bitrate: 1_000_000, jitterBufferMs: 25,
+  });
+  assert.deepEqual(receiverRates(previous, { ...current, timestamp: 6000 }), {
+    decoded: 15, presented: 14, bitrate: 500_000, jitterBufferMs: 25,
+  });
+});
+
+test("receiver stats discard stale samples and handle unavailable or reset counters", () => {
+  const previous = {
+    id: "video", timestamp: 4000, framesDecoded: 120, presentedFrames: 118,
+    bytesReceived: 500_000, jitterBufferDelay: 0.5, jitterBufferEmittedCount: 60,
+  };
+  const current = { ...previous, timestamp: 5000, bytesReceived: 0, presentedFrames: undefined };
+  assert.deepEqual(receiverRates(previous, current), {
+    decoded: 0, presented: undefined, bitrate: undefined, jitterBufferMs: undefined,
+  });
+  assert.deepEqual(receiverRates(undefined, current), {});
+  assert.deepEqual(receiverRates(previous, { ...current, id: "replacement" }), {});
+  for (const timestamp of [undefined, 3999, 4000, 9001]) {
+    assert.deepEqual(receiverRates(previous, { ...current, timestamp }), {});
   }
 });
