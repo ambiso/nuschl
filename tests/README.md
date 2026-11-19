@@ -295,6 +295,14 @@ VoiceOver), Bluetooth, echo, and mobile background-call behavior still need nati
 platform testing. The macOS Seatbelt profiles have a macOS-only test that has not run;
 the Windows sandbox has run in the Windows 11 VM only (above).
 
+## Linux video encoder
+
+`cargo test -p nuschl-video-worker` starts the real encoder through bubblewrap
+and prlimit, kills it and verifies recovery on a later frame. It also runs
+the synthetic `nuschl-video-probe` and verifies the AV1 dimensions and pixels
+with FFmpeg's libdav1d decoder. The flake's `nuschl-video-worker-unit` check
+runs the same test.
+
 ## WebRTC transport trial
 
 `cargo test -p nuschl-rtc` exchanges ICE/DTLS/SRTP datagrams in memory with a virtual

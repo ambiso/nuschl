@@ -1,0 +1,20 @@
+[package]
+name = "nuschl-video-worker"
+description = "Isolated video encoding process"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nuschl-ipc.workspace = true
+nuschl-sandbox.workspace = true
+rav1e = { version = "0.8.1", default-features = false }
+tokio = { version = "1.54.1", features = ["macros", "rt"] }
+
+[dev-dependencies]
+nuschl-testkit.workspace = true
+
+[lints]
+workspace = true

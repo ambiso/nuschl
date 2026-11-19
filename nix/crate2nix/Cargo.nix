@@ -453,6 +453,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "nuschl-video-worker" = rec {
+      packageId = "nuschl-video-worker";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "nuschl-video-worker";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "nuschl-web-relay" = rec {
       packageId = "nuschl-web-relay";
       build = internal.buildRustCrateWithFeatures {
@@ -25514,6 +25524,55 @@ rec {
           "signer" = [ "ed25519" "mldsa44" "dep:getrandom" "ml-dsa/rand_core" ];
         };
         resolvedDefaultFeatures = [ "default" "ed25519" "mldsa44" "runtime-fixture" "signer" ];
+      };
+      "nuschl-video-worker" = rec {
+        crateName = "nuschl-video-worker";
+        version = "0.2.0";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "nuschl-video-probe";
+            path = "src/bin/nuschl-video-probe.rs";
+            requiredFeatures = [ ];
+          }
+          {
+            name = "nuschl-video-worker";
+            path = "src/main.rs";
+            requiredFeatures = [ ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../apps/video-worker; };
+        dependencies = [
+          {
+            name = "nuschl-ipc";
+            packageId = "nuschl-ipc";
+            target = { target, features }: ("linux" == target."os" or null);
+          }
+          {
+            name = "nuschl-sandbox";
+            packageId = "nuschl-sandbox";
+            target = { target, features }: ("linux" == target."os" or null);
+          }
+          {
+            name = "rav1e";
+            packageId = "rav1e";
+            usesDefaultFeatures = false;
+            target = { target, features }: ("linux" == target."os" or null);
+          }
+          {
+            name = "tokio";
+            packageId = "tokio";
+            target = { target, features }: ("linux" == target."os" or null);
+            features = [ "macros" "rt" ];
+          }
+        ];
+        devDependencies = [
+          {
+            name = "nuschl-testkit";
+            packageId = "nuschl-testkit";
+          }
+        ];
+
       };
       "nuschl-web-relay" = rec {
         crateName = "nuschl-web-relay";

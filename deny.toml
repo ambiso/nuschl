@@ -47,21 +47,13 @@ allow = [
 # its Noise transit encryption, compiled in although 0.8 does not negotiate it,
 # and its WebAssembly-only WebSocket stack.
 exceptions = [
-  { allow = [
-    "Unlicense",
-  ], crate = "noise-protocol" },
-  { allow = [
-    "Unlicense",
-  ], crate = "noise-rust-crypto" },
-  { allow = [
-    "Unlicense",
-  ], crate = "ws_stream_wasm" },
-  { allow = [
-    "Unlicense",
-  ], crate = "async_io_stream" },
-  { allow = [
-    "Unlicense",
-  ], crate = "pharos" },
+  # rav1e declares the LLVM fuzzing runtime only under cfg(fuzzing).
+  { allow = ["NCSA"], crate = "libfuzzer-sys" },
+  { allow = ["Unlicense"], crate = "noise-protocol" },
+  { allow = ["Unlicense"], crate = "noise-rust-crypto" },
+  { allow = ["Unlicense"], crate = "ws_stream_wasm" },
+  { allow = ["Unlicense"], crate = "async_io_stream" },
+  { allow = ["Unlicense"], crate = "pharos" },
 ]
 
 [bans]
@@ -98,6 +90,10 @@ deny = [
   { name = "cpal", wrappers = [
     "nuschl-media-worker",
   ], reason = "Native audio APIs belong in the media worker" },
+  { name = "rav1e", wrappers = [
+    "ravif",
+    "nuschl-video-worker",
+  ], reason = "AVIF encoding stays behind ravif, and native video encoding runs inside the isolated video worker" },
   { name = "opus-rs", wrappers = [
     "nuschl-media-worker",
     "nuschl-audio-wasm",

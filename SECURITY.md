@@ -42,6 +42,7 @@ change alone is no reason to change a cryptographic protocol.
 | Typst (`typst`, `typst-render`) | LaTeX formulas; Typst scripts can reach files, packages, plugins and data | Math worker only. It receives code-free math markup from Nuschl's converter, in a one-file world without packages, clock or system fonts, with a library stripped of file, plugin, image, data, `eval` and `std` access, under per-formula limits ([math](docs/math.md)). |
 | `psm` (assembly, through `stacker`) | Stack growth in Typst's evaluator | Through `stacker` and `typst-eval` only, in the math worker. |
 | Symphonia, rubato, audioadapter-buffers, opus-rs (with `fearless_simd`), nnnoiseless in `nuschl-musicbot-codec-worker` | Music decoding, resampling, Opus encoding, voice ducking | That executable's fixed decode, encode and duck roles, sandboxed on Linux only; elsewhere and without confinement it fails to start. cargo-deny keeps these crates out of `nuschl-musicbot`, which starts the worker from its fixed libexec path, moves opaque bytes, validates bounded replies and makes no codec or DSP call ([music bot](docs/musicbot.md#security-and-codec-roles)). |
+| rav1e with defaults disabled | Local AV1 encoding of synthetic I420 frames, alongside its existing AVIF use through ravif | Linux video encoder worker for video, content worker for image codecs. The video role uses the scalar Rust kernels and holds only pipes. |
 | OS sandbox and process APIs (`nuschl-sandbox`) | Starting confined workers | Supervisor adapter; prefer safe wrappers (`win32job` for job objects). |
 | `nuschl-sandbox-windows` (`windows-sys`) | AppContainer launch with an explicit handle list and job limits, which no maintained safe wrapper offers | The worker executables' launch stage, before any input is read; cargo-deny admits only the worker crates. One trait method per Win32 function with Microsoft's documented contract as its `# Safety` (cross-checked with ReactOS); unsafe calls only in `os.rs`, one per block with a `SAFETY:` comment; guards release Windows allocations exactly once; no `as` casts; launch steps tested under Miri against a mock that fails each call in turn ([Windows sandbox](docs/windows-sandbox.md)). |
 
@@ -74,6 +75,7 @@ add only:
 | media | PipeWire and PulseAudio sockets, ALSA devices, sound sysfs and procfs, `/usr/share/pipewire`, `/usr/share/alsa` | 1 GiB |
 | transfer | network and resolver files; the offered file, read-only | 1 GiB |
 | music-bot codec, Linux only | none | 1 GiB |
+| video encode, Linux only | none | 1 GiB, 120 s CPU over its life, 5 s wall time per exchange |
 
 Rules for every platform:
 

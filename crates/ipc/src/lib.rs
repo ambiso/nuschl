@@ -12,6 +12,8 @@ pub mod preview;
 pub mod preview_fetch;
 pub mod server;
 pub mod thumbnail;
+#[cfg(target_os = "linux")]
+pub mod video;
 
 use std::io::{self, Read, Write};
 

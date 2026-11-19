@@ -1,0 +1,230 @@
+// SPDX-License-Identifier: EUPL-1.2
+//! Video encoder settings and bounded binary pipe framing. Raw I420 crosses
+//! the local worker pipe; encoded AV1 is the only output.
+
+mod supervisor;
+
+pub use supervisor::{Encoder, Error, Output};
+
+use std::io;
+
+pub const HEADER_BYTES: usize = 16;
+const KIB: usize = 1024;
+const KEY: u8 = 1;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Source {
+    Camera,
+    Screen,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Settings {
+    pub source: Source,
+    pub width: u16,
+    pub height: u16,
+    pub fps: u16,
+    pub bitrate: u32,
+}
+
+impl Settings {
+    pub const BYTES: usize = 11;
+
+    pub fn frame_bytes(self) -> io::Result<usize> {
+        if !(16..=3840).contains(&self.width)
+            || !(16..=2160).contains(&self.height)
+            || !self.width.is_multiple_of(2)
+            || !self.height.is_multiple_of(2)
+            || !(1..=120).contains(&self.fps)
+            || !(64_000..=50_000_000).contains(&self.bitrate)
+        {
+            return Err(invalid());
+        }
+        Ok(usize::from(self.width) * usize::from(self.height) * 3 / 2)
+    }
+
+    pub fn packet_limit(self, key: bool) -> usize {
+        let key_limit = match self.source {
+            Source::Camera => 256 * KIB,
+            Source::Screen if self.height >= 1440 => 1024 * KIB,
+            Source::Screen => 512 * KIB,
+        };
+        if key { key_limit } else { key_limit / 2 }
+    }
+
+    pub fn to_bytes(self) -> [u8; Self::BYTES] {
+        let mut bytes = [0; Self::BYTES];
+        bytes[0] = match self.source {
+            Source::Camera => 0,
+            Source::Screen => 1,
+        };
+        bytes[1..3].copy_from_slice(&self.width.to_be_bytes());
+        bytes[3..5].copy_from_slice(&self.height.to_be_bytes());
+        bytes[5..7].copy_from_slice(&self.fps.to_be_bytes());
+        bytes[7..].copy_from_slice(&self.bitrate.to_be_bytes());
+        bytes
+    }
+
+    pub fn from_bytes(bytes: [u8; Self::BYTES]) -> io::Result<Self> {
+        let [source, w1, w2, h1, h2, f1, f2, b1, b2, b3, b4] = bytes;
+        let settings = Self {
+            source: match source {
+                0 => Source::Camera,
+                1 => Source::Screen,
+                _ => return Err(invalid()),
+            },
+            width: u16::from_be_bytes([w1, w2]),
+            height: u16::from_be_bytes([h1, h2]),
+            fps: u16::from_be_bytes([f1, f2]),
+            bitrate: u32::from_be_bytes([b1, b2, b3, b4]),
+        };
+        settings.frame_bytes()?;
+        Ok(settings)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum Kind {
+    Configure = 1,
+    Frame,
+    Ready,
+    Encoded,
+    Dropped,
+}
+
+/// Each reply carries the ID from its request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Header {
+    pub kind: Kind,
+    pub key: bool,
+    pub id: u64,
+    pub bytes: u32,
+}
+
+impl Header {
+    pub fn to_bytes(self) -> [u8; HEADER_BYTES] {
+        let mut bytes = [0; HEADER_BYTES];
+        bytes[..2].copy_from_slice(&crate::PROTOCOL_VERSION.to_be_bytes());
+        bytes[2] = self.kind as u8;
+        bytes[3] = u8::from(self.key) * KEY;
+        bytes[4..12].copy_from_slice(&self.id.to_be_bytes());
+        bytes[12..].copy_from_slice(&self.bytes.to_be_bytes());
+        bytes
+    }
+
+    pub fn from_bytes(bytes: [u8; HEADER_BYTES]) -> io::Result<Self> {
+        let [
+            v1,
+            v2,
+            kind,
+            flags,
+            i1,
+            i2,
+            i3,
+            i4,
+            i5,
+            i6,
+            i7,
+            i8,
+            b1,
+            b2,
+            b3,
+            b4,
+        ] = bytes;
+        if u16::from_be_bytes([v1, v2]) != crate::PROTOCOL_VERSION || flags & !KEY != 0 {
+            return Err(invalid());
+        }
+        let kind = match kind {
+            1 => Kind::Configure,
+            2 => Kind::Frame,
+            3 => Kind::Ready,
+            4 => Kind::Encoded,
+            5 => Kind::Dropped,
+            _ => return Err(invalid()),
+        };
+        let key = flags == KEY;
+        if key && kind != Kind::Encoded {
+            return Err(invalid());
+        }
+        Ok(Self {
+            kind,
+            key,
+            id: u64::from_be_bytes([i1, i2, i3, i4, i5, i6, i7, i8]),
+            bytes: u32::from_be_bytes([b1, b2, b3, b4]),
+        })
+    }
+
+    pub fn empty(kind: Kind, id: u64) -> Self {
+        Self {
+            kind,
+            key: false,
+            id,
+            bytes: 0,
+        }
+    }
+}
+
+fn invalid() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "invalid video worker message")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn headers_reject_unknown_versions_kinds_and_flags() {
+        let header = Header::empty(Kind::Ready, 29);
+        let bytes = header.to_bytes();
+        assert_eq!(Header::from_bytes(bytes).unwrap(), header);
+        for (index, value) in [(0, 255), (2, 255), (3, 2), (3, 1)] {
+            let mut bytes = bytes;
+            bytes[index] = value;
+            assert!(Header::from_bytes(bytes).is_err());
+        }
+    }
+
+    #[test]
+    fn i420_dimensions_and_codec_budgets() {
+        let settings = Settings {
+            source: Source::Screen,
+            width: 3440,
+            height: 1440,
+            fps: 100,
+            bitrate: 25_000_000,
+        };
+        assert_eq!(Settings::from_bytes(settings.to_bytes()).unwrap(), settings);
+        assert_eq!(settings.frame_bytes().unwrap(), 7_430_400);
+        assert_eq!(settings.packet_limit(true), 1024 * KIB);
+        assert_eq!(settings.packet_limit(false), 512 * KIB);
+        let lower = Settings {
+            height: 1438,
+            ..settings
+        };
+        assert_eq!(lower.packet_limit(true), 512 * KIB);
+        let camera = Settings {
+            source: Source::Camera,
+            ..settings
+        };
+        assert_eq!(camera.packet_limit(true), 256 * KIB);
+        assert_eq!(camera.packet_limit(false), 128 * KIB);
+        for invalid in [
+            Settings {
+                width: 3439,
+                ..settings
+            },
+            Settings {
+                height: 2162,
+                ..settings
+            },
+            Settings { fps: 0, ..settings },
+            Settings {
+                bitrate: u32::MAX,
+                ..settings
+            },
+        ] {
+            assert!(Settings::from_bytes(invalid.to_bytes()).is_err());
+        }
+    }
+}

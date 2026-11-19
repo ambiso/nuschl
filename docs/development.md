@@ -78,6 +78,12 @@ tests for it. This check requires a working sandbox and rejects a substituted
 successful executable; it checks eventual cleanup, not atomic worker-tree exit
 or platform-wide confinement.
 
+The Linux video encoder diagnostic uses the fixed `--encode` sandbox role
+with generated I420 frames. Run `nix run .#video-probe` for a summary or
+`nix run .#video-probe -- --obu` for elementary AV1 on standard output.
+The CPU-only probe encodes independent frames. Live capture, interframe
+encoding and hardware codecs are tracked in #418.
+
 ## Continuous integration
 
 Pull requests to `main` and pushes to `main` run one command on the self-hosted

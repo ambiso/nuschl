@@ -291,6 +291,22 @@
               mkdir -p "$out/share/licenses/nuschl"
               cp -R ${rtcNotices.bundle}/share/licenses/nuschl/. "$out/share/licenses/nuschl/"
             '';
+        videoProbe =
+          pkgs.runCommand "nuschl-video-probe"
+            {
+              nativeBuildInputs = [ pkgs.makeWrapper ];
+              meta.mainProgram = "nuschl-video-probe";
+            }
+            ''
+              mkdir -p "$out/bin"
+              cp ${crates.project.workspaceMembers.nuschl-video-worker.build}/bin/nuschl-video-{worker,probe} "$out/bin/"
+              wrapProgram "$out/bin/nuschl-video-probe" --prefix PATH : ${
+                lib.makeBinPath [
+                  pkgs.bubblewrap
+                  pkgs.util-linux
+                ]
+              }
+            '';
         serverPackage =
           pkgs.runCommand "nuschld-${common.version}"
             {
@@ -390,6 +406,11 @@
           nuschl-musicbot-codec-worker.testInputs = [
             pkgs.bubblewrap
             pkgs.util-linux
+          ];
+          nuschl-video-worker.testInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            pkgs.bubblewrap
+            pkgs.util-linux
+            pkgs.ffmpeg-headless
           ];
           # The math worker's confinement tests spawn sandboxed workers, and
           # the CLI's e2ee tests run the crypto worker through the sandbox.
@@ -829,6 +850,7 @@
         packages.macos-app = macApp;
         packages.macos-aarch64 = macSlice "aarch64";
         packages.rtc-probe = rtcPackage;
+        packages.${if pkgs.stdenv.hostPlatform.isLinux then "video-probe" else null} = videoProbe;
         # The web client's tunnel relay and its probe (docs/web.md), from cached crates.
         packages.web-relay = crates.project.workspaceMembers."nuschl-web-relay".build;
         packages.stream-sfu = crates.project.workspaceMembers."nuschl-stream-sfu".build;
@@ -1162,6 +1184,7 @@
             ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
               pkgs.bubblewrap
               pkgs.util-linux
+              pkgs.ffmpeg-headless
             ];
           LD_LIBRARY_PATH = lib.optionalString pkgs.stdenv.hostPlatform.isLinux (
             lib.makeLibraryPath buildInputs

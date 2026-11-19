@@ -7663,6 +7663,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nuschl-video-worker"
+version = "0.2.0"
+dependencies = [
+ "nuschl-ipc",
+ "nuschl-sandbox",
+ "nuschl-testkit",
+ "rav1e",
+ "tokio",
+]
+
+[[package]]
 name = "nuschl-web-relay"
 version = "0.2.0"
 dependencies = [
