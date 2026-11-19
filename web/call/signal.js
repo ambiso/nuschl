@@ -13,6 +13,7 @@ export const MAX_TRACKS = 3 * MAX_PEERS;
 const MAX_KEY = 2 * 16 * 1024;
 
 const id = (value) => Number.isSafeInteger(value) && value >= 0;
+const limit = (max) => (value) => Number.isInteger(value) && value > 0 && value <= max;
 const text = (max) => (value) => typeof value === "string" && value.length <= max;
 const hex = (min, max) => (value) =>
   text(max)(value) && value.length >= min && value.length % 2 === 0 && /^[0-9a-f]*$/.test(value);
@@ -42,6 +43,7 @@ const messages = {
   offer: { sdp, tracks: list(MAX_TRACKS, object({ mid, peer: id, source: mid, kind: oneOf("camera", "screen", "audio") })) },
   answer: { sdp },
   key: { from: id, data: hex(2, MAX_KEY) },
+  quality: { request: hex(22, 22), source: mid, max_height: limit(2160), max_fps: limit(60), max_bitrate: limit(15_000_000) },
   error: { reason: text(64) },
 };
 
@@ -52,6 +54,8 @@ export function parse(data) {
   const message = JSON.parse(data);
   if (!object({ type: text(16) })(message)) throw new Error("malformed message");
   if (!Object.hasOwn(messages, message.type)) return null;
+  // Older SFUs send a tier index alone.
+  if (message.type === "quality" && message.source === undefined) return null;
   if (!object(messages[message.type])(message)) throw new Error(`malformed ${message.type}`);
   return message;
 }
