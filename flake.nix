@@ -450,6 +450,7 @@
             crates.project.workspaceMembers.nuschl-stream-sfu.build
           ]
           ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            pkgs.coturn
             crates.project.workspaceMembers.nuschl-rtc-worker.build
             videoWorker
           ];
@@ -1203,6 +1204,7 @@
               pkgs.bubblewrap
               pkgs.util-linux
               pkgs.ffmpeg-headless
+              pkgs.coturn
             ];
           LD_LIBRARY_PATH = lib.optionalString pkgs.stdenv.hostPlatform.isLinux (
             lib.makeLibraryPath buildInputs

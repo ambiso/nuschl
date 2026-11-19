@@ -30,6 +30,7 @@ static WORKERS: LazyLock<Option<(PathBuf, PathBuf)>> = LazyLock::new(|| {
 
 pub struct Active {
     owner: bool,
+    policy: PeerPolicy,
     room: String,
     server: String,
     conversation: TextTarget,
@@ -56,6 +57,7 @@ pub struct Start {
     generation: u64,
     url: String,
     host: String,
+    policy: PeerPolicy,
     source: Option<Source>,
     choice: Option<oneshot::Receiver<Source>>,
     updates: Arc<Latest>,
@@ -214,7 +216,6 @@ fn render_frame(frame: DecodedFrame) -> Option<Arc<RenderImage>> {
 impl Desktop {
     pub fn native_available(&self, host: &str) -> bool {
         WORKERS.is_some()
-            && !self.settings.relay_only
             && self.call_host().eq_ignore_ascii_case(host)
             && !matches!(host.split(':').next(), Some("localhost" | "127.0.0.1"))
     }
@@ -280,9 +281,13 @@ impl Desktop {
             ready: Notify::new(),
         });
         let (stop, stopped) = oneshot::channel();
+        let policy = PeerPolicy {
+            relay_only: self.settings.relay_only,
+        };
         self.native_call_generation = generation;
         self.native_call = Some(Active {
             owner,
+            policy,
             room,
             server,
             conversation,
@@ -303,6 +308,7 @@ impl Desktop {
             generation,
             url: browser,
             host: link.host().to_owned(),
+            policy,
             source,
             choice,
             updates,
@@ -375,7 +381,7 @@ impl Desktop {
                             .any(|announced| announced.link == call.room)
                     }
             });
-        if self.settings.relay_only || !current {
+        if !current || (self.settings.relay_only && !call.policy.relay_only) {
             if call.finished {
                 self.native_call = None;
             } else {
@@ -666,6 +672,7 @@ async fn drive(
         generation,
         url,
         host,
+        policy,
         source,
         choice,
         updates,
@@ -673,7 +680,10 @@ async fn drive(
     } = start;
     let revoke = async {
         loop {
-            if settings.borrow_and_update().relay_only || settings.changed().await.is_err() {
+            if settings.borrow_and_update().relay_only && !policy.relay_only {
+                return;
+            }
+            if settings.changed().await.is_err() {
                 return;
             }
         }
@@ -685,10 +695,17 @@ async fn drive(
         }
     };
     tokio::pin!(cancel);
+    let options = Connect {
+        generation,
+        host: &host,
+        link: &url,
+        codecs: &[Codec::Av1],
+        policy,
+    };
     let (mut media, grant, video_worker) = tokio::select! {
         biased;
         () = &mut cancel => return Ok(()),
-        result = prepare(crypto, generation, &host, &url, source, choice, &updates) => result?,
+        result = prepare(crypto, options, source, choice, &updates) => result?,
     };
     let result = if let Some(grant) = grant {
         publish_video(
@@ -751,9 +768,7 @@ async fn publish_video(
 
 async fn prepare(
     crypto: CryptoHandle,
-    generation: u64,
-    host: &str,
-    url: &str,
+    options: Connect<'_>,
     source: Option<Source>,
     choice: Option<oneshot::Receiver<Source>>,
     updates: &Latest,
@@ -762,18 +777,7 @@ async fn prepare(
         .as_ref()
         .ok_or("The native video workers are unavailable.")?
         .clone();
-    let mut connection = Connection::connect(
-        crypto,
-        Connect {
-            generation,
-            host,
-            link: url,
-            codecs: &[Codec::Av1],
-            policy: PeerPolicy::default(),
-        },
-    )
-    .await
-    .map_err(text)?;
+    let mut connection = Connection::connect(crypto, options).await.map_err(text)?;
     let permission = async {
         let source = if let Some(choice) = choice {
             updates.status("Call started. Choose a camera or screen to share.");
