@@ -107,7 +107,7 @@ async fn supervise(executable: PathBuf, settings: Settings, mut queue: mpsc::Rec
         id = id.wrapping_add(1);
         let exchange = async {
             if session.is_none() {
-                session = Some(Session::spawn(&executable).await?);
+                session = Some(Session::spawn(&executable, Role::VideoEncode).await?);
                 healthy_since = Instant::now();
                 if let Some(session) = &mut session {
                     session.configure(settings).await?;
@@ -140,23 +140,23 @@ async fn supervise(executable: PathBuf, settings: Settings, mut queue: mpsc::Rec
     }
 }
 
-struct Session {
+pub(super) struct Session {
     worker: Worker,
     retirement: Retirement,
 }
 
 impl Session {
-    async fn spawn(executable: &std::path::Path) -> Result<Self, Error> {
-        let mut worker = nuschl_sandbox::spawn_receipted(executable, Role::VideoEncode).await?;
+    pub(super) async fn spawn(
+        executable: &std::path::Path,
+        role: Role<'_>,
+    ) -> Result<Self, nuschl_sandbox::Error> {
+        let mut worker = nuschl_sandbox::spawn_receipted(executable, role).await?;
         let retirement = Retirement::new(&mut worker.child);
         Ok(Self { worker, retirement })
     }
 
     async fn configure(&mut self, settings: Settings) -> Result<(), Error> {
-        self.retirement
-            .ready()
-            .await
-            .map_err(|_| Error::Confinement)?;
+        self.ready().await.map_err(|_| Error::Confinement)?;
         let configuration = settings.to_bytes();
         let header = Header {
             bytes: Settings::BYTES as u32,
@@ -190,19 +190,31 @@ impl Session {
             return Err(invalid().into());
         }
         let mut bytes = vec![0; size];
-        self.worker.output.read_exact(&mut bytes).await?;
+        self.read(&mut bytes).await?;
         Ok(Output::Keyframe(bytes))
     }
 
-    async fn exchange(&mut self, header: Header, bytes: &[u8]) -> Result<Header, Error> {
-        self.worker.input.write_all(&header.to_bytes()).await?;
-        self.worker.input.write_all(bytes).await?;
-        let mut response = [0; HEADER_BYTES];
-        self.worker.output.read_exact(&mut response).await?;
-        Ok(Header::from_bytes(response)?)
+    pub(super) async fn ready(&mut self) -> Result<(), crate::host::Error> {
+        self.retirement.ready().await
     }
 
-    async fn retire(mut self) {
+    pub(super) async fn exchange(&mut self, header: Header, bytes: &[u8]) -> io::Result<Header> {
+        self.write(header, bytes).await?;
+        let mut response = [0; HEADER_BYTES];
+        self.read(&mut response).await?;
+        Header::from_bytes(response)
+    }
+
+    pub(super) async fn write(&mut self, header: Header, bytes: &[u8]) -> io::Result<()> {
+        self.worker.input.write_all(&header.to_bytes()).await?;
+        self.worker.input.write_all(bytes).await
+    }
+
+    pub(super) async fn read(&mut self, bytes: &mut [u8]) -> io::Result<()> {
+        self.worker.output.read_exact(bytes).await.map(|_| ())
+    }
+
+    pub(super) async fn retire(mut self) {
         self.retirement
             .retire(&mut self.worker.child, &self.worker.containment)
             .await;

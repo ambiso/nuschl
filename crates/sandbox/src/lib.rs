@@ -62,6 +62,8 @@ pub enum Role<'a> {
     VideoEncode,
     /// Video capture from an inherited portal-granted PipeWire connection.
     VideoCapture { node: Option<u32>, vaapi: bool },
+    /// AV1 video decoding from the input pipe, with an optional DRM render node.
+    VideoDecode { vaapi: bool },
     /// Encoded call media and opaque datagrams over inherited IPC.
     Rtc,
     /// History storage: only `directory`, writable.
@@ -140,6 +142,7 @@ impl<'a> Role<'a> {
             Role::MusicbotCodec { .. } => Capabilities { name: "musicbot-codec", linux_only: true, ..NOTHING },
             Role::VideoEncode => Capabilities { name: "video-encode", cpu_seconds: Some(120), linux_only: true, ..NOTHING },
             Role::VideoCapture { .. } => Capabilities { name: "video-capture", cpu_seconds: Some(3600), linux_only: true, ..NOTHING },
+            Role::VideoDecode { .. } => Capabilities { name: "video-decode", cpu_seconds: Some(3600), linux_only: true, ..NOTHING },
             Role::Rtc => Capabilities { name: "rtc", cpu_seconds: Some(3600), linux_only: true, ..NOTHING },
             Role::Storage { directory } => Capabilities { name: "storage", writable: Some(directory), ..NOTHING },
             Role::Crypto { directory } => Capabilities { name: "crypto", writable: Some(directory), ..NOTHING },
@@ -162,6 +165,8 @@ impl<'a> Role<'a> {
             Role::MusicbotCodec { operation } => vec!["--codec-worker".into(), operation.into()],
             Role::VideoEncode => vec!["--encode".into()],
             Role::VideoCapture { .. } => vec!["--encode".into(), "--capture".into()],
+            Role::VideoDecode { vaapi: false } => vec!["--decode".into()],
+            Role::VideoDecode { vaapi: true } => vec!["--decode-vaapi".into()],
             Role::Rtc => vec!["--call".into()],
             Role::Storage { .. } => vec!["--database".into(), data.join("history.sqlite3").into()],
             Role::Crypto { .. } => vec!["--data".into(), data.into()],

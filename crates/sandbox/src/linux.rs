@@ -45,6 +45,7 @@ pub(crate) fn command(executable: &Path, role: Role) -> Result<Command, Error> {
             | Role::Media
             | Role::VideoEncode
             | Role::VideoCapture { .. }
+            | Role::VideoDecode { .. }
             | Role::Rtc
     ) {
         command.args(["--json-status-fd", "2"]);
@@ -79,6 +80,9 @@ pub(crate) fn command(executable: &Path, role: Role) -> Result<Command, Error> {
         if vaapi {
             video_acceleration(&mut command);
         }
+    }
+    if let Role::VideoDecode { vaapi: true } = role {
+        video_acceleration(&mut command);
     }
     if can.network {
         command.arg("--share-net");

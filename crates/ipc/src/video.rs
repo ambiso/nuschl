@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: EUPL-1.2
-//! Video encoder settings and bounded binary pipe framing. Raw I420 crosses
-//! the local worker pipe; encoded AV1 is the only output.
+//! Video settings and bounded binary framing for the local video worker.
 
 mod capture;
+mod decode;
 #[cfg(feature = "video-portal")]
 pub mod portal;
 mod supervisor;
 
 pub use capture::{Capture, VideoFrame};
+pub use decode::{DecodeError, DecodedFrame, Decoder};
+#[doc(hidden)]
+pub use decode::{decode_frame_bytes, decode_packet_limit, source_from_byte, source_to_byte};
 pub use supervisor::{Encoder, Error, Output};
 
 use std::io;
@@ -103,6 +106,9 @@ pub enum Kind {
     HardwareFrame,
     SetBitrate,
     CaptureStart,
+    Decode,
+    Decoded,
+    ResetDecoder,
     CaptureKeyframe = 20,
 }
 
@@ -158,6 +164,9 @@ impl Header {
             7 => Kind::HardwareFrame,
             8 => Kind::SetBitrate,
             9 => Kind::CaptureStart,
+            10 => Kind::Decode,
+            11 => Kind::Decoded,
+            12 => Kind::ResetDecoder,
             20 => Kind::CaptureKeyframe,
             _ => return Err(invalid()),
         };
@@ -165,7 +174,7 @@ impl Header {
         if key
             && !matches!(
                 kind,
-                Kind::Encoded | Kind::CaptureFrame | Kind::HardwareFrame
+                Kind::Encoded | Kind::CaptureFrame | Kind::HardwareFrame | Kind::Decode
             )
         {
             return Err(invalid());
