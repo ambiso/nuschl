@@ -202,6 +202,10 @@ impl WgpuAtlasTextures {
             AtlasTextureKind::Subpixel | AtlasTextureKind::Polychrome => self.color_texture_format,
         };
 
+        let mut usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
+        if cfg!(test) {
+            usage |= wgpu::TextureUsages::COPY_SRC;
+        }
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("atlas"),
             size: wgpu::Extent3d {
@@ -213,7 +217,7 @@ impl WgpuAtlasTextures {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            usage,
             view_formats: &[],
         });
 
@@ -255,47 +259,60 @@ impl WgpuAtlasTextures {
     }
 
     fn upload_texture(&mut self, id: AtlasTextureId, bounds: Bounds<DevicePixels>, bytes: &[u8]) {
-        let data = self
-            .storage
-            .get(id)
-            .map(|texture| swizzle_upload_data(bytes, texture.format))
-            .unwrap_or_else(|| bytes.to_vec());
-
-        self.pending_uploads
-            .push(PendingUpload { id, bounds, data });
+        let Some(texture) = self.storage.get(id) else {
+            return;
+        };
+        if id.kind == AtlasTextureKind::Polychrome
+            && texture.format == wgpu::TextureFormat::Bgra8Unorm
+        {
+            // The queue stages these pixels now and applies the upload before
+            // the next submission. Each BGRA image tile uses this same order.
+            Self::write_texture(&self.queue, texture, bounds, bytes);
+        } else {
+            let data = swizzle_upload_data(bytes, texture.format);
+            self.pending_uploads
+                .push(PendingUpload { id, bounds, data });
+        }
     }
 
     fn flush_uploads(&mut self) {
         for upload in self.pending_uploads.drain(..) {
-            let Some(texture) = self.storage.get(upload.id) else {
-                continue;
-            };
-            let bytes_per_pixel = texture.bytes_per_pixel();
-
-            self.queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &texture.texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d {
-                        x: upload.bounds.origin.x.0 as u32,
-                        y: upload.bounds.origin.y.0 as u32,
-                        z: 0,
-                    },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &upload.data,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(upload.bounds.size.width.0 as u32 * bytes_per_pixel as u32),
-                    rows_per_image: None,
-                },
-                wgpu::Extent3d {
-                    width: upload.bounds.size.width.0 as u32,
-                    height: upload.bounds.size.height.0 as u32,
-                    depth_or_array_layers: 1,
-                },
-            );
+            if let Some(texture) = self.storage.get(upload.id) {
+                Self::write_texture(&self.queue, texture, upload.bounds, &upload.data);
+            }
         }
+    }
+
+    fn write_texture(
+        queue: &wgpu::Queue,
+        texture: &WgpuAtlasTexture,
+        bounds: Bounds<DevicePixels>,
+        bytes: &[u8],
+    ) {
+        let bytes_per_pixel = texture.bytes_per_pixel();
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: bounds.origin.x.0 as u32,
+                    y: bounds.origin.y.0 as u32,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bounds.size.width.0 as u32 * bytes_per_pixel as u32),
+                rows_per_image: None,
+            },
+            wgpu::Extent3d {
+                width: bounds.size.width.0 as u32,
+                height: bounds.size.height.0 as u32,
+                depth_or_array_layers: 1,
+            },
+        );
     }
 }
 
@@ -438,7 +455,7 @@ mod tests {
     fn before_frame_skips_uploads_for_removed_texture() -> anyhow::Result<()> {
         let (device, queue) = test_device_and_queue()?;
 
-        let atlas = WgpuAtlas::new(device, queue, wgpu::TextureFormat::Bgra8Unorm);
+        let atlas = WgpuAtlas::new(device, queue, wgpu::TextureFormat::Rgba8Unorm);
         let key = AtlasKey::Image(RenderImageParams {
             image_id: ImageId(1),
             frame_index: 0,
@@ -455,6 +472,92 @@ mod tests {
             .expect("tile should be created");
         atlas.remove(&key);
         atlas.before_frame();
+        Ok(())
+    }
+
+    #[test]
+    fn bgra_pixels_reach_reused_texture_slot_in_order() -> anyhow::Result<()> {
+        let (device, queue) = test_device_and_queue()?;
+        let atlas = WgpuAtlas::new(
+            device.clone(),
+            queue.clone(),
+            wgpu::TextureFormat::Bgra8Unorm,
+        );
+        let size = Size {
+            width: DevicePixels(1),
+            height: DevicePixels(1),
+        };
+        let old = AtlasKey::Image(RenderImageParams {
+            image_id: ImageId(1),
+            frame_index: 0,
+        });
+        let new = AtlasKey::Image(RenderImageParams {
+            image_id: ImageId(2),
+            frame_index: 0,
+        });
+        let first = atlas
+            .get_or_insert_with(old.clone(), &mut || {
+                Ok(Some((size, Cow::Borrowed(&[5, 6, 7, 255]))))
+            })?
+            .context("first image tile")?;
+        atlas.remove(&old);
+        let bgra = [10, 20, 30, 255];
+        let second = atlas
+            .get_or_insert_with(new, &mut || Ok(Some((size, Cow::Borrowed(&bgra)))))?
+            .context("second image tile")?;
+        assert_eq!(first.texture_id, second.texture_id);
+        let texture = {
+            let atlas = atlas.0.lock();
+            assert!(atlas.backend.pending_uploads.is_empty());
+            atlas
+                .backend
+                .storage
+                .get(second.texture_id)
+                .context("second texture")?
+                .texture
+                .clone()
+        };
+
+        let pixels = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("atlas BGRA readback"),
+            size: 4,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: second.bounds.origin.x.0 as u32,
+                    y: second.bounds.origin.y.0 as u32,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &pixels,
+                layout: wgpu::TexelCopyBufferLayout::default(),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        let submission = queue.submit([encoder.finish()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        pixels.map_async(wgpu::MapMode::Read, .., move |result| {
+            let _ = tx.send(result);
+        });
+        let timeout = std::time::Duration::from_secs(10);
+        device.poll(wgpu::PollType::Wait {
+            submission_index: Some(submission),
+            timeout: Some(timeout),
+        })?;
+        rx.recv_timeout(timeout)??;
+        assert_eq!(&*pixels.get_mapped_range(..)?, &bgra);
         Ok(())
     }
 
