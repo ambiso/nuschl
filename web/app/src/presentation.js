@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 // Inert presentation only: the SDK owns identity, selection, messages and history.
-export function channelRows(channels, expanded, server) {
+// The visible channel rows. A collapsed row counts the people in its hidden
+// subchannels (hiddenUsers) and whether one of them talks (hiddenTalking).
+export function channelRows(channels, expanded, server, users = []) {
   const nodes = new Map(channels.map((channel) => [channel.id, channel]));
   const children = new Map();
   for (const channel of channels) {
@@ -9,16 +11,30 @@ export function channelRows(channels, expanded, server) {
     group.push(channel);
     children.set(parent, group);
   }
+  const people = new Map();
+  for (const user of users) {
+    const [count, talking] = people.get(user.channel) || [0, false];
+    people.set(user.channel, [count + 1, talking || user.talking === true]);
+  }
   const rows = [];
   const visited = new Set();
-  const walk = (channel, depth) => {
-    if (visited.has(channel.id) || depth > 32) return;
+  // Adds the visible rows; returns the people in the subtree and whether one talks.
+  const walk = (channel, depth, visible = true) => {
+    if (visited.has(channel.id) || depth > 32) return [0, false];
     visited.add(channel.id);
     const hasChildren = (children.get(channel.id)?.length || 0) > 0;
     const key = `${server}:${channel.id}`;
     const open = expanded.has(key) ? expanded.get(key) : channel.id === 0;
-    rows.push({ ...channel, depth, hasChildren, open });
-    if (open) for (const child of children.get(channel.id) || []) walk(child, depth + 1);
+    const row = { ...channel, depth, hasChildren, open };
+    if (visible) rows.push(row);
+    let [count, talking] = [0, false];
+    for (const child of children.get(channel.id) || []) {
+      const [inside, speaking] = walk(child, depth + 1, visible && open);
+      count += inside; talking ||= speaking;
+    }
+    if (!open) { row.hiddenUsers = count; row.hiddenTalking = talking; }
+    const [own, ownTalking] = people.get(channel.id) || [0, false];
+    return [count + own, talking || ownTalking];
   };
   for (const root of children.get(null) || []) walk(root, 0);
   if (!rows.length && channels.length) walk(channels[0], 0);

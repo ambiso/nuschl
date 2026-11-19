@@ -75,7 +75,7 @@
     : microphoneMuted ? "Microphone muted" : audioState?.phase === "permission-pending" ? "Waiting for microphone permission"
     : audioState?.phase === "denied" ? "Microphone permission denied" : audioState?.phase === "unavailable" ? "Audio unavailable"
     : audioState?.microphone && voice.can_transmit ? "Microphone on" : voice.muted ? "Microphone blocked" : "Microphone off");
-  const rows = $derived(selected ? channelRows(selected.channels, expanded, selected.id) : []);
+  const rows = $derived(selected ? channelRows(selected.channels, expanded, selected.id, selected.users) : []);
   const currentChannel = $derived(selected?.channels.find((channel) => channel.id === timeline?.channel));
   const ownUser = $derived(selected?.users.find((user) => user.session === selected.own_session));
   // Current save availability, then this connection's rows that were not saved.
@@ -103,7 +103,7 @@
     menu:"M4 6h16M4 12h16M4 18h16", close:"m6 6 12 12M6 18 18 6", plus:"M12 5v14M5 12h14", hash:"M10 3 8 21M17 3l-2 18M4 9h17M3 15h17",
     voice:"M11 5 6 9H3v6h3l5 4V5Zm4 3a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14", mic:"M12 15a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v7a3 3 0 0 0 3 3Zm-6-4v1a6 6 0 0 0 12 0v-1M12 18v4M8 22h8",
     smile:"M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM8.5 14.5a4.5 4.5 0 0 0 7 0M9 9.5h.01M15 9.5h.01",
-    headphones:"M4 14v-3a8 8 0 0 1 16 0v3M4 13h4v8H4v-8Zm12 0h4v8h-4v-8", search:"m21 21-5-5M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16", people:"M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M16 3a4 4 0 0 1 0 8m6 10v-2a4 4 0 0 0-3-3.87M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0",
+    headphones:"M4 14v-3a8 8 0 0 1 16 0v3M4 13h4v8H4v-8Zm12 0h4v8h-4v-8", search:"m21 21-5-5M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16", user:"M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z", people:"M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M16 3a4 4 0 0 1 0 8m6 10v-2a4 4 0 0 0-3-3.87M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0",
     settings:"m9 3-.7 3-2.8 1-2.5-1.5-2 3.5 2.3 2V14L1 16l2 3.5L5.5 18l2.8 1L9 22h4l.7-3 2.8-1 2.5 1.5 2-3.5-2.3-2v-3L21 9l-2-3.5L16.5 7l-2.8-1L13 3H9ZM15 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0", send:"m22 2-7 20-4-9-9-4 20-7ZM11 13 22 2", leave:"M10 17l5-5-5-5M15 12H3M15 3h5v18h-5", lock:"M5 10h14v11H5V10Zm3 0V6a4 4 0 0 1 8 0", unlock:"M5 10h14v11H5V10Zm3 0V6a4 4 0 0 1 7-3", chevron:"m9 5 7 7-7 7",
   };
   function commandFrom(reference,method, ...args) {
@@ -499,6 +499,7 @@
           <div class="channel-row" style:--depth={Math.min(row.depth,8)}>
             {#if row.hasChildren}<button class="expand" aria-label={`${row.open ? "Collapse" : "Expand"} ${row.name}`} aria-expanded={row.open} onclick={() => toggle(row)}>{row.open ? "▾" : "▸"}</button>{:else}<span class="spacer"></span>{/if}
             <button class:current={timeline?.channel === row.id} class:voice-current={ownUser?.channel === row.id && selected.status === "connected"} class="channel" onpointerdown={(event) => lastChannelPointer = event.pointerType} data-unread={unreadCount(row) > 0} title={`${row.name || "Root"} — click for chat, double-click to join voice`} aria-label={row.name || "Root"} aria-current={timeline?.channel === row.id ? "page" : undefined} onclick={() => openChannel(row.id)} ondblclick={() => lastChannelPointer !== "touch" && !row.direct && joinVoice(row.id)}><span class="channel-symbol" aria-hidden="true">{row.direct ? "@" : "#"}</span><span class="channel-name">{row.name || "Root"}</span>{#if ownUser?.channel === row.id && !row.direct && selected.status === "connected"}<span class="voice-marker" title="Your voice channel">{@render icon("voice")}</span>{/if}{#if unreadCount(row)}<span class="badge">{Math.min(99,unreadCount(row))}</span>{/if}</button>
+            {#if row.hiddenUsers}{@const people = `${row.hiddenUsers} ${row.hiddenUsers === 1 ? "person" : "people"}`}<span class="member-count" class:talking={row.hiddenTalking} role="img" aria-label={`${people} inside`} title={`${people} in collapsed channels`}>{@render icon("user")}{row.hiddenUsers}</span>{/if}
           </div>
           {#each usersByChannel.get(row.id) || [] as user (user.session)}<button class:talking={user.talking} class:own-user={user.session === selected.own_session} class="user" title={user.name} aria-label={user.session === selected.own_session ? `${user.name} (you)` : `Private message ${user.name}`} style:--depth={Math.min(row.depth,8)} disabled={user.session === selected.own_session} onclick={async () => { rememberDraft(); await act("open_direct",selectedIndex,user.session); if (mobile) drawer = false; }}><span class={`mini-avatar ${avatarColor(user.name)}`}>{initials(user.name)}</span><span class="user-name">{user.name}</span>{#if user.self_deaf || user.deafened}<span title="Deafened">{@render icon("headphones", true)}</span>{:else if user.self_mute || user.muted}<span title="Muted">{@render icon("mic", true)}</span>{/if}</button>{/each}
         {/each}
