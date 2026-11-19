@@ -10,7 +10,7 @@ use crate::{
 };
 use gpui_kit::{prelude::*, *};
 use nuschl_client::native::sfu::{Connect, Connection, Media, MediaEvent, MediaOptions, Purpose};
-use nuschl_core::{call::page_url, model::TextTarget, network::PeerPolicy};
+use nuschl_core::{model::TextTarget, network::PeerPolicy};
 use nuschl_ipc::video::{Capture, DecodeError, DecodedFrame, Decoder, Source, portal};
 use nuschl_protocol::sfu::Codec;
 use nuschl_session::{config::ClientSettings, identity::CryptoHandle};
@@ -35,21 +35,13 @@ pub struct Active {
     server: String,
     conversation: TextTarget,
     voice_generation: u64,
-    browser: String,
     surface: Entity<Surface>,
     updates: Arc<Latest>,
-    choose: Option<oneshot::Sender<Source>>,
     stop: Option<oneshot::Sender<()>>,
-    after_stop: Option<AfterStop>,
-    finished: bool,
     minimized: bool,
-    curtain: bool,
-    curtain_ready: Option<oneshot::Sender<()>>,
-}
-
-enum AfterStop {
-    Close,
-    Browser,
+    expanded: bool,
+    monitor: bool,
+    confirm_monitor: Option<oneshot::Sender<()>>,
 }
 
 pub struct Start {
@@ -59,7 +51,6 @@ pub struct Start {
     host: String,
     policy: PeerPolicy,
     source: Option<Source>,
-    choice: Option<oneshot::Receiver<Source>>,
     updates: Arc<Latest>,
     stop: oneshot::Receiver<()>,
 }
@@ -69,7 +60,6 @@ struct Update {
     frame: Option<DecodedFrame>,
     visible: bool,
     clear: bool,
-    finished: bool,
 }
 
 struct Latest {
@@ -96,7 +86,7 @@ impl Latest {
         self.ready.notify_one();
     }
 
-    fn clear(&self, status: impl Into<String>, finished: bool) {
+    fn clear(&self, status: impl Into<String>) {
         let mut update = self
             .update
             .lock()
@@ -104,7 +94,6 @@ impl Latest {
         update.status = status.into();
         update.frame = None;
         update.clear = true;
-        update.finished = finished;
         drop(update);
         self.ready.notify_one();
     }
@@ -126,6 +115,7 @@ impl Latest {
 struct Surface {
     status: String,
     image: Option<Arc<RenderImage>>,
+    expanded: bool,
     _updates: Task<()>,
 }
 
@@ -134,7 +124,7 @@ impl Surface {
         let observe = cx.spawn(async move |this, cx| {
             loop {
                 updates.ready.notified().await;
-                let (status, frame, clear, finished) = {
+                let (status, frame, clear) = {
                     let mut update = updates
                         .update
                         .lock()
@@ -147,7 +137,6 @@ impl Surface {
                             None
                         },
                         std::mem::take(&mut update.clear),
-                        update.finished,
                     )
                 };
                 if this
@@ -164,14 +153,12 @@ impl Surface {
                 {
                     break;
                 }
-                if finished {
-                    break;
-                }
             }
         });
         Self {
             status: status.into(),
             image: None,
+            expanded: false,
             _updates: observe,
         }
     }
@@ -180,11 +167,14 @@ impl Surface {
 impl Render for Surface {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         crate::images::collect(window);
+        let height = px(f32::from(window.viewport_size().height) * 0.36).min(px(400.));
         div()
             .flex()
             .flex_col()
             .gap_1()
+            .min_h_0()
             .w_full()
+            .when(self.expanded, |surface| surface.flex_1())
             .child(
                 div()
                     .id("native-call-status")
@@ -197,7 +187,9 @@ impl Render for Surface {
                     div()
                         .id("native-call-picture")
                         .w_full()
-                        .h(px(240.))
+                        .min_h_0()
+                        .when(self.expanded, |picture| picture.flex_1())
+                        .when(!self.expanded, |picture| picture.h(height))
                         .bg(rgb(0x08090c))
                         .child(img(image).size_full().object_fit(ObjectFit::Contain)),
                 )
@@ -250,24 +242,17 @@ impl Desktop {
         let voice_generation = selected.generation;
         let owner = link.publisher().is_some();
         let room = link.url();
-        let browser = if owner {
-            let Some(browser) = link.creator_url() else {
+        let url = if owner {
+            let Some(url) = link.creator_url() else {
                 return;
             };
-            browser
+            url
         } else {
             room.clone()
-        };
-        let (choose, choice) = if owner && source.is_none() {
-            let (choose, choice) = oneshot::channel();
-            (Some(choose), Some(choice))
-        } else {
-            (None, None)
         };
         let status = match source {
             Some(Source::Camera) => "Waiting for camera permission",
             Some(Source::Screen) => "Choose a screen or window",
-            None if owner => "Starting video call",
             None => "Joining video call",
         };
         let updates = Arc::new(Latest {
@@ -276,7 +261,6 @@ impl Desktop {
                 frame: None,
                 visible: true,
                 clear: false,
-                finished: false,
             }),
             ready: Notify::new(),
         });
@@ -292,25 +276,21 @@ impl Desktop {
             server,
             conversation,
             voice_generation,
-            browser: browser.clone(),
             surface: cx.new(|cx| Surface::new(updates.clone(), status, cx)),
             updates: updates.clone(),
-            choose,
             stop: Some(stop),
-            after_stop: None,
-            finished: false,
             minimized: false,
-            curtain: false,
-            curtain_ready: None,
+            expanded: false,
+            monitor: false,
+            confirm_monitor: None,
         });
         self.services.native_call(Start {
             crypto: self.driver.call_crypto(),
             generation,
-            url: browser,
+            url,
             host: link.host().to_owned(),
             policy,
             source,
-            choice,
             updates,
             stop: stopped,
         });
@@ -320,7 +300,7 @@ impl Desktop {
         &mut self,
         index: usize,
         target: TextTarget,
-        source: Option<Source>,
+        source: Source,
         cx: &mut Context<Self>,
     ) {
         if self.native_call.is_some() || !self.native_available(self.call_host()) {
@@ -329,31 +309,24 @@ impl Desktop {
         match self.create_call(index, target.clone()) {
             Ok(link) => {
                 let server = self.client.servers[index].id.clone();
-                self.open_native_call(server, target, &link, source, cx);
-                self.announce_call(link, "Call");
+                self.open_native_call(server, target, &link, Some(source), cx);
+                self.announce_call(link);
             }
             Err(error) => self.client.servers[index].set_notice(error),
         }
     }
 
-    fn stop_native(&mut self, after: AfterStop) {
-        if let Some(call) = &mut self.native_call {
-            if let Some(stop) = call.stop.take() {
-                let _ = stop.send(());
-            }
-            call.after_stop = Some(after);
+    fn stop_native(&mut self) {
+        if let Some(call) = &mut self.native_call
+            && let Some(stop) = call.stop.take()
+        {
+            let _ = stop.send(());
         }
     }
 
     pub fn stop_native_owner(&mut self) {
-        if let Some(call) = &self.native_call
-            && call.owner
-        {
-            if call.finished {
-                self.native_call = None;
-            } else {
-                self.stop_native(AfterStop::Close);
-            }
+        if self.native_call.as_ref().is_some_and(|call| call.owner) {
+            self.stop_native();
         }
     }
 
@@ -382,29 +355,39 @@ impl Desktop {
                     }
             });
         if !current || (self.settings.relay_only && !call.policy.relay_only) {
-            if call.finished {
-                self.native_call = None;
-            } else {
-                self.stop_native(AfterStop::Close);
-            }
+            self.stop_native();
         }
     }
 
-    fn minimize_native_call(&mut self, cx: &mut Context<Self>) {
+    fn set_call_expanded(&mut self, expanded: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(call) = &mut self.native_call else {
+            return;
+        };
+        call.expanded = expanded;
+        call.surface.update(cx, |surface, cx| {
+            surface.expanded = expanded;
+            cx.notify();
+        });
+        if expanded && !window.is_fullscreen() {
+            self.native_call_fullscreen = true;
+            window.toggle_fullscreen();
+        } else if !expanded {
+            self.restore_call_window(window);
+        }
+        cx.notify();
+    }
+
+    fn restore_call_window(&mut self, window: &Window) {
+        if std::mem::take(&mut self.native_call_fullscreen) && window.is_fullscreen() {
+            window.toggle_fullscreen();
+        }
+    }
+
+    fn minimize_native_call(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_call_expanded(false, window, cx);
         if let Some(call) = &mut self.native_call {
             call.minimized = true;
             call.updates.show_video(false);
-            cx.notify();
-        }
-    }
-
-    fn choose_native_source(&mut self, source: Source, cx: &mut Context<Self>) {
-        if let Some(choose) = self
-            .native_call
-            .as_mut()
-            .and_then(|call| call.choose.take())
-        {
-            let _ = choose.send(source);
             cx.notify();
         }
     }
@@ -435,92 +418,72 @@ impl Desktop {
         }
     }
 
-    fn leave_native_call(&mut self, after: AfterStop, cx: &mut Context<Self>) {
-        self.stop_native(after);
-        if self.native_call.as_ref().is_some_and(|call| call.finished) {
-            self.native_finished(self.native_call_generation, cx);
-        }
-        cx.notify();
-    }
-
-    pub fn native_curtain(&mut self, generation: u64, ready: oneshot::Sender<()>) {
+    pub fn confirm_monitor_share(&mut self, generation: u64, ready: oneshot::Sender<()>) {
         if generation == self.native_call_generation
             && let Some(call) = &mut self.native_call
             && call.stop.is_some()
         {
-            call.curtain = true;
             call.minimized = false;
             call.updates.show_video(true);
-            call.curtain_ready = Some(ready);
+            call.confirm_monitor = Some(ready);
         }
     }
 
-    pub fn native_finished(&mut self, generation: u64, cx: &mut Context<Self>) {
+    pub fn native_finished(&mut self, generation: u64, error: Option<String>) {
         if generation != self.native_call_generation {
             return;
         }
-        let Some(call) = &mut self.native_call else {
+        let Some(call) = self.native_call.take() else {
             return;
         };
-        call.finished = true;
-        call.stop.take();
-        call.choose.take();
-        call.curtain = false;
-        call.curtain_ready = None;
-        match call.after_stop.take() {
-            Some(AfterStop::Browser) => {
-                cx.open_url(&page_url(&call.browser, self.settings.relay_only));
-                self.native_call = None;
+        if call.owner
+            && self
+                .client
+                .own_call()
+                .is_some_and(|own| own.link == call.room)
+        {
+            self.end_call();
+        }
+        if call.stop.is_some()
+            && let Some(server) = self.client.servers.iter_mut().find(|server| {
+                server.id == call.server && server.generation == call.voice_generation
+            })
+        {
+            if let Some(error) = error {
+                server.set_notice(format!("Video unavailable. {error}"));
+            } else if !call.owner {
+                server
+                    .calls
+                    .retain(|card| card.link != call.room || card.target != call.conversation);
             }
-            Some(AfterStop::Close) => {
-                let ends_our_call = call.owner
-                    && self
-                        .client
-                        .own_call()
-                        .is_some_and(|own| own.link == call.room);
-                self.native_call = None;
-                if ends_our_call {
-                    self.end_call();
-                }
-            }
-            None => {}
         }
     }
 }
 
-pub fn curtain(
+/// The user can focus video on demand. The ordinary view keeps the chat visible.
+pub fn expanded(
     this: &mut Desktop,
     window: &mut Window,
     cx: &mut Context<Desktop>,
 ) -> Option<AnyElement> {
-    let call = this.native_call.as_mut()?;
-    if !call.curtain || call.minimized {
+    if !this.native_call.as_ref().is_some_and(|call| call.expanded) {
+        this.restore_call_window(window);
         return None;
     }
-    if let Some(ready) = call.curtain_ready.take() {
-        window.on_next_frame(move |_, _| {
-            let _ = ready.send(());
-        });
-    }
     let cover = div()
-        .id("screen-sharing-curtain")
+        .id("expanded-video-call")
         .size_full()
         .flex()
         .flex_col()
-        .bg(color(MAIN))
         .text_color(color(TEXT))
-        .map(|cover| crate::chrome::round(cover, this.window_corners))
-        .child(crate::chrome::title_bar(
-            "Screen sharing".into(),
-            window,
-            cx,
-        ))
-        .child(
-            div()
-                .px_3()
-                .py_2()
-                .child("Conversations are hidden during screen sharing."),
-        )
+        .bg(color(MAIN))
+        .track_focus(&this.window_focus)
+        .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+            if event.keystroke.key == "escape" {
+                this.set_call_expanded(false, window, cx);
+                cx.stop_propagation();
+            }
+        }))
         .when_some(panel(this, cx), |cover, panel| cover.child(panel));
     Some(crate::chrome::frame(window, cover.into_any_element()))
 }
@@ -530,72 +493,83 @@ pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
     if call.minimized {
         return None;
     }
+    let expanded = call.expanded;
     let actions = layout::actions()
-        .when(call.choose.is_some(), |actions| {
-            actions
-                .child(styled_button(
-                    "native-call-camera",
-                    "Start camera",
-                    Tone::Primary,
-                    |this, _, cx| this.choose_native_source(Source::Camera, cx),
-                    cx,
-                ))
-                .child(styled_button(
-                    "native-call-screen",
-                    "Share screen",
-                    Tone::Secondary,
-                    |this, _, cx| this.choose_native_source(Source::Screen, cx),
-                    cx,
-                ))
+        .when(call.confirm_monitor.is_some(), |actions| {
+            actions.child(styled_button(
+                "native-call-confirm-monitor",
+                "Share entire monitor",
+                Tone::Primary,
+                |this, _, cx| {
+                    if let Some(call) = &mut this.native_call
+                        && let Some(ready) = call.confirm_monitor.take()
+                    {
+                        let _ = ready.send(());
+                        call.monitor = true;
+                        cx.notify();
+                    }
+                },
+                cx,
+            ))
         })
         .child(styled_button(
+            "native-call-expand",
+            if expanded {
+                "Exit full screen"
+            } else {
+                "Full screen"
+            },
+            Tone::Secondary,
+            move |this, window, cx| this.set_call_expanded(!expanded, window, cx),
+            cx,
+        ))
+        .child(styled_button(
             "native-call-minimize",
-            if call.curtain {
-                "Show app while sharing"
-            } else {
-                "Minimize call"
-            },
+            "Minimize call",
             Tone::Secondary,
-            |this, _, cx| this.minimize_native_call(cx),
+            |this, window, cx| this.minimize_native_call(window, cx),
             cx,
         ))
-        .child(styled_button(
-            "native-call-browser",
-            "Open in browser",
-            Tone::Secondary,
-            |this, _, cx| {
-                this.leave_native_call(AfterStop::Browser, cx);
-            },
-            cx,
-        ))
-        .child(styled_button(
-            "native-call-stop",
-            if call.owner {
-                "End call"
-            } else {
-                "Leave video"
-            },
-            Tone::Danger,
-            |this, _, cx| {
-                this.leave_native_call(AfterStop::Close, cx);
-            },
-            cx,
-        ));
+        .child(stop_button(call, cx));
     Some(
         div()
             .id("native-call")
             .flex()
             .flex_col()
+            .flex_shrink_0()
             .min_w_0()
-            .px_3()
-            .py_2()
+            .min_h_0()
+            .when(expanded, |panel| panel.flex_1().p_3())
+            .when(!expanded, |panel| panel.px_3().py_2())
             .gap_1()
             .border_b_1()
             .border_color(color(BORDER))
             .bg(color(MAIN))
             .child(actions)
+            .when(call.confirm_monitor.is_some() || call.monitor, |panel| {
+                panel.child(div().text_sm().child(
+                    "Anyone watching can see the Nuschl window while it’s on the shared monitor.",
+                ))
+            })
             .child(call.surface.clone())
             .into_any_element(),
+    )
+}
+
+fn stop_button(call: &Active, cx: &mut Context<Desktop>) -> impl IntoElement {
+    styled_button(
+        "native-call-stop",
+        if call.owner {
+            "End call"
+        } else {
+            "Leave video"
+        },
+        Tone::Danger,
+        |this, _, cx| {
+            this.stop_native();
+            cx.notify();
+        },
+        cx,
     )
 }
 
@@ -620,9 +594,7 @@ pub fn minimized(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement
             .py_1()
             .border_b_1()
             .border_color(color(BORDER))
-            .when(call.curtain, |bar| {
-                bar.child("Screen sharing · Nuschl is visible in the share")
-            })
+            .when(call.monitor, |bar| bar.child("Sharing entire monitor"))
             .child(styled_button(
                 "native-call-restore",
                 "Return to call",
@@ -630,17 +602,7 @@ pub fn minimized(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement
                 |this, window, cx| this.restore_native_call(window, cx),
                 cx,
             ))
-            .child(styled_button(
-                "native-call-stop",
-                if call.owner {
-                    "End call"
-                } else {
-                    "Leave video"
-                },
-                Tone::Danger,
-                |this, _, cx| this.leave_native_call(AfterStop::Close, cx),
-                cx,
-            ))
+            .child(stop_button(call, cx))
             .into_any_element(),
     )
 }
@@ -651,14 +613,9 @@ pub async fn run(
     events: mpsc::Sender<ServiceEvent>,
 ) {
     let generation = start.generation;
-    let updates = start.updates.clone();
-    let status = match drive(start, &mut settings, &events).await {
-        Ok(()) => "Video call ended".into(),
-        Err(error) => format!("Video unavailable. {error}"),
-    };
-    updates.clear(status, true);
+    let error = drive(start, &mut settings, &events).await.err();
     let _ = events
-        .send(ServiceEvent::NativeFinished { generation })
+        .send(ServiceEvent::NativeFinished { generation, error })
         .await;
 }
 
@@ -674,7 +631,6 @@ async fn drive(
         host,
         policy,
         source,
-        choice,
         updates,
         mut stop,
     } = start;
@@ -705,7 +661,7 @@ async fn drive(
     let (mut media, grant, video_worker) = tokio::select! {
         biased;
         () = &mut cancel => return Ok(()),
-        result = prepare(crypto, options, source, choice, &updates) => result?,
+        result = prepare(crypto, options, source, &updates) => result?,
     };
     let result = if let Some(grant) = grant {
         publish_video(
@@ -735,21 +691,18 @@ async fn publish_video(
     mut cancel: std::pin::Pin<&mut impl Future<Output = ()>>,
 ) -> Result<(), String> {
     if grant.requires_curtain() {
-        let hide_conversations = async {
-            let (ready, painted) = oneshot::channel();
+        let confirm = async {
+            let (ready, confirmed) = oneshot::channel();
             events
-                .send(ServiceEvent::NativeCurtain { generation, ready })
+                .send(ServiceEvent::ConfirmMonitorShare { generation, ready })
                 .await
                 .map_err(text)?;
-            tokio::time::timeout(Duration::from_secs(5), painted)
-                .await
-                .map_err(text)?
-                .map_err(text)
+            confirmed.await.map_err(text)
         };
         tokio::select! {
             biased;
             () = &mut cancel => return Ok(()),
-            result = hide_conversations => result?,
+            result = confirm => result?,
         }
     }
     let rate = match grant.source() {
@@ -770,7 +723,6 @@ async fn prepare(
     crypto: CryptoHandle,
     options: Connect<'_>,
     source: Option<Source>,
-    choice: Option<oneshot::Receiver<Source>>,
     updates: &Latest,
 ) -> Result<(Media, Option<portal::Grant>, PathBuf), String> {
     let (executable, video_worker) = WORKERS
@@ -779,12 +731,6 @@ async fn prepare(
         .clone();
     let mut connection = Connection::connect(crypto, options).await.map_err(text)?;
     let permission = async {
-        let source = if let Some(choice) = choice {
-            updates.status("Call started. Choose a camera or screen to share.");
-            Some(choice.await.map_err(text)?)
-        } else {
-            source
-        };
         let Some(source) = source else {
             return Ok::<_, String>(None);
         };
@@ -831,7 +777,7 @@ async fn send_video(
     let mut rate = cap;
     loop {
         tokio::select! {
-            event = media.next() => match event.transpose().map_err(text)? {
+            event = media.next() => match call_event(event)? {
                 Some(MediaEvent::SendReady) => { ready = true; capture.request_keyframe(); }
                 Some(MediaEvent::KeyframeRequired) => capture.request_keyframe(),
                 Some(MediaEvent::EncoderLimits { bitrate, .. }) => { cap = video_rate(bitrate); }
@@ -868,7 +814,10 @@ async fn receive_video(
     let mut decoder = None;
     let receive = async {
         while let Some(event) = media.next().await {
-            let (purpose, contiguous, key_frame, data) = match event.map_err(text)? {
+            let Some(event) = call_event(Some(event))? else {
+                break;
+            };
+            let (purpose, contiguous, key_frame, data) = match event {
                 MediaEvent::Frame {
                     purpose,
                     contiguous,
@@ -878,7 +827,7 @@ async fn receive_video(
                 } => (purpose, contiguous, key_frame, data),
                 MediaEvent::SourceEnded { purpose } => {
                     if let Some((_, session)) = decoder.take_if(|(chosen, _)| *chosen == purpose) {
-                        updates.clear("Waiting for video", false);
+                        updates.clear("Waiting for video");
                         Decoder::stop(session).await.map_err(text)?;
                     }
                     continue;
@@ -934,4 +883,13 @@ fn video_rate(bitrate: u64) -> u32 {
 }
 fn text(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+fn call_event(
+    event: Option<Result<MediaEvent, nuschl_client::native::sfu::Error>>,
+) -> Result<Option<MediaEvent>, String> {
+    match event.transpose() {
+        Err(nuschl_client::native::sfu::Error::Refused(reason)) if reason == "ended" => Ok(None),
+        result => result.map_err(text),
+    }
 }

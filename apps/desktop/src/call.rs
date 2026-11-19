@@ -14,11 +14,9 @@
 //! opens as `/call?relay#…` and connects through the call host's TURN server only
 //! (docs/web.md, "The call page").
 use crate::{services::ServiceEvent, state::Desktop};
-use gpui_kit::Context;
-use nuschl_core::{
-    call::{DEFAULT_HOST, page_url},
-    model::TextTarget,
-};
+use nuschl_core::call::DEFAULT_HOST;
+#[cfg(target_os = "linux")]
+use nuschl_core::model::TextTarget;
 use nuschl_stream::Link;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
@@ -128,24 +126,6 @@ pub async fn run(
 }
 
 impl Desktop {
-    /// Start a call in the open conversation.
-    pub fn start_call(
-        &mut self,
-        index: usize,
-        target: nuschl_core::model::TextTarget,
-        cx: &mut Context<Self>,
-    ) {
-        #[cfg(target_os = "linux")]
-        if self.native_available(self.call_host()) {
-            self.start_native_call(index, target, None, cx);
-            return;
-        }
-        match self.create_call(index, target) {
-            Ok(link) => self.open_call(link, "Call", cx),
-            Err(error) => self.client.servers[index].set_notice(error),
-        }
-    }
-
     pub fn call_host(&self) -> &str {
         match self.settings.call_host.as_str() {
             "" => DEFAULT_HOST,
@@ -153,6 +133,7 @@ impl Desktop {
         }
     }
 
+    #[cfg(target_os = "linux")]
     pub fn create_call(&mut self, index: usize, target: TextTarget) -> Result<Link, String> {
         let link = Link::generate(self.call_host(), &mut getrandom::SysRng)
             .map_err(|error| format!("No call: {error}"))?;
@@ -160,29 +141,9 @@ impl Desktop {
         Ok(link)
     }
 
-    /// Our call gets a new link; the page opens again on it.
-    pub fn rotate_call(&mut self, cx: &mut Context<Self>) {
-        let Some(link) = self
-            .call
-            .as_ref()
-            .and_then(|call| Link::generate(call.link.host(), &mut getrandom::SysRng).ok())
-        else {
-            return;
-        };
-        self.client.rotate_call(link.url());
-        self.open_call(link, "New call link", cx);
-    }
-
-    /// Open the creator's page, post the Join link as text for stock Mumble
-    /// clients and keep the lease; a previous lease ends.
-    fn open_call(&mut self, link: Link, label: &str, cx: &mut Context<Self>) {
-        let url = link.creator_url().expect("the creator's link");
-        cx.open_url(&page_url(&url, self.settings.relay_only));
-        self.announce_call(link, label);
-    }
-
-    pub fn announce_call(&mut self, link: Link, label: &str) {
-        let _ = self.client.send_text(format!("{label}: {}", link.url()));
+    #[cfg(target_os = "linux")]
+    pub fn announce_call(&mut self, link: Link) {
+        let _ = self.client.send_text(format!("Call: {}", link.url()));
         let (url, body) = lease_request(&link);
         self.call_leases += 1;
         let (stop, stopped) = oneshot::channel();

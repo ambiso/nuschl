@@ -204,6 +204,8 @@ pub struct Desktop {
     pub native_call: Option<crate::native_call::Active>,
     #[cfg(target_os = "linux")]
     pub native_call_generation: u64,
+    #[cfg(target_os = "linux")]
+    pub native_call_fullscreen: bool,
     pub link_preview: crate::link_preview::ComposerPreview,
     pub profile: Profile,
     pub form: Option<ServerForm>,
@@ -534,6 +536,8 @@ impl Desktop {
             native_call: None,
             #[cfg(target_os = "linux")]
             native_call_generation: 0,
+            #[cfg(target_os = "linux")]
+            native_call_fullscreen: false,
             link_preview: crate::link_preview::ComposerPreview::default(),
             profile,
             form: None,
@@ -2716,11 +2720,13 @@ impl Desktop {
             ServiceEvent::Prepared { id, result } => self.prepared(id, result, cx),
             ServiceEvent::CallLeaseEnded { id } => self.call_lease_ended(id),
             #[cfg(target_os = "linux")]
-            ServiceEvent::NativeCurtain { generation, ready } => {
-                self.native_curtain(generation, ready);
+            ServiceEvent::ConfirmMonitorShare { generation, ready } => {
+                self.confirm_monitor_share(generation, ready);
             }
             #[cfg(target_os = "linux")]
-            ServiceEvent::NativeFinished { generation } => self.native_finished(generation, cx),
+            ServiceEvent::NativeFinished { generation, error } => {
+                self.native_finished(generation, error)
+            }
             ServiceEvent::ServerIcon { server, icon } => {
                 if let Some(server) = self
                     .client

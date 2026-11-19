@@ -94,8 +94,8 @@ impl Render for Desktop {
         #[cfg(target_os = "linux")]
         {
             self.sync_native_call();
-            if let Some(curtain) = crate::native_call::curtain(self, window, cx) {
-                return curtain;
+            if let Some(call) = crate::native_call::expanded(self, window, cx) {
+                return call;
             }
         }
         self.ease_voice_toggles(window, cx);
@@ -2025,92 +2025,58 @@ fn conversation_header(
                 ))
             },
         )
-        .when(
-            connected
-                && match channel.target {
-                    TextTarget::Channel(_) => in_this_voice,
-                    TextTarget::Direct(session) => {
-                        server.users.contains_key(&session) && server.own_session != Some(session)
+        .map(|controls| {
+            #[cfg(target_os = "linux")]
+            let controls = controls.when(
+                connected
+                    && match channel.target {
+                        TextTarget::Channel(_) => in_this_voice,
+                        TextTarget::Direct(session) => {
+                            server.users.contains_key(&session)
+                                && server.own_session != Some(session)
+                        }
+                        TextTarget::DirectConversation(_) => false,
                     }
-                    TextTarget::DirectConversation(_) => false,
-                }
-                && server.has_mumble_voice()
-                && !server.mls
-                && this.client.calls_in(index, &channel.target).is_empty()
-                && this
-                    .client
-                    .own_call()
-                    .is_none_or(|call| call.server != server.id),
-            |controls| {
-                let button = |id,
-                              icon,
-                              label,
-                              start: fn(&mut Desktop, usize, TextTarget, &mut Context<Desktop>),
-                              cx: &mut Context<Desktop>| {
-                    let target = channel.target.clone();
-                    icon_button(
-                        id,
-                        icon,
-                        label,
-                        TEXT_MUTED,
-                        None,
-                        move |this, _, cx| {
-                            start(this, index, target.clone(), cx);
-                            cx.notify();
-                        },
-                        cx,
-                    )
-                };
-                #[cfg(target_os = "linux")]
-                if this.native_available(this.call_host()) {
+                    && server.has_mumble_voice()
+                    && !server.mls
+                    && this.native_call.is_none()
+                    && this.native_available(this.call_host())
+                    && this.client.calls_in(index, &channel.target).is_empty()
+                    && this.client.own_call().is_none(),
+                |controls| {
                     use nuschl_ipc::video::Source;
-                    if this.native_call.is_some() {
-                        return controls;
-                    }
-                    return controls
-                        .child(button(
-                            "start-call",
-                            "video",
-                            "Start call",
-                            Desktop::start_call,
+                    let mut button = |id, icon, label, source| {
+                        let target = channel.target.clone();
+                        icon_button(
+                            id,
+                            icon,
+                            label,
+                            TEXT_MUTED,
+                            None,
+                            move |this, _, cx| {
+                                this.start_native_call(index, target.clone(), source, cx);
+                                cx.notify();
+                            },
                             cx,
-                        ))
+                        )
+                    };
+                    controls
                         .child(button(
                             "native-camera",
                             "video",
                             "Start camera",
-                            |this, index, target, cx| {
-                                this.start_native_call(index, target, Some(Source::Camera), cx)
-                            },
-                            cx,
+                            Source::Camera,
                         ))
                         .child(button(
                             "share-screen",
                             "screen",
                             "Share screen",
-                            |this, index, target, cx| {
-                                this.start_native_call(index, target, Some(Source::Screen), cx)
-                            },
-                            cx,
-                        ));
-                }
-                controls
-                    .child(button(
-                        "start-call",
-                        "video",
-                        "Start call in browser",
-                        Desktop::start_call,
-                        cx,
-                    ))
-                    .child(button(
-                        "share-screen",
-                        "screen",
-                        "Share screen in browser",
-                        Desktop::start_call,
-                        cx,
-                    ))
-            },
-        )
+                            Source::Screen,
+                        ))
+                },
+            );
+            controls
+        })
         .when(!connected, |controls| {
             controls.child(styled_button(
                 "connect-server",
@@ -3356,44 +3322,22 @@ fn call_card(
     if this.native_call_in(&server.id, target) {
         return None;
     }
-    let join = |url: String, cx: &mut Context<Desktop>| {
-        let url = nuschl_core::call::page_url(&url, this.settings.relay_only).into_owned();
-        styled_button(
-            "call-join",
-            "Open in browser",
-            Tone::Secondary,
-            move |_, _, cx| cx.open_url(&url),
-            cx,
-        )
-    };
     let own = this
         .client
         .own_call()
         .filter(|call| call.server == server.id && call.target == *target)
         .and(this.call.as_ref());
     let (who, link, actions) = if let Some(call) = own {
-        let actions = layout::actions()
-            .child(join(call.link.creator_url()?, cx))
-            .child(styled_button(
-                "call-rotate",
-                "Rotate link",
-                Tone::Secondary,
-                |this, _, cx| {
-                    this.rotate_call(cx);
-                    cx.notify();
-                },
-                cx,
-            ))
-            .child(styled_button(
-                "call-end",
-                "End call",
-                Tone::Danger,
-                |this, _, cx| {
-                    this.end_call();
-                    cx.notify();
-                },
-                cx,
-            ));
+        let actions = layout::actions().child(styled_button(
+            "call-end",
+            "End call",
+            Tone::Danger,
+            |this, _, cx| {
+                this.end_call();
+                cx.notify();
+            },
+            cx,
+        ));
         ("You".to_owned(), call.link.host().to_owned(), actions)
     } else {
         let call = *this.client.calls_in(index, target).first()?;
@@ -3421,11 +3365,7 @@ fn call_card(
             },
         );
         let who = server.users.get(&call.sender).map(|user| user.name.clone());
-        (
-            who.unwrap_or_default(),
-            link.host().to_owned(),
-            actions.child(join(link.url(), cx)),
-        )
+        (who.unwrap_or_default(), link.host().to_owned(), actions)
     };
     let text = format!("Video call · {who} · {link}");
     Some(banner(

@@ -39,13 +39,14 @@ pub enum ServiceEvent {
         id: u64,
     },
     #[cfg(target_os = "linux")]
-    NativeCurtain {
+    ConfirmMonitorShare {
         generation: u64,
         ready: tokio::sync::oneshot::Sender<()>,
     },
     #[cfg(target_os = "linux")]
     NativeFinished {
         generation: u64,
+        error: Option<String>,
     },
 }
 
