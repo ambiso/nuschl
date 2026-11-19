@@ -32,6 +32,7 @@ from pathlib import Path
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import Select
 
 ORIGIN = "https://stream.test"
 OUT = Path(sys.argv[1])
@@ -67,6 +68,16 @@ for (const name of ['getUserMedia', 'getDisplayMedia']) {
     return stream;
   };
 }
+"""
+# Record quality messages sent by a viewer to the real SFU.
+RECORD_QUALITY = """
+window.qualityRequests = [];
+const send = WebSocket.prototype.send;
+WebSocket.prototype.send = function (data) {
+  const message = JSON.parse(data);
+  if (message.type === 'quality') window.qualityRequests.push(message.request);
+  send.call(this, data);
+};
 """
 # A browser that decodes VP9 and no AV1.
 WITHOUT_AV1 = """
@@ -192,7 +203,7 @@ try:
         driver.get(f"{ORIGIN}/call_publisher.html{fragment}")
         publishers[name] = wait(driver, "return window.peer && window.peer()", f"publisher {name} joined")
         if name == "a":
-            chrome, fox = chromium(), firefox()
+            chrome, fox = chromium(script=RECORD_QUALITY), firefox()
             drivers += [chrome, fox]
             chrome.get(f"{ORIGIN}/call{LINK}")
             fox.get(f"{ORIGIN}/call?relay{LINK}")
@@ -223,6 +234,12 @@ try:
     # Actual receiver measurements become available on the selected tile.
     screen_stats = chrome.find_element(By.CSS_SELECTOR, "#large .video-stats")
     screen_stats.find_element(By.TAG_NAME, "summary").click()
+    quality = Select(screen_stats.find_element(By.TAG_NAME, "select"))
+    assert quality.first_selected_option.text == "Auto"
+    quality.select_by_value("2")
+    request = f"01{c:016x}0102"
+    wait(chrome, f"return window.qualityRequests.includes('{request}')", "explicit receive quality")
+    quality.select_by_value("")
     wait(chrome, """
       const panel = document.querySelector('#large .video-stats[open]');
       if (!panel) return false;
