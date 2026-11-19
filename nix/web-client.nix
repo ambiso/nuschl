@@ -126,6 +126,12 @@ let
     name = "nuschl-web-audio-codec";
     targetFeatures = [ "simd128" ];
   };
+  # The reference for tests/web_audio_simd.mjs.
+  audioWasmScalar = bindings {
+    packageId = "nuschl-audio-wasm";
+    moduleName = "nuschl_audio_wasm";
+    name = "nuschl-web-audio-codec-scalar";
+  };
   contentWasm = bindings {
     packageId = "nuschl-content-wasm";
     moduleName = "nuschl_content_wasm";
@@ -189,6 +195,7 @@ in
     app
     wasm
     audioWasm
+    audioWasmScalar
     contentWasm
     streamWasm
     rawApp

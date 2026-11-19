@@ -289,6 +289,7 @@ DOM, so a Web Worker can host it.
 The web client's WebAssembly needs Chrome 96, Firefox 89 or Safari 16.4 or later:
 every module uses reference types (Chrome 96, Firefox 79, Safari 15), and the Opus
 codec Worker's module uses SIMD (`simd128`: Chrome 91, Firefox 89, Safari 16.4).
+`tests/web_audio_simd.mjs` checks that it encodes and decodes to the scalar build's bits.
 
 - `nix build .#web-wasm`, `.#web-audio-wasm`, `.#web-client` and `.#web-site`
   build the session SDK, separate Opus codec, Svelte app and complete site.

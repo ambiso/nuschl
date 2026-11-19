@@ -29,3 +29,18 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 36500 \
   -subj "/CN=nuschl-musicbot-test-murmur" \
   -keyout musicbot-murmur.key -out musicbot-murmur.crt
 ```
+
+# Opus music fixture
+
+`music-290k.opus` is one second of synthetic stereo music (sine chords and pink
+noise) in Ogg Opus: 51 CELT fullband stereo packets of 725 bytes, 20 ms each, at
+290 kbit/s CBR. `tests/web_audio_simd.mjs` decodes it with the browser audio
+worker's SIMD and scalar builds. It is part of Nuschl's EUPL-1.2 test material.
+
+```sh
+ffmpeg -f lavfi -i "aevalsrc=0.2*sin(2*PI*220*t)+0.15*sin(2*PI*277.2*t)+0.12*sin(2*PI*329.6*t)+0.05*sin(2*PI*3520*t)*sin(2*PI*3*t)|0.2*sin(2*PI*220.5*t)+0.15*sin(2*PI*329.6*t)+0.1*sin(2*PI*440*t)+0.05*sin(2*PI*7040*t):s=48000:d=1" \
+  -f lavfi -i "anoisesrc=c=pink:a=0.05:r=48000:d=1:s=1,pan=stereo|c0=c0|c1=c0" \
+  -filter_complex "[0][1]amix=inputs=2:normalize=0" -map_metadata -1 \
+  -fflags +bitexact -flags:a +bitexact -c:a libopus -b:a 290k -vbr off \
+  -frame_duration 20 -application audio music-290k.opus
+```
