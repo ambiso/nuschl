@@ -456,31 +456,6 @@
         updateMlVerifier = updateVerifier "mldsa44";
         # Explicit fixture executable, not part of the distributed payload.
         updateRuntimeFixture = updateVerifier "runtime-fixture";
-        # What nix/crate2nix/Cargo.nix was generated from: Cargo.lock and every
-        # manifest. `just crate2nix` records it; a check compares.
-        crate2nixInputs =
-          let
-            manifests =
-              dir:
-              map (name: ./. + "/${dir}/${name}/Cargo.toml") (
-                builtins.attrNames (
-                  lib.filterAttrs (
-                    name: type: type == "directory" && builtins.pathExists (./. + "/${dir}/${name}/Cargo.toml")
-                  ) (builtins.readDir (./. + "/${dir}"))
-                )
-              );
-          in
-          builtins.hashString "sha256" (
-            lib.concatMapStrings builtins.readFile (
-              [
-                ./Cargo.lock
-                ./Cargo.toml
-              ]
-              ++ manifests "apps"
-              ++ manifests "crates"
-              ++ manifests "vendor"
-            )
-          );
         package =
           pkgs.runCommand "nuschl-${version}"
             {
@@ -822,7 +797,6 @@
         packages.${distroOutput "server-static"} = serverStatic;
         packages.${if linuxDistro ? aur then distroOutput "aur" else null} = linuxDistro.aur;
         packages.${distroOutput "apt-repository"} = linuxDistro.aptRepository.command;
-        legacyPackages.crate2nixInputs = crate2nixInputs;
         # The clean-system package tests, including the Ubuntu AppArmor test.
         legacyPackages.${distroOutput "distroTests"} = linuxDistro.tests;
         packages.default-crane = cranePackage;
@@ -1004,20 +978,26 @@
             done
             [ "$missing" = 0 ] && touch $out
           '';
-          # nix/crate2nix/Cargo.nix must follow Cargo.lock and the manifests.
+          # nix/crate2nix must equal what `just crate2nix` generates: the same
+          # crate2nix and command on the source, offline from crane's vendored crates.
           crate2nix-current =
-            let
-              recorded = lib.removeSuffix "\n" (builtins.readFile ./nix/crate2nix/inputs.sha256);
-            in
-            pkgs.runCommand "crate2nix-current" { } (
-              if recorded == crate2nixInputs then
-                "touch $out"
-              else
-                ''
-                  echo "nix/crate2nix/Cargo.nix is out of date: run 'just crate2nix'" >&2
+            pkgs.runCommand "crate2nix-current"
+              {
+                nativeBuildInputs = [ pkgs.crate2nix ];
+                CARGO_NET_OFFLINE = "true";
+              }
+              ''
+                export CARGO_HOME="$TMPDIR/cargo-home"
+                install -Dm644 ${craneLib.vendorCargoDeps { inherit src; }}/config.toml "$CARGO_HOME/config.toml"
+                cp -R --no-preserve=mode ${src} tree
+                cd tree
+                if ! crate2nix generate -f Cargo.toml -o nix/crate2nix/Cargo.nix -h nix/crate2nix/crate-hashes.json \
+                  || ! diff -ru ${./nix/crate2nix} nix/crate2nix | head -n 40 >&2; then
+                  echo "nix/crate2nix is out of date: run 'just crate2nix'" >&2
                   exit 1
-                ''
-            );
+                fi
+                touch $out
+              '';
           audit = craneLib.cargoAudit {
             inherit src advisory-db;
             # Share the individually reviewed exceptions with cargo-deny. Audit
