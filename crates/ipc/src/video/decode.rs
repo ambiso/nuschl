@@ -176,7 +176,7 @@ async fn supervise(executable: &Path, source: Source, mut queue: mpsc::Receiver<
         let decode = async {
             if session.is_none() {
                 healthy_since = Instant::now();
-                session = Some(configured(executable, source, &mut vaapi).await?);
+                configure(executable, source, &mut vaapi, &mut session).await?;
             }
             let session = session.as_mut().ok_or(DecodeError::Stopped)?;
             let packet = async {
@@ -214,39 +214,43 @@ async fn supervise(executable: &Path, source: Source, mut queue: mpsc::Receiver<
     }
 }
 
-async fn configured(
+async fn configure(
     executable: &Path,
     source: Source,
     vaapi: &mut bool,
-) -> Result<Session, DecodeError> {
+    active: &mut Option<Session>,
+) -> Result<(), DecodeError> {
     loop {
-        let mut session = Session::spawn(executable, Role::VideoDecode { vaapi: *vaapi }).await?;
-        let configure = async {
+        *active = Some(Session::spawn(executable, Role::VideoDecode { vaapi: *vaapi }).await?);
+        let session = active.as_mut().ok_or(DecodeError::Stopped)?;
+        let exchange = async {
             session
                 .ready()
                 .await
                 .map_err(|_| DecodeError::Confinement)?;
+            session.grow_output_pipe();
             let header = Header {
                 bytes: 1,
                 ..Header::empty(Kind::Configure, 0)
             };
-            let reply = session.exchange(header, &[source_to_byte(source)]).await?;
-            if reply == Header::empty(Kind::Ready, 0) {
+            let status = session.exchange(header, &[source_to_byte(source)]).await?;
+            if status == Header::empty(Kind::Ready, 0) {
                 Ok(true)
-            } else if *vaapi && reply == Header::empty(Kind::Dropped, 0) {
+            } else if *vaapi && status == Header::empty(Kind::Dropped, 0) {
                 Ok(false)
             } else {
-                Err(invalid().into())
+                Err(DecodeError::from(invalid()))
             }
         };
-        let result = timeout(DEADLINE, configure)
+        if timeout(DEADLINE, exchange)
             .await
-            .unwrap_or(Err(DecodeError::Timeout));
-        if matches!(result, Ok(true)) {
-            return Ok(session);
+            .unwrap_or(Err(DecodeError::Timeout))?
+        {
+            return Ok(());
         }
-        session.retire().await;
-        result?;
+        if let Some(session) = active.take() {
+            session.retire().await;
+        }
         *vaapi = false;
     }
 }
@@ -306,5 +310,39 @@ mod tests {
         assert!(decode_frame_bytes(Source::Camera, 1920, 1081).is_err());
         assert!(decode_frame_bytes(Source::Screen, 1, u16::MAX).is_err());
         assert!(decode_frame_bytes(Source::Screen, 0, 1).is_err());
+    }
+
+    #[tokio::test]
+    async fn canceling_decode_keeps_the_request_queued_until_reclaimed() {
+        use std::{
+            future::{Future, poll_fn},
+            pin::pin,
+            task::Poll,
+        };
+
+        let (requests, mut queue) = mpsc::channel(1);
+        let mut decoder = Decoder {
+            requests,
+            task: tokio::spawn(async {}),
+            source: Source::Screen,
+            reset: false,
+        };
+        {
+            let mut decode = pin!(decoder.decode(true, vec![1]));
+            let state = poll_fn(|cx| Poll::Ready(decode.as_mut().poll(cx))).await;
+            assert!(state.is_pending());
+        }
+        assert!(matches!(
+            decoder.decode(false, vec![2]).await,
+            Err(DecodeError::Busy)
+        ));
+        assert!(decoder.reset);
+        assert!(
+            queue
+                .try_recv()
+                .is_ok_and(|request| request.reply.is_closed())
+        );
+        assert!(queue.is_empty());
+        decoder.stop().await.unwrap();
     }
 }

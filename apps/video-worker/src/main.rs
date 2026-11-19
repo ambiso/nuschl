@@ -2,6 +2,8 @@
 
 #[cfg(target_os = "linux")]
 mod capture;
+#[cfg(target_os = "linux")]
+mod decode;
 
 #[cfg(target_os = "linux")]
 mod linux {
@@ -18,7 +20,12 @@ mod linux {
             [encode, capture] if encode == "--encode" && capture == "--capture" => {
                 super::capture::run()
             }
-            _ => Err("usage: nuschl-video-worker --encode [--capture]".into()),
+            [decode] if decode == "--decode" => super::decode::run(false),
+            [decode] if decode == "--decode-vaapi" => super::decode::run(true),
+            _ => Err(
+                "usage: nuschl-video-worker --encode [--capture] | --decode | --decode-vaapi"
+                    .into(),
+            ),
         }
     }
 
@@ -119,5 +126,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "linux")]
     return linux::run();
     #[cfg(not(target_os = "linux"))]
-    Err("the video encoder requires the Linux sandbox".into())
+    Err("the video worker requires the Linux sandbox".into())
 }

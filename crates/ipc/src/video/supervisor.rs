@@ -210,6 +210,11 @@ impl Session {
         self.worker.input.write_all(bytes).await
     }
 
+    pub(super) fn grow_output_pipe(&self) {
+        // Packed video needs more pipe bandwidth. The system may grant less.
+        let _ = rustix::pipe::fcntl_setpipe_size(&self.worker.output, 1024 * 1024);
+    }
+
     pub(super) async fn read(&mut self, bytes: &mut [u8]) -> io::Result<()> {
         self.worker.output.read_exact(bytes).await.map(|_| ())
     }
