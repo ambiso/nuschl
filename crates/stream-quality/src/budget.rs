@@ -88,13 +88,24 @@ pub fn allocate(limits: &Limits, receivers: &[u64], streams: &[Stream]) -> Vec<u
     choices
 }
 
-/// Whether every stream gets its base layer: a join that brings new streams
-/// fails otherwise.
-pub fn admits(limits: &Limits, receivers: &[u64], streams: &[Stream]) -> bool {
-    allocate(limits, receivers, streams)
-        .iter()
-        .zip(streams)
-        .all(|(&choices, stream)| choices > 0 || stream.rates.is_empty())
+/// Whether all base layers fit the configured egress budgets.
+pub fn admits(limits: &Limits, receivers: usize, streams: &[Stream]) -> bool {
+    let rooms = streams.iter().map(|s| s.room + 1).max().unwrap_or(0);
+    let mut room_left = vec![limits.room; rooms];
+    let mut receiver_left = vec![limits.receiver; receivers];
+    let mut host_left = limits.host;
+    streams.iter().all(|stream| {
+        let rate = stream.rates.first().copied().unwrap_or(0);
+        let room = &mut room_left[stream.room];
+        let receiver = &mut receiver_left[stream.receiver];
+        if rate > host_left.min(*room).min(*receiver) {
+            return false;
+        }
+        host_left -= rate;
+        *room -= rate;
+        *receiver -= rate;
+        true
+    })
 }
 
 #[cfg(test)]
@@ -211,12 +222,22 @@ mod tests {
         };
         // Two bases fit, upper layers get dropped.
         let two = [stream(0, 0, 3), stream(0, 1, 0), empty];
-        assert!(admits(&limits, &[u64::MAX; 3], &two));
+        assert!(admits(&limits, 3, &two));
         assert_eq!(allocate(&limits, &[u64::MAX; 3], &two), [1, 1, 0]);
         // A third base does not.
         let three = [stream(0, 0, 3), stream(0, 1, 0), stream(0, 2, 0)];
-        assert!(!admits(&limits, &[u64::MAX; 3], &three));
-        // A receiver whose own network cannot take the base.
-        assert!(!admits(&wide(u64::MAX, u64::MAX), &[50], &three[..1]));
+        assert!(!admits(&limits, 3, &three));
+        // Host and per-receiver caps also apply during admission.
+        assert!(!admits(&wide(150, u64::MAX), 3, &two));
+        assert!(!admits(
+            &Limits {
+                receiver: 50,
+                ..limits
+            },
+            3,
+            &two
+        ));
+        assert_eq!(allocate(&limits, &[50], &three[..1]), [0]);
+        assert!(admits(&limits, 1, &three[..1]));
     }
 }

@@ -417,11 +417,13 @@ impl Core {
             decode_throttle: Throttle::default(),
         };
         self.peers.insert(id, peer);
-        // A join fails when some stream's base layer no longer fits.
+        // Configured egress budgets govern admission. Measured connection
+        // capacity governs layer allocation after the viewer connects.
         let planned = self.plan().0;
         let rates = rates(&planned);
         let (receivers, streams) = self.streams(&planned, &rates);
-        if !budget::admits(&self.limits(), &receivers, &streams) {
+        let limits = self.limits();
+        if !budget::admits(&limits, receivers.len(), &streams) {
             let peer = self.peers.remove(&id).expect("inserted");
             self.rooms.leave(&peer.room, id);
             self.routing.remove(|(route, _)| route == id);
@@ -429,6 +431,19 @@ impl Core {
                 reason: "bandwidth",
             });
             return;
+        }
+        // Give the estimator enough initial capacity to send the admitted
+        // base layers. Their traffic lets it measure this connection.
+        let base: u64 = planned
+            .iter()
+            .zip(&rates)
+            .filter(|(source, _)| source.receiver == id)
+            .filter_map(|(_, rates)| rates.first())
+            .sum();
+        let peer = self.peers.get_mut(&id).expect("admitted peer");
+        if base > peer.estimate {
+            peer.estimate = base;
+            peer.subscribe.bwe().reset(Bitrate::bps(base));
         }
         self.send(
             id,
