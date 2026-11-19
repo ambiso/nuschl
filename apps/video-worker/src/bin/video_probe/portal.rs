@@ -9,6 +9,7 @@ use ashpd::{
         camera::Camera,
         screencast::{CursorMode, Screencast, SelectSourcesOptions, SourceType},
     },
+    zbus,
 };
 use futures_util::FutureExt as _;
 use nuschl_ipc::video::Source;

@@ -2,16 +2,32 @@
 //! Encode a synthetic test pattern through the confined video worker.
 
 #[cfg(target_os = "linux")]
+#[path = "video_probe/portal.rs"]
+mod portal;
+
+#[cfg(target_os = "linux")]
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use nuschl_ipc::video::{Encoder, Output, Settings, Source};
     use std::io::{self, Write as _};
 
-    let mut args = std::env::args_os().skip(1);
+    let mut args = std::env::args_os().skip(1).peekable();
+    let source = match args.peek().and_then(|arg| arg.to_str()) {
+        Some("--screen") => Some(Source::Screen),
+        Some("--camera") => Some(Source::Camera),
+        _ => None,
+    };
+    if let Some(source) = source {
+        args.next();
+        if args.next().is_some() {
+            return Err("usage: nuschl-video-probe [--obu | --screen | --camera]".into());
+        }
+        return portal_probe(source).await;
+    }
     let write_obu = match (args.next(), args.next()) {
         (None, None) => false,
         (Some(option), None) if option == "--obu" => true,
-        _ => return Err("usage: nuschl-video-probe [--obu]".into()),
+        _ => return Err("usage: nuschl-video-probe [--obu | --screen | --camera]".into()),
     };
     let settings = Settings {
         source: Source::Screen,
@@ -49,6 +65,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Encoded 3 synthetic 160×120 AV1 frames ({bytes} bytes)"
         )?;
     }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn portal_probe(source: nuschl_ipc::video::Source) -> Result<(), Box<dyn std::error::Error>> {
+    let grant = portal::request(source, None).await?;
+    #[cfg(feature = "vaapi")]
+    let start = nuschl_ipc::video::Capture::start_vaapi;
+    #[cfg(not(feature = "vaapi"))]
+    let start = nuschl_ipc::video::Capture::start;
+    let mut capture = start(
+        nuschl_sandbox::sibling("nuschl-video-worker")?,
+        grant.remote().try_clone_to_owned()?,
+        source,
+        grant.node_id(),
+    )?;
+    let result = tokio::time::timeout(std::time::Duration::from_secs(20), capture.next()).await;
+    capture.stop().await?;
+    let frame = result??;
+    println!(
+        "Captured one {}×{} AV1 frame ({} bytes)",
+        frame.width,
+        frame.height,
+        frame.av1.len()
+    );
     Ok(())
 }
 

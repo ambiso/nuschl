@@ -81,6 +81,11 @@ or platform-wide confinement.
 The Linux video encoder diagnostic uses the fixed `--encode` sandbox role
 with generated I420 frames. Run `nix run .#video-probe` for a summary or
 `nix run .#video-probe -- --obu` for elementary AV1 on standard output.
+Use `--screen` or `--camera` to request one live frame through the portal.
+The probe prints the frame dimensions and encoded byte count. Nix builds try
+the isolated VA-API pipeline first and fall back to the software worker if
+hardware setup fails before opening the granted connection. Starting again
+after a running PipeWire stream fails requests a fresh portal connection.
 The software path encodes independent frames. Its capture integration test opens
 one connection to a private PipeWire daemon with a synthetic video node, starts
 the worker in bubblewrap and reads encoded AV1. Interframe encoding, hardware

@@ -22,6 +22,7 @@ pub struct VideoFrame {
     /// Microseconds since this capture began, on the worker's monotonic clock.
     pub capture_time_us: u64,
     pub av1: Vec<u8>,
+    pub hardware: bool,
     received: Instant,
 }
 
@@ -38,6 +39,26 @@ impl Capture {
         source: Source,
         node_id: Option<u32>,
     ) -> Result<Self, Error> {
+        Self::start_inner(executable, remote, source, node_id, false)
+    }
+
+    /// Prefer the isolated VA-API path when its fixed render device exists.
+    pub fn start_vaapi(
+        executable: PathBuf,
+        remote: OwnedFd,
+        source: Source,
+        node_id: Option<u32>,
+    ) -> Result<Self, Error> {
+        Self::start_inner(executable, remote, source, node_id, true)
+    }
+
+    fn start_inner(
+        executable: PathBuf,
+        remote: OwnedFd,
+        source: Source,
+        node_id: Option<u32>,
+        vaapi: bool,
+    ) -> Result<Self, Error> {
         if (source == Source::Screen) != node_id.is_some() || matches!(node_id, Some(0 | u32::MAX))
         {
             return Err(invalid().into());
@@ -47,7 +68,7 @@ impl Capture {
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| Error::Runtime)?;
         let task = runtime.spawn(async move {
             let _permit = permit;
-            if let Err(error) = capture(executable, remote, source, node_id, &sender).await {
+            if let Err(error) = capture(executable, remote, source, node_id, vaapi, &sender).await {
                 let _ = sender.try_send(Err(error));
             }
         });
@@ -74,9 +95,10 @@ async fn capture(
     remote: OwnedFd,
     source: Source,
     node: Option<u32>,
+    vaapi: bool,
     sender: &mpsc::Sender<Result<VideoFrame, Error>>,
 ) -> Result<(), Error> {
-    let mut child = nuschl_sandbox::command(&executable, Role::VideoCapture { node })?
+    let mut child = nuschl_sandbox::command(&executable, Role::VideoCapture { node, vaapi })?
         .stdin(Stdio::from(remote))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -123,7 +145,10 @@ async fn read_frame(
     timeout(DEADLINE, async {
         input.read_exact(&mut bytes[1..]).await?;
         let header = Header::from_bytes(bytes)?;
-        if header.kind != Kind::CaptureFrame || !header.key || header.id <= previous {
+        if !matches!(header.kind, Kind::CaptureFrame | Kind::HardwareFrame)
+            || !header.key
+            || header.id <= previous
+        {
             return Err(invalid().into());
         }
         let mut settings = [0; Settings::BYTES];
@@ -140,6 +165,7 @@ async fn read_frame(
             height: settings.height,
             capture_time_us: header.id,
             av1,
+            hardware: header.kind == Kind::HardwareFrame,
             received: Instant::now(),
         })
     })

@@ -7,7 +7,14 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+vaapi = ["dep:gstreamer", "dep:gstreamer-app"]
+
 [target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.13", default-features = false, features = ["async-io", "camera", "screencast"] }
+futures-util = "0.3"
+gstreamer = { version = "0.25.4", default-features = false, optional = true, features = ["v1_28"] }
+gstreamer-app = { version = "0.25.2", default-features = false, optional = true, features = ["v1_28"] }
 nuschl-ipc.workspace = true
 nuschl-sandbox.workspace = true
 pipewire = { version = "0.10.1", default-features = false }

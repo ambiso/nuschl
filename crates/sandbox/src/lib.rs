@@ -61,7 +61,7 @@ pub enum Role<'a> {
     /// Video encoding, with the source supplied over its input pipe.
     VideoEncode,
     /// Video capture from an inherited portal-granted PipeWire connection.
-    VideoCapture { node: Option<u32> },
+    VideoCapture { node: Option<u32>, vaapi: bool },
     /// History storage: only `directory`, writable.
     Storage { directory: &'a Path },
     /// The crypto worker: only `directory`, writable.

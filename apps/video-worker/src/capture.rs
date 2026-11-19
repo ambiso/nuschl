@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 //! Capture from one portal-granted PipeWire connection.
 
+#[cfg(feature = "vaapi")]
+mod vaapi;
+
 use nuschl_ipc::video::{Header, Kind, Settings, Source};
 use pipewire::{self as pw, properties::properties, spa};
 use spa::{
@@ -37,6 +40,12 @@ pub fn run() -> Result<(), Failure> {
         Some(_) => (Source::Screen, "Screen"),
         None => (Source::Camera, "Camera"),
     };
+    #[cfg(feature = "vaapi")]
+    if std::env::var_os("NUSCHL_VIDEO_VAAPI").is_some()
+        && let Ok(pipeline) = vaapi::prepare(target)
+    {
+        return vaapi::run(pipeline, source);
+    }
     let remote = io::stdin().as_fd().try_clone_to_owned()?;
     pw::init();
     let loop_ = pw::main_loop::MainLoopRc::new(None)?;

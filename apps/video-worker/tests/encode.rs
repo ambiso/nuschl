@@ -56,6 +56,13 @@ async fn confined_worker_recovers_and_the_probe_produces_decodable_av1() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let decoded = decode_av1(&output.stdout);
+    assert_eq!(decoded.len(), 3 * settings.frame_bytes().unwrap());
+    assert!(decoded[8] < 85);
+    assert!(decoded[24] > 170);
+}
+
+fn decode_av1(av1: &[u8]) -> Vec<u8> {
     let mut decoder = Command::new(nuschl_testkit::program("ffmpeg"))
         .args([
             "-v", "error", "-c:v", "libdav1d", "-f", "obu", "-i", "pipe:0", "-f", "rawvideo",
@@ -65,23 +72,27 @@ async fn confined_worker_recovers_and_the_probe_produces_decodable_av1() {
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
-    decoder
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(&output.stdout)
-        .unwrap();
+    decoder.stdin.take().unwrap().write_all(av1).unwrap();
     let decoded = decoder.wait_with_output().unwrap();
     assert!(decoded.status.success());
-    assert_eq!(decoded.stdout.len(), 3 * settings.frame_bytes().unwrap());
-    assert!(decoded.stdout[8] < 85);
-    assert!(decoded.stdout[24] > 170);
+    decoded.stdout
 }
 
 /// A separate PipeWire daemon owns the generator and socket. Passing its
 /// connected FD exercises the portal-FD launch path without opening a portal.
 #[tokio::test]
 async fn video_capture_consumes_only_the_inherited_pipewire_connection() {
+    capture_with_fixture(false).await;
+}
+
+#[cfg(feature = "vaapi")]
+#[tokio::test]
+#[ignore = "requires a host DRM render node with VA-API AV1 encode"]
+async fn vaapi_capture_from_the_inherited_pipewire_connection() {
+    capture_with_fixture(true).await;
+}
+
+async fn capture_with_fixture(hardware: bool) {
     let _serial = SERIAL.lock().await;
     nuschl_testkit::sandbox();
     let directory = nuschl_testkit::temp_dir();
@@ -152,7 +163,12 @@ context.objects = [
         .and_then(|object| object["id"].as_u64())
         .and_then(|id| u32::try_from(id).ok())
         .expect("the synthetic Nuschl source appears in its private graph");
-    let mut capture = nuschl_ipc::video::Capture::start(
+    let start = if hardware {
+        nuschl_ipc::video::Capture::start_vaapi
+    } else {
+        nuschl_ipc::video::Capture::start
+    };
+    let mut capture = start(
         Path::new(WORKER).to_owned(),
         remote.into(),
         Source::Screen,
@@ -169,10 +185,7 @@ context.objects = [
                 String::from_utf8_lossy(&output.stderr)
             );
             let ports = String::from_utf8_lossy(&output.stdout);
-            if let Some(port) = ports
-                .lines()
-                .find(|port| port.starts_with("nuschl-video-capture:"))
-            {
+            if let Some(port) = ports.lines().next() {
                 break port.to_owned();
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -202,8 +215,14 @@ context.objects = [
         .await
         .expect("the worker returns bounded AV1");
     assert!(!frame.av1.is_empty());
+    assert_eq!(frame.hardware, hardware);
     assert!(frame.width >= 16 && frame.height >= 16);
     assert!(frame.capture_time_us > 0);
+    let raw = decode_av1(&frame.av1);
+    assert_eq!(
+        raw.len(),
+        usize::from(frame.width) * usize::from(frame.height) * 3 / 2
+    );
     capture.stop().await.unwrap();
     nuschl_testkit::none_running(Path::new(WORKER), Duration::from_secs(3)).await;
     daemon.kill().await.unwrap();

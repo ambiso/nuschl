@@ -35,9 +35,25 @@ let
     CARGO_CFG_TARGET_OS = pkgs.stdenv.hostPlatform.parsed.kernel.name;
     CARGO_ENCODED_RUSTFLAGS = "";
   };
+  gst = pkgs.gst_all_1;
+  gstLibraries = [
+    pkgs.glib
+    gst.gstreamer
+    gst.gst-plugins-base
+  ];
+  withGstreamer = _: {
+    nativeBuildInputs = pkgConfig;
+    buildInputs = gstLibraries;
+  };
   overrides = pkgs.defaultCrateOverrides // {
     # These build scripts read Cargo's target environment directly.
     av-scenechange = videoCodec;
+    glib-sys = withGstreamer;
+    gio-sys = withGstreamer;
+    gobject-sys = withGstreamer;
+    gstreamer-sys = withGstreamer;
+    gstreamer-base-sys = withGstreamer;
+    gstreamer-app-sys = withGstreamer;
     rav1e = videoCodec;
     pipewire-sys = bindgen;
     libspa-sys = bindgen;
@@ -77,9 +93,19 @@ let
     };
     nuschl = attrs: withLibraries attrs // { NUSCHL_EMOJI_ASSETS = emojiAssets; };
     nuschl-media-worker = withLibraries;
-    nuschl-video-worker = _: {
+    nuschl-video-worker = attrs: {
       nativeBuildInputs = pkgConfig;
-      buildInputs = [ pkgs.pipewire ];
+      buildInputs = [
+        pkgs.pipewire
+      ]
+      ++ lib.optionals (builtins.elem "vaapi" (attrs.features or [ ])) gstLibraries;
+      NUSCHL_VIDEO_GST_PLUGINS = lib.concatStringsSep ":" [
+        "${gst.gstreamer}/lib/gstreamer-1.0/libgstcoreelements.so"
+        "${gst.gst-plugins-base}/lib/gstreamer-1.0/libgstapp.so"
+        "${gst.gst-plugins-bad}/lib/gstreamer-1.0/libgstva.so"
+        "${gst.gst-plugins-bad}/lib/gstreamer-1.0/libgstvideoparsersbad.so"
+        "${pkgs.pipewire}/lib/gstreamer-1.0/libgstpipewire.so"
+      ];
     };
     # The cli's e2ee tests exec the crypto worker beside the cli binary the
     # harness records at test-compile time (CARGO_BIN_EXE_nuschl-cli); the

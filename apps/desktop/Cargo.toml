@@ -54,12 +54,7 @@ frame-timing = ["dep:gpui-profiler"]
 workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-ashpd = { version = "0.13", default-features = false, features = [
-  "async-io",
-  "camera",
-  "global_shortcuts",
-  "screencast",
-] }
+ashpd = { version = "0.13", default-features = false, features = ["async-io", "global_shortcuts"] }
 # Desktop notifications over D-Bus (already used through ashpd and AccessKit).
 zbus = { version = "5.13", default-features = false, features = ["async-io"] }
 

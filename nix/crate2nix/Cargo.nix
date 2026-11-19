@@ -2728,6 +2728,20 @@ rec {
           "portable-atomic" = [ "dep:portable-atomic" ];
         };
       };
+      "atomic_refcell" = rec {
+        crateName = "atomic_refcell";
+        version = "0.1.14";
+        edition = "2021";
+        sha256 = "193ijlkf4lyi7mpds3izvyn9p06dw31yd5injh2l5zxyg5rj5r11";
+        authors = [
+          "Bobby Holley <bobbyholley@gmail.com>"
+        ];
+        features = {
+          "portable-atomic" = [ "dep:portable-atomic" ];
+          "serde" = [ "dep:serde" ];
+        };
+        resolvedDefaultFeatures = [ "default" ];
+      };
       "atspi" = rec {
         crateName = "atspi";
         version = "0.29.0";
@@ -11333,7 +11347,7 @@ rec {
           "default" = [ "std" ];
           "std" = [ "alloc" ];
         };
-        resolvedDefaultFeatures = [ "alloc" "std" ];
+        resolvedDefaultFeatures = [ "alloc" "default" "std" ];
       };
       "futures-task" = rec {
         crateName = "futures-task";
@@ -11818,6 +11832,61 @@ rec {
         };
         resolvedDefaultFeatures = [ "read" "read-core" ];
       };
+      "gio-sys" = rec {
+        crateName = "gio-sys";
+        version = "0.22.11";
+        edition = "2024";
+        sha256 = "0sg6d7kg924ihh0spgxphv8yj1y4d35nrgq9y53m0iws1x4m7hmr";
+        libName = "gio_sys";
+        authors = [
+          "The gtk-rs Project Developers"
+        ];
+        dependencies = [
+          {
+            name = "glib-sys";
+            packageId = "glib-sys";
+          }
+          {
+            name = "gobject-sys";
+            packageId = "gobject-sys";
+          }
+          {
+            name = "libc";
+            packageId = "libc";
+          }
+          {
+            name = "windows-sys";
+            packageId = "windows-sys 0.61.2";
+            target = { target, features }: (target."windows" or false);
+            features = [ "Win32_Networking_WinSock" ];
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "system-deps";
+            packageId = "system-deps 9.0.1";
+          }
+        ];
+        features = {
+          "v2_60" = [ "v2_58" ];
+          "v2_62" = [ "v2_60" ];
+          "v2_64" = [ "v2_62" ];
+          "v2_66" = [ "v2_64" ];
+          "v2_68" = [ "v2_66" ];
+          "v2_70" = [ "v2_68" ];
+          "v2_72" = [ "v2_70" ];
+          "v2_74" = [ "v2_72" ];
+          "v2_76" = [ "v2_74" ];
+          "v2_78" = [ "v2_76" ];
+          "v2_80" = [ "v2_78" ];
+          "v2_82" = [ "v2_80" ];
+          "v2_84" = [ "v2_82" ];
+          "v2_86" = [ "v2_84" ];
+          "v2_88" = [ "v2_86" ];
+          "v2_90" = [ "v2_88" ];
+          "v2_92" = [ "v2_90" ];
+        };
+      };
       "gl_generator" = rec {
         crateName = "gl_generator";
         version = "0.14.0";
@@ -11844,6 +11913,189 @@ rec {
           }
         ];
         features = {
+        };
+      };
+      "glib" = rec {
+        crateName = "glib";
+        version = "0.22.11";
+        edition = "2024";
+        sha256 = "1nh4yridkf1pn3w17iszfilzq3m9hajj76yfwld781rajzqwpi69";
+        authors = [
+          "The gtk-rs Project Developers"
+        ];
+        dependencies = [
+          {
+            name = "bitflags";
+            packageId = "bitflags 2.13.2";
+          }
+          {
+            name = "futures-channel";
+            packageId = "futures-channel";
+            optional = true;
+          }
+          {
+            name = "futures-core";
+            packageId = "futures-core";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "futures-executor";
+            packageId = "futures-executor";
+            optional = true;
+          }
+          {
+            name = "futures-task";
+            packageId = "futures-task";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "futures-util";
+            packageId = "futures-util";
+            optional = true;
+          }
+          {
+            name = "gio-sys";
+            packageId = "gio-sys";
+            optional = true;
+          }
+          {
+            name = "glib-macros";
+            packageId = "glib-macros";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "glib-sys";
+            packageId = "glib-sys";
+          }
+          {
+            name = "gobject-sys";
+            packageId = "gobject-sys";
+          }
+          {
+            name = "libc";
+            packageId = "libc";
+          }
+          {
+            name = "memchr";
+            packageId = "memchr";
+          }
+          {
+            name = "smallvec";
+            packageId = "smallvec";
+            features = [ "union" "const_generics" "const_new" ];
+          }
+        ];
+        features = {
+          "default" = [ "gio" "futures" ];
+          "futures" = [ "futures-core" "futures-task" "futures-executor" "futures-channel" "futures-util" ];
+          "futures-channel" = [ "dep:futures-channel" ];
+          "futures-core" = [ "dep:futures-core" ];
+          "futures-executor" = [ "dep:futures-executor" ];
+          "futures-task" = [ "dep:futures-task" ];
+          "futures-util" = [ "dep:futures-util" ];
+          "gio" = [ "gio-sys" "futures" ];
+          "gio-sys" = [ "dep:gio-sys" ];
+          "log" = [ "rs-log" ];
+          "log_kv" = [ "log" "rs-log/kv" ];
+          "log_macros" = [ "log" ];
+          "rs-log" = [ "dep:rs-log" ];
+          "v2_58" = [ "glib-sys/v2_58" "gobject-sys/v2_58" ];
+          "v2_60" = [ "v2_58" "glib-sys/v2_60" ];
+          "v2_62" = [ "v2_60" "glib-sys/v2_62" "gobject-sys/v2_62" ];
+          "v2_64" = [ "v2_62" "glib-sys/v2_64" ];
+          "v2_66" = [ "v2_64" "glib-sys/v2_66" "gobject-sys/v2_66" ];
+          "v2_68" = [ "v2_66" "glib-sys/v2_68" "gobject-sys/v2_68" ];
+          "v2_70" = [ "v2_68" "glib-sys/v2_70" "gobject-sys/v2_70" ];
+          "v2_72" = [ "v2_70" "glib-sys/v2_72" "gobject-sys/v2_72" ];
+          "v2_74" = [ "v2_72" "glib-sys/v2_74" "gobject-sys/v2_74" ];
+          "v2_76" = [ "v2_74" "glib-sys/v2_76" "gobject-sys/v2_76" ];
+          "v2_78" = [ "v2_76" "glib-sys/v2_78" "gobject-sys/v2_78" ];
+          "v2_80" = [ "v2_78" "glib-sys/v2_80" "gobject-sys/v2_80" ];
+          "v2_82" = [ "v2_80" "glib-sys/v2_82" "gobject-sys/v2_82" ];
+          "v2_84" = [ "v2_82" "glib-sys/v2_84" "gobject-sys/v2_84" ];
+          "v2_86" = [ "v2_84" "glib-sys/v2_86" "gobject-sys/v2_86" ];
+          "v2_88" = [ "v2_86" "glib-sys/v2_88" ];
+          "v2_90" = [ "v2_88" "glib-sys/v2_90" ];
+          "v2_92" = [ "v2_90" "glib-sys/v2_92" ];
+        };
+        resolvedDefaultFeatures = [ "default" "futures" "futures-channel" "futures-core" "futures-executor" "futures-task" "futures-util" "gio" "gio-sys" ];
+      };
+      "glib-macros" = rec {
+        crateName = "glib-macros";
+        version = "0.22.11";
+        edition = "2024";
+        sha256 = "14shqf60k8nz4md4b6z00aa8947li57bcy7j7k4hi484w9a4w0fl";
+        procMacro = true;
+        libName = "glib_macros";
+        authors = [
+          "The gtk-rs Project Developers"
+        ];
+        dependencies = [
+          {
+            name = "heck";
+            packageId = "heck 0.5.0";
+          }
+          {
+            name = "proc-macro2";
+            packageId = "proc-macro2";
+          }
+          {
+            name = "quote";
+            packageId = "quote";
+          }
+          {
+            name = "syn";
+            packageId = "syn 3.0.9";
+            features = [ "full" ];
+          }
+        ];
+        features = {
+          "default" = [ "proc_macro_crate" ];
+          "proc-macro-crate" = [ "dep:proc-macro-crate" ];
+          "proc_macro_crate" = [ "proc-macro-crate" ];
+        };
+      };
+      "glib-sys" = rec {
+        crateName = "glib-sys";
+        version = "0.22.11";
+        edition = "2024";
+        sha256 = "0pblkq0kd4xa748mvqn1jmhvf0g0y63vhrgpk25nkhi98nwyh0cb";
+        libName = "glib_sys";
+        authors = [
+          "The gtk-rs Project Developers"
+        ];
+        dependencies = [
+          {
+            name = "libc";
+            packageId = "libc";
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "system-deps";
+            packageId = "system-deps 9.0.1";
+          }
+        ];
+        features = {
+          "v2_60" = [ "v2_58" ];
+          "v2_62" = [ "v2_60" ];
+          "v2_64" = [ "v2_62" ];
+          "v2_66" = [ "v2_64" ];
+          "v2_68" = [ "v2_66" ];
+          "v2_70" = [ "v2_68" ];
+          "v2_72" = [ "v2_70" ];
+          "v2_74" = [ "v2_72" ];
+          "v2_76" = [ "v2_74" ];
+          "v2_78" = [ "v2_76" ];
+          "v2_80" = [ "v2_78" ];
+          "v2_82" = [ "v2_80" ];
+          "v2_84" = [ "v2_82" ];
+          "v2_86" = [ "v2_84" ];
+          "v2_88" = [ "v2_86" ];
+          "v2_90" = [ "v2_88" ];
+          "v2_92" = [ "v2_90" ];
         };
       };
       "glidesort" = rec {
@@ -12039,6 +12291,46 @@ rec {
           }
         ];
 
+      };
+      "gobject-sys" = rec {
+        crateName = "gobject-sys";
+        version = "0.22.9";
+        edition = "2024";
+        sha256 = "0d1q0p19512mvm9f13shg7b3v3q712gz73barccrigcnlsdmqn87";
+        libName = "gobject_sys";
+        authors = [
+          "The gtk-rs Project Developers"
+        ];
+        dependencies = [
+          {
+            name = "glib-sys";
+            packageId = "glib-sys";
+          }
+          {
+            name = "libc";
+            packageId = "libc";
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "system-deps";
+            packageId = "system-deps 9.0.1";
+          }
+        ];
+        features = {
+          "v2_62" = [ "v2_58" ];
+          "v2_66" = [ "v2_62" ];
+          "v2_68" = [ "v2_66" ];
+          "v2_70" = [ "v2_68" ];
+          "v2_72" = [ "v2_70" ];
+          "v2_74" = [ "v2_72" ];
+          "v2_76" = [ "v2_74" ];
+          "v2_78" = [ "v2_74" ];
+          "v2_80" = [ "v2_78" ];
+          "v2_82" = [ "v2_80" ];
+          "v2_84" = [ "v2_82" ];
+          "v2_86" = [ "v2_84" ];
+        };
       };
       "gpu-allocator" = rec {
         crateName = "gpu-allocator";
@@ -14398,6 +14690,342 @@ rec {
           "wnaf-memuse" = [ "alloc" "memuse" ];
         };
         resolvedDefaultFeatures = [ "alloc" ];
+      };
+      "gstreamer" = rec {
+        crateName = "gstreamer";
+        version = "0.25.4";
+        edition = "2024";
+        sha256 = "1ijpk2ngh3jnindpkfb50a91a1p315j0cv5yaizcnpm2cqh7w8zl";
+        authors = [
+          "Sebastian Dröge <sebastian@centricular.com>"
+        ];
+        dependencies = [
+          {
+            name = "cfg-if";
+            packageId = "cfg-if";
+          }
+          {
+            name = "futures-channel";
+            packageId = "futures-channel";
+          }
+          {
+            name = "futures-core";
+            packageId = "futures-core";
+          }
+          {
+            name = "futures-util";
+            packageId = "futures-util";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "glib";
+            packageId = "glib";
+          }
+          {
+            name = "gstreamer-sys";
+            packageId = "gstreamer-sys";
+          }
+          {
+            name = "itertools";
+            packageId = "itertools 0.15.0";
+          }
+          {
+            name = "kstring";
+            packageId = "kstring";
+          }
+          {
+            name = "libc";
+            packageId = "libc";
+          }
+          {
+            name = "muldiv";
+            packageId = "muldiv";
+          }
+          {
+            name = "num-integer";
+            packageId = "num-integer";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "num-rational";
+            packageId = "num-rational";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "option-operations";
+            packageId = "option-operations";
+            rename = "opt-ops";
+          }
+          {
+            name = "pastey";
+            packageId = "pastey 0.2.3";
+          }
+          {
+            name = "pin-project-lite";
+            packageId = "pin-project-lite";
+          }
+          {
+            name = "smallvec";
+            packageId = "smallvec";
+            features = [ "write" ];
+          }
+          {
+            name = "thiserror";
+            packageId = "thiserror 2.0.21";
+          }
+        ];
+        features = {
+          "log" = [ "dep:log" ];
+          "serde" = [ "num-rational/serde" "dep:serde" "serde_bytes" ];
+          "serde_bytes" = [ "dep:serde_bytes" ];
+          "v1_16" = [ "gstreamer-sys/v1_16" ];
+          "v1_18" = [ "gstreamer-sys/v1_18" "v1_16" ];
+          "v1_20" = [ "gstreamer-sys/v1_20" "v1_18" ];
+          "v1_22" = [ "gstreamer-sys/v1_22" "v1_20" ];
+          "v1_24" = [ "gstreamer-sys/v1_24" "v1_22" ];
+          "v1_26" = [ "gstreamer-sys/v1_26" "v1_24" ];
+          "v1_28" = [ "gstreamer-sys/v1_28" "v1_26" ];
+          "v1_30" = [ "gstreamer-sys/v1_30" "v1_28" ];
+        };
+        resolvedDefaultFeatures = [ "default" "v1_16" "v1_18" "v1_20" "v1_22" "v1_24" "v1_26" "v1_28" ];
+      };
+      "gstreamer-app" = rec {
+        crateName = "gstreamer-app";
+        version = "0.25.2";
+        edition = "2024";
+        sha256 = "04604lzx4613nmhc3ika46prjw1zvwldx160vjc26df2729axy4p";
+        libName = "gstreamer_app";
+        authors = [
+          "Sebastian Dröge <sebastian@centricular.com>"
+        ];
+        dependencies = [
+          {
+            name = "futures-core";
+            packageId = "futures-core";
+          }
+          {
+            name = "futures-sink";
+            packageId = "futures-sink";
+          }
+          {
+            name = "glib";
+            packageId = "glib";
+          }
+          {
+            name = "gstreamer";
+            packageId = "gstreamer";
+            rename = "gst";
+          }
+          {
+            name = "gstreamer-app-sys";
+            packageId = "gstreamer-app-sys";
+          }
+          {
+            name = "gstreamer-base";
+            packageId = "gstreamer-base";
+            rename = "gst-base";
+          }
+          {
+            name = "libc";
+            packageId = "libc";
+          }
+        ];
+        features = {
+          "v1_16" = [ "gst/v1_16" "gst-base/v1_16" "gstreamer-app-sys/v1_16" ];
+          "v1_18" = [ "gst/v1_18" "gst-base/v1_18" "gstreamer-app-sys/v1_18" "v1_16" ];
+          "v1_20" = [ "gst/v1_20" "gst-base/v1_20" "gstreamer-app-sys/v1_20" "v1_18" ];
+          "v1_22" = [ "gst/v1_22" "gst-base/v1_22" "gstreamer-app-sys/v1_22" "v1_20" ];
+          "v1_24" = [ "gst/v1_24" "gst-base/v1_24" "gstreamer-app-sys/v1_24" "v1_22" ];
+          "v1_26" = [ "gst/v1_26" "gst-base/v1_26" "gstreamer-app-sys/v1_26" "v1_24" ];
+          "v1_28" = [ "gst/v1_28" "gst-base/v1_28" "gstreamer-app-sys/v1_28" "v1_26" ];
+          "v1_30" = [ "gst/v1_30" "gst-base/v1_30" "gstreamer-app-sys/v1_30" "v1_28" ];
+        };
+        resolvedDefaultFeatures = [ "v1_16" "v1_18" "v1_20" "v1_22" "v1_24" "v1_26" "v1_28" ];
+      };
+      "gstreamer-app-sys" = rec {
+        crateName = "gstreamer-app-sys";
+        version = "0.25.4";
+        edition = "2024";
+        sha256 = "0hz7y9xvp8ygv12hz7wznnbbhyc9kxsxq7mq1ga42hv9yspbi607";
+        libName = "gstreamer_app_sys";
+        authors = [
+          "Sebastian Dröge <sebastian@centricular.com>"
+        ];
+        dependencies = [
+          {
+            name = "glib-sys";
+            packageId = "glib-sys";
+          }
+          {
+            name = "gstreamer-base-sys";
+            packageId = "gstreamer-base-sys";
+          }
+          {
+            name = "gstreamer-sys";
+            packageId = "gstreamer-sys";
+          }
+          {
+            name = "libc";
+            packageId = "libc";
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "system-deps";
+            packageId = "system-deps 9.0.1";
+          }
+        ];
+        features = {
+          "v1_18" = [ "v1_16" ];
+          "v1_20" = [ "v1_18" ];
+          "v1_22" = [ "v1_20" ];
+          "v1_24" = [ "v1_22" ];
+          "v1_26" = [ "v1_24" ];
+          "v1_28" = [ "v1_26" ];
+          "v1_30" = [ "v1_28" ];
+        };
+        resolvedDefaultFeatures = [ "v1_16" "v1_18" "v1_20" "v1_22" "v1_24" "v1_26" "v1_28" ];
+      };
+      "gstreamer-base" = rec {
+        crateName = "gstreamer-base";
+        version = "0.25.4";
+        edition = "2024";
+        sha256 = "0pi6k6m5yz4frp6h6mfgnf3r57ngc4x2y3ab1p26k8w6jpsxijqp";
+        libName = "gstreamer_base";
+        authors = [
+          "Sebastian Dröge <sebastian@centricular.com>"
+        ];
+        dependencies = [
+          {
+            name = "atomic_refcell";
+            packageId = "atomic_refcell";
+          }
+          {
+            name = "cfg-if";
+            packageId = "cfg-if";
+          }
+          {
+            name = "glib";
+            packageId = "glib";
+          }
+          {
+            name = "gstreamer";
+            packageId = "gstreamer";
+            rename = "gst";
+          }
+          {
+            name = "gstreamer-base-sys";
+            packageId = "gstreamer-base-sys";
+          }
+          {
+            name = "libc";
+            packageId = "libc";
+          }
+        ];
+        features = {
+          "v1_14_1" = [ "gstreamer-base-sys/v1_14_1" ];
+          "v1_16" = [ "gst/v1_16" "gstreamer-base-sys/v1_16" "v1_14_1" ];
+          "v1_18" = [ "gst/v1_18" "gstreamer-base-sys/v1_18" "v1_16" ];
+          "v1_20" = [ "gst/v1_20" "gstreamer-base-sys/v1_20" "v1_18" ];
+          "v1_22" = [ "gst/v1_22" "gstreamer-base-sys/v1_22" "v1_20" ];
+          "v1_24" = [ "gst/v1_24" "gstreamer-base-sys/v1_24" "v1_22" ];
+          "v1_26" = [ "gst/v1_26" "gstreamer-base-sys/v1_26" "v1_24" ];
+          "v1_28" = [ "gst/v1_28" "gstreamer-base-sys/v1_28" "v1_26" ];
+          "v1_30" = [ "gst/v1_30" "gstreamer-base-sys/v1_30" "v1_28" ];
+        };
+        resolvedDefaultFeatures = [ "default" "v1_14_1" "v1_16" "v1_18" "v1_20" "v1_22" "v1_24" "v1_26" "v1_28" ];
+      };
+      "gstreamer-base-sys" = rec {
+        crateName = "gstreamer-base-sys";
+        version = "0.25.4";
+        edition = "2024";
+        sha256 = "0cjw73349ppk41sx3l7qbj5h3xga36p7vhi9dgpazdbnzmxzf19v";
+        libName = "gstreamer_base_sys";
+        authors = [
+          "Sebastian Dröge <sebastian@centricular.com>"
+        ];
+        dependencies = [
+          {
+            name = "glib-sys";
+            packageId = "glib-sys";
+          }
+          {
+            name = "gobject-sys";
+            packageId = "gobject-sys";
+          }
+          {
+            name = "gstreamer-sys";
+            packageId = "gstreamer-sys";
+          }
+          {
+            name = "libc";
+            packageId = "libc";
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "system-deps";
+            packageId = "system-deps 9.0.1";
+          }
+        ];
+        features = {
+          "v1_14_3" = [ "v1_14_1" ];
+          "v1_16" = [ "v1_14_3" ];
+          "v1_18" = [ "v1_16" ];
+          "v1_20" = [ "v1_18" ];
+          "v1_22" = [ "v1_20" ];
+          "v1_24" = [ "v1_22" ];
+          "v1_26" = [ "v1_24" ];
+          "v1_28" = [ "v1_26" ];
+          "v1_30" = [ "v1_28" ];
+        };
+        resolvedDefaultFeatures = [ "v1_14_1" "v1_14_3" "v1_16" "v1_18" "v1_20" "v1_22" "v1_24" "v1_26" "v1_28" ];
+      };
+      "gstreamer-sys" = rec {
+        crateName = "gstreamer-sys";
+        version = "0.25.4";
+        edition = "2024";
+        sha256 = "1f91ypkf0llv2nmw5zbpywc2mhb20xkw7f2pbllai2blhhr9ava3";
+        libName = "gstreamer_sys";
+        authors = [
+          "Sebastian Dröge <sebastian@centricular.com>"
+        ];
+        dependencies = [
+          {
+            name = "cfg-if";
+            packageId = "cfg-if";
+          }
+          {
+            name = "glib-sys";
+            packageId = "glib-sys";
+          }
+          {
+            name = "gobject-sys";
+            packageId = "gobject-sys";
+          }
+          {
+            name = "libc";
+            packageId = "libc";
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "system-deps";
+            packageId = "system-deps 9.0.1";
+          }
+        ];
+        features = {
+          "v1_18" = [ "v1_16" ];
+          "v1_18_3" = [ "v1_18" ];
+          "v1_20" = [ "v1_18_3" ];
+          "v1_20_4" = [ "v1_20" ];
+          "v1_22" = [ "v1_20_4" ];
+          "v1_24" = [ "v1_22" ];
+          "v1_26" = [ "v1_24" ];
+          "v1_28" = [ "v1_26" ];
+          "v1_30" = [ "v1_28" ];
+        };
+        resolvedDefaultFeatures = [ "v1_16" "v1_18" "v1_18_3" "v1_20" "v1_20_4" "v1_22" "v1_24" "v1_26" "v1_28" ];
       };
       "guillotiere" = rec {
         crateName = "guillotiere";
@@ -18006,6 +18634,27 @@ rec {
         };
         resolvedDefaultFeatures = [ "default" "use_alloc" "use_std" ];
       };
+      "itertools 0.15.0" = rec {
+        crateName = "itertools";
+        version = "0.15.0";
+        edition = "2018";
+        sha256 = "1p412hriqm4kxn7x1539vz2p5c5s1v2m36m4kis2ai4dyn9syjwb";
+        authors = [
+          "bluss"
+        ];
+        dependencies = [
+          {
+            name = "either";
+            packageId = "either";
+            usesDefaultFeatures = false;
+          }
+        ];
+        features = {
+          "default" = [ "use_std" ];
+          "use_std" = [ "use_alloc" "either/use_std" ];
+        };
+        resolvedDefaultFeatures = [ "default" "use_alloc" "use_std" ];
+      };
       "itoa" = rec {
         crateName = "itoa";
         version = "1.0.18";
@@ -18637,6 +19286,27 @@ rec {
           "Pierre Krieger <pierre.krieger1708@gmail.com>"
         ];
 
+      };
+      "kstring" = rec {
+        crateName = "kstring";
+        version = "2.0.2";
+        edition = "2021";
+        sha256 = "1lfvqlqkg2x23nglznb7ah6fk3vv3y5i759h5l2151ami98gk2sm";
+        authors = [
+          "Ed Page <eopage@gmail.com>"
+        ];
+        dependencies = [
+          {
+            name = "static_assertions";
+            packageId = "static_assertions";
+          }
+        ];
+        features = {
+          "default" = [ "std" "unsafe" ];
+          "document-features" = [ "dep:document-features" ];
+          "serde" = [ "dep:serde" ];
+        };
+        resolvedDefaultFeatures = [ "default" "std" "unsafe" ];
       };
       "kurbo" = rec {
         crateName = "kurbo";
@@ -20266,7 +20936,7 @@ rec {
           }
           {
             name = "system-deps";
-            packageId = "system-deps";
+            packageId = "system-deps 7.0.8";
           }
         ];
         features = {
@@ -20305,7 +20975,7 @@ rec {
           }
           {
             name = "system-deps";
-            packageId = "system-deps";
+            packageId = "system-deps 7.0.8";
           }
         ];
         features = {
@@ -21870,6 +22540,16 @@ rec {
         };
         resolvedDefaultFeatures = [ "avx" "avx_luts" "avx_shaper_fixed_point_paths" "avx_shaper_paths" "default" "lut" "neon" "neon_luts" "neon_shaper_fixed_point_paths" "neon_shaper_paths" "sse" "sse_luts" "sse_shaper_fixed_point_paths" "sse_shaper_paths" ];
       };
+      "muldiv" = rec {
+        crateName = "muldiv";
+        version = "1.0.1";
+        edition = "2018";
+        sha256 = "1c6ljsp41n8ijsx7zicwfm135drgyhcms12668ivvsbm1r98frwm";
+        authors = [
+          "Sebastian Dröge <sebastian@centricular.com>"
+        ];
+
+      };
       "multimap" = rec {
         crateName = "multimap";
         version = "0.10.1";
@@ -23154,7 +23834,7 @@ rec {
             packageId = "ashpd";
             usesDefaultFeatures = false;
             target = { target, features }: ("linux" == target."os" or null);
-            features = [ "async-io" "camera" "global_shortcuts" "screencast" ];
+            features = [ "async-io" "global_shortcuts" ];
           }
           {
             name = "base64";
@@ -25565,6 +26245,34 @@ rec {
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../apps/video-worker; };
         dependencies = [
           {
+            name = "ashpd";
+            packageId = "ashpd";
+            usesDefaultFeatures = false;
+            target = { target, features }: ("linux" == target."os" or null);
+            features = [ "async-io" "camera" "screencast" ];
+          }
+          {
+            name = "futures-util";
+            packageId = "futures-util";
+            target = { target, features }: ("linux" == target."os" or null);
+          }
+          {
+            name = "gstreamer";
+            packageId = "gstreamer";
+            optional = true;
+            usesDefaultFeatures = false;
+            target = { target, features }: ("linux" == target."os" or null);
+            features = [ "v1_28" ];
+          }
+          {
+            name = "gstreamer-app";
+            packageId = "gstreamer-app";
+            optional = true;
+            usesDefaultFeatures = false;
+            target = { target, features }: ("linux" == target."os" or null);
+            features = [ "v1_28" ];
+          }
+          {
             name = "nuschl-ipc";
             packageId = "nuschl-ipc";
             target = { target, features }: ("linux" == target."os" or null);
@@ -25603,7 +26311,10 @@ rec {
             packageId = "serde_json";
           }
         ];
-
+        features = {
+          "vaapi" = [ "dep:gstreamer" "dep:gstreamer-app" ];
+        };
+        resolvedDefaultFeatures = [ "vaapi" ];
       };
       "nuschl-web-relay" = rec {
         crateName = "nuschl-web-relay";
@@ -29895,6 +30606,26 @@ rec {
         ];
 
       };
+      "option-operations" = rec {
+        crateName = "option-operations";
+        version = "0.6.1";
+        edition = "2018";
+        sha256 = "0m17ykxb3w68ymirnc096hsw78rf71b9psvfq40889h35gsrr8xc";
+        libName = "option_operations";
+        authors = [
+          "François Laignel <fengalin@free.fr>"
+        ];
+        dependencies = [
+          {
+            name = "pastey";
+            packageId = "pastey 0.2.3";
+          }
+        ];
+        features = {
+          "default" = [ "std" ];
+        };
+        resolvedDefaultFeatures = [ "default" "std" ];
+      };
       "opus-rs" = rec {
         crateName = "opus-rs";
         version = "0.1.42";
@@ -31781,7 +32512,7 @@ rec {
           }
           {
             name = "system-deps";
-            packageId = "system-deps";
+            packageId = "system-deps 7.0.8";
           }
         ];
 
@@ -41139,7 +41870,7 @@ rec {
         };
         resolvedDefaultFeatures = [ "component" "default" "disk" "multithread" "network" "system" "user" "windows" ];
       };
-      "system-deps" = rec {
+      "system-deps 7.0.8" = rec {
         crateName = "system-deps";
         version = "7.0.8";
         edition = "2018";
@@ -41175,6 +41906,52 @@ rec {
           }
         ];
 
+      };
+      "system-deps 9.0.1" = rec {
+        crateName = "system-deps";
+        version = "9.0.1";
+        edition = "2018";
+        sha256 = "0zf60c6fww4mjljs1di39rf13qrv2sqfw3iy6khdaqdcib9ilmfv";
+        libName = "system_deps";
+        authors = [
+          "Guillaume Desmottes <guillaume.desmottes@collabora.com>"
+          "Josh Triplett <josh@joshtriplett.org>"
+        ];
+        dependencies = [
+          {
+            name = "cfg-expr";
+            packageId = "cfg-expr";
+            features = [ "targets" ];
+          }
+          {
+            name = "heck";
+            packageId = "heck 0.5.0";
+          }
+          {
+            name = "pkg-config";
+            packageId = "pkg-config";
+          }
+          {
+            name = "toml";
+            packageId = "toml 1.2.1+spec-1.1.0";
+            usesDefaultFeatures = false;
+            features = [ "parse" "std" ];
+          }
+          {
+            name = "version-compare";
+            packageId = "version-compare";
+          }
+        ];
+        features = {
+          "binary" = [ "system-deps-meta/binary" "dep:which" "toml/serde" ];
+          "gz" = [ "system-deps-meta/gz" ];
+          "inno" = [ "system-deps-meta/inno" ];
+          "pkg" = [ "system-deps-meta/pkg" ];
+          "system-deps-meta" = [ "dep:system-deps-meta" ];
+          "xz" = [ "system-deps-meta/xz" ];
+          "zip" = [ "system-deps-meta/zip" ];
+        };
+        resolvedDefaultFeatures = [ "default" ];
       };
       "taffy" = rec {
         crateName = "taffy";

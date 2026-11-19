@@ -94,6 +94,7 @@ pub enum Kind {
     Encoded,
     Dropped,
     CaptureFrame,
+    HardwareFrame,
 }
 
 /// Each reply carries the ID from its request.
@@ -145,10 +146,16 @@ impl Header {
             4 => Kind::Encoded,
             5 => Kind::Dropped,
             6 => Kind::CaptureFrame,
+            7 => Kind::HardwareFrame,
             _ => return Err(invalid()),
         };
         let key = flags == KEY;
-        if key && !matches!(kind, Kind::Encoded | Kind::CaptureFrame) {
+        if key
+            && !matches!(
+                kind,
+                Kind::Encoded | Kind::CaptureFrame | Kind::HardwareFrame
+            )
+        {
             return Err(invalid());
         }
         Ok(Self {
