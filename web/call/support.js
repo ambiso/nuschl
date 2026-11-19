@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 // What this browser brings to a call: encoded transforms for the stream worker's
 // SFrame, and the royalty-free codecs it decodes in WebRTC (docs/video-plan.md §6).
+import { TIERS } from "./signal.js";
 
 /** `{codecs}` with the call codecs this browser decodes, AV1 first, or `{refusal}`. */
 export function support(scope = globalThis) {
@@ -30,4 +31,23 @@ export function sendCodecs(scope, codec) {
   const primary = codecs.filter((entry) => entry.mimeType.toLowerCase() === `video/${codec}`);
   const rtx = codecs.filter((entry) => entry.mimeType.toLowerCase() === "video/rtx");
   return primary.length ? [...primary, ...rtx] : [];
+}
+
+/** A single AV1 encoding can expose multiple decode targets through its RTP
+ * Dependency Descriptor. Probe at the capture size before enabling it. */
+export async function scalabilityMode(scope, codec, kind, { width, height, frameRate }) {
+  if (codec !== "av1" || !width || !height || !frameRate) return undefined;
+  const mode = kind === "screen" ? "L2T2_KEY" : "L3T3_KEY";
+  try {
+    const capabilities = await scope.navigator.mediaCapabilities.encodingInfo({
+      type: "webrtc",
+      video: {
+        contentType: "video/AV1", width, height, framerate: frameRate,
+        bitrate: TIERS[kind].at(-1)[2], scalabilityMode: mode,
+      },
+    });
+    if (capabilities.supported && capabilities.smooth) return mode;
+  } catch {
+    // Browsers without a WebRTC encoder capability probe use one layer.
+  }
 }

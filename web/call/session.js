@@ -4,7 +4,7 @@
 // who is in the call, and this page's own camera and screen on the publish
 // connection, encrypted in the stream worker and encoded in the call codec.
 import { MAX_PEERS, TIERS, join, parse } from "./signal.js";
-import { preferences, sendCodecs } from "./support.js";
+import { preferences, scalabilityMode, sendCodecs } from "./support.js";
 
 /** A publisher whose keys have not arrived is asked again after this. */
 const RESUBSCRIBE_MS = 5000;
@@ -195,7 +195,8 @@ export class Call extends EventTarget {
   /** Publishes `track`, from the user's own Start camera or Share screen, as this
    * page's `kind` source ("camera" or "screen"). */
   async publish(kind, track, tier) {
-    if (this.ended || this.sources.has(kind)) return track.stop();
+    const mode = await scalabilityMode(globalThis, this.codec, kind, track.getSettings());
+    if (this.ended || this.sources.has(kind) || track.readyState === "ended") return track.stop();
     if (!this.publisher) {
       this.deliver(await this.stream.request({ kind: "publish" }));
       this.publisher = new RTCPeerConnection(this.configuration);
@@ -207,7 +208,7 @@ export class Call extends EventTarget {
         this.stream.request({ kind: "tick" }).then((reply) => this.deliver(reply), () => {});
       }, TICK_MS);
     }
-    const transceiver = this.sender(kind, track);
+    const transceiver = this.sender(kind, track, mode);
     this.sources.set(kind, { track, transceiver, stream: new MediaStream([track]), tier });
     // The browser's own Stop sharing, or an unplugged camera.
     track.addEventListener("ended", () => this.unpublish(kind));
@@ -216,8 +217,17 @@ export class Call extends EventTarget {
   }
 
   /** A send transceiver for `track`, encrypted in the stream worker. */
-  sender(kind, track) {
-    const transceiver = this.publisher.addTransceiver(track, { direction: "sendonly" });
+  sender(kind, track, mode) {
+    const add = (encoding) => this.publisher.addTransceiver(track, {
+      direction: "sendonly", ...(encoding ? { sendEncodings: [{ scalabilityMode: encoding }] } : {}),
+    });
+    let transceiver;
+    try {
+      transceiver = add(this.codec === "av1" ? mode : undefined);
+    } catch (error) {
+      if (!mode) throw error;
+      transceiver = add();
+    }
     transceiver.sender.transform = new RTCRtpScriptTransform(this.stream.worker, {
       side: "send",
       encoding: ENCODINGS[kind],
@@ -273,7 +283,9 @@ export class Call extends EventTarget {
     for (const [kind, source] of this.sources) {
       if (source.transceiver.codec === this.codec) continue;
       source.transceiver.stop();
-      source.transceiver = this.sender(kind, source.track);
+      const mode = await scalabilityMode(globalThis, this.codec, kind, source.track.getSettings());
+      if (this.sources.get(kind) !== source || this.ended) continue;
+      source.transceiver = this.sender(kind, source.track, mode);
     }
     await this.offer();
   }

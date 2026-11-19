@@ -12,7 +12,7 @@ import { unsized } from "./frames.js";
 import { receiverRates } from "./receiver-stats.js";
 import { Call } from "./session.js";
 import { MAX_MESSAGE, MAX_PEERS, fitTier, join, linkOf, parse, qualityRequest } from "./signal.js";
-import { preferences, sendCodecs, support } from "./support.js";
+import { preferences, scalabilityMode, sendCodecs, support } from "./support.js";
 
 const directory = process.env.STREAM_WASM;
 assert.ok(directory, "STREAM_WASM must name the stream worker's wasm-bindgen build");
@@ -211,6 +211,20 @@ test("publishing: the call codec only, with retransmission, or nothing", () => {
   assert.deepEqual(sendCodecs(sender, "vp9").map((codec) => codec.mimeType), ["video/VP9", "video/VP9", "video/rtx"]);
   assert.deepEqual(sendCodecs(scope(["video/VP8", "video/rtx"]), "av1"), [], "no fallback to another codec");
   assert.deepEqual(sendCodecs({}, "vp9"), []);
+});
+
+test("one AV1 encoding uses layers with confirmed encoder support", async () => {
+  const video = { width: 1920, height: 1080, frameRate: 30 };
+  const scope = { navigator: { mediaCapabilities: { encodingInfo: async ({ type, video }) => {
+    assert.equal(type, "webrtc");
+    assert.equal(video.contentType, "video/AV1");
+    assert.equal(video.width, 1920);
+    return { supported: true, smooth: video.scalabilityMode === "L2T2_KEY" };
+  } } } };
+  assert.equal(await scalabilityMode(scope, "av1", "screen", video), "L2T2_KEY");
+  assert.equal(await scalabilityMode(scope, "av1", "camera", video), undefined);
+  assert.equal(await scalabilityMode(scope, "vp9", "screen", video), undefined);
+  assert.equal(await scalabilityMode({}, "av1", "screen", video), undefined);
 });
 
 test("frames: the AV1 depacketizer's size field comes off again", () => {
