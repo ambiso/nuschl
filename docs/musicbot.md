@@ -12,6 +12,8 @@ browsers. People control what plays on a web page; they get their link by writin
   extension, tells it which formats it decodes, so the server transcodes only what
   the bot cannot play. Plain Subsonic servers get a salted password token and send
   the original file, or always a transcoded one when `transcode` is set.
+  Use HTTPS for libraries on another machine. Local libraries also accept HTTP
+  on a loopback address.
 - **Browsing.** The web page browses each library much like Navidrome's own: album
   lists (recently added, recently played, most played, random, by name, starred)
   with covers, the artist index, an artist's albums, an album's songs, and
