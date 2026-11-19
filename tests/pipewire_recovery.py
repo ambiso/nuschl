@@ -497,10 +497,19 @@ def check_sandboxed_restarts(sandboxed, pipewire, packets, output):
 
 
 def defaults(pipewire):
-    """The session's default sink and source (PipeWire 'default' metadata)."""
-    result = subprocess.run([str(pipewire.pipewire / "bin/pw-metadata"), "-n", "default"], env=pipewire.env,
-                            capture_output=True, text=True, timeout=10)
-    return sorted(line.split("key:", 1)[1] for line in result.stdout.splitlines() if "key:'default.audio." in line)
+    """The session's default sink and source (PipeWire 'default' metadata).
+
+    WirePlumber owns that metadata, and on a loaded host its properties can
+    reach pw-metadata after pw-metadata's round trip ends: a reading without
+    them is repeated."""
+    for _ in range(10):
+        result = subprocess.run([str(pipewire.pipewire / "bin/pw-metadata"), "-n", "default"], env=pipewire.env,
+                                capture_output=True, text=True, timeout=10)
+        found = sorted(line.split("key:", 1)[1] for line in result.stdout.splitlines() if "key:'default.audio." in line)
+        if found:
+            return found
+        time.sleep(0.1)
+    return found
 
 
 def connect_device(pipewire, name, media_class, position):
