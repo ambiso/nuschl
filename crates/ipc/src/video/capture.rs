@@ -7,13 +7,17 @@ use super::{
 use crate::host::preview_lifecycle::Retirement;
 use nuschl_sandbox::Role;
 use std::{
-    os::fd::OwnedFd,
+    os::{fd::OwnedFd, unix::net::UnixStream as Socket},
     path::PathBuf,
     process::Stdio,
     time::{Duration, Instant},
 };
 use tokio::{
-    io::AsyncReadExt as _, process::ChildStdout, sync::mpsc, task::JoinHandle, time::timeout,
+    io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _},
+    net::UnixStream,
+    sync::{mpsc, watch},
+    task::JoinHandle,
+    time::timeout,
 };
 
 pub struct VideoFrame {
@@ -23,12 +27,14 @@ pub struct VideoFrame {
     pub capture_time_us: u64,
     pub av1: Vec<u8>,
     pub hardware: bool,
+    pub bitrate_bps: u32,
     received: Instant,
 }
 
 pub struct Capture {
     frames: mpsc::Receiver<Result<VideoFrame, Error>>,
     task: JoinHandle<()>,
+    bitrate: watch::Sender<Option<u32>>,
 }
 
 impl Capture {
@@ -65,14 +71,31 @@ impl Capture {
         }
         let permit = SOURCES.try_acquire().map_err(|_| Error::Busy)?;
         let (sender, frames) = mpsc::channel(1);
+        let (bitrate, updates) = watch::channel(None);
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| Error::Runtime)?;
         let task = runtime.spawn(async move {
             let _permit = permit;
-            if let Err(error) = capture(executable, remote, source, node_id, vaapi, &sender).await {
+            if let Err(error) =
+                capture(executable, remote, source, node_id, vaapi, &sender, updates).await
+            {
                 let _ = sender.try_send(Err(error));
             }
         });
-        Ok(Self { frames, task })
+        Ok(Self {
+            frames,
+            task,
+            bitrate,
+        })
+    }
+
+    /// Update the target bitrate. The latest request replaces pending requests.
+    pub fn set_bitrate(&self, bitrate_bps: u32) -> Result<(), Error> {
+        if !Settings::valid_bitrate(bitrate_bps) {
+            return Err(invalid().into());
+        }
+        self.bitrate
+            .send(Some(bitrate_bps))
+            .map_err(|_| Error::Stopped)
     }
 
     pub async fn next(&mut self) -> Result<VideoFrame, Error> {
@@ -97,10 +120,14 @@ async fn capture(
     node: Option<u32>,
     vaapi: bool,
     sender: &mpsc::Sender<Result<VideoFrame, Error>>,
+    mut updates: watch::Receiver<Option<u32>>,
 ) -> Result<(), Error> {
+    let (supervisor, worker) = Socket::pair()?;
+    supervisor.set_nonblocking(true)?;
+    let (mut output, mut control) = UnixStream::from_std(supervisor)?.into_split();
     let mut child = nuschl_sandbox::command(&executable, Role::VideoCapture { node, vaapi })?
         .stdin(Stdio::from(remote))
-        .stdout(Stdio::piped())
+        .stdout(Stdio::from(OwnedFd::from(worker)))
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
@@ -108,23 +135,14 @@ async fn capture(
     let mut retirement = Retirement::new(&mut child);
     let result = async {
         retirement.ready().await.map_err(|_| Error::Confinement)?;
-        let mut output = child.stdout.take().ok_or_else(invalid)?;
-        let mut previous = 0;
-        loop {
-            let frame = tokio::select! {
-                _ = sender.closed() => return Ok(()),
-                result = async {
-                    if previous == 0 {
-                        timeout(Duration::from_secs(15), read_frame(&mut output, source, 0))
-                            .await.unwrap_or(Err(Error::Timeout))
-                    } else {
-                        read_frame(&mut output, source, previous).await
-                    }
-                } => result?,
-            };
-            previous = frame.capture_time_us;
-            // Each frame is independent, so a slow consumer can skip frames.
-            let _ = sender.try_send(Ok(frame));
+        let start = Header::empty(Kind::CaptureStart, 0).to_bytes();
+        timeout(DEADLINE, control.write_all(&start))
+            .await
+            .map_err(|_| Error::Timeout)??;
+        tokio::select! {
+            _ = sender.closed() => Ok(()),
+            result = receive_frames(&mut output, source, sender) => result,
+            result = send_updates(&mut control, &mut updates) => result,
         }
     }
     .await;
@@ -135,8 +153,46 @@ async fn capture(
     Ok(())
 }
 
+async fn send_updates(
+    socket: &mut (impl AsyncWrite + Unpin),
+    updates: &mut watch::Receiver<Option<u32>>,
+) -> Result<(), Error> {
+    while updates.changed().await.is_ok() {
+        let target = *updates.borrow_and_update();
+        if let Some(bitrate) = target {
+            let header = Header {
+                bytes: 4,
+                ..Header::empty(Kind::SetBitrate, 0)
+            };
+            let mut control = [0; HEADER_BYTES + 4];
+            control[..HEADER_BYTES].copy_from_slice(&header.to_bytes());
+            control[HEADER_BYTES..].copy_from_slice(&bitrate.to_be_bytes());
+            timeout(DEADLINE, socket.write_all(&control))
+                .await
+                .map_err(|_| Error::Timeout)??;
+        }
+    }
+    Ok(())
+}
+
+async fn receive_frames(
+    output: &mut (impl AsyncRead + Unpin),
+    source: Source,
+    sender: &mpsc::Sender<Result<VideoFrame, Error>>,
+) -> Result<(), Error> {
+    let mut frame = timeout(Duration::from_secs(15), read_frame(output, source, 0))
+        .await
+        .map_err(|_| Error::Timeout)??;
+    loop {
+        let previous = frame.capture_time_us;
+        // Each frame is independent, so a slow consumer can skip frames.
+        let _ = sender.try_send(Ok(frame));
+        frame = read_frame(output, source, previous).await?;
+    }
+}
+
 async fn read_frame(
-    input: &mut ChildStdout,
+    input: &mut (impl AsyncRead + Unpin),
     source: Source,
     previous: u64,
 ) -> Result<VideoFrame, Error> {
@@ -166,6 +222,7 @@ async fn read_frame(
             capture_time_us: header.id,
             av1,
             hardware: header.kind == Kind::HardwareFrame,
+            bitrate_bps: settings.bitrate,
             received: Instant::now(),
         })
     })

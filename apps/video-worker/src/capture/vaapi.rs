@@ -5,11 +5,8 @@
 use super::Failure;
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app::AppSink;
-use nuschl_ipc::video::{Header, Kind, Settings, Source};
-use std::{
-    io::{self, Write as _},
-    time::Instant,
-};
+use nuschl_ipc::video::{Kind, Settings, Source};
+use std::{io, sync::atomic::AtomicU32, time::Instant};
 
 const BITRATE: u32 = 20_000_000;
 
@@ -31,7 +28,7 @@ pub fn prepare(node: Option<u32>) -> Result<gst::Pipeline, Failure> {
             "pipewiresrc fd=0 {target} ! ",
             "queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! ",
             "vapostproc ! video/x-raw(memory:VAMemory),format=NV12,width=[16,3840],height=[16,2160] ! ",
-            "vaav1enc bitrate={bitrate} rate-control=cbr hierarchical-level=1 key-int-max=1 ! ",
+            "vaav1enc name=encoder bitrate={bitrate} rate-control=cbr hierarchical-level=1 key-int-max=1 ! ",
             "av1parse ! video/x-av1,stream-format=obu-stream,alignment=tu ! ",
             "appsink name=encoded max-buffers=1 leaky-type=downstream sync=false",
         ),
@@ -44,23 +41,36 @@ pub fn prepare(node: Option<u32>) -> Result<gst::Pipeline, Failure> {
         .map_err(|_| "invalid video pipeline".into())
 }
 
-pub fn run(pipeline: gst::Pipeline, source: Source) -> Result<(), Failure> {
+pub fn run(pipeline: gst::Pipeline, source: Source, control: &AtomicU32) -> Result<(), Failure> {
     let sink = pipeline
         .by_name("encoded")
         .ok_or("missing video sink")?
         .downcast::<AppSink>()
         .map_err(|_| "invalid video sink")?;
+    let encoder = pipeline.by_name("encoder").ok_or("missing video encoder")?;
     let bus = pipeline.bus().ok_or("missing pipeline bus")?;
     pipeline.set_state(gst::State::Playing)?;
-    let result = write_frames(&bus, &sink, source);
+    let result = write_frames(&bus, &sink, &encoder, source, control);
     let _ = pipeline.set_state(gst::State::Null);
     result
 }
 
-fn write_frames(bus: &gst::Bus, sink: &AppSink, source: Source) -> Result<(), Failure> {
+fn write_frames(
+    bus: &gst::Bus,
+    sink: &AppSink,
+    encoder: &gst::Element,
+    source: Source,
+    control: &AtomicU32,
+) -> Result<(), Failure> {
     let clock = Instant::now();
     let mut stdout = io::stdout().lock();
+    let mut bitrate = BITRATE / 1000;
     loop {
+        let wanted = super::target_bitrate(control, BITRATE) / 1000;
+        if wanted != bitrate {
+            encoder.set_property("bitrate", wanted);
+            bitrate = encoder.property::<u32>("bitrate");
+        }
         let Some(sample) = sink.try_pull_sample(gst::ClockTime::from_mseconds(300)) else {
             if let Some(message) =
                 bus.pop_filtered(&[gst::MessageType::Error, gst::MessageType::Eos])
@@ -87,7 +97,7 @@ fn write_frames(bus: &gst::Bus, sink: &AppSink, source: Source) -> Result<(), Fa
             width: u16::try_from(format.get::<i32>("width")?)?,
             height: u16::try_from(format.get::<i32>("height")?)?,
             fps: u16::try_from(fps)?,
-            bitrate: BITRATE,
+            bitrate: bitrate * 1000,
         };
         settings.frame_bytes()?;
 
@@ -100,15 +110,12 @@ fn write_frames(bus: &gst::Bus, sink: &AppSink, source: Source) -> Result<(), Fa
         }
         let bytes = buffer.map_readable()?;
         let timestamp = u64::try_from(clock.elapsed().as_micros())?.max(1);
-        let header = Header {
-            kind: Kind::HardwareFrame,
-            key: true,
-            id: timestamp,
-            bytes: u32::try_from(bytes.len())?,
-        };
-        stdout.write_all(&header.to_bytes())?;
-        stdout.write_all(&settings.to_bytes())?;
-        stdout.write_all(bytes.as_slice())?;
-        stdout.flush()?;
+        super::write_frame(
+            &mut stdout,
+            Kind::HardwareFrame,
+            settings,
+            timestamp,
+            bytes.as_slice(),
+        )?;
     }
 }

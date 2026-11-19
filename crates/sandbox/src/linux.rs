@@ -101,7 +101,10 @@ pub(crate) fn command(executable: &Path, role: Role) -> Result<Command, Error> {
 /// Grant one DRM render node and the system VA drivers for that node.
 fn video_acceleration(command: &mut Command) {
     const RENDER: &str = "/dev/dri/renderD128";
-    if !std::fs::symlink_metadata(RENDER).is_ok_and(|info| info.file_type().is_char_device()) {
+    const RENDER_DEV: u64 = (226 << 8) | 128;
+    if !std::fs::symlink_metadata(RENDER)
+        .is_ok_and(|info| info.file_type().is_char_device() && info.rdev() == RENDER_DEV)
+    {
         return;
     }
     let sysfs = Path::new("/sys/dev/char/226:128");
@@ -126,6 +129,8 @@ fn video_acceleration(command: &mut Command) {
     }
     command.args(["--dev-bind", RENDER, RENDER]);
     command.args(["--setenv", "NUSCHL_VIDEO_VAAPI", "1"]);
+    // Keep the pipeline's per-thread glibc arenas within the address-space limit.
+    command.args(["--setenv", "MALLOC_ARENA_MAX", "2"]);
     command.args(["--setenv", "GST_PLUGIN_SYSTEM_PATH_1_0", ""]);
     command.args(["--setenv", "GST_PLUGIN_PATH_1_0", ""]);
     command.args(["--setenv", "GST_REGISTRY", "/tmp/gst-registry"]);

@@ -302,8 +302,11 @@ and prlimit, kills it and verifies recovery on a later frame. It also runs
 the synthetic `nuschl-video-probe` and verifies the AV1 dimensions and pixels
 with FFmpeg's libdav1d decoder. It runs a separate private PipeWire daemon to
 deliver a synthetic video stream through the same inherited file-descriptor
-path that the desktop uses for portal capture. The flake's `nuschl-video-worker-unit` check
-runs the same test.
+path that the portal capture probe uses. The flake's `nuschl-video-worker-unit`
+check runs the same test. `vaapi_capture_from_the_inherited_pipewire_connection`
+is local-only because it needs a DRM render node with AV1 hardware encode.
+Both capture tests feed synthetic frames, decode AV1, and verify that a new
+bitrate target persists across subsequent frames.
 
 ## WebRTC transport trial
 

@@ -86,6 +86,8 @@ The probe prints the frame dimensions and encoded byte count. Nix builds try
 the isolated VA-API pipeline first and fall back to the software worker if
 hardware setup fails before opening the granted connection. Starting again
 after a running PipeWire stream fails requests a fresh portal connection.
+The native capture adapter applies live bitrate targets through its bounded
+socket protocol and coalesces pending targets to the latest value.
 The software path encodes independent frames. Its capture integration test opens
 one connection to a private PipeWire daemon with a synthetic video node, starts
 the worker in bubblewrap and reads encoded AV1. Interframe encoding and

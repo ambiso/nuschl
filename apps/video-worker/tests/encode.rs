@@ -223,6 +223,21 @@ context.objects = [
         raw.len(),
         usize::from(frame.width) * usize::from(frame.height) * 3 / 2
     );
+    assert!(capture.set_bitrate(1).is_err());
+    capture.set_bitrate(900_000).unwrap();
+    let updated_at = tokio::time::timeout(Duration::from_secs(12), async {
+        loop {
+            let current = capture.next().await.expect("the encoder keeps running");
+            if current.bitrate_bps == 900_000 {
+                assert!(!current.av1.is_empty());
+                break current.capture_time_us;
+            }
+        }
+    })
+    .await
+    .expect("the new target is applied within the running capture");
+    assert!(updated_at > frame.capture_time_us);
+    assert_eq!(capture.next().await.unwrap().bitrate_bps, 900_000);
     capture.stop().await.unwrap();
     nuschl_testkit::none_running(Path::new(WORKER), Duration::from_secs(3)).await;
     daemon.kill().await.unwrap();

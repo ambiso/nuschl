@@ -24762,6 +24762,12 @@ rec {
             packageId = "tokio";
             features = [ "io-util" "macros" "process" "time" "rt" "sync" ];
           }
+          {
+            name = "tokio";
+            packageId = "tokio";
+            target = { target, features }: ("linux" == target."os" or null);
+            features = [ "net" ];
+          }
         ];
         devDependencies = [
           {

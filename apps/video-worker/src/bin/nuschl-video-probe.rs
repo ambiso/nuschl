@@ -82,8 +82,10 @@ async fn portal_probe(source: nuschl_ipc::video::Source) -> Result<(), Box<dyn s
         grant.node_id(),
     )?;
     let result = tokio::time::timeout(std::time::Duration::from_secs(20), capture.next()).await;
-    capture.stop().await?;
+    drop(grant);
+    let stopped = tokio::time::timeout(std::time::Duration::from_secs(2), capture.stop()).await;
     let frame = result??;
+    stopped??;
     println!(
         "Captured one {}×{} AV1 frame ({} bytes)",
         frame.width,

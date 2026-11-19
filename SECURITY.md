@@ -78,7 +78,7 @@ add only:
 | transfer | network and resolver files; the offered file, read-only | 1 GiB |
 | music-bot codec, Linux only | none | 1 GiB |
 | video encode, Linux only | none | 1 GiB, 120 s CPU over its life, 5 s wall time per exchange |
-| video capture, Linux only | one portal-granted PipeWire connection inherited as standard input, read-only system PipeWire configuration, one optional DRM render device with read-only sysfs metadata and the hardware codec's driver libraries | 1 GiB, 1 h CPU over its life, 15 s to first frame, 5 s to read a started frame |
+| video capture, Linux only | one portal-granted PipeWire connection inherited as standard input, a private inherited socket for AV1 and versioned bitrate commands, read-only system PipeWire configuration, one optional DRM render device with read-only sysfs metadata and the hardware codec's driver libraries | 1 GiB, 1 h CPU over its life, 15 s to first frame, 5 s to read a started frame |
 
 Rules for every platform:
 

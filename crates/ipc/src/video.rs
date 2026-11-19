@@ -38,11 +38,15 @@ impl Settings {
             || !self.width.is_multiple_of(2)
             || !self.height.is_multiple_of(2)
             || !(1..=120).contains(&self.fps)
-            || !(64_000..=50_000_000).contains(&self.bitrate)
+            || !Self::valid_bitrate(self.bitrate)
         {
             return Err(invalid());
         }
         Ok(usize::from(self.width) * usize::from(self.height) * 3 / 2)
+    }
+
+    pub fn valid_bitrate(bitrate: u32) -> bool {
+        (64_000..=50_000_000).contains(&bitrate)
     }
 
     pub fn packet_limit(self, key: bool) -> usize {
@@ -95,6 +99,8 @@ pub enum Kind {
     Dropped,
     CaptureFrame,
     HardwareFrame,
+    SetBitrate,
+    CaptureStart,
 }
 
 /// Each reply carries the ID from its request.
@@ -147,6 +153,8 @@ impl Header {
             5 => Kind::Dropped,
             6 => Kind::CaptureFrame,
             7 => Kind::HardwareFrame,
+            8 => Kind::SetBitrate,
+            9 => Kind::CaptureStart,
             _ => return Err(invalid()),
         };
         let key = flags == KEY;
