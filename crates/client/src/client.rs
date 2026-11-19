@@ -1438,6 +1438,12 @@ impl Client {
         self.sending.is_some()
     }
 
+    pub(crate) fn composer_sending(&self) -> bool {
+        self.sending
+            .as_ref()
+            .is_some_and(|pending| pending.composer_channel.is_some())
+    }
+
     fn finish_pending_send(&mut self, pending: PendingSend, generation: u64) {
         let Some(channel) = pending.composer_channel else {
             return;
@@ -5201,18 +5207,6 @@ mod tests {
             .unwrap();
         client.announce_own_call();
         client.open(0, 3).unwrap();
-        client.set_link_preview_settings(
-            crate::preview::Settings {
-                mode: crate::preview::Mode::Direct,
-            },
-            0,
-        );
-        client.composing_link_preview("https://example.org/ ", false, false, false, 0);
-        client.poll_link_preview(crate::preview::DEBOUNCE_MS);
-        let preview = recorder.previews.lock().unwrap().last().unwrap().id;
-        let typing = Some(((id.clone(), 3), 0));
-        client.typing_sent.clone_from(&typing);
-
         let sent = |generation, target, body: &str| Input::Sent {
             server: id.clone(),
             generation,
@@ -5233,6 +5227,18 @@ mod tests {
         );
         client.handle(sent(1, TextTarget::Channel(2), "previous message"));
         client.take_updates();
+        client.set_link_preview_settings(
+            crate::preview::Settings {
+                mode: crate::preview::Mode::Direct,
+            },
+            0,
+        );
+        client.composing_link_preview("https://example.org/ ", false, false, false, 0);
+        client.poll_link_preview(crate::preview::DEBOUNCE_MS);
+        let preview = recorder.previews.lock().unwrap().last().unwrap().id;
+        let typing = Some(((id.clone(), 3), 0));
+        client.typing_sent.clone_from(&typing);
+
         client.settle();
         let invite = format!("Call: {link}");
         assert!(client.sending());
@@ -5244,6 +5250,17 @@ mod tests {
                 expected_peer: Some(10)
             },
         )));
+        assert_eq!(
+            client.send_text("another message".into()),
+            Err(SendError::Nothing)
+        );
+        client.composing_link_preview(
+            "https://example.org/ ",
+            false,
+            false,
+            false,
+            crate::preview::DEBOUNCE_MS,
+        );
         client.handle(sent(1, TextTarget::Direct(4), &invite));
         client.announce_own_call();
         client.settle();
