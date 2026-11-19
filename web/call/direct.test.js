@@ -143,7 +143,7 @@ test("direct waits for consent, upload headroom and both ICE legs, then falls ba
   assert.equal(sfuSender.track, null);
   assert.equal(outgoing.getTransceivers()[0].sender.track, track);
   await signal(1, subscribe, "active");
-  assert.equal(subscribe.track(remoteTrack).path, "direct");
+  assert.notEqual(subscribe.track(remoteTrack).receiver, remoteTrack.receiver);
 
   outgoing.bitrate = 4_000_000;
   await publish.tick();

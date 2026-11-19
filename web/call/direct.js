@@ -72,6 +72,16 @@ function encodingOf(sender) {
   return encodings?.length === 1 ? encodings[0] : null;
 }
 
+function desiredRate(sources) {
+  let total = 0;
+  for (const { local } of sources) {
+    const rate = encodingOf(local.sender)?.maxBitrate;
+    if (!Number.isFinite(rate) || rate <= 0) return 0;
+    total += rate;
+  }
+  return total;
+}
+
 async function applyCaps({ local, direct }) {
   const caps = encodingOf(local.sender);
   const parameters = direct.sender.getParameters();
@@ -142,8 +152,9 @@ export class DirectPaths {
         await this.#drop(this.#outgoing);
         return;
       }
-      if (this.#incoming?.peer !== peer) await this.#drop(this.#incoming);
-      if (this.#outgoing?.peer !== peer) await this.#drop(this.#outgoing);
+      for (const leg of [this.#incoming, this.#outgoing]) {
+        if (leg && (leg.peer !== peer || leg.pc.connectionState === "closed")) await this.#drop(leg);
+      }
       if (this.#call.keys.get(peer)?.keyed && !this.#incoming) {
         await this.#send(peer, false, { type: "ready" }).then(() => { this.#asked = peer; }, () => {});
       }
@@ -250,11 +261,10 @@ export class DirectPaths {
       kind,
       mid: transceiver.mid,
       local: { track, sender: transceiver.sender },
-      encoding: encodingOf(transceiver.sender),
     }));
-    if (sources.some(({ mid, encoding, local }) =>
-      !mid || !(encoding?.maxBitrate > 0) || local.track.readyState !== "live")) return;
-    const desired = sources.reduce((sum, { encoding }) => sum + encoding.maxBitrate, 0);
+    if (sources.some(({ mid, local }) => !mid || local.track.readyState !== "live")) return;
+    const desired = desiredRate(sources);
+    if (!desired) return;
     const leg = this.#outgoing;
     if (leg && (!sameSources(leg.sources, call) || leg.peer !== peer)) return this.#drop(leg, true);
     const { direct, bitrate } = await selectedPair(leg?.active ? leg.pc : call.publisher);
@@ -309,7 +319,7 @@ export class DirectPaths {
         if (receiver?.track.kind !== "video") throw new Error("direct offer source is missing");
         transceiver.direction = "recvonly";
         receiver.transform = new RTCRtpScriptTransform(call.stream.worker, { side: "receive", peer });
-        leg.tracks.set(source, { receiver, stream: new MediaStream([receiver.track]), path: "direct" });
+        leg.tracks.set(source, { receiver, stream: new MediaStream([receiver.track]) });
       }
       await leg.pc.setLocalDescription();
       const sdp = await candidates(leg.pc);
@@ -325,6 +335,9 @@ export class DirectPaths {
     if (this.#peer() !== leg.peer || !sameSources(leg.sources, call) || !(await selectedPair(leg.pc)).direct) {
       return this.#drop(leg, true);
     }
+    const { bitrate } = await selectedPair(call.publisher);
+    const desired = desiredRate(leg.sources);
+    if (!desired || !Number.isFinite(bitrate) || bitrate * 0.8 < desired) return this.#drop(leg, true);
     // Install the same encoder caps while the direct senders are detached.
     for (const source of leg.sources) await applyCaps(source);
     if (this.#peer() !== leg.peer || !sameSources(leg.sources, call)) return this.#drop(leg, true);
