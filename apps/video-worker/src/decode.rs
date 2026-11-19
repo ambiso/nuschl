@@ -5,7 +5,7 @@ mod color;
 mod vaapi;
 
 use nuschl_ipc::video::{
-    DecodedFrame, HEADER_BYTES, Header, Kind, Source, decode_packet_limit, source_from_byte,
+    HEADER_BYTES, Header, Kind, Source, decode_packet_limit, source_from_byte,
 };
 use rav1d::{Decoder, Picture, Rav1dError, Settings};
 use std::io::{self, Read, Write};
@@ -69,19 +69,21 @@ pub fn run(accelerated: bool) -> Result<(), Error> {
         needs_key = false;
         let mut encoded = vec![0; request.bytes as usize];
         input.read_exact(&mut encoded)?;
-        let Some(frame) = backend.decode(encoded, request.id, source)? else {
+        let write = |width: u16, height: u16, bgra: &[u8]| {
+            let decoded = Header {
+                bytes: u32::try_from(bgra.len() + 4)?,
+                ..Header::empty(Kind::Decoded, request.id)
+            };
+            output.write_all(&decoded.to_bytes())?;
+            output.write_all(&width.to_be_bytes())?;
+            output.write_all(&height.to_be_bytes())?;
+            output.write_all(bgra)?;
+            output.flush()?;
+            Ok(())
+        };
+        if !backend.decode(encoded, request.id, source, write)? {
             reply(&mut output, Header::empty(Kind::Dropped, request.id))?;
-            continue;
-        };
-        let decoded = Header {
-            bytes: u32::try_from(frame.bgra.len() + 4)?,
-            ..Header::empty(Kind::Decoded, request.id)
-        };
-        output.write_all(&decoded.to_bytes())?;
-        output.write_all(&frame.width.to_be_bytes())?;
-        output.write_all(&frame.height.to_be_bytes())?;
-        output.write_all(&frame.bgra)?;
-        output.flush()?;
+        }
     }
     Ok(())
 }
@@ -113,13 +115,20 @@ impl Backend {
         encoded: Vec<u8>,
         id: u64,
         source: Source,
-    ) -> Result<Option<DecodedFrame>, Error> {
+        write: impl FnOnce(u16, u16, &[u8]) -> Result<(), Error>,
+    ) -> Result<bool, Error> {
         match self {
-            Self::Software(decoder) => software_picture(decoder, encoded, i64::try_from(id)?)?
-                .map(|picture| color::to_bgra(&picture, source))
-                .transpose(),
+            Self::Software(decoder) => {
+                if let Some(picture) = software_picture(decoder, encoded, i64::try_from(id)?)? {
+                    let frame = color::to_bgra(&picture, source)?;
+                    write(frame.width, frame.height, &frame.bgra)?;
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
             #[cfg(feature = "vaapi")]
-            Self::Hardware(decoder) => decoder.decode(encoded, id, source),
+            Self::Hardware(decoder) => decoder.decode(encoded, id, source, write),
         }
     }
 }
