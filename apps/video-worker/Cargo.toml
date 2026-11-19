@@ -1,6 +1,6 @@
 [package]
 name = "nuschl-video-worker"
-description = "Isolated video encoding process"
+description = "Isolated video capture, encoding and decoding process"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -75,6 +75,19 @@ automatic gain control, all in Rust:
 The design and its measurements: [architecture.md](architecture.md#audio-configuration-and-recovery),
 [dsp-evaluation.md](dsp-evaluation.md).
 
+## Video and screen sharing
+
+On Linux with the video and RTC workers installed, **Start camera** and
+**Share screen** are available in a channel or direct conversation. The call
+card contains the link for browser viewers. **Watch here** plays an incoming
+AV1 source inside Nuschl. The native call supports one publisher and one
+viewer. **Open in browser** opens the same room for group calls and other
+call modes. Relay-only calls open in the browser, where TURN relays media.
+
+The desktop asks the portal for permission on each share. A monitor share
+hides Nuschl conversations behind a curtain until the capture worker has
+stopped. Mumble handles voice during the call.
+
 ## Channels and conversations
 
 - Click a channel to open its conversation; double-click it, or use **Join
