@@ -17,7 +17,7 @@
 //! (docs/web.md, "The call page").
 use crate::{services::ServiceEvent, state::Desktop};
 use gpui_kit::Context;
-use nuschl_core::call::DEFAULT_HOST;
+use nuschl_core::call::{DEFAULT_HOST, page_url};
 use nuschl_stream::Link;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
@@ -211,15 +211,6 @@ impl Desktop {
     }
 }
 
-/// The call page for a call link: `/call?relay#…` for relay-only users.
-pub fn page_url(link: &str, relay_only: bool) -> String {
-    if relay_only {
-        link.replacen("/call#", "/call?relay#", 1)
-    } else {
-        link.to_owned()
-    }
-}
-
 /// A Join link someone posted, checked by `nuschl-stream`'s parser.
 pub fn join_link(link: &str) -> Option<Link> {
     Link::parse(link, nuschl_core::call::link_host(link)?).ok()
@@ -269,16 +260,6 @@ mod tests {
         );
         assert!(join_link(&link.url().replace("&h=", "&x=")).is_none());
         assert!(join_link("https://stream.example/call#v=1").is_none());
-    }
-
-    #[test]
-    fn relay_only_users_open_the_page_with_relay() {
-        let link = "https://stream.example/call#v=1&k=a&h=b";
-        assert_eq!(page_url(link, false), link);
-        assert_eq!(
-            page_url(link, true),
-            "https://stream.example/call?relay#v=1&k=a&h=b"
-        );
     }
 
     #[test]

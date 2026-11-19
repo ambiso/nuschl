@@ -27,6 +27,9 @@
 //! client on the server can send one, so its link is the sender's claim and the
 //! Mumble server sees S.
 
+use std::borrow::Cow;
+use url::Url;
+
 /// The project's call host.
 pub const DEFAULT_HOST: &str = "stream.nuschl.eu";
 /// The plugin data ID of call cards.
@@ -89,6 +92,23 @@ pub fn link_host(link: &str) -> Option<&str> {
     (!host.is_empty() && page.starts_with("call#")).then_some(host)
 }
 
+/// The browser URL for a call, including the local relay-only choice.
+pub fn page_url(link: &str, relay_only: bool) -> Cow<'_, str> {
+    if relay_only
+        && let Ok(mut url) = Url::parse(link)
+        && url.scheme() == "https"
+        && url.path() == "/call"
+        && url
+            .fragment()
+            .is_some_and(|hash| hash.starts_with("v=1&k="))
+        && !url.query_pairs().any(|(name, _)| name == "relay")
+    {
+        url.query_pairs_mut().append_key_only("relay");
+        return Cow::Owned(url.into());
+    }
+    Cow::Borrowed(link)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,5 +152,24 @@ mod tests {
             Some("localhost:8443")
         );
         assert_eq!(link_host("https://stream.nuschl.eu/call"), None);
+    }
+
+    #[test]
+    fn relay_only_survives_browser_url_normalization_and_preserves_the_call() {
+        assert_eq!(page_url(LINK, false), LINK);
+        let relay = LINK.replace("/call#", "/call?relay#");
+        assert_eq!(page_url(LINK, true), relay);
+        assert_eq!(page_url(&relay, true), relay);
+
+        let pasted = LINK.replace(
+            "https://stream.nuschl.eu/call#",
+            "HTTPS://STREAM.NUSCHL.EU/call?view=grid#",
+        );
+        assert_eq!(
+            page_url(&pasted, true),
+            LINK.replace("/call#", "/call?view=grid&relay#")
+        );
+        let unrelated = "https://stream.nuschl.eu/call#about";
+        assert_eq!(page_url(unrelated, true), unrelated);
     }
 }
