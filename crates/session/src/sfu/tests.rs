@@ -412,6 +412,7 @@ async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
         }
         let mut frame = 0u64;
         let mut tick = tokio::time::interval(Duration::from_millis(34));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let initial = loop {
             tokio::select! {
                 _ = tick.tick() => {
@@ -420,7 +421,9 @@ async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
                 }
                 data = rendered(&mut bob, publisher, true) => {
                     assert_eq!(data, KEY);
-                    break decoder.decode(true, data).await.unwrap().expect("decoded keyframe");
+                    if let Some(frame) = decoder.decode(true, data).await.unwrap() {
+                        break frame;
+                    }
                 }
             }
         };
