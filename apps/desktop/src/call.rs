@@ -2,13 +2,13 @@
 //! Calls (docs/desktop.md, "Calls"). The creator posts a link and renews the
 //! room's lease. The creator and invitees join through the desktop or browser.
 //!
-//! The lease keeps the room the creator's page made: every [`RENEW`] the desktop
+//! The lease keeps the creator's room alive: every [`RENEW`] the desktop
 //! sends `POST <origin>/sfu/lease` with `{"stream_id", "host_key"}` in lowercase
 //! hex (`nuschl-stream` derives them from S and P; P stays on this device). 204
 //! means the lease is renewed, 404 that the call host has no such room (E1,
 //! `apps/stream-sfu/src/protocol.rs`). Ending the call sends `DELETE` with the
 //! same body. The call ends when the room is gone after it existed, when the
-//! room fails to appear within [`GRACE`] (the page creates it), when renewals
+//! room fails to appear within [`GRACE`], when renewals
 //! fail for [`TIMEOUT`], and after [`MAX`]. Hosts `localhost` and `127.0.0.1` take
 //! the lease over `http://`, for development and tests. With relay-only on, the page
 //! opens as `/call?relay#…` and connects through the call host's TURN server only
