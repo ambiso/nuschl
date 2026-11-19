@@ -42,6 +42,7 @@ export class View {
   tiles = new Map();
   /** Explicit viewer choices survive a publisher's encoder restart. */
   tiers = new Map();
+  sentTiers = new WeakMap();
   sizes = new Map();
 
   constructor(document, call) {
@@ -192,21 +193,23 @@ export class View {
     select.value = tiers[kind] ?? "";
 
     const original = this.call.tracks.get(mid);
-    let size = 0, lastTier, sentAt = -Infinity, timer;
+    const sent = this.sentTiers.get(original) ?? { at: -Infinity };
+    this.sentTiers.set(original, sent);
+    let size = 0, timer;
     const send = () => {
       clearTimeout(timer);
       if (this.call.tracks.get(mid) !== original || this.call.ended) return;
       const tier = select.value === "" ? fitTier(kind, size) : Number(select.value);
-      if (tier === lastTier || !size) return;
+      if (tier === sent.tier || !size) return;
       // The SFU accepts one request per second. Keep the latest choice until then.
-      const wait = sentAt + 1100 - performance.now();
+      const wait = sent.at + 1100 - performance.now();
       if (wait > 0) {
         timer = setTimeout(send, wait);
         return;
       }
       this.call.send(qualityRequest(track.peer, kind, tier));
-      lastTier = tier;
-      sentAt = performance.now();
+      sent.tier = tier;
+      sent.at = performance.now();
     };
     select.addEventListener("change", () => {
       tiers[kind] = select.value;

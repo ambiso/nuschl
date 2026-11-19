@@ -354,7 +354,7 @@ export class DirectPaths {
       const call = this.#call;
       for (const { kind, local } of leg.sources) {
         if (local.track.readyState === "live" && call.sources.get(kind)?.transceiver.sender === local.sender) {
-          await local.sender.replaceTrack(local.track);
+          await local.sender.replaceTrack(local.track).catch(() => {});
         }
       }
     }

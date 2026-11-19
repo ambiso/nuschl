@@ -235,11 +235,21 @@ export class Call extends EventTarget {
       }, TICK_MS);
     }
     const transceiver = this.sender(kind, track, mode);
-    this.sources.set(kind, { track, transceiver, stream: new MediaStream([track]), tier });
+    const source = { track, transceiver, stream: new MediaStream([track]), tier };
+    this.sources.set(kind, source);
     // The browser's own Stop sharing, or an unplugged camera.
-    track.addEventListener("ended", () => this.unpublish(kind));
+    track.addEventListener("ended", () => {
+      if (this.sources.get(kind) === source) this.unpublish(kind).catch(() => this.end("media"));
+    });
     this.changed();
-    await this.offer();
+    try {
+      await this.offer();
+    } catch (error) {
+      if (this.sources.get(kind) === source) this.sources.delete(kind);
+      transceiver.stop();
+      this.changed();
+      throw error;
+    }
   }
 
   /** A send transceiver for `track`, encrypted in the stream worker. */
@@ -282,6 +292,7 @@ export class Call extends EventTarget {
 
   applyCap(kind, source) {
     source.applying = Promise.resolve(source.applying).then(async () => {
+      if (this.sources.get(kind) !== source || this.ended) return;
       const local = TIERS[kind][source.tier] ?? TIERS[kind].at(-1);
       const [height, fps, bitrate] = local.map((value, index) => Math.min(value, source.remoteCap?.[index] ?? value));
       const { sender } = source.transceiver;
@@ -339,10 +350,15 @@ export class Call extends EventTarget {
     this.offering = true;
     this.again = false;
     const codecs = sendCodecs(globalThis, this.codec);
-    for (const { transceiver } of this.sources.values()) transceiver.setCodecPreferences(codecs);
-    await this.publisher.setLocalDescription();
-    const screen = this.sources.get("screen")?.transceiver.mid;
-    this.send({ type: "offer", sdp: this.publisher.localDescription.sdp, screens: screen ? [screen] : [] });
+    try {
+      for (const { transceiver } of this.sources.values()) transceiver.setCodecPreferences(codecs);
+      await this.publisher.setLocalDescription();
+      const screen = this.sources.get("screen")?.transceiver.mid;
+      this.send({ type: "offer", sdp: this.publisher.localDescription.sdp, screens: screen ? [screen] : [] });
+    } catch (error) {
+      this.offering = false;
+      throw error;
+    }
   }
 
   /** Host actions (P): end the call for everyone, or remove one peer. */
