@@ -766,6 +766,49 @@ async fn a_receiver_budget_limits_its_layers() {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_overloaded_single_layer_publisher_receives_lower_encoder_limits() {
+    let sfu = start("receiver_bitrate = 40000");
+    let (mut host, _) = join(&sfu.url, &ADMIT, true, true).await;
+    let (mut viewer, _) = join(&sfu.url, &ADMIT, false, false).await;
+    // VP9 carries no dependency descriptor in this fixture.
+    host.start_publishing(Codec::Vp9);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut began = false;
+    loop {
+        host.step();
+        viewer.step();
+        if began {
+            host.send_frame();
+        }
+        if let Some(index) = host
+            .messages
+            .iter()
+            .position(|msg| msg["type"] == "quality")
+        {
+            let message = host.messages.remove(index);
+            let bytes = hex::decode(message["request"].as_str().expect("hex")).expect("request");
+            let demand = QualityRequest::from_bytes(&bytes).expect("demand");
+            assert_eq!((demand.publisher, demand.kind), (host.id, Kind::Camera));
+            let (_, _, mid, _) = host.publish.as_ref().expect("publisher");
+            assert_eq!(message["source"], mid.to_string());
+            let tier = usize::from(demand.tier);
+            let cap = demand.kind.ladder()[tier];
+            assert_eq!(message["max_height"], cap.height);
+            assert_eq!(message["max_fps"], cap.fps);
+            assert_eq!(message["max_bitrate"], cap.ceiling);
+            if began && tier < demand.kind.top() {
+                assert!((1..host.sent.len()).contains(&viewer.count(host.id)));
+                break;
+            }
+            assert_eq!(tier, demand.kind.top());
+            began = true;
+        }
+        assert!(Instant::now() < deadline, "no lower encoder limits");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
 /// At its traffic budget the SFU refuses new peers, and the count is on disk.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_traffic_budget_refuses_new_video() {

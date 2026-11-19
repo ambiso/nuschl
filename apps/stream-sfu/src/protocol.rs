@@ -22,7 +22,8 @@
 //! peer → SFU  key {to, data}               relayed as key {from, data}
 //! peer → SFU  quality {request}            hex QualityRequest, per source, ≤ 1/s
 //! peer → SFU  capacity {decode}            hex DecodeCapacity, ≤ 1/s
-//! SFU → peer  quality {request}            the largest tier asked of a source
+//! SFU → peer  quality {request, source, max_height, max_fps, max_bitrate}
+//!                                          encoder limits for the publisher's mid
 //! peer → SFU  remove {peer} | end          hosts only
 //! SFU → peer  joined {peer, role} | left {peer}
 //! SFU → peer  codec {codec}
@@ -206,6 +207,10 @@ pub enum ServerMessage {
     },
     Quality {
         request: String,
+        source: String,
+        max_height: u16,
+        max_fps: u8,
+        max_bitrate: u64,
     },
     Error {
         reason: &'static str,
@@ -264,10 +269,17 @@ mod tests {
         assert!(matches!(offer, ClientMessage::Offer { screens, .. } if screens == ["1"]));
         let demand = ServerMessage::Quality {
             request: "01".into(),
+            source: "1".into(),
+            max_height: 720,
+            max_fps: 15,
+            max_bitrate: 800_000,
         };
         assert_eq!(
-            serde_json::to_string(&demand).expect("json"),
-            r#"{"type":"quality","request":"01"}"#
+            serde_json::to_value(demand).expect("json"),
+            serde_json::json!({
+                "type": "quality", "request": "01", "source": "1",
+                "max_height": 720, "max_fps": 15, "max_bitrate": 800_000,
+            })
         );
     }
 
