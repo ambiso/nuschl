@@ -164,11 +164,11 @@ participant, which the roster shows; with the stream host's help it can
 intercept participants unseen. Identity-bound keys (Phase 2, #139 B) detect a
 substituted pk_v ("Identity check failed").
 
-**Where keys live.** Natively the crypto worker runs the exchange and hands
-K_epoch and channel keys to the SDK driver, which does SFrame. In the browser a
-dedicated stream worker, which is also the encoded-transform worker, holds all
-keys, using libcrux's portable wasm32 build under a narrow SECURITY.md row
-(Owner: libcrux with hpke-rs on both targets).
+**Where keys live.** Natively the crypto worker runs the exchange and sends
+media epochs over a private socket to one confined RTC worker per call. The RTC
+worker runs SFrame and str0m. The SDK brokers UDP outside that process. In the
+browser a dedicated stream worker, which is also the encoded-transform worker,
+holds the keys using libcrux's portable wasm32 build (SECURITY.md).
 
 ## 5. Quality, bandwidth and paths
 
@@ -383,7 +383,7 @@ Owner rule (2026-11-18):
   stream id, epoch, request}.
 - **Isolation:** codecs run in `nuschl-video-worker` roles, encoding and
   decoding in separate roles; decoding happens in the decode role and the
-  browser; keys stay in the crypto worker, the SDK driver and the browser stream
+  browser; keys stay in the crypto worker, the native RTC worker and the browser stream
   worker. Worker credit is held until the process is reaped.
 - **Bounds:** §5.2; key messages ≤16 KiB, ≤32 pending key requests, ≥1 s
   between epochs, bounded replay windows, fixed-size quality messages.
