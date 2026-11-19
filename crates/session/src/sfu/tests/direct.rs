@@ -3,7 +3,7 @@
 use super::*;
 
 #[tokio::test]
-async fn native_viewer_moves_an_active_sfu_stream_to_direct() {
+async fn native_viewer_moves_to_direct_and_recovers_through_the_sfu() {
     let _media = MEDIA_TEST.lock().await;
     nuschl_testkit::sandbox();
     let crypto = fixture("nuschl-crypto-worker");
@@ -69,10 +69,14 @@ async fn native_viewer_moves_an_active_sfu_stream_to_direct() {
     let mut over_sfu = false;
     let mut sender_direct = false;
     let mut receiver_direct = false;
+    let mut outage = None;
+    let mut sender_relayed = false;
+    let mut receiver_relayed = false;
+    let mut resumed = false;
     let mut timestamp = 0;
     let mut tick = tokio::time::interval(Duration::from_millis(33));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    timeout(Duration::from_secs(15), async {
+    timeout(Duration::from_secs(20), async {
         loop {
             tokio::select! {
                 _ = tick.tick() => {
@@ -84,17 +88,26 @@ async fn native_viewer_moves_an_active_sfu_stream_to_direct() {
                 event = publisher.next() => match event.unwrap().unwrap() {
                     MediaEvent::SendReady => ready = true,
                     MediaEvent::Direct { active: true } => sender_direct = true,
+                    MediaEvent::Direct { active: false } => sender_relayed = true,
                     _ => {}
                 },
                 event = viewer.next() => match event.unwrap().unwrap() {
                     MediaEvent::Direct { active: true } => receiver_direct = true,
-                    MediaEvent::Frame { publisher, purpose, key_frame, data, .. } => {
-                        assert_eq!(publisher, from);
+                    MediaEvent::Direct { active: false } => receiver_relayed = true,
+                    MediaEvent::Frame { publisher: sender, purpose, contiguous, key_frame, data, .. } => {
+                        assert_eq!(sender, from);
                         assert_eq!(purpose, Purpose::Camera);
                         assert!(key_frame);
                         assert_eq!(data, picture);
-                        if sender_direct && receiver_direct {
-                            break;
+                        if receiver_relayed && !resumed {
+                            assert!(!contiguous);
+                            resumed = true;
+                        }
+                        if sender_direct && receiver_direct && outage.is_none() {
+                            // Drop packets at the publisher's broker while the SFU
+                            // and both real media workers continue to run.
+                            publisher.lose_direct().await;
+                            outage = Some(tokio::time::Instant::now());
                         }
                         if !sender_direct {
                             over_sfu = true;
@@ -103,11 +116,18 @@ async fn native_viewer_moves_an_active_sfu_stream_to_direct() {
                     _ => {}
                 },
             }
+            if resumed && sender_relayed {
+                break;
+            }
         }
     })
     .await
     .unwrap_or_else(|_| panic!("direct did not deliver; SFU={over_sfu}, sender={sender_direct}, receiver={receiver_direct}"));
     assert!(over_sfu);
+    eprintln!(
+        "SFU resumed with both endpoints reporting fallback after {:?}",
+        outage.unwrap().elapsed()
+    );
     publisher.stop().await.unwrap();
     viewer.stop().await.unwrap();
 }

@@ -69,6 +69,12 @@ pub enum MediaEvent {
     },
 }
 
+enum Input {
+    Frame(Video),
+    #[cfg(test)]
+    LoseDirect,
+}
+
 struct Video {
     sequence: u64,
     queued: Instant,
@@ -78,7 +84,7 @@ struct Video {
 }
 
 pub struct Media {
-    input: mpsc::Sender<Video>,
+    input: mpsc::Sender<Input>,
     sequence: AtomicU64,
     events: mpsc::Receiver<Result<MediaEvent, Error>>,
     keyframes: mpsc::Receiver<()>,
@@ -117,11 +123,16 @@ impl Media {
             key_frame,
             data,
         };
-        match self.input.try_send(frame) {
+        match self.input.try_send(Input::Frame(frame)) {
             Ok(()) => Ok(true),
             Err(mpsc::error::TrySendError::Full(_)) => Ok(false),
             Err(mpsc::error::TrySendError::Closed(_)) => Err(Error::Protocol("media ended")),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) async fn lose_direct(&self) {
+        assert!(self.input.send(Input::LoseDirect).await.is_ok());
     }
 
     pub async fn next(&mut self) -> Option<Result<MediaEvent, Error>> {
@@ -223,7 +234,7 @@ impl Connection {
 }
 
 enum Network {
-    Sfu(NetworkLeg),
+    Sfu(Box<NetworkLeg>),
     Direct {
         socket: tokio::net::UdpSocket,
         remote: Option<Candidates>,
@@ -274,6 +285,7 @@ struct Leg {
     connected: bool,
     selected: bool,
     bandwidth: Option<(Instant, u64)>,
+    last_packet: Option<Instant>,
     camera: FrameGate,
     screen: FrameGate,
 }
@@ -312,6 +324,7 @@ impl Leg {
             connected: false,
             selected: false,
             bandwidth: None,
+            last_packet: None,
             camera: FrameGate::new(),
             screen: FrameGate::new(),
         })
@@ -326,7 +339,7 @@ impl Leg {
         if data.is_empty() || data.len() > rtc::MAX_DATAGRAM || !self.network.permits(source)? {
             return Ok(());
         }
-        worker
+        let reply = worker
             .exchange(
                 Command::Datagram {
                     leg: self.id,
@@ -335,7 +348,11 @@ impl Leg {
                 data.to_vec(),
             )
             .await?;
-        self.wake = Some(Instant::now());
+        let now = Instant::now();
+        if matches!(reply.kind, Reply::Done) && matches!(self.network, Network::Direct { .. }) {
+            self.last_packet = Some(now);
+        }
+        self.wake = Some(now);
         Ok(())
     }
 }
@@ -453,7 +470,7 @@ async fn run(
     destination: SocketAddr,
     codec: rtc::Codec,
     source: Option<Purpose>,
-    mut frames: mpsc::Receiver<Video>,
+    mut frames: mpsc::Receiver<Input>,
     output: Output<'_>,
 ) -> Result<(), Error> {
     let publishing = source.is_some();
@@ -488,7 +505,7 @@ async fn run(
         let leg = Leg::start(
             worker,
             PUBLISH,
-            Network::Sfu(path),
+            Network::Sfu(Box::new(path)),
             codec,
             LegRole::SfuPublish,
         )
@@ -527,7 +544,7 @@ async fn run(
     let mut subscribe = Leg::start(
         worker,
         SUBSCRIBE,
-        Network::Sfu(subscribe_path),
+        Network::Sfu(Box::new(subscribe_path)),
         codec,
         LegRole::SfuSubscribe,
     )
@@ -652,8 +669,20 @@ async fn run(
                 ServerMessage::Error { reason } => return Err(Error::Refused(reason.into_owned())),
                 _ => {}
             },
-            frame = frames.recv() => {
-                let Some(frame) = frame else { return Ok(()); };
+            input = frames.recv() => {
+                let frame = match input {
+                    Some(Input::Frame(frame)) => frame,
+                    #[cfg(test)]
+                    Some(Input::LoseDirect) => {
+                        if let Some(attempt) = direct.as_mut().and_then(|direct| direct.leg.as_mut())
+                            && let Network::Direct { remote, .. } = &mut attempt.transport.network
+                        {
+                            *remote = None;
+                        }
+                        continue;
+                    }
+                    None => return Ok(()),
+                };
                 let active = if selected {
                     direct.as_mut().and_then(|direct| direct.leg.as_mut()).map(|attempt| &mut attempt.transport)
                 } else {
@@ -781,11 +810,11 @@ async fn run(
                         let _ = output.keyframes.try_send(());
                     } else {
                         for purpose in [Purpose::Camera, Purpose::ScreenVideo] {
-                            if subscribed.iter().any(|track| track.purpose == purpose) {
-                                if let Some(gate) = subscribe.video_gate(purpose) {
-                                    *gate = FrameGate::new();
-                                    gate.request();
-                                }
+                            if subscribed.iter().any(|track| track.purpose == purpose)
+                                && let Some(gate) = subscribe.video_gate(purpose)
+                            {
+                                *gate = FrameGate::new();
+                                gate.request();
                                 request_keyframe(worker, SUBSCRIBE, purpose).await?;
                                 subscribe.wake = Some(Instant::now());
                             }
@@ -814,13 +843,23 @@ async fn run(
                     && attempt.confirmed
                     && !attempt.transport.selected
                 {
-                    done(
-                        worker,
-                        Command::SetSendLeg {
-                            leg: attempt.transport.id,
-                        },
-                    )
-                    .await?;
+                    if !matches!(
+                        worker
+                            .exchange(
+                                Command::SetSendLeg {
+                                    leg: attempt.transport.id
+                                },
+                                Vec::new()
+                            )
+                            .await?
+                            .kind,
+                        Reply::Done,
+                    ) {
+                        if let Some(id) = direct.close(worker, None).await? {
+                            let _ = direct::send(connection, peer, &Signal::Close { id }).await;
+                        }
+                        continue;
+                    }
                     attempt.transport.selected = true;
                     attempt.transport.wake = Some(Instant::now());
                     send_gate = FrameGate::new();

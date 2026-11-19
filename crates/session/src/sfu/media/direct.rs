@@ -27,6 +27,8 @@ const SETUP: Duration = Duration::from_secs(10);
 const COOLDOWN: Duration = Duration::from_secs(15);
 const SAMPLE_AGE: Duration = Duration::from_secs(5);
 const DISCOVERY: Duration = Duration::from_millis(900);
+// str0m emits ICE checks at least every three seconds on an idle live leg.
+const SILENCE: Duration = Duration::from_secs(8);
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -136,10 +138,15 @@ impl Direct {
     }
 
     pub(super) fn deadline(&self) -> Option<Instant> {
-        self.leg
-            .as_ref()
-            .filter(|leg| !leg.transport.selected)
-            .map(|leg| leg.deadline)
+        self.leg.as_ref().map(|leg| {
+            if leg.transport.selected {
+                leg.transport
+                    .last_packet
+                    .map_or(leg.deadline, |last| last + SILENCE)
+            } else {
+                leg.deadline
+            }
+        })
     }
 
     pub(super) fn discover(&self, setup: Setup) -> Discovery {
@@ -401,7 +408,14 @@ fn valid_sdp(interface: IpAddr, candidates: Candidates, sdp: &str) -> bool {
         .filter_map(|line| line.strip_prefix("a=candidate:"))
     {
         let mut fields = line.split_ascii_whitespace();
-        let Some(ip) = fields.nth(4).and_then(|field| field.parse().ok()) else {
+        if fields.nth(1) != Some("1")
+            || !fields
+                .next()
+                .is_some_and(|transport| transport.eq_ignore_ascii_case("udp"))
+        {
+            return false;
+        }
+        let Some(ip) = fields.nth(1).and_then(|field| field.parse().ok()) else {
             return false;
         };
         let Some(port) = fields.next().and_then(|field| field.parse().ok()) else {
