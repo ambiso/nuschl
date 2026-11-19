@@ -47,6 +47,10 @@ pub enum MediaEvent {
         bitrate: u64,
     },
     KeyframeRequired,
+    /// A negotiated video source was removed while the publisher stayed in the room.
+    SourceEnded {
+        purpose: Purpose,
+    },
     Frame {
         publisher: u64,
         purpose: Purpose,
@@ -219,6 +223,14 @@ struct Leg {
 }
 
 impl Leg {
+    fn video_gate(&mut self, purpose: Purpose) -> Option<&mut FrameGate> {
+        match purpose {
+            Purpose::Camera => Some(&mut self.camera),
+            Purpose::ScreenVideo => Some(&mut self.screen),
+            _ => None,
+        }
+    }
+
     async fn open(
         worker: &mut Worker,
         id: u32,
@@ -436,6 +448,7 @@ async fn run(
     };
     let mut subscribe =
         Leg::open(worker, SUBSCRIBE, destination, codec, LegRole::SfuSubscribe).await?;
+    let mut subscribed = Vec::<Track>::new();
     let mut pub_buffer = [0; rtc::MAX_DATAGRAM + 1];
     let mut sub_buffer = [0; rtc::MAX_DATAGRAM + 1];
     let mut connected = false;
@@ -462,9 +475,19 @@ async fn run(
                         Ok(Track { mid: track.mid, purpose, publisher: Some(track.peer) })
                     }).collect::<Result<Vec<_>, _>>()?;
                     if pair.peer.is_none() && !tracks.is_empty() && let Some(peer) = other { pair.connect(connection, peer).await?; }
-                    let description = Description { id: signaling_id(connection, SUBSCRIBE), sdp, tracks };
+                    let description = Description { id: signaling_id(connection, SUBSCRIBE), sdp, tracks: tracks.clone() };
                     let answer = describe(worker, Command::AcceptOffer { leg: SUBSCRIBE, description }).await?;
                     write(&mut connection.socket, &ClientMessage::Answer { sdp: answer.sdp }).await?;
+                    // End old sources after queued frames and before any media from the new offer.
+                    for track in subscribed.iter().filter(|track| !tracks.contains(track)) {
+                        if let Some(gate) = subscribe.video_gate(track.purpose) {
+                            *gate = FrameGate::new();
+                        }
+                        if output.events.send(Ok(MediaEvent::SourceEnded { purpose: track.purpose })).await.is_err() {
+                            return Ok(());
+                        }
+                    }
+                    subscribed = tracks;
                     subscribe.wake = Some(Instant::now());
                 }
                 ServerMessage::Answer { sdp } => {
@@ -586,10 +609,8 @@ async fn drain(
                         contiguous,
                         key_frame,
                     } if leg.id == SUBSCRIBE && peer == Some(publisher) => {
-                        let gate = match purpose {
-                            Purpose::Camera => &mut leg.camera,
-                            Purpose::ScreenVideo => &mut leg.screen,
-                            _ => continue,
+                        let Some(gate) = leg.video_gate(purpose) else {
+                            continue;
                         };
                         if (key_frame || (contiguous && !gate.awaiting_key))
                             && output

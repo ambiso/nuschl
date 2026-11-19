@@ -61,6 +61,7 @@ pub struct Start {
 struct Update {
     status: String,
     frame: Option<DecodedFrame>,
+    clear: bool,
     finished: bool,
 }
 
@@ -80,14 +81,15 @@ impl Latest {
         self.ready.notify_one();
     }
 
-    fn finished(&self, status: String) {
+    fn clear(&self, status: impl Into<String>, finished: bool) {
         let mut update = self
             .update
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        update.status = status;
+        update.status = status.into();
         update.frame = None;
-        update.finished = true;
+        update.clear = true;
+        update.finished = finished;
         drop(update);
         self.ready.notify_one();
     }
@@ -117,20 +119,25 @@ impl Surface {
         let observe = cx.spawn(async move |this, cx| {
             loop {
                 updates.ready.notified().await;
-                let (status, frame, finished) = {
+                let (status, frame, clear, finished) = {
                     let mut update = updates
                         .update
                         .lock()
                         .unwrap_or_else(|error| error.into_inner());
-                    (update.status.clone(), update.frame.take(), update.finished)
+                    (
+                        update.status.clone(),
+                        update.frame.take(),
+                        std::mem::take(&mut update.clear),
+                        update.finished,
+                    )
                 };
                 if this
                     .update(cx, |this, cx| {
                         this.status = status;
-                        if finished {
-                            this.image = None;
-                        } else if let Some(frame) = frame.and_then(render_frame) {
+                        if let Some(frame) = frame.and_then(render_frame) {
                             this.image = Some(frame);
+                        } else if clear {
+                            this.image = None;
                         }
                         cx.notify();
                     })
@@ -242,6 +249,7 @@ impl Desktop {
             update: Mutex::new(Update {
                 status: status.into(),
                 frame: None,
+                clear: false,
                 finished: false,
             }),
             ready: Notify::new(),
@@ -485,7 +493,7 @@ pub async fn run(
         Ok(()) => "Video call ended".into(),
         Err(error) => format!("Video unavailable. {error}"),
     };
-    updates.finished(status);
+    updates.clear(status, true);
     let _ = events
         .send(ServiceEvent::NativeFinished { generation })
         .await;
@@ -676,15 +684,22 @@ async fn receive_video(
     let mut decoder = None;
     let receive = async {
         while let Some(event) = media.next().await {
-            let MediaEvent::Frame {
-                purpose,
-                contiguous,
-                key_frame,
-                data,
-                ..
-            } = event.map_err(text)?
-            else {
-                continue;
+            let (purpose, contiguous, key_frame, data) = match event.map_err(text)? {
+                MediaEvent::Frame {
+                    purpose,
+                    contiguous,
+                    key_frame,
+                    data,
+                    ..
+                } => (purpose, contiguous, key_frame, data),
+                MediaEvent::SourceEnded { purpose } => {
+                    if let Some((_, session)) = decoder.take_if(|(chosen, _)| *chosen == purpose) {
+                        updates.clear("Waiting for video", false);
+                        Decoder::stop(session).await.map_err(text)?;
+                    }
+                    continue;
+                }
+                _ => continue,
             };
             let source = match purpose {
                 Purpose::Camera => Source::Camera,
@@ -693,12 +708,12 @@ async fn receive_video(
             };
             // One decoded source per native viewer. The browser can show every track.
             let decoder = match &mut decoder {
-                Some((chosen, decoder)) if *chosen == source => decoder,
+                Some((chosen, decoder)) if *chosen == purpose => decoder,
                 Some(_) => continue,
                 None => {
                     &mut decoder
                         .insert((
-                            source,
+                            purpose,
                             Decoder::start(executable.clone(), source).map_err(text)?,
                         ))
                         .1
