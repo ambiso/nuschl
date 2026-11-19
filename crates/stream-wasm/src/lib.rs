@@ -3,8 +3,8 @@
 //! exchange of `nuschl-stream` and the SFrame of `nuschl-sframe` behind one message
 //! interface. One dedicated Web Worker per call loads this module; it is also the
 //! encoded-transform worker (`RTCRtpScriptTransform`) of the call's senders and receivers.
-//! It holds S, P and every key. The page receives the SFU's join fields and proofs, key
-//! messages and frames, the last two encrypted.
+//! It holds S, P and every key. The page receives the SFU's join fields and proofs,
+//! encrypted key messages and frames, and locally opened direct signals for WebRTC.
 //!
 //! # Messages
 //!
@@ -16,15 +16,16 @@
 //!
 //! ```text
 //! request                  reply
-//! open {link, host}        opened {room, verifier, creator}
+//! open {link, host, allow_direct?}   opened {room, verifier, creator}
 //! admit {nonce}            admitted {proof, host_proof, create}
 //! publish                  done {send, events}
 //! subscribe {peer}         done
 //! key {from, data}         done
+//! direct {peer, publisher, data}  done
 //! leave {peer}             done
 //! tick                     done
 //!
-//! done   = {send: [{to, data}], events: [keyed {peer, epoch} | confirmed {peer}]}
+//! done   = {send: [{to, data}], events: [keyed {peer, epoch} | confirmed {peer} | direct {peer, publisher, data}]}
 //! create = {admit_key, host_key}       host_proof, create: null without P
 //! ```
 //!
@@ -35,6 +36,10 @@
 //! - `publish`: starts this participant's sender keys; frames encrypt at once.
 //! - `subscribe`: asks the publisher `peer` for its keys, again after a failure.
 //! - `key`: an SFU `key {from, data}`.
+//! - `direct`: UTF-8 signaling sealed for `peer` under the established pairwise
+//!   key. `publisher` says which side of that exchange this worker is on. The
+//!   incoming `direct` event has the same fields. `allow_direct` defaults to false;
+//!   relay-only calls keep it false, for both sealing and opening.
 //! - `leave`: the SFU's `left {peer}`; the next `tick` locks `peer` out.
 //! - `tick`: every 250 ms while publishing. Rekeys after joins and leaves and every
 //!   [`REKEY_INTERVAL_MS`], sends each rekey's messages a second time, and moves the
@@ -95,12 +100,31 @@ struct Envelope {
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
-    Open { link: String, host: String },
-    Admit { nonce: String },
+    Open {
+        link: String,
+        host: String,
+        #[serde(default)]
+        allow_direct: bool,
+    },
+    Admit {
+        nonce: String,
+    },
     Publish {},
-    Subscribe { peer: u64 },
-    Key { from: u64, data: String },
-    Leave { peer: u64 },
+    Subscribe {
+        peer: u64,
+    },
+    Key {
+        from: u64,
+        data: String,
+    },
+    Direct {
+        peer: u64,
+        publisher: bool,
+        data: String,
+    },
+    Leave {
+        peer: u64,
+    },
     Tick {},
 }
 
@@ -145,8 +169,18 @@ pub struct Message {
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Event {
-    Keyed { peer: u64, epoch: u32 },
-    Confirmed { peer: u64 },
+    Keyed {
+        peer: u64,
+        epoch: u32,
+    },
+    Confirmed {
+        peer: u64,
+    },
+    Direct {
+        peer: u64,
+        publisher: bool,
+        data: String,
+    },
 }
 
 // -------------------------------------------------------------------------------------
@@ -158,6 +192,7 @@ pub struct Worker<R> {
     link: Option<Link>,
     publishing: Option<Publishing>,
     remotes: BTreeMap<u64, Remote>,
+    allow_direct: bool,
 }
 
 /// A publisher this worker subscribes to.
@@ -193,6 +228,7 @@ impl<R: TryCryptoRng> Worker<R> {
             link: None,
             publishing: None,
             remotes: BTreeMap::new(),
+            allow_direct: false,
         }
     }
 
@@ -205,11 +241,20 @@ impl<R: TryCryptoRng> Worker<R> {
             return Err("unsupported version".into());
         }
         let reply = match envelope.request {
-            Request::Open { link, host } => self.open(&link, &host)?,
+            Request::Open {
+                link,
+                host,
+                allow_direct,
+            } => self.open(&link, &host, allow_direct)?,
             Request::Admit { nonce } => self.admit(&nonce)?,
             Request::Publish {} => self.publish(now)?,
             Request::Subscribe { peer } => self.subscribe(peer, now)?,
             Request::Key { from, data } => self.key(from, &data, now)?,
+            Request::Direct {
+                peer,
+                publisher,
+                data,
+            } => self.send_direct(peer, publisher, data.as_bytes())?,
             Request::Leave { peer } => self.leave(peer),
             Request::Tick {} => match &mut self.publishing {
                 Some(publishing) => done(publishing.tick(now, &mut self.rng)?, Vec::new()),
@@ -244,7 +289,7 @@ impl<R: TryCryptoRng> Worker<R> {
         self.link.as_ref().ok_or_else(|| "no call link".into())
     }
 
-    fn open(&mut self, link: &str, host: &str) -> Result<Reply, String> {
+    fn open(&mut self, link: &str, host: &str, allow_direct: bool) -> Result<Reply, String> {
         if self.link.is_some() {
             return Err("call link already open".into());
         }
@@ -255,6 +300,7 @@ impl<R: TryCryptoRng> Worker<R> {
             creator: link.publisher().is_some(),
         };
         self.link = Some(link);
+        self.allow_direct = allow_direct;
         Ok(reply)
     }
 
@@ -313,6 +359,9 @@ impl<R: TryCryptoRng> Worker<R> {
             return Err(nuschl_stream::Error::TooLong.to_string());
         }
         let message = hex::decode(data).map_err(|_| "malformed key message")?;
+        if let Some(publisher) = nuschl_stream::direct_for_publisher(&message) {
+            return self.receive_direct(from, publisher, &message);
+        }
         if nuschl_stream::for_publisher(&message) {
             let publishing = self.publishing.as_mut().ok_or("not publishing")?;
             let events = publishing.receive(from, &message, now)?;
@@ -333,6 +382,62 @@ impl<R: TryCryptoRng> Worker<R> {
             epoch: key.epoch,
         };
         Ok(done(send, vec![keyed]))
+    }
+
+    fn send_direct(&mut self, peer: u64, publisher: bool, body: &[u8]) -> Result<Reply, String> {
+        self.check_direct()?;
+        let sealed = if publisher {
+            let (publisher, subscriber) = self.publishing_pair(peer)?;
+            publisher.seal_direct(&subscriber, body)
+        } else {
+            self.subscriber(peer)?.seal_direct(body)
+        }
+        .map_err(text)?;
+        Ok(done(vec![message(peer, &sealed)], Vec::new()))
+    }
+
+    fn receive_direct(
+        &mut self,
+        peer: u64,
+        publisher: bool,
+        message: &[u8],
+    ) -> Result<Reply, String> {
+        self.check_direct()?;
+        let body = if publisher {
+            let (publisher, subscriber) = self.publishing_pair(peer)?;
+            publisher.open_direct(&subscriber, message)
+        } else {
+            self.subscriber(peer)?.open_direct(message)
+        }
+        .map_err(text)?;
+        let data = String::from_utf8(body).map_err(|_| "malformed direct signal")?;
+        Ok(done(
+            Vec::new(),
+            vec![Event::Direct {
+                peer,
+                publisher,
+                data,
+            }],
+        ))
+    }
+
+    fn check_direct(&self) -> Result<(), String> {
+        self.allow_direct
+            .then_some(())
+            .ok_or_else(|| "direct signaling disabled".into())
+    }
+
+    fn publishing_pair(&mut self, peer: u64) -> Result<(&mut Publisher, SubscriberId), String> {
+        let publishing = self.publishing.as_mut().ok_or("not publishing")?;
+        let subscriber = *publishing.peers.get(&peer).ok_or("unknown peer")?;
+        Ok((&mut publishing.publisher, subscriber))
+    }
+
+    fn subscriber(&mut self, peer: u64) -> Result<&mut Subscriber, String> {
+        self.remotes
+            .get_mut(&peer)
+            .map(|remote| &mut remote.subscriber)
+            .ok_or_else(|| "unknown peer".into())
     }
 
     fn leave(&mut self, peer: u64) -> Reply {

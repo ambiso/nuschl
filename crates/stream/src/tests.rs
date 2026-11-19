@@ -91,6 +91,61 @@ fn rekeyed(subscriber: &mut Subscriber, message: &[u8], now: u64) -> Result<Epoc
     }
 }
 
+#[test]
+fn direct_signals_bind_the_pair_and_direction_across_rekeys() {
+    let link = link(3);
+    let mut publisher = publisher(&link);
+    let (mut a, _, _) = join(&link, &mut publisher, T0, 4);
+    let (mut b, _, rekeys) = join(&link, &mut publisher, T0 + 1000, 5);
+    let signal = b"candidate:1 1 UDP 1 127.0.0.1 54321 typ host";
+    let sealed = publisher.seal_direct(&a.id(), signal).unwrap();
+
+    assert!(!sealed.windows(signal.len()).any(|bytes| bytes == signal));
+    assert_eq!(crate::direct_for_publisher(&sealed), Some(false));
+    assert_eq!(b.open_direct(&sealed), Err(Error::Authentication));
+    assert_eq!(
+        publisher.open_direct(&a.id(), &sealed),
+        Err(Error::Unexpected)
+    );
+    let mut tampered = sealed.clone();
+    tampered[9] ^= 64;
+    assert_eq!(a.open_direct(&tampered), Err(Error::Authentication));
+    assert_eq!(a.open_direct(&sealed).unwrap(), signal);
+    assert_eq!(a.open_direct(&sealed), Err(Error::Replay));
+
+    rekeyed(&mut a, &rekeys[0].1, T0 + 1000).unwrap();
+    let answer = a.seal_direct(b"answer").unwrap();
+    assert_eq!(crate::direct_for_publisher(&answer), Some(true));
+    assert_eq!(publisher.open_direct(&a.id(), &answer).unwrap(), b"answer");
+
+    let largest = vec![0; crate::MAX_DIRECT_SIGNAL];
+    assert_eq!(a.seal_direct(&largest).unwrap().len(), MAX_KEY_MESSAGE);
+    assert_eq!(
+        a.seal_direct(&[largest, vec![0]].concat()),
+        Err(Error::TooLong)
+    );
+    assert!(publisher.remove(&a.id()));
+    assert_eq!(
+        publisher.open_direct(&a.id(), &answer),
+        Err(Error::UnknownSubscriber)
+    );
+}
+
+#[test]
+fn direct_signals_wait_for_the_pairwise_key_exchange() {
+    let link = link(42);
+    let mut publisher = publisher(&link);
+    let mut rng = rng(43);
+    let (mut subscriber, request) = request(&link, T0, &mut rng);
+    let id = admit(&mut publisher, &request, T0);
+    assert_eq!(subscriber.seal_direct(b"early"), Err(Error::Unexpected));
+    publisher.rekey(T0, &mut rng).unwrap();
+    assert_eq!(
+        publisher.seal_direct(&id, b"early"),
+        Err(Error::UnknownSubscriber)
+    );
+}
+
 fn vector_fields(text: &str) -> Vec<(&str, Vec<u8>)> {
     text.lines()
         .filter(|line| !line.starts_with('#'))

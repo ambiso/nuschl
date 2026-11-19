@@ -55,6 +55,14 @@
 //! struct { uint32 epoch; opaque key[32]; } EpochKey;
 //! ```
 //!
+//! **Direct signaling.** Each confirmed pair can send opaque signaling on the same
+//! SFU transport, with a separate HPKE export labeled `direct signaling`. The header
+//! is `version || kind || uint64_be(counter)`: kind 5 goes to the publisher and kind 6
+//! to the subscriber. The header authenticates the direction and counter and, padded
+//! on the right with two zero bytes, is the ChaCha20-Poly1305 nonce. Each receiver
+//! accepts increasing counters on this ordered transport. The room-wide `signal_key`
+//! opens neither direction. A new subscription resets the counters under a fresh key.
+//!
 //! **Delivery.** Send the messages from [`Publisher::rekey`], send them again after
 //! [`RESEND_AFTER_MS`] (subscribers drop duplicates as replays), and switch the
 //! encryptors to the new [`EpochKey`] [`SWITCH_AFTER_MS`] after the first send. A
@@ -66,6 +74,7 @@
 //! holder of S, and every subscriber holds the epoch key: media authenticity rests on the
 //! SFU admitting only publishers that prove P (plan E1).
 
+mod direct;
 mod exchange;
 mod link;
 mod wire;
@@ -75,6 +84,7 @@ mod tests;
 
 use rand_core::TryCryptoRng;
 
+pub use direct::{MAX_DIRECT_SIGNAL, direct_for_publisher};
 pub use exchange::{
     EpochKey, MAX_MISSED_REKEYS, MIN_EPOCH_INTERVAL_MS, Publisher, PublisherEvent,
     REQUEST_LIFETIME_MS, RESEND_AFTER_MS, Rekey, SWITCH_AFTER_MS, Subscriber, SubscriberEvent,
