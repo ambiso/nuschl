@@ -2,22 +2,26 @@
 //! Encoded media for a two-person native call. The WSS connection owns
 //! signaling, and the isolated RTC worker owns ICE, DTLS, SRTP and SFrame.
 
+use super::turn::NetworkLeg;
 use super::{Action, ClientMessage, Codec, Connection, Error, Outcome, ServerMessage, write};
+use nuschl_core::network::Destination;
 use nuschl_ipc::rtc::{self, Command, Description, Event, LegRole, Reply, Track, Worker};
 use std::{
     future::pending,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::SocketAddr,
     os::unix::net::UnixStream,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 use tokio::{
-    net::UdpSocket,
     sync::mpsc,
     task::JoinHandle,
     time::{Instant, sleep, sleep_until, timeout},
 };
+
+mod direct;
+use direct::{Candidates, Direct, Signal};
 
 pub use rtc::Purpose;
 
@@ -47,6 +51,10 @@ pub enum MediaEvent {
         bitrate: u64,
     },
     KeyframeRequired,
+    /// The active media path changed. The SFU stays available for fallback.
+    Direct {
+        active: bool,
+    },
     /// A negotiated video source was removed while the publisher stayed in the room.
     SourceEnded {
         purpose: Purpose,
@@ -61,6 +69,12 @@ pub enum MediaEvent {
     },
 }
 
+enum Input {
+    Frame(Video),
+    #[cfg(test)]
+    LoseDirect,
+}
+
 struct Video {
     sequence: u64,
     queued: Instant,
@@ -70,7 +84,7 @@ struct Video {
 }
 
 pub struct Media {
-    input: mpsc::Sender<Video>,
+    input: mpsc::Sender<Input>,
     sequence: AtomicU64,
     events: mpsc::Receiver<Result<MediaEvent, Error>>,
     keyframes: mpsc::Receiver<()>,
@@ -109,11 +123,16 @@ impl Media {
             key_frame,
             data,
         };
-        match self.input.try_send(frame) {
+        match self.input.try_send(Input::Frame(frame)) {
             Ok(()) => Ok(true),
             Err(mpsc::error::TrySendError::Full(_)) => Ok(false),
             Err(mpsc::error::TrySendError::Closed(_)) => Err(Error::Protocol("media ended")),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) async fn lose_direct(&self) {
+        assert!(self.input.send(Input::LoseDirect).await.is_ok());
     }
 
     pub async fn next(&mut self) -> Option<Result<MediaEvent, Error>> {
@@ -141,7 +160,7 @@ impl Connection {
     /// Start native encoded video over the configured SFU. Calls use a supplied
     /// publisher or viewer role and keep their signaling connection until stop.
     pub async fn into_media(self, options: MediaOptions) -> Result<Media, Error> {
-        if self.policy.relay_only {
+        if self.policy.relay_only && self.welcome.turn.is_none() {
             return Err(Error::Protocol(
                 "native media requires TURN in relay-only mode",
             ));
@@ -214,10 +233,59 @@ impl Connection {
     }
 }
 
+enum Network {
+    Sfu(Box<NetworkLeg>),
+    Direct {
+        socket: tokio::net::UdpSocket,
+        remote: Option<Candidates>,
+    },
+}
+
+impl Network {
+    fn address(&self) -> std::io::Result<SocketAddr> {
+        match self {
+            Self::Sfu(leg) => Ok(leg.address()),
+            Self::Direct { socket, .. } => socket.local_addr(),
+        }
+    }
+
+    fn permits(&self, address: SocketAddr) -> std::io::Result<bool> {
+        match self {
+            Self::Sfu(leg) => Ok(leg.peer()? == address),
+            Self::Direct { remote, .. } => {
+                Ok(remote.is_some_and(|remote| remote.contains(address)))
+            }
+        }
+    }
+
+    async fn receive(&mut self, data: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+        match self {
+            Self::Sfu(leg) => Ok((leg.recv(data).await?, leg.peer()?)),
+            Self::Direct { socket, .. } => socket.recv_from(data).await,
+        }
+    }
+
+    async fn send(&mut self, data: &[u8], destination: SocketAddr) -> std::io::Result<()> {
+        if self.permits(destination)? {
+            match self {
+                Self::Sfu(leg) => leg.send(data).await?,
+                Self::Direct { socket, .. } => {
+                    socket.send_to(data, destination).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 struct Leg {
     id: u32,
-    socket: UdpSocket,
+    network: Network,
     wake: Option<Instant>,
+    connected: bool,
+    selected: bool,
+    bandwidth: Option<(Instant, u64)>,
+    last_packet: Option<Instant>,
     camera: FrameGate,
     screen: FrameGate,
 }
@@ -231,45 +299,47 @@ impl Leg {
         }
     }
 
-    async fn open(
+    async fn start(
         worker: &mut Worker,
         id: u32,
-        destination: SocketAddr,
+        network: Network,
         codec: rtc::Codec,
         role: LegRole,
     ) -> Result<Self, Error> {
-        let address = match destination {
-            SocketAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-            SocketAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-        };
-        let socket = UdpSocket::bind((address, 0)).await?;
-        socket.connect(destination).await?;
-        let local = socket.local_addr()?;
         done(
             worker,
             Command::OpenLeg {
                 leg: id,
-                local,
+                local: network.address()?,
                 codec,
                 role,
+                relayed: matches!(&network, Network::Sfu(leg) if leg.is_relayed()),
             },
         )
         .await?;
         Ok(Self {
             id,
-            socket,
+            network,
             wake: None,
+            connected: false,
+            selected: false,
+            bandwidth: None,
+            last_packet: None,
             camera: FrameGate::new(),
             screen: FrameGate::new(),
         })
     }
 
-    async fn datagram(&mut self, worker: &mut Worker, data: &[u8]) -> Result<(), Error> {
-        if data.is_empty() || data.len() > rtc::MAX_DATAGRAM {
+    async fn datagram(
+        &mut self,
+        worker: &mut Worker,
+        source: SocketAddr,
+        data: &[u8],
+    ) -> Result<(), Error> {
+        if data.is_empty() || data.len() > rtc::MAX_DATAGRAM || !self.network.permits(source)? {
             return Ok(());
         }
-        let source = self.socket.peer_addr()?;
-        worker
+        let reply = worker
             .exchange(
                 Command::Datagram {
                     leg: self.id,
@@ -278,20 +348,24 @@ impl Leg {
                 data.to_vec(),
             )
             .await?;
-        self.wake = Some(Instant::now());
+        let now = Instant::now();
+        if matches!(reply.kind, Reply::Done) && matches!(self.network, Network::Direct { .. }) {
+            self.last_packet = Some(now);
+        }
+        self.wake = Some(now);
         Ok(())
     }
 }
 
-async fn receive(leg: Option<&Leg>, bytes: &mut [u8]) -> std::io::Result<usize> {
+async fn receive(leg: Option<&mut Leg>, bytes: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
     match leg {
-        Some(leg) => leg.socket.recv(bytes).await,
+        Some(leg) => leg.network.receive(bytes).await,
         None => pending().await,
     }
 }
 
-async fn wake(leg: Option<&Leg>) {
-    match leg.and_then(|leg| leg.wake) {
+async fn wake(until: Option<Instant>) {
+    match until {
         Some(until) => sleep_until(until).await,
         None => pending().await,
     }
@@ -369,18 +443,17 @@ impl Pair {
         Ok(())
     }
 
-    async fn key(&mut self, connection: &mut Connection, peer: u64, data: &str) {
+    async fn key(&mut self, connection: &mut Connection, peer: u64, data: &str) -> Option<Signal> {
         if self.peer != Some(peer) {
-            return;
+            return None;
         }
-        let Ok(data) = hex::decode(data) else {
-            return;
-        };
-        let result = connection.signal(Action::Key { peer, data }).await;
-        self.ready |= matches!(
-            result,
-            Ok(Outcome::Ready { .. } | Outcome::Send { ready: true, .. })
-        );
+        let data = hex::decode(data).ok()?;
+        match connection.signal(Action::Key { peer, data }).await.ok()? {
+            Outcome::Ready { .. } | Outcome::Send { ready: true, .. } => self.ready = true,
+            Outcome::Signal { data, .. } => return serde_json::from_slice(&data).ok(),
+            _ => {}
+        }
+        None
     }
 }
 
@@ -397,7 +470,7 @@ async fn run(
     destination: SocketAddr,
     codec: rtc::Codec,
     source: Option<Purpose>,
-    mut frames: mpsc::Receiver<Video>,
+    mut frames: mpsc::Receiver<Input>,
     output: Output<'_>,
 ) -> Result<(), Error> {
     let publishing = source.is_some();
@@ -413,8 +486,30 @@ async fn run(
 
     let mut offered = None;
     let mut publish_mid = None;
-    let mut publish = if let Some(purpose) = source {
-        let leg = Leg::open(worker, PUBLISH, destination, codec, LegRole::SfuPublish).await?;
+    let turn = connection
+        .welcome
+        .turn
+        .as_ref()
+        .filter(|_| connection.policy.relay_only);
+    let (publish_path, subscribe_path) = tokio::try_join!(
+        async {
+            if publishing {
+                NetworkLeg::open(destination, turn).await.map(Some)
+            } else {
+                Ok(None)
+            }
+        },
+        NetworkLeg::open(destination, turn)
+    )?;
+    let mut publish = if let (Some(purpose), Some(path)) = (source, publish_path) {
+        let leg = Leg::start(
+            worker,
+            PUBLISH,
+            Network::Sfu(Box::new(path)),
+            codec,
+            LegRole::SfuPublish,
+        )
+        .await?;
         let mut description = describe(
             worker,
             Command::Offer {
@@ -446,16 +541,52 @@ async fn run(
     } else {
         None
     };
-    let mut subscribe =
-        Leg::open(worker, SUBSCRIBE, destination, codec, LegRole::SfuSubscribe).await?;
+    let mut subscribe = Leg::start(
+        worker,
+        SUBSCRIBE,
+        Network::Sfu(Box::new(subscribe_path)),
+        codec,
+        LegRole::SfuSubscribe,
+    )
+    .await?;
+    let mut direct = if connection.policy.permits(Destination::DirectPeer) {
+        Some(Direct::new(
+            connection.socket.get_ref().get_ref().0.local_addr()?.ip(),
+            connection
+                .welcome
+                .turn
+                .as_ref()
+                .map_or(&[], |turn| turn.urls.as_slice()),
+        ))
+    } else {
+        None
+    };
+    let mut discovery = None;
+    let mut desired = None;
+    let mut direct_buffer = [0; rtc::MAX_DATAGRAM + 1];
     let mut subscribed = Vec::<Track>::new();
     let mut pub_buffer = [0; rtc::MAX_DATAGRAM + 1];
     let mut sub_buffer = [0; rtc::MAX_DATAGRAM + 1];
-    let mut connected = false;
     let mut sending = false;
     let mut send_gate = FrameGate::new();
     let mut sequence = 0_u64;
     loop {
+        let attempt = direct.as_ref().and_then(|direct| direct.leg.as_ref());
+        let selected = attempt.is_some_and(|attempt| attempt.transport.selected);
+        let attempting_direct = attempt.is_some() || discovery.is_some();
+        let direct_wake = attempt
+            .filter(|attempt| attempt.answered)
+            .and_then(|attempt| attempt.transport.wake);
+        let direct_deadline = direct.as_ref().and_then(Direct::deadline);
+        let direct_connected = direct
+            .as_mut()
+            .and_then(|direct| direct.leg.as_mut())
+            .filter(|attempt| attempt.answered)
+            .map(|attempt| &mut attempt.transport);
+        let publish_wake = publish.as_ref().and_then(|leg| leg.wake);
+        let subscribe_wake = subscribe.wake;
+        let mut retreat = false;
+        let mut notify = true;
         tokio::select! {
             message = connection.next() => match message? {
                 ServerMessage::Joined { peer, .. } => {
@@ -480,6 +611,7 @@ async fn run(
                     write(&mut connection.socket, &ClientMessage::Answer { sdp: answer.sdp }).await?;
                     // End old sources after queued frames and before any media from the new offer.
                     for track in subscribed.iter().filter(|track| !tracks.contains(track)) {
+                        retreat |= attempting_direct;
                         if let Some(gate) = subscribe.video_gate(track.purpose) {
                             *gate = FrameGate::new();
                         }
@@ -496,18 +628,67 @@ async fn run(
                     done(worker, Command::AcceptAnswer { leg: PUBLISH, description }).await?;
                     if let Some(leg) = &mut publish { leg.wake = Some(Instant::now()); }
                 }
-                ServerMessage::Key { from, data } => pair.key(connection, from, &data).await,
+                ServerMessage::Key { from, data } => {
+                    if let Some(signal) = pair.key(connection, from, &data).await
+                        && let Some(direct) = &mut direct
+                    {
+                        let result = match signal {
+                            Signal::Ready if publishing => {
+                                direct.ready = true;
+                                Ok(())
+                            }
+                            Signal::Offer { candidates, description }
+                                if !publishing && direct.can_accept() && discovery.is_none() =>
+                            {
+                                discovery = direct.accept(from, candidates, description, &subscribed);
+                                Ok(())
+                            }
+                            Signal::Answer { candidates, description } if publishing => direct.answer(worker, from, candidates, description).await,
+                            Signal::Connected { id } if publishing => {
+                                if let Some(attempt) = &mut direct.leg && attempt.id == id {
+                                    attempt.confirmed = true;
+                                }
+                                Ok(())
+                            }
+                            Signal::Close { id } => {
+                                retreat = direct.leg.as_ref().is_some_and(|attempt| attempt.id == id);
+                                notify = false;
+                                Ok(())
+                            }
+                            _ => Ok(()),
+                        };
+                        retreat |= result.is_err();
+                    }
+                }
                 ServerMessage::Quality { source, max_height, max_fps, max_bitrate, .. }
                     if publish_mid.as_ref() == Some(&source) && (16..=2160).contains(&max_height) && (1..=120).contains(&max_fps) && (64_000..=50_000_000).contains(&max_bitrate) => {
+                    desired = Some(max_bitrate);
                     let _ = output.events.try_send(Ok(MediaEvent::EncoderLimits { height: max_height, fps: max_fps, bitrate: max_bitrate }));
                 }
                 ServerMessage::Codec { codec: changed } if changed != connection.welcome.codec => return Err(Error::Protocol("native call codec changed")),
                 ServerMessage::Error { reason } => return Err(Error::Refused(reason.into_owned())),
                 _ => {}
             },
-            frame = frames.recv() => {
-                let Some(frame) = frame else { return Ok(()); };
-                if let (Some(purpose), Some(publish), true) = (source, &mut publish, sending) {
+            input = frames.recv() => {
+                let frame = match input {
+                    Some(Input::Frame(frame)) => frame,
+                    #[cfg(test)]
+                    Some(Input::LoseDirect) => {
+                        if let Some(attempt) = direct.as_mut().and_then(|direct| direct.leg.as_mut())
+                            && let Network::Direct { remote, .. } = &mut attempt.transport.network
+                        {
+                            *remote = None;
+                        }
+                        continue;
+                    }
+                    None => return Ok(()),
+                };
+                let active = if selected {
+                    direct.as_mut().and_then(|direct| direct.leg.as_mut()).map(|attempt| &mut attempt.transport)
+                } else {
+                    publish.as_mut()
+                };
+                if let (Some(purpose), Some(active), true) = (source, active, sending) {
                     if frame.sequence != sequence.wrapping_add(1) {
                         send_gate.awaiting_key = true;
                     }
@@ -517,7 +698,7 @@ async fn run(
                         match worker.exchange(command, frame.data).await?.kind {
                             Reply::Done => {
                                 send_gate.arrived(frame.key_frame);
-                                publish.wake = Some(Instant::now());
+                                active.wake = Some(Instant::now());
                                 continue;
                             }
                             Reply::Rejected => {}
@@ -530,16 +711,49 @@ async fn run(
                     }
                 }
             }
-            received = receive(publish.as_ref(), &mut pub_buffer) => {
-                if let Some(leg) = &mut publish { leg.datagram(worker, &pub_buffer[..received?]).await?; }
+            received = receive(publish.as_mut(), &mut pub_buffer) => {
+                if let Some(leg) = &mut publish {
+                    let (size, source) = received?;
+                    leg.datagram(worker, source, &pub_buffer[..size]).await?;
+                }
             }
-            received = subscribe.socket.recv(&mut sub_buffer) => subscribe.datagram(worker, &sub_buffer[..received?]).await?,
-            () = wake(publish.as_ref()) => {
-                if let Some(leg) = &mut publish { connected |= drain(worker, leg, other, &output).await?; }
+            received = subscribe.network.receive(&mut sub_buffer) => {
+                let (size, source) = received?;
+                subscribe.datagram(worker, source, &sub_buffer[..size]).await?;
             }
-            () = wake(Some(&subscribe)) => { drain(worker, &mut subscribe, other, &output).await?; }
+            received = receive(direct_connected, &mut direct_buffer) => {
+                if let Some(attempt) = direct.as_mut().and_then(|direct| direct.leg.as_mut()) {
+                    retreat = match received {
+                        Ok((size, source)) => attempt.transport.datagram(worker, source, &direct_buffer[..size]).await.is_err(),
+                        Err(_) => true,
+                    };
+                }
+            }
+            result = direct::next_prepared(&mut discovery) => {
+                discovery = None;
+                if let (Some(direct), Some(peer)) = (&mut direct, pair.peer) {
+                    retreat = match result {
+                        Ok(prepared) => match direct.complete(worker, codec, prepared).await {
+                            Ok(signal) => direct::send(connection, peer, &signal).await.is_err(),
+                            Err(_) => true,
+                        },
+                        Err(_) => true,
+                    };
+                }
+            }
+            () = wake(publish_wake) => {
+                if let Some(leg) = &mut publish { drain(worker, leg, None, !selected, &output).await?; }
+            }
+            () = wake(subscribe_wake) => { drain(worker, &mut subscribe, other.filter(|_| !selected), false, &output).await?; }
+            () = wake(direct_wake) => {
+                if let Some(attempt) = direct.as_mut().and_then(|direct| direct.leg.as_mut()) {
+                    retreat = drain(worker, &mut attempt.transport, other.filter(|_| !publishing), selected && publishing, &output).await.is_err();
+                }
+            }
+            () = wake(direct_deadline) => retreat = true,
         }
-        if !sending && connected && pair.ready && publishing {
+        if !sending && publish.as_ref().is_some_and(|leg| leg.connected) && pair.ready && publishing
+        {
             // The crypto worker sent the epoch on a separate socket. Wait for
             // the RTC process to install it before admitting frames.
             timeout(Duration::from_secs(1), async {
@@ -563,6 +777,119 @@ async fn run(
                 return Ok(());
             }
         }
+
+        let (Some(direct), Some(peer)) = (&mut direct, pair.peer) else {
+            continue;
+        };
+        if pair.ready && !publishing && !direct.asked {
+            direct.asked = true;
+            let _ = direct::send(connection, peer, &Signal::Ready).await;
+        }
+        if let Some(desired) = desired
+            && let Some(attempt) = &direct.leg
+            && attempt.transport.selected
+        {
+            retreat |= attempt
+                .transport
+                .bandwidth
+                .is_some_and(|(_, rate)| rate.saturating_mul(4) / 5 < desired);
+        }
+        if retreat {
+            discovery = None;
+            let was_selected = direct
+                .leg
+                .as_ref()
+                .is_some_and(|attempt| attempt.transport.selected);
+            if let Some(id) = direct.close(worker, publish.as_mut()).await? {
+                if notify {
+                    let _ = direct::send(connection, peer, &Signal::Close { id }).await;
+                }
+                if was_selected {
+                    send_gate = FrameGate::new();
+                    if publishing {
+                        let _ = output.keyframes.try_send(());
+                    } else {
+                        for purpose in [Purpose::Camera, Purpose::ScreenVideo] {
+                            if subscribed.iter().any(|track| track.purpose == purpose)
+                                && let Some(gate) = subscribe.video_gate(purpose)
+                            {
+                                *gate = FrameGate::new();
+                                gate.request();
+                                request_keyframe(worker, SUBSCRIBE, purpose).await?;
+                                subscribe.wake = Some(Instant::now());
+                            }
+                        }
+                    }
+                    if output
+                        .events
+                        .send(Ok(MediaEvent::Direct { active: false }))
+                        .await
+                        .is_err()
+                    {
+                        return Ok(());
+                    }
+                }
+            }
+            continue;
+        }
+        match (source, publish.as_ref(), desired) {
+            (Some(purpose), Some(publish), Some(desired))
+                if sending && direct::enough(publish.bandwidth, desired) =>
+            {
+                if direct.can_offer() && discovery.is_none() {
+                    discovery = Some(direct.discover(direct::Setup::Offer(purpose)));
+                } else if let Some(attempt) = &mut direct.leg
+                    && attempt.transport.connected
+                    && attempt.confirmed
+                    && !attempt.transport.selected
+                {
+                    if !matches!(
+                        worker
+                            .exchange(
+                                Command::SetSendLeg {
+                                    leg: attempt.transport.id
+                                },
+                                Vec::new()
+                            )
+                            .await?
+                            .kind,
+                        Reply::Done,
+                    ) {
+                        if let Some(id) = direct.close(worker, None).await? {
+                            let _ = direct::send(connection, peer, &Signal::Close { id }).await;
+                        }
+                        continue;
+                    }
+                    attempt.transport.selected = true;
+                    attempt.transport.wake = Some(Instant::now());
+                    send_gate = FrameGate::new();
+                    let _ = output.keyframes.try_send(());
+                    if output
+                        .events
+                        .send(Ok(MediaEvent::Direct { active: true }))
+                        .await
+                        .is_err()
+                    {
+                        return Ok(());
+                    }
+                }
+            }
+            (None, _, _) => {
+                if let Some(attempt) = &mut direct.leg
+                    && attempt.transport.connected
+                    && !attempt.confirmed
+                {
+                    attempt.confirmed = true;
+                    if direct::send(connection, peer, &Signal::Connected { id: attempt.id })
+                        .await
+                        .is_err()
+                    {
+                        direct.close(worker, None).await?;
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -570,9 +897,9 @@ async fn drain(
     worker: &mut Worker,
     leg: &mut Leg,
     peer: Option<u64>,
+    sending: bool,
     output: &Output<'_>,
-) -> Result<bool, Error> {
-    let mut connected = false;
+) -> Result<(), Error> {
     for _ in 0..UDP_BURST {
         let packet = worker
             .exchange(Command::Poll { leg: leg.id }, Vec::new())
@@ -580,25 +907,28 @@ async fn drain(
         match packet.kind {
             Reply::Wake { after_millis, .. } => {
                 leg.wake = Some(Instant::now() + Duration::from_millis(after_millis));
-                return Ok(connected);
+                return Ok(());
             }
-            Reply::Datagram { destination, .. } if destination == leg.socket.peer_addr()? => {
-                leg.socket.send(&packet.data).await?;
+            Reply::Datagram { destination, .. } => {
+                leg.network.send(&packet.data, destination).await?;
             }
-            Reply::Datagram { .. } => {}
             Reply::Event { event, .. } => {
                 let event = match event {
                     Event::Connected => {
-                        connected = true;
+                        leg.connected = true;
                         continue;
                     }
                     Event::Disconnected => {
                         return Err(Error::Protocol("native media transport disconnected"));
                     }
-                    Event::BandwidthEstimate { bitrate } if leg.id == PUBLISH => {
+                    Event::BandwidthEstimate { bitrate } => {
+                        leg.bandwidth = Some((Instant::now(), bitrate));
+                        if !sending {
+                            continue;
+                        }
                         MediaEvent::BandwidthEstimate { bitrate }
                     }
-                    Event::Keyframe { .. } if leg.id == PUBLISH => {
+                    Event::Keyframe { .. } if sending => {
                         let _ = output.keyframes.try_send(());
                         continue;
                     }
@@ -608,7 +938,8 @@ async fn drain(
                         timestamp,
                         contiguous,
                         key_frame,
-                    } if leg.id == SUBSCRIBE && peer == Some(publisher) => {
+                    } if peer == Some(publisher) => {
+                        let upgrading = leg.id > SUBSCRIBE && !leg.selected;
                         let Some(gate) = leg.video_gate(purpose) else {
                             continue;
                         };
@@ -619,25 +950,28 @@ async fn drain(
                                     publisher,
                                     purpose,
                                     timestamp,
-                                    contiguous,
+                                    contiguous: contiguous && !gate.awaiting_key,
                                     key_frame,
                                     data: packet.data,
                                 }))
                                 .is_ok()
                         {
                             gate.arrived(key_frame);
+                            if upgrading {
+                                leg.selected = true;
+                                if output
+                                    .events
+                                    .send(Ok(MediaEvent::Direct { active: true }))
+                                    .await
+                                    .is_err()
+                                {
+                                    return Ok(());
+                                }
+                            }
                         } else {
                             gate.awaiting_key = true;
                             if gate.request() {
-                                worker
-                                    .exchange(
-                                        Command::RequestKeyframe {
-                                            leg: leg.id,
-                                            purpose,
-                                        },
-                                        Vec::new(),
-                                    )
-                                    .await?;
+                                request_keyframe(worker, leg.id, purpose).await?;
                             }
                         }
                         continue;
@@ -650,5 +984,12 @@ async fn drain(
         }
     }
     leg.wake = Some(Instant::now());
-    Ok(connected)
+    Ok(())
+}
+
+async fn request_keyframe(worker: &mut Worker, leg: u32, purpose: Purpose) -> Result<(), Error> {
+    worker
+        .exchange(Command::RequestKeyframe { leg, purpose }, Vec::new())
+        .await?;
+    Ok(())
 }

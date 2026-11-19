@@ -60,6 +60,9 @@ exceptions = [
 multiple-versions = "warn"
 wildcards = "deny"
 deny = [
+  { name = "turn-client-proto", wrappers = [
+    "nuschl-session",
+  ], reason = "Keep TURN allocations and destination checks in the session broker" },
   { name = "str0m", wrappers = [
     "nuschl-rtc",
     "nuschl-stream-sfu",

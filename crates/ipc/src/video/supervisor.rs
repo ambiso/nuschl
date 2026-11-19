@@ -219,6 +219,23 @@ impl Session {
         self.worker.output.read_exact(bytes).await.map(|_| ())
     }
 
+    pub(super) async fn read_pixels(&mut self, len: usize) -> io::Result<Vec<u8>> {
+        let mut pixels = Vec::with_capacity(len.max(32));
+        // Tokio fills the vector's spare capacity directly. The limit keeps the
+        // next worker reply on the pipe even if the worker sends them together.
+        let read = (&mut self.worker.output)
+            .take(len as u64)
+            .read_to_end(&mut pixels)
+            .await?;
+        if read != len {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "short video frame",
+            ));
+        }
+        Ok(pixels)
+    }
+
     pub(super) async fn retire(mut self) {
         self.retirement
             .retire(&mut self.worker.child, &self.worker.containment)

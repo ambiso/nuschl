@@ -188,15 +188,20 @@ impl Call {
                 local,
                 codec,
                 role,
+                relayed,
             } => {
-                if leg <= self.last_leg || self.legs.len() == MAX_LEGS {
+                if leg <= self.last_leg
+                    || self.legs.len() == MAX_LEGS
+                    || relayed && role == LegRole::Direct
+                {
                     return Err(());
                 }
                 let codec = match codec {
                     Codec::Av1 => VideoCodec::Av1,
                     Codec::Vp9 => VideoCodec::Vp9,
                 };
-                let peer = Peer::for_call(local, now, codec, MAX_WIRE_VIDEO).map_err(|_| ())?;
+                let peer =
+                    Peer::for_call(local, now, codec, MAX_WIRE_VIDEO, relayed).map_err(|_| ())?;
                 self.legs.insert(
                     leg,
                     Leg {
@@ -216,6 +221,14 @@ impl Call {
                 if self.active == Some(leg) {
                     self.active = None;
                 }
+                Reply::Done
+            }
+            Command::AddReflexive { leg, address } => {
+                let live = self.legs.get_mut(&leg).ok_or(())?;
+                if live.role != LegRole::Direct {
+                    return Err(());
+                }
+                live.peer.add_call_reflexive(address).map_err(|_| ())?;
                 Reply::Done
             }
             Command::Offer { leg, id, purposes } => {
@@ -267,7 +280,14 @@ impl Call {
                 }
                 if self.active != Some(leg) {
                     if let Some(previous) = self.active.replace(leg) {
-                        self.legs.remove(&previous);
+                        match self.legs.get_mut(&previous) {
+                            Some(old) if old.role == LegRole::SfuPublish => {
+                                old.peer.clear_call_send()
+                            }
+                            _ => {
+                                self.legs.remove(&previous);
+                            }
+                        }
                     }
                     self.keyframe = [false; MAX_ENCODINGS as usize];
                 }

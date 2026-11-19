@@ -1,0 +1,15 @@
+stun-proto 2.0.5
+Copyright (C) 2020 Matthew Waters <matthew@centricular.com>
+Copyright (C) 2026 Matthew Waters <matthew@centricular.com>
+
+stun-types 2.0.5
+Copyright (C) 2020 Matthew Waters <matthew@centricular.com>
+
+STUN release source:
+https://github.com/ystreet/stun-proto/tree/b950baa50db83656abc68bad079f36e3954492d2
+
+turn-client-proto 0.8.0 and turn-types 0.8.0
+Copyright (C) 2025 Matthew Waters <matthew@centricular.com>
+
+TURN release source:
+https://github.com/ystreet/turn-proto/tree/d1b82526ee4d8ae6eaa109c924534ffd594dc190

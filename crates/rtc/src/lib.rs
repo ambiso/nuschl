@@ -185,6 +185,7 @@ enum Signaling {
 pub struct Peer {
     rtc: Rtc,
     address: SocketAddr,
+    reflexive: bool,
     video: VideoCodec,
     subscription: bool,
     signaling: Signaling,
@@ -227,7 +228,7 @@ impl Peer {
     /// Configure the call's video codec while retaining Opus for audio. Socket
     /// adapters enforce the connection policy before creating a host candidate.
     pub fn with_video(address: SocketAddr, now: Instant, video: VideoCodec) -> Result<Self, Error> {
-        Self::build(address, now, video, None)
+        Self::build(address, now, video, None, false)
     }
 
     /// Video-call legs carry bounded encrypted frames and let the RTP pacer
@@ -237,8 +238,9 @@ impl Peer {
         now: Instant,
         video: VideoCodec,
         video_limit: usize,
+        relayed: bool,
     ) -> Result<Self, Error> {
-        Self::build(address, now, video, Some(video_limit))
+        Self::build(address, now, video, Some(video_limit), relayed)
     }
 
     fn build(
@@ -246,6 +248,7 @@ impl Peer {
         now: Instant,
         video: VideoCodec,
         call_video_limit: Option<usize>,
+        relayed: bool,
     ) -> Result<Self, Error> {
         if address.port() == 0 || address.ip().is_unspecified() || address.ip().is_multicast() {
             return Err(Error::Address);
@@ -282,11 +285,18 @@ impl Peer {
                 str0m::bwe::Bitrate::bps(CALL_MAX_BITRATE),
             );
         }
-        rtc.add_local_candidate(Candidate::host(address, "udp").map_err(|_| Error::Address)?)
+        let candidate = if relayed {
+            // The broker uses the allocation address as the RTC socket identity.
+            Candidate::relayed(address, address, "udp")
+        } else {
+            Candidate::host(address, "udp")
+        };
+        rtc.add_local_candidate(candidate.map_err(|_| Error::Address)?)
             .ok_or(Error::Address)?;
         Ok(Self {
             rtc,
             address,
+            reflexive: false,
             video,
             subscription: false,
             signaling: Signaling::New,
@@ -298,6 +308,21 @@ impl Peer {
             total_budget: Bucket::new(now, window),
             video_budget: Bucket::new(now, window),
         })
+    }
+
+    /// Add the mapping observed by the configured STUN service to this call's host socket.
+    pub fn add_call_reflexive(&mut self, address: SocketAddr) -> Result<(), Error> {
+        if self.reflexive || !matches!(self.signaling, Signaling::New) || address == self.address {
+            return Err(Error::Address);
+        }
+        self.rtc
+            .add_local_candidate(
+                Candidate::server_reflexive(address, self.address, "udp")
+                    .map_err(|_| Error::Address)?,
+            )
+            .ok_or(Error::Address)?;
+        self.reflexive = true;
+        Ok(())
     }
 
     pub fn offer(&mut self, video: bool) -> Result<String, Error> {
@@ -559,6 +584,30 @@ impl Peer {
             .ok_or(Error::Frame)?
             .request_keyframe(None, KeyframeRequestKind::Pli)?;
         Ok(())
+    }
+
+    /// Drop queued RTP and retransmissions while keeping the negotiated transport warm.
+    pub fn clear_call_send(&mut self) {
+        for state in &self.tracks {
+            let mid = state.track.0;
+            let Some(direction) = self.rtc.media(mid).map(|media| media.direction()) else {
+                continue;
+            };
+            if direction.is_sending() {
+                let mut sdp = self.rtc.sdp_api();
+                // Changing the local direction clears str0m's payloader and transmit
+                // buffers. Restore the negotiated direction in the same operation.
+                sdp.set_direction(
+                    mid,
+                    if direction.is_receiving() {
+                        Direction::RecvOnly
+                    } else {
+                        Direction::Inactive
+                    },
+                );
+                sdp.set_direction(mid, direction);
+            }
+        }
     }
 
     pub fn is_connected(&self) -> bool {

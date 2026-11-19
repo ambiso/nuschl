@@ -59,7 +59,7 @@ impl Pair {
             "127.0.0.1:41001".parse().unwrap(),
         ];
         let mut peers = addresses.map(|address| match call_video_limit {
-            Some(limit) => Peer::for_call(address, now, codec, limit).unwrap(),
+            Some(limit) => Peer::for_call(address, now, codec, limit, false).unwrap(),
             None => Peer::with_video(address, now, codec).unwrap(),
         });
         let offer = if purposes.is_empty() {

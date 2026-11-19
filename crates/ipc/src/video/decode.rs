@@ -279,8 +279,7 @@ async fn decode_one(
     if reply.bytes as usize != 4 + required {
         return Err(invalid().into());
     }
-    let mut bgra = vec![0; required];
-    session.read(&mut bgra).await?;
+    let bgra = session.read_pixels(required).await?;
     Ok(Some(DecodedFrame {
         width,
         height,

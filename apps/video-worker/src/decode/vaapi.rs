@@ -3,7 +3,7 @@
 use super::Error;
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app::{AppSink, AppSrc};
-use nuschl_ipc::video::{DecodedFrame, Source, decode_frame_bytes};
+use nuschl_ipc::video::{Source, decode_frame_bytes};
 use std::time::{Duration, Instant};
 
 const WAIT: Duration = Duration::from_millis(200);
@@ -65,7 +65,8 @@ impl Pipeline {
         encoded: Vec<u8>,
         id: u64,
         source: Source,
-    ) -> Result<Option<DecodedFrame>, Error> {
+        write: impl FnOnce(u16, u16, &[u8]) -> Result<(), Error>,
+    ) -> Result<bool, Error> {
         let mut buffer = gst::Buffer::from_mut_slice(encoded);
         let timestamp = gst::ClockTime::from_nseconds(id);
         buffer
@@ -95,11 +96,8 @@ impl Pipeline {
             if pixels.size() != length {
                 return Err("invalid BGRA layout from VA-API".into());
             }
-            return Ok(Some(DecodedFrame {
-                width,
-                height,
-                bgra: pixels.as_slice().to_vec(),
-            }));
+            write(width, height, pixels.as_slice())?;
+            return Ok(true);
         }
         if let Some(message) = self
             .bus
@@ -110,7 +108,7 @@ impl Pipeline {
                 _ => Err("VA-API decode has ended".into()),
             };
         }
-        Ok(None)
+        Ok(false)
     }
 }
 

@@ -100,9 +100,15 @@ pub enum Command {
         local: SocketAddr,
         codec: Codec,
         role: LegRole,
+        #[serde(default)]
+        relayed: bool,
     },
     CloseLeg {
         leg: u32,
+    },
+    AddReflexive {
+        leg: u32,
+        address: SocketAddr,
     },
     Offer {
         leg: u32,
@@ -152,6 +158,7 @@ impl Command {
         match self {
             Self::Start { generation } => *generation != 0,
             Self::OpenLeg { leg, local, .. } => *leg != 0 && endpoint(*local),
+            Self::AddReflexive { leg, address } => *leg != 0 && endpoint(*address),
             Self::Offer { leg, id, purposes } => {
                 *leg != 0 && *id != [0; 16] && (1..=4).contains(&purposes.len())
             }
