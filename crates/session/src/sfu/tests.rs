@@ -208,6 +208,8 @@ async fn two_native_peers_admit_and_signal_through_the_sfu_over_wss() {
 
 #[tokio::test]
 async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
+    use nuschl_ipc::video::{Decoder, Encoder, Output, Settings, Source};
+
     // Successive AV1 packets from a synthetic 32×32 color source.
     const KEY: [u8; 30] = [
         0x12, 0x00, 0x0a, 0x0a, 0x00, 0x00, 0x00, 0x02, 0x27, 0xfe, 0x6d, 0x7c, 0x80, 0x20, 0x32,
@@ -252,6 +254,7 @@ async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
     nuschl_testkit::sandbox();
     let crypto = fixture("nuschl-crypto-worker");
     let rtc = fixture("nuschl-rtc-worker");
+    let video = fixture("nuschl-video-worker");
     let sfu = nuschl_testkit::sfu::start(fixture("nuschl-stream-sfu"), "");
     let (host, roots) = tls_proxy(&sfu).await;
     let directory = nuschl_testkit::temp_dir();
@@ -296,6 +299,26 @@ async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
         .await
         .unwrap();
 
+    let mut decoder = Decoder::start(video.clone(), Source::Screen).unwrap();
+    let mut encoder = Encoder::start(
+        video.clone(),
+        Settings {
+            source: Source::Screen,
+            width: 32,
+            height: 32,
+            fps: 30,
+            bitrate: 256_000,
+        },
+    )
+    .unwrap();
+    // Limited-range I420 for a uniform red picture.
+    let mut pixels = vec![81; 32 * 32];
+    pixels.extend([90; 16 * 16]);
+    pixels.extend([240; 16 * 16]);
+    let Output::Keyframe(red) = encoder.encode(pixels).await.unwrap() else {
+        panic!("expected a synthetic red keyframe");
+    };
+
     timeout(HANDSHAKE, async {
         loop {
             if matches!(
@@ -311,7 +334,7 @@ async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
         }
         let mut frame = 0u64;
         let mut tick = tokio::time::interval(Duration::from_millis(34));
-        loop {
+        let initial = loop {
             tokio::select! {
                 _ = tick.tick() => {
                     frame += 1;
@@ -319,10 +342,10 @@ async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
                 }
                 data = rendered(&mut bob, publisher, true) => {
                     assert_eq!(data, KEY);
-                    break;
+                    break decoder.decode(true, data).await.unwrap().expect("decoded keyframe");
                 }
             }
-        }
+        };
         tick.tick().await;
         frame += 1;
         assert!(
@@ -335,7 +358,15 @@ async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
                 .send_frame((frame + 1) * 3_060, false, DELTAS[1].to_vec())
                 .unwrap()
         );
-        assert_eq!(rendered(&mut bob, publisher, false).await, DELTAS[0]);
+        let delta = rendered(&mut bob, publisher, false).await;
+        assert_eq!(delta, DELTAS[0]);
+        let next = decoder
+            .decode(false, delta)
+            .await
+            .unwrap()
+            .expect("decoded interframe");
+        assert_eq!((initial.width, initial.height), (32, 32));
+        assert_eq!(next.bgra, initial.bgra);
 
         // Dropping an input frame invalidates later dependent frames until a
         // fresh keyframe. The RTC worker remains live through the recovery.
@@ -377,10 +408,32 @@ async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
                 .unwrap()
         );
         assert_eq!(rendered(&mut bob, publisher, false).await, DELTAS[0]);
+
+        tick.tick().await;
+        frame += 1;
+        assert!(alice.send_keyframe(frame * 3_060, red.clone()).unwrap());
+        let packet = rendered(&mut bob, publisher, true).await;
+        assert_eq!(packet, red);
+        let decoded = decoder
+            .decode(true, packet)
+            .await
+            .unwrap()
+            .expect("decoded red keyframe");
+        assert_eq!((decoded.width, decoded.height), (32, 32));
+        assert_eq!(decoded.bgra.len(), 32 * 32 * 4);
+        assert!(
+            decoded
+                .bgra
+                .chunks_exact(4)
+                .all(|px| px[0] < 45 && px[1] < 45 && px[2] > 200 && px[3] == 255)
+        );
     })
     .await
     .expect("a native frame crosses the owned SFU");
+    encoder.stop().await.unwrap();
+    decoder.stop().await.unwrap();
     bob.stop().await.unwrap();
     alice.stop().await.unwrap();
+    nuschl_testkit::none_running(&video, Duration::from_secs(3)).await;
     nuschl_testkit::none_running(&rtc, Duration::from_secs(3)).await;
 }
