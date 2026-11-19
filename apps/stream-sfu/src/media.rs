@@ -1117,7 +1117,10 @@ impl Core {
                 if forward.view.backlog.limited()
                     && video.layers.choices(video.kind, video.kind.top()).len() <= 1
                 {
-                    demand.shared_cap = demand.shared_cap.min(tier);
+                    let configured = self.config.receiver_bitrate.min(self.config.room_bitrate);
+                    demand.shared_cap = demand
+                        .shared_cap
+                        .min(tier.min(video.kind.affordable(configured)));
                 }
                 planned.push(Planned {
                     receiver: id,
