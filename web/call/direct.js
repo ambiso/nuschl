@@ -208,6 +208,13 @@ export class DirectPaths {
     return direct ? { ...track, ...direct } : track;
   }
 
+  /** Sample the sender carrying this source's media. */
+  sender(local) {
+    const leg = this.#outgoing;
+    if (!leg?.active) return local;
+    return leg.sources.find((source) => source.local.sender === local)?.direct.sender ?? local;
+  }
+
   get active() {
     return Boolean(this.#incoming?.active || this.#outgoing?.active);
   }

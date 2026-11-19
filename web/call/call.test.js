@@ -9,10 +9,11 @@ import { join as joinPath } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { unsized } from "./frames.js";
-import { receiverRates } from "./receiver-stats.js";
+import { publisherMeasurements, receiverRates } from "./receiver-stats.js";
 import { Call } from "./session.js";
-import { MAX_MESSAGE, MAX_PEERS, fitTier, join, linkOf, parse, qualityRequest } from "./signal.js";
+import { MAX_MESSAGE, MAX_PEERS, TIERS, fitTier, join, linkOf, parse, qualityRequest } from "./signal.js";
 import { preferences, scalabilityMode, sendCodecs, support } from "./support.js";
+import { View } from "./view.js";
 
 const directory = process.env.STREAM_WASM;
 assert.ok(directory, "STREAM_WASM must name the stream worker's wasm-bindgen build");
@@ -155,6 +156,42 @@ test("viewer quality uses tile pixels and the v1 request layout", () => {
   assert.equal(qualityRequest(23, "camera", 0).request, "0100000000000000170000");
 });
 
+test("an explicit receive tier applies before layout and survives a tile resize", () => {
+  class Element extends EventTarget {
+    constructor(ownerDocument) {
+      super();
+      this.ownerDocument = ownerDocument;
+      this.children = [];
+    }
+    setAttribute() {}
+    replaceChildren(...children) { this.children = children; }
+    append(...children) { this.children.push(...children); }
+  }
+  const document = { createElement: () => new Element(document) };
+  const track = { peer: 4, screen: true };
+  const video = {};
+  const sent = [];
+  const view = {
+    document,
+    call: { tracks: new Map([["source", track]]), send: (message) => sent.push(message) },
+    tiers: new Map(),
+    sentTiers: new WeakMap(),
+    sizes: new Map(),
+    observer: { observe() {} },
+  };
+  const { control, requested } = View.prototype.viewerQuality.call(view, "source", video, track, "Screen");
+  assert.equal(requested(), undefined);
+  assert.deepEqual(sent, []);
+  const select = control.children[1];
+  select.value = "2";
+  select.dispatchEvent(new Event("change"));
+  assert.equal(requested(), TIERS.screen[2]);
+  assert.deepEqual(sent, [{ type: "quality", request: "0100000000000000040102" }]);
+  view.sizes.get(video).resize(400);
+  assert.equal(requested(), TIERS.screen[2]);
+  assert.equal(sent.length, 1);
+});
+
 test("publisher quality applies bounded encoder limits to the matching MID", async () => {
   const request = "0100000000000000040100";
   const quality = { type: "quality", request, source: "3", max_height: 720, max_fps: 15, max_bitrate: 800_000 };
@@ -180,12 +217,24 @@ test("publisher quality applies bounded encoder limits to the matching MID", asy
   assert.equal(applied.length, 1);
   await call.receive({ ...quality, source: "4", max_height: 2160, max_fps: 60, max_bitrate: 15_000_000 });
   assert.deepEqual(applied[1], { scaleResolutionDownBy: 1, maxFramerate: 60, maxBitrate: 15_000_000 });
+  await call.setPublishTier("screen", "2");
+  assert.deepEqual(applied[2], { scaleResolutionDownBy: 1, maxFramerate: 60, maxBitrate: 8_000_000 });
   await call.setPublishTier("screen", "1");
-  assert.deepEqual(applied[2], {
+  assert.deepEqual(applied[3], {
     scaleResolutionDownBy: 1440 / 1080, maxFramerate: 30, maxBitrate: 3_000_000,
   });
   await call.receive({ ...quality, source: "4" });
-  assert.deepEqual(applied[3], { scaleResolutionDownBy: 2, maxFramerate: 15, maxBitrate: 800_000 });
+  assert.deepEqual(applied[4], { scaleResolutionDownBy: 2, maxFramerate: 15, maxBitrate: 800_000 });
+});
+
+test("ultrawide publisher stats distinguish capture, verified caps and encoded resolution", () => {
+  const capture = { width: 3440, height: 1440 };
+  const target = TIERS.screen[2];
+  const encoded = { frameWidth: 2580, frameHeight: 1080, qualityLimitationReason: "bandwidth" };
+  assert.deepEqual(publisherMeasurements(capture, target, TIERS.screen[3], 1, encoded),
+    ["3440 × 1440", "1440p60", "2160p60 · 15.0 Mb/s", "3440 × 1440", "2580 × 1080", "Bandwidth"]);
+  assert.deepEqual(publisherMeasurements(capture, target, TIERS.screen[1], 1440 / 1080),
+    ["3440 × 1440", "1440p60", "1080p30 · 3.0 Mb/s", "2580 × 1080", "—", "Unavailable"]);
 });
 
 test("support: encoded transforms and AV1 or VP9, AV1 first", () => {
