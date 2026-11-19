@@ -6,14 +6,14 @@ Two real desktops (Andi and Bea) in a private headless GNOME Shell, operated
 over AT-SPI, a stock Mumble client ("Witness") in the same channel of a
 loopback Murmur, and an owned loopback call host that answers the lease. Each
 desktop's `xdg-open` is a script that records the URL in place of a browser.
-Checks:
+It exercises the browser fallback against a local call host. Checks:
 
-- Start call opens the creator's page (S, V and P, V matching P) and posts
+- Start call in browser opens the creator's page (S, V and P, V matching P) and posts
   the Join link (S and V) as text, which the stock client receives;
 - the lease reaches the call host with stream_id and host_key; P stays with Andi;
 - Bea's card names Andi and the host, and Join opens the page with S and V;
 - Rotate link opens a new creator page and Bea's Join follows the new S;
-- the call ends when the call host reports the room gone; Share screen starts
+- the call ends when the call host reports the room gone; Share screen in browser starts
   a new one, and End call ends it and releases the lease; Bea's card goes away
   both times;
 - a direct call from Andi to Bea shows Bea's card in her conversation with

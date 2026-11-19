@@ -208,16 +208,19 @@ call** takes you back to its conversation. A monitor share initially covers
 Nuschl conversations. Choose **Show app while sharing** to reveal the app in
 the share, and **Return to call** to cover it again.
 
-The native path supports one publisher and one viewer. **Open in browser**
-opens the same room for group calls and other call modes. Voice stays in
-Mumble.
+The native path supports one publisher and one viewer. Two native clients can
+switch to a direct connection when it can carry their video, and return to the
+call server when the connection drops or runs out of bandwidth. With **Relay
+only** enabled, native video uses the call host's UDP TURN relay. **Open in
+browser** opens the same room for group calls and other call modes. Voice stays
+in Mumble.
 
 In a direct conversation with someone online, the same buttons start a call
 with that person alone: the link goes to them as a private message, and the
 card shows in their direct conversation with you. The call ends when either of
 you leaves the server.
 
-The creator's card also has **Rotate link**, which ends the call for everyone
+The creator's browser call card also has **Rotate link**, which ends the call for everyone
 on the old link, opens the page again on a new one and posts it, and **End
 call**. The call also ends when you leave the channel or the server, after 4
 hours, and when the call page is gone.
