@@ -43,10 +43,12 @@ decisions (§11).
   Descriptors to select layers and rewrites sequence numbers for each viewer.
 - `crates/stream` and `crates/sframe` implement call links, key exchange, media
   rekeying and RFC 9605 SFrame. The native crypto worker supports SFU
-  admission and sealed pairwise signaling.
+  admission and sealed pairwise signaling. The Linux RTC worker receives media
+  epochs directly from the crypto worker. Two native SDK participants can send
+  and receive authenticated video frames through the SFU.
 - The Linux video probe captures from one portal-granted PipeWire FD in the
-  video worker. The worker encodes AV1 through VA-API or rav1e. Connecting
-  native capture, media encryption and GPUI playback is the next phase.
+  video worker. The worker encodes AV1 through VA-API or rav1e. The GPUI call
+  workflow and native playback are tracked in #419.
 - The companion browser page captures camera and screen, sets receive
   quality per tile and switches two-person video between the SFU and a direct
   connection. The chat web app uses the companion page for video.
