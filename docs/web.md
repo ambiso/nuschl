@@ -286,6 +286,10 @@ against the pin or the web's certificate authorities (anything else is the user'
 decision, as in the apps), the Mumble login, the channel tree and users. It uses no
 DOM, so a Web Worker can host it.
 
+The web client's WebAssembly needs Chrome 96, Firefox 89 or Safari 16.4 or later:
+every module uses reference types (Chrome 96, Firefox 79, Safari 15), and the Opus
+codec Worker's module uses SIMD (`simd128`: Chrome 91, Firefox 89, Safari 16.4).
+
 - `nix build .#web-wasm`, `.#web-audio-wasm`, `.#web-client` and `.#web-site`
   build the session SDK, separate Opus codec, Svelte app and complete site.
   `just wasm-client` and `just web` remain development entry points. The exact
