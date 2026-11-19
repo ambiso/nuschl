@@ -91,6 +91,13 @@ impl Render for Desktop {
         let started = std::time::Instant::now();
         self.window_corners = crate::chrome::corner_radii(window);
         crate::images::collect(window);
+        #[cfg(target_os = "linux")]
+        {
+            self.sync_native_call();
+            if let Some(curtain) = crate::native_call::curtain(self, window, cx) {
+                return curtain;
+            }
+        }
         self.ease_voice_toggles(window, cx);
         crate::acl_editor::follow_jump(self, window, cx);
         // Which dialog the last frame showed (see dialogs::modal).
@@ -2026,6 +2033,43 @@ fn conversation_header(
                     .own_call()
                     .is_none_or(|call| call.server != server.id),
             |controls| {
+                #[cfg(target_os = "linux")]
+                if this.native_call.is_none()
+                    && !this.settings.relay_only
+                    && matches!(channel.target, TextTarget::Direct(_))
+                {
+                    use nuschl_ipc::video::Source;
+                    let button = |id, icon, label, source, cx: &mut Context<Desktop>| {
+                        let target = channel.target.clone();
+                        icon_button(
+                            id,
+                            icon,
+                            label,
+                            TEXT_MUTED,
+                            None,
+                            move |this, _, cx| {
+                                this.start_native_call(index, target.clone(), source, cx);
+                                cx.notify();
+                            },
+                            cx,
+                        )
+                    };
+                    return controls
+                        .child(button(
+                            "start-call",
+                            "video",
+                            "Start camera",
+                            Source::Camera,
+                            cx,
+                        ))
+                        .child(button(
+                            "share-screen",
+                            "screen",
+                            "Share screen",
+                            Source::Screen,
+                            cx,
+                        ));
+                }
                 let start = |id, icon, label, cx: &mut Context<Desktop>| {
                     let target = channel.target.clone();
                     icon_button(
@@ -2378,6 +2422,13 @@ fn conversation(
                     cx,
                 )),
             )
+        })
+        .map(|view| {
+            #[cfg(target_os = "linux")]
+            let view = view.when_some(crate::native_call::panel(this, cx), |view, panel| {
+                view.child(panel)
+            });
+            view
         })
         .map(|view| match crate::search::panel(this, cx) {
             Some(panel) => view.child(panel),
@@ -3278,6 +3329,14 @@ fn call_card(
     cx: &mut Context<Desktop>,
 ) -> Option<AnyElement> {
     let server = &this.client.servers[index];
+    #[cfg(target_os = "linux")]
+    if this
+        .native_call
+        .as_ref()
+        .is_some_and(|call| call.server == server.id && call.conversation == *target)
+    {
+        return None;
+    }
     let join = |url: String, cx: &mut Context<Desktop>| {
         let url = nuschl_core::call::page_url(&url, this.settings.relay_only).into_owned();
         styled_button(
@@ -3321,6 +3380,29 @@ fn call_card(
         let call = *this.client.calls_in(index, target).first()?;
         let link = crate::call::join_link(&call.link)?;
         let actions = layout::actions().child(join(link.url(), cx));
+        #[cfg(target_os = "linux")]
+        let actions = actions.when(
+            matches!(target, TextTarget::Direct(_))
+                && this.native_call.is_none()
+                && this.native_available(link.host()),
+            |actions| {
+                let url = link.url();
+                let server = server.id.clone();
+                let target = target.clone();
+                actions.child(styled_button(
+                    "call-watch-here",
+                    "Watch here",
+                    Tone::Secondary,
+                    move |this, _, cx| {
+                        if let Some(link) = crate::call::join_link(&url) {
+                            this.open_native_call(server.clone(), target.clone(), &link, None, cx);
+                            cx.notify();
+                        }
+                    },
+                    cx,
+                ))
+            },
+        );
         let who = server.users.get(&call.sender).map(|user| user.name.clone());
         (who.unwrap_or_default(), link.host().to_owned(), actions)
     };

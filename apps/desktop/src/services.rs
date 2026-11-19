@@ -38,6 +38,15 @@ pub enum ServiceEvent {
     CallLeaseEnded {
         id: u64,
     },
+    #[cfg(target_os = "linux")]
+    NativeCurtain {
+        generation: u64,
+        ready: tokio::sync::oneshot::Sender<()>,
+    },
+    #[cfg(target_os = "linux")]
+    NativeFinished {
+        generation: u64,
+    },
 }
 
 pub struct Services {
@@ -130,6 +139,15 @@ impl Services {
         self.handle
             .spawn(crate::call::run(id, url, body, stop, events));
     }
+    #[cfg(target_os = "linux")]
+    pub fn native_call(&self, start: crate::native_call::Start) {
+        self.handle.spawn(crate::native_call::run(
+            start,
+            self.settings.clone(),
+            self.sender.clone(),
+        ));
+    }
+
     /// Closing the sender lets the task shut its worker down cleanly.
     pub fn stop_preview(&mut self) {
         self.preview.take();
