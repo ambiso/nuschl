@@ -266,8 +266,14 @@ context.objects = [
     .expect("the new target is applied within the running capture");
     assert!(updated_at > frame.capture_time_us);
     assert_eq!(capture.next().await.unwrap().bitrate_bps, 900_000);
+    let shorter_side = frame.width.min(frame.height);
     let limits = CaptureLimits {
-        height: (frame.width.min(frame.height) / 2).max(16),
+        // The hardware fixture negotiates the encoder's minimum size.
+        height: if hardware {
+            shorter_side
+        } else {
+            (shorter_side / 2).max(16)
+        },
         fps: 10,
         bitrate: 800_000,
     };
@@ -293,6 +299,18 @@ context.objects = [
     .await
     .expect("the new dimensions arrive in the current PipeWire grant");
     assert_eq!(updated.bitrate_bps, limits.bitrate);
+    if hardware {
+        let last = tokio::time::timeout(Duration::from_secs(3), async {
+            let mut last = updated.capture_time_us;
+            for _ in 0..5 {
+                last = capture.next().await.unwrap().capture_time_us;
+            }
+            last
+        })
+        .await
+        .expect("the hardware capture keeps sending at the new rate");
+        assert!(last - updated.capture_time_us >= 400_000);
+    }
     assert_eq!(
         decode_av1(&updated.av1).len(),
         usize::from(expected.0) * usize::from(expected.1) * 3 / 2,

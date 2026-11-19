@@ -5,7 +5,7 @@
 use super::{Cadence, Control, Failure};
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app::AppSink;
-use nuschl_ipc::video::{Kind, Settings, Source};
+use nuschl_ipc::video::{CaptureLimits, Kind, Settings, Source};
 use std::{
     io,
     sync::{Arc, Mutex, atomic::Ordering},
@@ -55,7 +55,7 @@ pub fn run(pipeline: gst::Pipeline, source: Source, control: Arc<Control>) -> Re
         .downcast::<AppSink>()
         .map_err(|_| "invalid video sink")?;
     let encoder = pipeline.by_name("encoder").ok_or("missing video encoder")?;
-    let mut scale = Scale::new(&pipeline)?;
+    let mut scale = Scale::new(&pipeline, &encoder)?;
     let clock = Instant::now();
     let cadence = Mutex::new(Cadence::default());
     let cadence_control = control.clone();
@@ -86,11 +86,12 @@ pub fn run(pipeline: gst::Pipeline, source: Source, control: Arc<Control>) -> Re
 struct Scale {
     input: gst::Pad,
     filter: gst::Element,
+    encoder_caps: gst::Caps,
     size: Option<(u16, u16)>,
 }
 
 impl Scale {
-    fn new(pipeline: &gst::Pipeline) -> Result<Self, Failure> {
+    fn new(pipeline: &gst::Pipeline, encoder: &gst::Element) -> Result<Self, Failure> {
         let input = pipeline
             .by_name("scale")
             .and_then(|element| element.static_pad("sink"))
@@ -98,18 +99,20 @@ impl Scale {
         let filter = pipeline
             .by_name("limit")
             .ok_or("missing video caps filter")?;
+        let encoder_caps = encoder
+            .pad_template("sink")
+            .ok_or("missing video encoder input template")?
+            .caps()
+            .to_owned();
         Ok(Self {
             input,
             filter,
+            encoder_caps,
             size: None,
         })
     }
 
-    fn update(
-        &mut self,
-        source: Source,
-        limits: nuschl_ipc::video::CaptureLimits,
-    ) -> Result<bool, Failure> {
+    fn update(&mut self, source: Source, limits: CaptureLimits) -> Result<bool, Failure> {
         // Measure the unscaled PipeWire format upstream of the capsfilter.
         let Some(input) = self.input.current_caps() else {
             return Ok(false);
@@ -126,6 +129,9 @@ impl Scale {
         let caps =
             format!("video/x-raw(memory:VAMemory),format=NV12,width={width},height={height}")
                 .parse::<gst::Caps>()?;
+        if !caps.can_intersect(&self.encoder_caps) {
+            return Ok(self.size.take().is_some());
+        }
         self.filter.set_property("caps", caps);
         self.size = Some((width, height));
         Ok(true)
