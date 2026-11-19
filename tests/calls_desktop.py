@@ -154,7 +154,7 @@ class CallTest(VoiceTest):
             creator = rf"{re.escape(origin)}/call#v=1&k=({SECRET})&h=({SECRET})&p=({SECRET})"
 
             # Start call: Andi's page holds S, V and P; the channel gets S and V.
-            self.press(andi, "Start call")
+            self.press(andi, "Start call in browser")
             page = self.opened(andi_opened, 1)
             match = re.fullmatch(creator, page)
             assert match, page
@@ -171,9 +171,9 @@ class CallTest(VoiceTest):
                        for _, _, body in CallHost.requests)
 
             # Bea's card and Join.
-            eventually(lambda: self.find(bea, None, f"Call · Andi · 127.0.0.1:{self.host.server_port}"),
+            eventually(lambda: self.find(bea, None, f"Video call · Andi · 127.0.0.1:{self.host.server_port}"),
                        "Bea has no call card")
-            self.press(bea, "Join")
+            self.press(bea, "Open in browser")
             assert self.opened(bea_opened, 1) == f"{origin}/call#v=1&k={secret}&h={check}"
             self.shot("card")
 
@@ -185,7 +185,7 @@ class CallTest(VoiceTest):
             self.witness.wait(lambda event: event["kind"] == "text" and new_secret in event["body"], timeout=15)
 
             def joins(expected):
-                self.press(bea, "Join")
+                self.press(bea, "Open in browser")
                 time.sleep(0.5)
                 return bea_opened.read_text().split()[-1] == expected
             eventually(lambda: joins(f"{origin}/call#v=1&k={new_secret}&h={new_check}"),
@@ -193,41 +193,41 @@ class CallTest(VoiceTest):
 
             # The room goes away: the lease ends the call and the card goes.
             CallHost.room = False
-            eventually(lambda: self.find(andi, "push button", "Start call"), "the lease did not end the call",
+            eventually(lambda: self.find(andi, "push button", "Start call in browser"), "the lease did not end the call",
                        timeout=30)
-            eventually(lambda: not self.find(bea, "push button", "Join"), "Bea kept an ended call")
+            eventually(lambda: not self.find(bea, "push button", "Open in browser"), "Bea kept an ended call")
 
             # Share screen starts a call too; End call releases the lease.
             CallHost.room = True
-            self.press(andi, "Share screen")
+            self.press(andi, "Share screen in browser")
             assert re.fullmatch(creator, self.opened(andi_opened, 3))
-            eventually(lambda: self.find(bea, "push button", "Join"), "Bea has no card for the new call")
+            eventually(lambda: self.find(bea, "push button", "Open in browser"), "Bea has no card for the new call")
             self.press(andi, "End call")
             eventually(lambda: any(method == "DELETE" for method, _, _ in CallHost.requests),
                        "End call kept the lease")
-            eventually(lambda: not self.find(bea, "push button", "Join"), "Bea kept an ended call")
+            eventually(lambda: not self.find(bea, "push button", "Open in browser"), "Bea kept an ended call")
             self.witness.wait(lambda event: event["kind"] == "text" and "Call ended" in event["body"], timeout=15)
 
             # A direct call: Andi and Bea alone. The Witness gets neither the
             # link nor a card; Bea's card is in her conversation with Andi.
             self.direct(andi, "Bea")
-            self.press(andi, "Start call")
+            self.press(andi, "Start call in browser")
             secret, check, _ = re.fullmatch(creator, self.opened(andi_opened, 4)).groups()
             self.direct(bea, "Andi")
-            eventually(lambda: self.find(bea, None, f"Call · Andi · 127.0.0.1:{self.host.server_port}"),
+            eventually(lambda: self.find(bea, None, f"Video call · Andi · 127.0.0.1:{self.host.server_port}"),
                        "Bea has no card for the direct call")
-            self.press(bea, "Join")
+            self.press(bea, "Open in browser")
             eventually(lambda: bea_opened.read_text().split()[-1] == f"{origin}/call#v=1&k={secret}&h={check}",
                        "Join did not open the direct call")
             self.shot("direct-card")
             assert not any(secret in event.get("body", "") for event in list(self.witness.events)), \
                 "the Witness saw the direct call"
             self.press(andi, "End call")
-            eventually(lambda: not self.find(bea, "push button", "Join"), "Bea kept an ended direct call")
+            eventually(lambda: not self.find(bea, "push button", "Open in browser"), "Bea kept an ended direct call")
 
             # A direct call with a stock client: the link arrives as a private message.
             self.direct(andi, "Witness")
-            self.press(andi, "Share screen")
+            self.press(andi, "Share screen in browser")
             secret = re.fullmatch(creator, self.opened(andi_opened, 5)).group(1)
             private = self.witness.wait(lambda event: event["kind"] == "text" and secret in event["body"],
                                         timeout=15)

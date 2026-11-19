@@ -56,6 +56,8 @@ pub struct Connection {
     scope: CallScope,
     #[cfg(target_os = "linux")]
     policy: PeerPolicy,
+    #[cfg(target_os = "linux")]
+    pending_offer: Option<ServerMessage>,
 }
 
 struct CallScope {
@@ -192,6 +194,8 @@ impl Connection {
             scope,
             #[cfg(target_os = "linux")]
             policy: options.policy,
+            #[cfg(target_os = "linux")]
+            pending_offer: None,
         })
     }
 
@@ -200,7 +204,34 @@ impl Connection {
     }
 
     pub async fn next(&mut self) -> Result<ServerMessage, Error> {
+        #[cfg(target_os = "linux")]
+        if let Some(offer) = self.pending_offer.take() {
+            return Ok(offer);
+        }
         read(&mut self.socket).await
+    }
+
+    /// Keep control signaling current while the owner chooses a video source.
+    #[cfg(target_os = "linux")]
+    pub async fn poll_idle(&mut self) -> Result<(), Error> {
+        match read(&mut self.socket).await? {
+            ServerMessage::Joined { peer, role } => {
+                if self.welcome.peers.len() >= 256 || peer == 0 || peer == self.welcome.peer {
+                    return Err(Error::Protocol("invalid call roster"));
+                }
+                if !self.welcome.peers.iter().any(|entry| entry.id == peer) {
+                    self.welcome.peers.push(sfu::PeerInfo { id: peer, role });
+                }
+            }
+            ServerMessage::Left { peer } => self.welcome.peers.retain(|entry| entry.id != peer),
+            ServerMessage::Codec { codec } if codec != self.welcome.codec => {
+                return Err(Error::Protocol("native call codec changed"));
+            }
+            offer @ ServerMessage::Offer { .. } => self.pending_offer = Some(offer),
+            ServerMessage::Error { reason } => return Err(Error::Refused(reason.into_owned())),
+            _ => {}
+        }
+        Ok(())
     }
 
     /// Pair with the selected peer, apply its key message, or send direct

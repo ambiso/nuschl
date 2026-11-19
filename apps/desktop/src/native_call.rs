@@ -36,6 +36,8 @@ pub struct Active {
     voice_generation: u64,
     browser: String,
     surface: Entity<Surface>,
+    updates: Arc<Latest>,
+    choose: Option<oneshot::Sender<Source>>,
     stop: Option<oneshot::Sender<()>>,
     after_stop: Option<AfterStop>,
     finished: bool,
@@ -55,6 +57,7 @@ pub struct Start {
     url: String,
     host: String,
     source: Option<Source>,
+    choice: Option<oneshot::Receiver<Source>>,
     updates: Arc<Latest>,
     stop: oneshot::Receiver<()>,
 }
@@ -62,6 +65,7 @@ pub struct Start {
 struct Update {
     status: String,
     frame: Option<DecodedFrame>,
+    visible: bool,
     clear: bool,
     finished: bool,
 }
@@ -72,6 +76,14 @@ struct Latest {
 }
 
 impl Latest {
+    fn show_video(&self, visible: bool) {
+        self.update
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .visible = visible;
+        self.ready.notify_one();
+    }
+
     fn status(&self, status: impl Into<String>) {
         let mut update = self
             .update
@@ -127,7 +139,11 @@ impl Surface {
                         .unwrap_or_else(|error| error.into_inner());
                     (
                         update.status.clone(),
-                        update.frame.take(),
+                        if update.visible {
+                            update.frame.take()
+                        } else {
+                            None
+                        },
                         std::mem::take(&mut update.clear),
                         update.finished,
                     )
@@ -231,7 +247,7 @@ impl Desktop {
             return;
         };
         let voice_generation = selected.generation;
-        let owner = source.is_some();
+        let owner = link.publisher().is_some();
         let room = link.url();
         let browser = if owner {
             let Some(browser) = link.creator_url() else {
@@ -241,15 +257,23 @@ impl Desktop {
         } else {
             room.clone()
         };
+        let (choose, choice) = if owner && source.is_none() {
+            let (choose, choice) = oneshot::channel();
+            (Some(choose), Some(choice))
+        } else {
+            (None, None)
+        };
         let status = match source {
             Some(Source::Camera) => "Waiting for camera permission",
             Some(Source::Screen) => "Choose a screen or window",
+            None if owner => "Starting video call",
             None => "Joining video call",
         };
         let updates = Arc::new(Latest {
             update: Mutex::new(Update {
                 status: status.into(),
                 frame: None,
+                visible: true,
                 clear: false,
                 finished: false,
             }),
@@ -265,6 +289,8 @@ impl Desktop {
             voice_generation,
             browser: browser.clone(),
             surface: cx.new(|cx| Surface::new(updates.clone(), status, cx)),
+            updates: updates.clone(),
+            choose,
             stop: Some(stop),
             after_stop: None,
             finished: false,
@@ -278,6 +304,7 @@ impl Desktop {
             url: browser,
             host: link.host().to_owned(),
             source,
+            choice,
             updates,
             stop: stopped,
         });
@@ -287,7 +314,7 @@ impl Desktop {
         &mut self,
         index: usize,
         target: TextTarget,
-        source: Source,
+        source: Option<Source>,
         cx: &mut Context<Self>,
     ) {
         if self.native_call.is_some() || !self.native_available(self.call_host()) {
@@ -296,7 +323,7 @@ impl Desktop {
         match self.create_call(index, target.clone()) {
             Ok(link) => {
                 let server = self.client.servers[index].id.clone();
-                self.open_native_call(server, target, &link, Some(source), cx);
+                self.open_native_call(server, target, &link, source, cx);
                 self.announce_call(link, "Call");
             }
             Err(error) => self.client.servers[index].set_notice(error),
@@ -360,11 +387,24 @@ impl Desktop {
     fn minimize_native_call(&mut self, cx: &mut Context<Self>) {
         if let Some(call) = &mut self.native_call {
             call.minimized = true;
+            call.updates.show_video(false);
+            cx.notify();
+        }
+    }
+
+    fn choose_native_source(&mut self, source: Source, cx: &mut Context<Self>) {
+        if let Some(choose) = self
+            .native_call
+            .as_mut()
+            .and_then(|call| call.choose.take())
+        {
+            let _ = choose.send(source);
             cx.notify();
         }
     }
 
     fn restore_native_call(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selected = self.selected_indices();
         let Some(call) = &mut self.native_call else {
             return;
         };
@@ -374,13 +414,17 @@ impl Desktop {
             .iter()
             .enumerate()
             .find(|(_, server)| server.id == call.server)
-            && let Some(channel) = server
+            && let Some((channel_index, channel)) = server
                 .channels
                 .iter()
-                .find(|channel| channel.target == call.conversation)
+                .enumerate()
+                .find(|(_, channel)| channel.target == call.conversation)
         {
             call.minimized = false;
-            self.browse_channel(index, channel.id, window, cx);
+            call.updates.show_video(true);
+            if selected != Some((index, channel_index)) {
+                self.browse_channel(index, channel.id, window, cx);
+            }
             cx.notify();
         }
     }
@@ -400,6 +444,7 @@ impl Desktop {
         {
             call.curtain = true;
             call.minimized = false;
+            call.updates.show_video(true);
             call.curtain_ready = Some(ready);
         }
     }
@@ -413,6 +458,7 @@ impl Desktop {
         };
         call.finished = true;
         call.stop.take();
+        call.choose.take();
         call.curtain = false;
         call.curtain_ready = None;
         match call.after_stop.take() {
@@ -479,6 +525,23 @@ pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
         return None;
     }
     let actions = layout::actions()
+        .when(call.choose.is_some(), |actions| {
+            actions
+                .child(styled_button(
+                    "native-call-camera",
+                    "Start camera",
+                    Tone::Primary,
+                    |this, _, cx| this.choose_native_source(Source::Camera, cx),
+                    cx,
+                ))
+                .child(styled_button(
+                    "native-call-screen",
+                    "Share screen",
+                    Tone::Secondary,
+                    |this, _, cx| this.choose_native_source(Source::Screen, cx),
+                    cx,
+                ))
+        })
         .child(styled_button(
             "native-call-minimize",
             if call.curtain {
@@ -502,7 +565,7 @@ pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
         .child(styled_button(
             "native-call-stop",
             if call.owner {
-                "Stop sharing"
+                "End call"
             } else {
                 "Leave video"
             },
@@ -604,6 +667,7 @@ async fn drive(
         url,
         host,
         source,
+        choice,
         updates,
         mut stop,
     } = start;
@@ -624,7 +688,7 @@ async fn drive(
     let (mut media, grant, video_worker) = tokio::select! {
         biased;
         () = &mut cancel => return Ok(()),
-        result = prepare(crypto, generation, &host, &url, source, &updates) => result?,
+        result = prepare(crypto, generation, &host, &url, source, choice, &updates) => result?,
     };
     let result = if let Some(grant) = grant {
         publish_video(
@@ -691,18 +755,14 @@ async fn prepare(
     host: &str,
     url: &str,
     source: Option<Source>,
+    choice: Option<oneshot::Receiver<Source>>,
     updates: &Latest,
 ) -> Result<(Media, Option<portal::Grant>, PathBuf), String> {
     let (executable, video_worker) = WORKERS
         .as_ref()
         .ok_or("The native video workers are unavailable.")?
         .clone();
-    let grant = match source {
-        Some(source) => Some(portal::request(source, None).await.map_err(text)?),
-        None => None,
-    };
-    updates.status("Joining video call");
-    let connection = Connection::connect(
+    let mut connection = Connection::connect(
         crypto,
         Connect {
             generation,
@@ -714,6 +774,32 @@ async fn prepare(
     )
     .await
     .map_err(text)?;
+    let permission = async {
+        let source = if let Some(choice) = choice {
+            updates.status("Call started. Choose a camera or screen to share.");
+            Some(choice.await.map_err(text)?)
+        } else {
+            source
+        };
+        let Some(source) = source else {
+            return Ok::<_, String>(None);
+        };
+        updates.status(match source {
+            Source::Camera => "Waiting for camera permission",
+            Source::Screen => "Choose a screen or window",
+        });
+        portal::request(source, None).await.map(Some).map_err(text)
+    };
+    tokio::pin!(permission);
+    let grant = loop {
+        tokio::select! {
+            biased;
+            grant = &mut permission => break grant?,
+            tick = connection.poll_idle() => tick.map_err(text)?,
+        }
+    };
+    let source = grant.as_ref().map(portal::Grant::source);
+    updates.status("Joining video call");
     let publish = source.map(|source| match source {
         Source::Camera => Purpose::Camera,
         Source::Screen => Purpose::ScreenVideo,

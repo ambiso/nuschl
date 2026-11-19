@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
-//! Calls (docs/desktop.md, "Calls"): Start call and Share screen open the
-//! creator's page in the system browser and post the call to the channel,
-//! Join opens a call someone announced, and the creator's lease on the call
-//! host keeps the call alive.
+//! Calls (docs/desktop.md, "Calls"). The creator posts a link and renews the
+//! room's lease. The creator and invitees join through the desktop or browser.
 //!
 //! The lease keeps the room the creator's page made: every [`RENEW`] the desktop
 //! sends `POST <origin>/sfu/lease` with `{"stream_id", "host_key"}` in lowercase
@@ -130,15 +128,18 @@ pub async fn run(
 }
 
 impl Desktop {
-    /// Start a call in conversation `target` on server `index` (the open
-    /// conversation: our channel or a direct conversation) and open its page,
-    /// where the camera and screen start.
+    /// Start a call in the open conversation.
     pub fn start_call(
         &mut self,
         index: usize,
         target: nuschl_core::model::TextTarget,
         cx: &mut Context<Self>,
     ) {
+        #[cfg(target_os = "linux")]
+        if self.native_available(self.call_host()) {
+            self.start_native_call(index, target, None, cx);
+            return;
+        }
         match self.create_call(index, target) {
             Ok(link) => self.open_call(link, "Call", cx),
             Err(error) => self.client.servers[index].set_notice(error),

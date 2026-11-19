@@ -2062,12 +2062,15 @@ fn conversation_header(
                     )
                 };
                 #[cfg(target_os = "linux")]
-                if this.native_call.is_none() && this.native_available(this.call_host()) {
+                if this.native_available(this.call_host()) {
                     use nuschl_ipc::video::Source;
+                    if this.native_call.is_some() {
+                        return controls;
+                    }
                     return controls
                         .child(button(
                             "start-call",
-                            "link",
+                            "video",
                             "Start call",
                             Desktop::start_call,
                             cx,
@@ -2077,7 +2080,7 @@ fn conversation_header(
                             "video",
                             "Start camera",
                             |this, index, target, cx| {
-                                this.start_native_call(index, target, Source::Camera, cx)
+                                this.start_native_call(index, target, Some(Source::Camera), cx)
                             },
                             cx,
                         ))
@@ -2086,7 +2089,7 @@ fn conversation_header(
                             "screen",
                             "Share screen",
                             |this, index, target, cx| {
-                                this.start_native_call(index, target, Source::Screen, cx)
+                                this.start_native_call(index, target, Some(Source::Screen), cx)
                             },
                             cx,
                         ));
@@ -2095,14 +2098,14 @@ fn conversation_header(
                     .child(button(
                         "start-call",
                         "video",
-                        "Start call",
+                        "Start call in browser",
                         Desktop::start_call,
                         cx,
                     ))
                     .child(button(
                         "share-screen",
                         "screen",
-                        "Share screen",
+                        "Share screen in browser",
                         Desktop::start_call,
                         cx,
                     ))
@@ -3357,8 +3360,8 @@ fn call_card(
         let url = nuschl_core::call::page_url(&url, this.settings.relay_only).into_owned();
         styled_button(
             "call-join",
-            "Join",
-            Tone::Primary,
+            "Open in browser",
+            Tone::Secondary,
             move |_, _, cx| cx.open_url(&url),
             cx,
         )
@@ -3395,7 +3398,7 @@ fn call_card(
     } else {
         let call = *this.client.calls_in(index, target).first()?;
         let link = crate::call::join_link(&call.link)?;
-        let actions = layout::actions().child(join(link.url(), cx));
+        let actions = layout::actions();
         #[cfg(target_os = "linux")]
         let actions = actions.when(
             this.native_call.is_none() && this.native_available(link.host()),
@@ -3405,8 +3408,8 @@ fn call_card(
                 let target = target.clone();
                 actions.child(styled_button(
                     "call-watch-here",
-                    "Watch here",
-                    Tone::Secondary,
+                    "Join video call",
+                    Tone::Primary,
                     move |this, _, cx| {
                         if let Some(link) = crate::call::join_link(&url) {
                             this.open_native_call(server.clone(), target.clone(), &link, None, cx);
@@ -3418,9 +3421,13 @@ fn call_card(
             },
         );
         let who = server.users.get(&call.sender).map(|user| user.name.clone());
-        (who.unwrap_or_default(), link.host().to_owned(), actions)
+        (
+            who.unwrap_or_default(),
+            link.host().to_owned(),
+            actions.child(join(link.url(), cx)),
+        )
     };
-    let text = format!("Call · {who} · {link}");
+    let text = format!("Video call · {who} · {link}");
     Some(banner(
         "call-card",
         ACCENT,
