@@ -76,7 +76,7 @@ async function applyCaps({ local, direct }) {
   const caps = encodingOf(local.sender);
   const parameters = direct.sender.getParameters();
   const encoding = parameters.encodings[0];
-  const keys = ["maxBitrate", "maxFramerate", "scaleResolutionDownBy", "scalabilityMode"];
+  const keys = ["maxBitrate", "maxFramerate", "scaleResolutionDownBy"];
   if (!keys.some((key) => encoding[key] !== caps[key])) return;
   for (const key of keys) {
     if (caps[key] === undefined) delete encoding[key];
