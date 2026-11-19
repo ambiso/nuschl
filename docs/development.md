@@ -88,8 +88,9 @@ hardware setup fails before opening the granted connection. Starting again
 after a running PipeWire stream fails requests a fresh portal connection.
 The software path encodes independent frames. Its capture integration test opens
 one connection to a private PipeWire daemon with a synthetic video node, starts
-the worker in bubblewrap and reads encoded AV1. Interframe encoding, hardware
-codecs, and desktop call integration are tracked in #418.
+the worker in bubblewrap and reads encoded AV1. Interframe encoding and
+compositor DMA-BUF verification are tracked in #418. The native RTC and
+desktop integration are tracked in #424 and #419.
 
 ## Continuous integration
 

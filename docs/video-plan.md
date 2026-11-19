@@ -38,16 +38,18 @@ decisions (§11).
 
 ## 1. What exists
 
-- `nuschl-rtc`: a str0m 0.25 trial with Opus and VP8, one offer/answer, host
-  candidates only, and bounds too small for 4K. str0m packetizes AV1 and finds
-  AV1 key frames; Dependency Descriptor (DD) parsing, layer selection and
-  sequence rewriting are Nuschl code.
-- `crates/stream` and `crates/sframe` (#267, in review): link parsing, the key
-  schedule, the HPKE-PSK exchange, rekeying and RFC 9605 SFrame.
-- Still to build: capture, encoders, decoders and video worker roles. The media
-  worker holds the microphone and audio socket, so video gets its own roles.
-- The browser client does voice only; RTCPeerConnection, camera capture and
-  getDisplayMedia are still to build.
+- `nuschl-rtc` negotiates Opus and the call's video codec (AV1 or VP9).
+  Its encoded-media loopback probe also supports VP8. The SFU uses Dependency
+  Descriptors to select layers and rewrites sequence numbers for each viewer.
+- `crates/stream` and `crates/sframe` implement call links, key exchange, media
+  rekeying and RFC 9605 SFrame. The native crypto worker supports SFU
+  admission and sealed pairwise signaling.
+- The Linux video probe captures from one portal-granted PipeWire FD in the
+  video worker. The worker encodes AV1 through VA-API or rav1e. Connecting
+  native capture, media encryption and GPUI playback is the next phase.
+- The companion browser page captures camera and screen, sets receive
+  quality per tile and switches two-person video between the SFU and a direct
+  connection. The chat web app uses the companion page for video.
 - `privacy/1` relay-only and `PeerPolicy` exist; `rtc/1` is still to build
   (#141).
 - Voice playout knows its per-talker delay, which video playout can follow.
@@ -263,8 +265,8 @@ Owner rule (2026-11-18):
   authenticates keys (§7). A Friends Direct mode, direct only with friends or
   verified contacts, is a proposal (#444).
 - Candidates travel to the peer sealed under the pairwise channel key.
-- Phase 1 relays every source through the SFU; X1 adds direct paths, starting
-  with two-person calls.
+- The browser call starts on the SFU. Two-person calls can move video to a
+  direct path. The SFU connection remains available for fallback.
 - Path switches (Owner) are quick and keep the keys: the new path is set up
   and ICE-connected in the background without media, media moves in one step
   with a key frame on the new path, and the old path closes at once. Media
