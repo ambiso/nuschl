@@ -68,7 +68,7 @@ impl Speaker {
 
 fuzz_target!(|data: &[u8]| {
     let mut decoder = OpusDecoder::new(48_000, 1).expect("a mono decoder");
-    // Deep PLC, as the media worker conceals.
+    // Exercise neural concealment in every Opus mode.
     decoder.set_complexity(5).expect("a valid complexity");
     let mut speaker = Speaker {
         decoder,
