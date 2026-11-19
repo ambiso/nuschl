@@ -37,7 +37,9 @@ unchanged.
 Video uploads. Polychrome BGRA tiles pass their borrowed pixels directly to
 the wgpu queue. wgpu stages the pixels and orders the writes before the next
 submission. Persistent frame images and rapidly replaced video images use the
-same atlas lifecycle. Other texture formats use the upstream pending uploads.
+same atlas lifecycle. Uploads beyond the per-frame staging budget, and uploads
+to other texture formats, use the pending upload queue. Dropping a tile releases
+its deferred pixels.
 
 Tests. `nuschel_tests` in `src/cosmic_text_system.rs` covers the patches; its
 tests with real fonts read DejaVu and Adwaita font files from

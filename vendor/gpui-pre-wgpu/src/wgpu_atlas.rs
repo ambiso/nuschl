@@ -23,9 +23,11 @@ fn etagere_point_to_device(point: etagere::Point) -> Point<DevicePixels> {
 
 pub struct WgpuAtlas(Mutex<AtlasState<WgpuAtlasTextures>>);
 
+// Keep staging bounded while a window's surface cannot submit a frame.
+const MAX_EAGER_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
+
 struct PendingUpload {
-    id: AtlasTextureId,
-    bounds: Bounds<DevicePixels>,
+    tile: AtlasTile,
     data: Vec<u8>,
 }
 
@@ -36,6 +38,7 @@ struct WgpuAtlasTextures {
     color_texture_format: wgpu::TextureFormat,
     storage: WgpuAtlasStorage,
     pending_uploads: Vec<PendingUpload>,
+    eager_upload_bytes: Option<usize>,
     next_texture_generation: u64,
 }
 
@@ -59,6 +62,7 @@ impl WgpuAtlas {
             color_texture_format,
             storage: WgpuAtlasStorage::default(),
             pending_uploads: Vec::new(),
+            eager_upload_bytes: Some(0),
             next_texture_generation: 0,
         })))
     }
@@ -107,6 +111,7 @@ impl WgpuAtlas {
             textures.color_texture_format = context.color_texture_format();
             textures.storage = WgpuAtlasStorage::default();
             textures.pending_uploads.clear();
+            textures.eager_upload_bytes = Some(0);
         });
     }
 }
@@ -133,7 +138,7 @@ impl AtlasBackend for WgpuAtlasTextures {
         bytes: &[u8],
     ) -> Result<AtlasTile> {
         let tile = self.allocate(size, kind).context("failed to allocate")?;
-        self.upload_texture(tile.texture_id, tile.bounds, bytes);
+        self.upload_texture(tile, bytes);
         Ok(tile)
     }
 
@@ -146,9 +151,8 @@ impl AtlasBackend for WgpuAtlasTextures {
         if let Some(mut texture) = texture_slot.take() {
             texture.allocator.deallocate(tile.tile_id.into());
             texture.decrement_ref_count();
+            self.pending_uploads.retain(|upload| upload.tile != tile);
             if texture.is_unreferenced() {
-                self.pending_uploads
-                    .retain(|upload| upload.id != texture.id);
                 self.storage[id.kind]
                     .free_list
                     .push(texture.id.index as usize);
@@ -258,29 +262,36 @@ impl WgpuAtlasTextures {
         }
     }
 
-    fn upload_texture(&mut self, id: AtlasTextureId, bounds: Bounds<DevicePixels>, bytes: &[u8]) {
-        let Some(texture) = self.storage.get(id) else {
+    fn upload_texture(&mut self, tile: AtlasTile, bytes: &[u8]) {
+        let Some(texture) = self.storage.get(tile.texture_id) else {
             return;
         };
-        if id.kind == AtlasTextureKind::Polychrome
+        if tile.texture_id.kind == AtlasTextureKind::Polychrome
             && texture.format == wgpu::TextureFormat::Bgra8Unorm
         {
-            // The queue stages these pixels now and applies the upload before
-            // the next submission. Each BGRA image tile uses this same order.
-            Self::write_texture(&self.queue, texture, bounds, bytes);
-        } else {
-            let data = swizzle_upload_data(bytes, texture.format);
-            self.pending_uploads
-                .push(PendingUpload { id, bounds, data });
+            self.eager_upload_bytes = self
+                .eager_upload_bytes
+                .and_then(|queued| queued.checked_add(bytes.len()))
+                .filter(|&queued| queued <= MAX_EAGER_UPLOAD_BYTES);
+            if self.eager_upload_bytes.is_some() {
+                // wgpu stages the pixels now and applies them before submission.
+                // Once this budget fills, later BGRA writes are deferred in order.
+                Self::write_texture(&self.queue, texture, tile.bounds, bytes);
+                return;
+            }
         }
+        let data = swizzle_upload_data(bytes, texture.format);
+        self.pending_uploads.push(PendingUpload { tile, data });
     }
 
     fn flush_uploads(&mut self) {
         for upload in self.pending_uploads.drain(..) {
-            if let Some(texture) = self.storage.get(upload.id) {
-                Self::write_texture(&self.queue, texture, upload.bounds, &upload.data);
+            if let Some(texture) = self.storage.get(upload.tile.texture_id) {
+                Self::write_texture(&self.queue, texture, upload.tile.bounds, &upload.data);
             }
         }
+        // The renderer submits on both frame completion and encoding failure.
+        self.eager_upload_bytes = Some(0);
     }
 
     fn write_texture(
@@ -558,6 +569,56 @@ mod tests {
         })?;
         rx.recv_timeout(timeout)??;
         assert_eq!(&*pixels.get_mapped_range(..)?, &bgra);
+        Ok(())
+    }
+
+    #[test]
+    fn deferred_bgra_upload_releases_pixels_when_its_tile_is_removed() -> anyhow::Result<()> {
+        let (device, queue) = test_device_and_queue()?;
+        let atlas = WgpuAtlas::new(device, queue.clone(), wgpu::TextureFormat::Bgra8Unorm);
+        let key = |image_id| {
+            AtlasKey::Image(RenderImageParams {
+                image_id: ImageId(image_id),
+                frame_index: 0,
+            })
+        };
+        let mut build = || {
+            Ok(Some((
+                Size {
+                    width: DevicePixels(1),
+                    height: DevicePixels(1),
+                },
+                Cow::Borrowed(&[0, 0, 0, 255][..]),
+            )))
+        };
+        let keeper = atlas
+            .get_or_insert_with(key(1), &mut build)?
+            .context("resident tile")?;
+        atlas.0.lock().backend.eager_upload_bytes = Some(MAX_EAGER_UPLOAD_BYTES);
+        let removed = atlas
+            .get_or_insert_with(key(2), &mut build)?
+            .context("deferred tile")?;
+        let latest = atlas
+            .get_or_insert_with(key(3), &mut build)?
+            .context("latest tile")?;
+        assert_eq!(keeper.texture_id, removed.texture_id);
+        assert_eq!(keeper.texture_id, latest.texture_id);
+        {
+            let locked = atlas.0.lock();
+            assert_eq!(locked.backend.eager_upload_bytes, None);
+            assert_eq!(locked.backend.pending_uploads.len(), 2);
+        }
+        atlas.remove(&key(2));
+        {
+            let locked = atlas.0.lock();
+            let [pending] = locked.backend.pending_uploads.as_slice() else {
+                anyhow::bail!("only the live tile should retain its pixels");
+            };
+            assert_eq!(pending.tile, latest);
+        }
+        atlas.before_frame();
+        queue.submit([]);
+        assert_eq!(atlas.0.lock().backend.eager_upload_bytes, Some(0));
         Ok(())
     }
 
