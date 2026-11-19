@@ -1102,7 +1102,7 @@ rec {
           }
           {
             name = "zerocopy";
-            packageId = "zerocopy";
+            packageId = "zerocopy 0.8.63";
             usesDefaultFeatures = false;
             features = [ "simd" ];
           }
@@ -2048,6 +2048,16 @@ rec {
         ];
 
       };
+      "assert_matches" = rec {
+        crateName = "assert_matches";
+        version = "1.5.0";
+        edition = "2015";
+        sha256 = "1a9b3p9vy0msylyr2022sk5flid37ini1dxji5l3vwxsvw4xcd4v";
+        authors = [
+          "Murarth <murarth@gmail.com>"
+        ];
+
+      };
       "async-broadcast" = rec {
         crateName = "async-broadcast";
         version = "0.7.2";
@@ -2752,6 +2762,54 @@ rec {
         };
         resolvedDefaultFeatures = [ "default" ];
       };
+      "atomig" = rec {
+        crateName = "atomig";
+        version = "0.4.3";
+        edition = "2021";
+        sha256 = "0qwqky8p5y72bs2z6m0v311d18y4g3xq7qi50d2wdxc9pgs423yd";
+        authors = [
+          "Lukas Kalbertodt <lukas.kalbertodt@gmail.com>"
+        ];
+        dependencies = [
+          {
+            name = "atomig-macro";
+            packageId = "atomig-macro";
+            optional = true;
+          }
+        ];
+        features = {
+          "atomig-macro" = [ "dep:atomig-macro" ];
+          "derive" = [ "atomig-macro" ];
+          "serde" = [ "dep:serde" ];
+        };
+        resolvedDefaultFeatures = [ "atomig-macro" "derive" ];
+      };
+      "atomig-macro" = rec {
+        crateName = "atomig-macro";
+        version = "0.4.0";
+        edition = "2021";
+        sha256 = "1xd4nm7k61j5as71kmjzvvxakrpi4g66lgynwy6mh85r0sx8vja9";
+        procMacro = true;
+        libName = "atomig_macro";
+        authors = [
+          "Lukas Kalbertodt <lukas.kalbertodt@gmail.com>"
+        ];
+        dependencies = [
+          {
+            name = "proc-macro2";
+            packageId = "proc-macro2";
+          }
+          {
+            name = "quote";
+            packageId = "quote";
+          }
+          {
+            name = "syn";
+            packageId = "syn 2.0.119";
+          }
+        ];
+
+      };
       "atspi" = rec {
         crateName = "atspi";
         version = "0.29.0";
@@ -2980,6 +3038,39 @@ rec {
         sha256 = "0lqasy5i30flcgih1b50kvsk6z32g09r1q4ql7q81pj6228jy0zj";
         authors = [
           "Josh Stone <cuviper@gmail.com>"
+        ];
+
+      };
+      "av-data" = rec {
+        crateName = "av-data";
+        version = "0.4.4";
+        edition = "2021";
+        sha256 = "13ih12xbhjykwrncdsvnibjanjymmxbn2mqc3014r4hpsfjpp9pw";
+        libName = "av_data";
+        authors = [
+          "Luca Barbato <lu_zero@gentoo.org>"
+        ];
+        dependencies = [
+          {
+            name = "byte-slice-cast";
+            packageId = "byte-slice-cast";
+          }
+          {
+            name = "bytes";
+            packageId = "bytes";
+          }
+          {
+            name = "num-derive";
+            packageId = "num-derive";
+          }
+          {
+            name = "num-rational";
+            packageId = "num-rational";
+          }
+          {
+            name = "num-traits";
+            packageId = "num-traits";
+          }
         ];
 
       };
@@ -4142,6 +4233,20 @@ rec {
           "Matt Brubeck <mbrubeck@limpet.net>"
         ];
 
+      };
+      "byte-slice-cast" = rec {
+        crateName = "byte-slice-cast";
+        version = "1.2.3";
+        edition = "2018";
+        sha256 = "178c6ghnqwq472xypxabk27kjid01qxifw3bff8nj63jf8pihxbm";
+        libName = "byte_slice_cast";
+        authors = [
+          "Sebastian Dröge <sebastian@centricular.com>"
+        ];
+        features = {
+          "default" = [ "std" ];
+        };
+        resolvedDefaultFeatures = [ "default" "std" ];
       };
       "bytecodec" = rec {
         crateName = "bytecodec";
@@ -15086,7 +15191,7 @@ rec {
           }
           {
             name = "zerocopy";
-            packageId = "zerocopy";
+            packageId = "zerocopy 0.8.63";
             usesDefaultFeatures = false;
             features = [ "derive" "simd" ];
           }
@@ -22759,6 +22864,36 @@ rec {
         };
         resolvedDefaultFeatures = [ "std" ];
       };
+      "nasm-rs" = rec {
+        crateName = "nasm-rs";
+        version = "0.3.2";
+        edition = "2018";
+        sha256 = "0jd1z9s5rn3qqq7c5x7h2zgbrx11plqisaf3528vkpf8x2jzhsvh";
+        libName = "nasm_rs";
+        authors = [
+          "Allen Goodman <allen@goodman.io>"
+          "Gavin Massey <mdk@mystacktrace.org>"
+          "Jerome Rasky <jyrome.112@gmail.com>"
+          "Justinas Stankevičius <justinas@users.noreply.github.com>"
+          "Kornel Lesinski <kornel@geekhood.net>"
+        ];
+        dependencies = [
+          {
+            name = "jobserver";
+            packageId = "jobserver";
+            optional = true;
+          }
+          {
+            name = "log";
+            packageId = "log";
+          }
+        ];
+        features = {
+          "jobserver" = [ "dep:jobserver" ];
+          "parallel" = [ "jobserver" ];
+        };
+        resolvedDefaultFeatures = [ "jobserver" "parallel" ];
+      };
       "ndk" = rec {
         crateName = "ndk";
         version = "0.9.0";
@@ -24773,7 +24908,7 @@ rec {
             name = "rustix";
             packageId = "rustix 1.1.6";
             target = { target, features }: ("linux" == target."os" or null);
-            features = [ "net" ];
+            features = [ "net" "pipe" ];
           }
           {
             name = "serde";
@@ -26395,6 +26530,13 @@ rec {
             packageId = "pipewire";
             usesDefaultFeatures = false;
             target = { target, features }: ("linux" == target."os" or null);
+          }
+          {
+            name = "rav1d";
+            packageId = "rav1d";
+            usesDefaultFeatures = false;
+            target = { target, features }: ("linux" == target."os" or null);
+            features = [ "bitdepth_8" "bitdepth_16" ];
           }
           {
             name = "rav1e";
@@ -33315,7 +33457,7 @@ rec {
         dependencies = [
           {
             name = "zerocopy";
-            packageId = "zerocopy";
+            packageId = "zerocopy 0.8.63";
             features = [ "simd" ];
           }
         ];
@@ -35051,6 +35193,96 @@ rec {
           "unstable" = [ "unstable-rendered-line-info" ];
         };
         resolvedDefaultFeatures = [ "std" ];
+      };
+      "rav1d" = rec {
+        crateName = "rav1d";
+        version = "1.1.1";
+        edition = "2021";
+        workspace_member = null;
+        src = pkgs.fetchgit {
+          url = "https://github.com/memorysafety/rav1d";
+          rev = "2e7216c20ac2a75de204d6c8d7268b75a45959b4";
+          sha256 = "1llirkmg890d4r0pwx0flbbix9lk5qhk7jy1lqzk56k1hw3h3n5g";
+        };type = [ "staticlib" "rlib" ];
+        authors = [
+          "Rav1d Developers"
+          "Prossimo"
+        ];
+        dependencies = [
+          {
+            name = "assert_matches";
+            packageId = "assert_matches";
+          }
+          {
+            name = "atomig";
+            packageId = "atomig";
+            features = [ "derive" ];
+          }
+          {
+            name = "av-data";
+            packageId = "av-data";
+          }
+          {
+            name = "bitflags";
+            packageId = "bitflags 2.13.2";
+          }
+          {
+            name = "cfg-if";
+            packageId = "cfg-if";
+          }
+          {
+            name = "libc";
+            packageId = "libc";
+          }
+          {
+            name = "parking_lot";
+            packageId = "parking_lot";
+          }
+          {
+            name = "paste";
+            packageId = "paste";
+          }
+          {
+            name = "raw-cpuid";
+            packageId = "raw-cpuid";
+          }
+          {
+            name = "static_assertions";
+            packageId = "static_assertions";
+          }
+          {
+            name = "strum";
+            packageId = "strum 0.27.2";
+            features = [ "derive" ];
+          }
+          {
+            name = "to_method";
+            packageId = "to_method";
+          }
+          {
+            name = "zerocopy";
+            packageId = "zerocopy 0.7.35";
+            features = [ "derive" ];
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "cc";
+            packageId = "cc";
+          }
+          {
+            name = "nasm-rs";
+            packageId = "nasm-rs";
+            features = [ "parallel" ];
+          }
+        ];
+        features = {
+          "asm_arm64_dotprod" = [ "asm" ];
+          "asm_arm64_i8mm" = [ "asm" ];
+          "asm_arm64_sve2" = [ "asm" ];
+          "default" = [ "asm" "asm_arm64_dotprod" "asm_arm64_i8mm" "asm_arm64_sve2" "bitdepth_8" "bitdepth_16" ];
+        };
+        resolvedDefaultFeatures = [ "bitdepth_16" "bitdepth_8" ];
       };
       "rav1e" = rec {
         crateName = "rav1e";
@@ -43193,6 +43425,16 @@ rec {
           "default" = [ "std" ];
         };
         resolvedDefaultFeatures = [ "default" "std" ];
+      };
+      "to_method" = rec {
+        crateName = "to_method";
+        version = "1.1.0";
+        edition = "2018";
+        sha256 = "1s72l06fnb5kv6vm5ds0lilg1dyciyyis09ypi5kij0mrbpcxi67";
+        authors = [
+          "muvlon <muvlon@hentzes.de>"
+        ];
+
       };
       "tokio" = rec {
         crateName = "tokio";
@@ -56002,7 +56244,49 @@ rec {
         };
         resolvedDefaultFeatures = [ "eval" "std" ];
       };
-      "zerocopy" = rec {
+      "zerocopy 0.7.35" = rec {
+        crateName = "zerocopy";
+        version = "0.7.35";
+        edition = "2018";
+        sha256 = "1w36q7b9il2flg0qskapgi9ymgg7p985vniqd09vi0mwib8lz6qv";
+        authors = [
+          "Joshua Liebow-Feeser <joshlf@google.com>"
+        ];
+        dependencies = [
+          {
+            name = "byteorder";
+            packageId = "byteorder";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "zerocopy-derive";
+            packageId = "zerocopy-derive 0.7.35";
+            optional = true;
+          }
+          {
+            name = "zerocopy-derive";
+            packageId = "zerocopy-derive 0.7.35";
+            target = { target, features }: false;
+          }
+        ];
+        devDependencies = [
+          {
+            name = "zerocopy-derive";
+            packageId = "zerocopy-derive 0.7.35";
+          }
+        ];
+        features = {
+          "__internal_use_only_features_that_work_on_stable" = [ "alloc" "derive" "simd" ];
+          "byteorder" = [ "dep:byteorder" ];
+          "default" = [ "byteorder" ];
+          "derive" = [ "zerocopy-derive" ];
+          "simd-nightly" = [ "simd" ];
+          "zerocopy-derive" = [ "dep:zerocopy-derive" ];
+        };
+        resolvedDefaultFeatures = [ "byteorder" "default" "derive" "zerocopy-derive" ];
+      };
+      "zerocopy 0.8.63" = rec {
         crateName = "zerocopy";
         version = "0.8.63";
         edition = "2021";
@@ -56010,19 +56294,19 @@ rec {
         dependencies = [
           {
             name = "zerocopy-derive";
-            packageId = "zerocopy-derive";
+            packageId = "zerocopy-derive 0.8.63";
             optional = true;
           }
           {
             name = "zerocopy-derive";
-            packageId = "zerocopy-derive";
+            packageId = "zerocopy-derive 0.8.63";
             target = { target, features }: false;
           }
         ];
         devDependencies = [
           {
             name = "zerocopy-derive";
-            packageId = "zerocopy-derive";
+            packageId = "zerocopy-derive 0.8.63";
           }
         ];
         features = {
@@ -56034,7 +56318,33 @@ rec {
         };
         resolvedDefaultFeatures = [ "derive" "simd" "zerocopy-derive" ];
       };
-      "zerocopy-derive" = rec {
+      "zerocopy-derive 0.7.35" = rec {
+        crateName = "zerocopy-derive";
+        version = "0.7.35";
+        edition = "2018";
+        sha256 = "0gnf2ap2y92nwdalzz3x7142f2b83sni66l39vxp2ijd6j080kzs";
+        procMacro = true;
+        libName = "zerocopy_derive";
+        authors = [
+          "Joshua Liebow-Feeser <joshlf@google.com>"
+        ];
+        dependencies = [
+          {
+            name = "proc-macro2";
+            packageId = "proc-macro2";
+          }
+          {
+            name = "quote";
+            packageId = "quote";
+          }
+          {
+            name = "syn";
+            packageId = "syn 2.0.119";
+          }
+        ];
+
+      };
+      "zerocopy-derive 0.8.63" = rec {
         crateName = "zerocopy-derive";
         version = "0.8.63";
         edition = "2021";
