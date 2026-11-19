@@ -117,7 +117,7 @@ pkgs.testers.runNixOSTest {
             pkgs.bubblewrap
             pkgs.util-linux
           ]
-        } HOME=/var/empty LANG=C.UTF-8 TMPDIR=${nativeDirectory}/tmp NUSCHL_PREVIEW_FIXTURE=${nativeDirectory} NUSCHL_PREVIEW_WORKER=${contentWorker}/bin/nuschl-content-worker ${nativeFetchTest}/bin/nuschl-preview-fetch-test --ignored --exact link_preview::tests::actual_fetch_privacy --nocapture --test-threads=1";
+        } HOME=/var/empty LANG=C.UTF-8 TMPDIR=${nativeDirectory}/tmp NUSCHL_PREVIEW_FIXTURE=${nativeDirectory} NUSCHL_PREVIEW_WORKER=${contentWorker}/bin/nuschl-content-worker ${nativeFetchTest}/bin/nuschl-session-test --ignored --exact link_preview::tests::actual_fetch_privacy --nocapture --test-threads=1";
         WorkingDirectory = nativeDirectory;
         CapabilityBoundingSet = "";
         AmbientCapabilities = "";
@@ -237,7 +237,7 @@ pkgs.testers.runNixOSTest {
             stop_status, stop_log = machine.execute("systemctl stop " + " ".join(native_units), timeout=timedelta(seconds=60))
             assert len(stop_log) <= 16384, "bounded native stop output exceeded"
             machine.succeed("printf %s " + shlex.quote(stop_log) + f" > {native_directory}/stop.log")
-            machine.succeed(f"sha256sum ${nativeFetchTest}/bin/nuschl-preview-fetch-test ${contentWorker}/bin/nuschl-content-worker ${fixture} ${fixtureTests}/link_preview_fetch.py > {native_directory}/artifacts.sha256")
+            machine.succeed(f"sha256sum ${nativeFetchTest}/bin/nuschl-session-test ${contentWorker}/bin/nuschl-content-worker ${fixture} ${fixtureTests}/link_preview_fetch.py > {native_directory}/artifacts.sha256")
             machine.succeed("printf %s " + shlex.quote("${sourceIdentity}") + f" > {native_directory}/source-identity.txt")
             machine.succeed(f"(ip -4 route show table all; ip -6 route show table all; iptables-save; ip6tables-save) > {native_directory}/routes.txt")
             machine.succeed("install -d /tmp/preview-native-evidence")

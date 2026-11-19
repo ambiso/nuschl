@@ -1146,6 +1146,12 @@
               turnModule = self.nixosModules.turn;
               streamModule = self.nixosModules.stream;
               callSite = self.packages.${system}.call-site;
+              nativeCallTest = crates.sessionTest;
+              nativeCallWorkers = [
+                crates.project.workspaceMembers.nuschl-crypto-worker.build
+                crates.project.workspaceMembers.nuschl-rtc-worker.build
+                videoWorker
+              ];
             };
             # The music bot under its module, against Murmur and a fake library
             # (`nix build .#checks.x86_64-linux.vm-musicbot`).
@@ -1170,22 +1176,7 @@
               nuschl = package;
               sourceIdentity = self.rev or self.outPath;
               contentWorker = crates.project.workspaceMembers."nuschl-content-worker".build;
-              # Export the actual cached test ELF without running its private
-              # network fixture in a build sandbox or rewriting its bytes.
-              nativeFetchTest =
-                (crates.project.workspaceMembers."nuschl-session".build.override {
-                  runTests = true;
-                  testPreRun = ''
-                    case "$f" in
-                      */nuschl_session-*)
-                        test ! -e "$out/bin/nuschl-preview-fetch-test"
-                        install -Dm0555 "$f" "$out/bin/nuschl-preview-fetch-test"
-                        ;;
-                    esac
-                    continue
-                  '';
-                }).test.overrideAttrs
-                  { dontFixup = true; };
+              nativeFetchTest = crates.sessionTest;
             };
           }
         );
