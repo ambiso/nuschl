@@ -181,12 +181,6 @@ impl Render for Surface {
 
 fn render_frame(frame: DecodedFrame) -> Option<Arc<RenderImage>> {
     let (width, height) = (u32::from(frame.width), u32::from(frame.height));
-    if !(1..=3840).contains(&width)
-        || !(1..=2160).contains(&height)
-        || frame.bgra.len() != width as usize * height as usize * 4
-    {
-        return None;
-    }
     let image = image::RgbaImage::from_raw(width, height, frame.bgra)?;
     Some(crate::images::track(Arc::new(RenderImage::new(vec![
         image::Frame::new(image),
