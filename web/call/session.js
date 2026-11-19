@@ -3,6 +3,7 @@
 // subscribe connection with each publisher's frames decrypted in the stream worker,
 // who is in the call, and this page's own camera and screen on the publish
 // connection, encrypted in the stream worker and encoded in the call codec.
+import { DirectPaths, ENCODINGS } from "./direct.js";
 import { MAX_PEERS, TIERS, join, parse } from "./signal.js";
 import { preferences, scalabilityMode, sendCodecs } from "./support.js";
 
@@ -10,8 +11,8 @@ import { preferences, scalabilityMode, sendCodecs } from "./support.js";
 const RESUBSCRIBE_MS = 5000;
 /** The stream worker's rekey clock while publishing (crates/stream-wasm). */
 const TICK_MS = 250;
-/** Each source's SFrame encoding (crates/sframe, below MAX_ENCODINGS). */
-const ENCODINGS = { camera: 0, screen: 1 };
+/** Samples transport readiness and the outgoing estimate once per second. */
+const PATH_MS = 1000;
 
 export class Call extends EventTarget {
   /** The other peers: id → role. */
@@ -34,12 +35,13 @@ export class Call extends EventTarget {
     this.stream = stream;
     this.codecs = codecs;
     this.relay = relay;
+    this.direct = new DirectPaths(this);
   }
 
   /** Opens the call `link` on the stream host `host` and joins it. */
   async start({ link, host }) {
     try {
-      this.opened = await this.stream.request({ kind: "open", link, host });
+      this.opened = await this.stream.request({ kind: "open", link, host, allow_direct: !this.relay });
     } catch {
       return this.end("link");
     }
@@ -56,6 +58,7 @@ export class Call extends EventTarget {
       inbox = inbox.then(() => this.end("lost"));
     });
     this.timer = setInterval(() => this.resubscribe(), RESUBSCRIBE_MS);
+    if (!this.relay) this.pathTimer = setInterval(() => this.checkPath(), PATH_MS);
   }
 
   get creator() {
@@ -71,7 +74,11 @@ export class Call extends EventTarget {
     for (const { to, data } of send) this.send({ type: "key", to, data });
     for (const event of events) {
       const keys = this.keys.get(event.peer);
-      if (event.kind === "keyed" && keys) keys.keyed = true;
+      if (event.kind === "keyed" && keys) {
+        keys.keyed = true;
+        this.checkPath();
+      }
+      if (event.kind === "direct") this.direct.receive(event).catch(() => {});
     }
   }
 
@@ -97,9 +104,11 @@ export class Call extends EventTarget {
         break;
       case "joined":
         if (this.peers.size < MAX_PEERS) this.peers.set(message.peer, message.role);
+        this.checkPath();
         break;
       case "left":
         this.peers.delete(message.peer);
+        this.checkPath();
         this.keys.delete(message.peer);
         for (const [mid, track] of this.tracks) if (track.peer === message.peer) this.tracks.delete(mid);
         await this.stream.request({ kind: "leave", peer: message.peer });
@@ -195,10 +204,28 @@ export class Call extends EventTarget {
   /** Publishes `track`, from the user's own Start camera or Share screen, as this
    * page's `kind` source ("camera" or "screen"). */
   async publish(kind, track, tier) {
+    const pending = Promise.resolve(this.publishing).then(
+      () => this.publishTrack(kind, track, tier), () => this.publishTrack(kind, track, tier),
+    );
+    this.publishing = pending;
+    try {
+      await pending;
+    } catch (error) {
+      track.stop();
+      throw error;
+    } finally {
+      if (this.publishing === pending) this.publishing = null;
+    }
+  }
+
+  async publishTrack(kind, track, tier) {
     const mode = await scalabilityMode(globalThis, this.codec, kind, track.getSettings());
     if (this.ended || this.sources.has(kind) || track.readyState === "ended") return track.stop();
+    if (this.publisher) await this.direct.resetPublisher();
+    if (this.ended || track.readyState === "ended") return track.stop();
     if (!this.publisher) {
       this.deliver(await this.stream.request({ kind: "publish" }));
+      if (this.ended) return track.stop();
       this.publisher = new RTCPeerConnection(this.configuration);
       // An unused data channel, offered first, holds the transport: stopping a source's
       // media section, also its first, leaves it up.
@@ -218,12 +245,13 @@ export class Call extends EventTarget {
 
   /** A send transceiver for `track`, encrypted in the stream worker. */
   sender(kind, track, mode) {
+    mode = this.codec === "av1" ? mode : undefined;
     const add = (encoding) => this.publisher.addTransceiver(track, {
       direction: "sendonly", ...(encoding ? { sendEncodings: [{ scalabilityMode: encoding }] } : {}),
     });
     let transceiver;
     try {
-      transceiver = add(this.codec === "av1" ? mode : undefined);
+      transceiver = add(mode);
     } catch (error) {
       if (!mode) throw error;
       transceiver = add();
@@ -280,6 +308,7 @@ export class Call extends EventTarget {
    * SFU keeps a media section's first codec. The first frame is a key frame, and
    * the encryptors continue, so no SFrame nonce repeats. */
   async recodec() {
+    await this.direct.resetPublisher();
     for (const [kind, source] of this.sources) {
       if (source.transceiver.codec === this.codec) continue;
       source.transceiver.stop();
@@ -296,6 +325,7 @@ export class Call extends EventTarget {
     if (!source) return;
     this.sources.delete(kind);
     source.track.stop();
+    await this.direct.resetPublisher();
     source.transceiver.stop();
     this.changed();
     await this.offer();
@@ -331,12 +361,18 @@ export class Call extends EventTarget {
     this.ended = reason;
     clearInterval(this.timer);
     clearInterval(this.ticker);
+    clearInterval(this.pathTimer);
+    this.direct.close();
     for (const { track } of this.sources.values()) track.stop();
     this.sources.clear();
     this.socket?.close();
     this.subscriber?.close();
     this.publisher?.close();
     this.changed();
+  }
+
+  checkPath() {
+    if (!this.relay && !this.ended) this.direct.tick().catch(() => {});
   }
 
   changed() {

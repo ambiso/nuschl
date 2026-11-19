@@ -345,8 +345,13 @@ with a call link opens it ([desktop](desktop.md#calls)); the creator's link adds
   keys arrive. Camera tiles fill a grid; a shared screen or a pinned camera
   takes the large view. The roster lists everyone in the call, and a host
   (P) gets End call and Remove.
-- **Relay only:** `/call?relay#…` connects with `iceTransportPolicy: 'relay'`
-  through the TURN server the SFU names, and fails closed without one.
+- **Connection path:** Two participants can move video to a direct WebRTC
+  connection when the measured outgoing bitrate covers the selected quality
+  with 20% headroom. Pairwise keys protect the ICE candidates in transit.
+  The participants learn their peer's address on this path. The page moves
+  video back to the SFU when the direct connection falls behind or fails.
+  `/call?relay#…` skips direct negotiation and uses the call host's TURN
+  server, failing closed when the host offers none.
 - **Bounds:** SFU messages are checked against the page's limits before use
   (`signal.js`: 256 KiB, 256 peers, three tracks per peer, 16 KiB key
   messages); the stream worker bounds its own requests.

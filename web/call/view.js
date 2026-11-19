@@ -95,6 +95,7 @@ export class View {
     const { status, large, grid, empty, roster, count, host } = this.nodes;
     const values = call.self === null ? ["Connecting"] : [call.codec.toUpperCase()];
     if (call.relay) values.push("Relay only");
+    else if (call.direct.active) values.push("Direct video");
     status.textContent = values.join(" · ");
 
     // Tiles: one per video track and per own source; the large view holds the pinned
@@ -103,7 +104,8 @@ export class View {
       `own:${source.track.id}`,
       { peer: call.self, screen: kind === "screen", stream: source.stream, own: true },
     ]);
-    const videos = [...call.tracks].filter(([, track]) => track.kind === "video").concat(own);
+    const videos = [...call.tracks].filter(([, track]) => track.kind === "video")
+      .map(([mid, track]) => [mid, call.direct.track(track)]).concat(own);
     const shown = new Map(videos);
     for (const [key, tile] of this.tiles) {
       const video = tile.querySelector("video");
@@ -189,10 +191,11 @@ export class View {
     this.tiers.set(track.peer, tiers);
     select.value = tiers[kind] ?? "";
 
+    const original = this.call.tracks.get(mid);
     let size = 0, lastTier, sentAt = -Infinity, timer;
     const send = () => {
       clearTimeout(timer);
-      if (this.call.tracks.get(mid) !== track || this.call.ended) return;
+      if (this.call.tracks.get(mid) !== original || this.call.ended) return;
       const tier = select.value === "" ? fitTier(kind, size) : Number(select.value);
       if (tier === lastTier || !size) return;
       // The SFU accepts one request per second. Keep the latest choice until then.
