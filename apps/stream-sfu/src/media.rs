@@ -27,7 +27,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 use str0m::{
-    Candidate, Event, IceConnectionState, Input, Output, Rtc,
+    Candidate, Event, IceConnectionState, Input, Output, PacerReason, Reason, Rtc,
     bwe::{Bitrate, BweKind},
     change::{SdpAnswer, SdpOffer, SdpPendingOffer},
     format::{Codec, CodecConfig, FormatParams, PayloadParams},
@@ -51,6 +51,8 @@ const PACKET_OVERHEAD: usize = 48;
 pub const MAX_DATAGRAM: usize = 2048;
 /// A subscribe connection's bandwidth estimate before its first measurement.
 const INITIAL_ESTIMATE: u64 = 2_000_000;
+/// Immediate sends a connection may service before returning to socket and signalling I/O.
+const PACER_BATCH: usize = 16;
 
 pub enum Command {
     Join {
@@ -743,7 +745,8 @@ impl Core {
 
     /// Polls one connection until it waits: sends its datagrams and handles
     /// its events.
-    fn drain(&mut self, id: PeerId, leg: Leg, now: Instant) {
+    fn drain(&mut self, id: PeerId, leg: Leg, mut now: Instant) {
+        let mut immediate = 0;
         loop {
             let Some(peer) = self.peers.get_mut(&id) else {
                 return;
@@ -761,6 +764,23 @@ impl Core {
                     return;
                 }
                 Ok(Output::Timeout(at)) => {
+                    // str0m asks for a new clock reading after each paced send.
+                    // Service due work here because Tokio timers run in milliseconds.
+                    if leg == Leg::Subscribe
+                        && immediate < PACER_BATCH
+                        && rtc.last_timeout_reason() == Reason::Pacer(PacerReason::Immediate)
+                    {
+                        let current = Instant::now();
+                        if at <= current {
+                            if rtc.handle_input(Input::Timeout(current)).is_err() {
+                                self.kicks.push((id, "media"));
+                                return;
+                            }
+                            now = current;
+                            immediate += 1;
+                            continue;
+                        }
+                    }
                     if peer.deadlines[leg as usize] != Some(at) {
                         peer.deadlines[leg as usize] = Some(at);
                         self.timers.push(Reverse((at, id, leg as u8)));
