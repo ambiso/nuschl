@@ -143,9 +143,11 @@ Reviews check that a change is:
 
 The Linux package (`nix build .#default`, also used by the VM tests) is built per
 crate with crate2nix, so a change rebuilds only the crates that depend on it; after
-changing dependencies run `just crate2nix` (a flake check fails while
-`nix/crate2nix/Cargo.nix` is out of date). Clippy, tests and the Windows/macOS cross
-builds use crane (`.#default-crane` builds the package the same way).
+changing Cargo.lock or a manifest run `just crate2nix`. Builds import the committed
+`nix/crate2nix/Cargo.nix`. The `crate2nix-current` check runs the same crate2nix
+command offline on crane's vendored crates and fails with a diff when its output
+differs from `nix/crate2nix`. Clippy, tests and the Windows/macOS cross builds use
+crane (`.#default-crane` builds the package the same way).
 
 Windows and macOS packages are cross-built from Linux: `.#windows`, `.#macos-app`,
 `.#macos-universal` and `.#macos-aarch64` ([install.md](install.md#how-releases-are-made)).

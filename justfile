@@ -181,9 +181,9 @@ readme-screenshot:
         --command python3 tests/readme_screenshot.py "${CARGO_TARGET_DIR:-target}/debug" --output docs/images/nuschl.png
 
 # Regenerate after changing dependencies/manifests, including new local vendors.
+# The crate2nix-current check runs the same command and compares.
 crate2nix:
     nix run --inputs-from . nixpkgs#crate2nix -- generate -f Cargo.toml -o nix/crate2nix/Cargo.nix -h nix/crate2nix/crate-hashes.json
-    python3 nix/crate2nix-inputs.py > nix/crate2nix/inputs.sha256
 
 fmt:
     cargo fmt --all
