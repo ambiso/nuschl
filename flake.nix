@@ -451,6 +451,7 @@
           ]
           ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
             crates.project.workspaceMembers.nuschl-rtc-worker.build
+            videoWorker
           ];
           # The signer's tests need its feature; the default build has none.
           nuschl-update-worker.features = [ "signer" ];

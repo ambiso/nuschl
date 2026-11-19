@@ -107,14 +107,17 @@ deny = [
     "gstreamer-app",
     "gstreamer-base",
     "nuschl-video-worker",
-  ], reason = "Native video pipeline code runs only in the confined encoder" },
+  ], reason = "Native video pipelines run only in the confined video worker" },
   { name = "gstreamer-app", wrappers = [
     "nuschl-video-worker",
-  ], reason = "Only the confined video encoder receives GStreamer media buffers" },
+  ], reason = "Only the confined video worker receives GStreamer media buffers" },
   { name = "rav1e", wrappers = [
     "ravif",
     "nuschl-video-worker",
   ], reason = "AVIF encoding stays behind ravif, and native video encoding runs inside the isolated video worker" },
+  { name = "rav1d", wrappers = [
+    "nuschl-video-worker",
+  ], reason = "The confined video worker decodes untrusted AV1" },
   { name = "opus-rs", wrappers = [
     "nuschl-media-worker",
     "nuschl-audio-wasm",
@@ -244,8 +247,12 @@ deny = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# opus-rs, the Opus codec: the owner's fork, at the commit Cargo.lock pins.
-allow-git = ["https://github.com/ambiso/opus-rs"]
+# Cargo.lock pins the owner's opus-rs fork and the rav1d Rust decoder API.
+allow-git = ["https://github.com/ambiso/opus-rs", "https://github.com/memorysafety/rav1d"]
+
+[[bans.features]]
+name = "rav1d"
+deny = ["asm"]
 
 [[bans.features]]
 name = "str0m"
