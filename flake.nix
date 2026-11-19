@@ -100,6 +100,7 @@
             || lib.hasSuffix ".sql" path
             || lib.hasSuffix ".json" path
             || lib.hasSuffix ".vp8" path
+            || lib.hasSuffix "/apps/rtc-worker/tests/fixtures/screen.av1" path
             || lib.hasSuffix ".svg" path
             # The Windows icon and the resource script embed-resource compiles.
             || lib.hasSuffix ".ico" path
