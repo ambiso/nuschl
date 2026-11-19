@@ -260,6 +260,7 @@ def native_video(viewer):
                 native.kill()
                 native.wait()
                 raise
+    viewer.get("about:blank")
 
 
 drivers = []
