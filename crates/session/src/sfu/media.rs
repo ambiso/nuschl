@@ -2,19 +2,19 @@
 //! Encoded media for a two-person native call. The WSS connection owns
 //! signaling, and the isolated RTC worker owns ICE, DTLS, SRTP and SFrame.
 
+use super::turn::NetworkLeg;
 use super::{Action, ClientMessage, Codec, Connection, Error, Outcome, ServerMessage, write};
 use nuschl_core::network::Destination;
 use nuschl_ipc::rtc::{self, Command, Description, Event, LegRole, Reply, Track, Worker};
 use std::{
     future::pending,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::SocketAddr,
     os::unix::net::UnixStream,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 use tokio::{
-    net::UdpSocket,
     sync::mpsc,
     task::JoinHandle,
     time::{Instant, sleep, sleep_until, timeout},
@@ -149,7 +149,7 @@ impl Connection {
     /// Start native encoded video over the configured SFU. Calls use a supplied
     /// publisher or viewer role and keep their signaling connection until stop.
     pub async fn into_media(self, options: MediaOptions) -> Result<Media, Error> {
-        if self.policy.relay_only {
+        if self.policy.relay_only && self.welcome.turn.is_none() {
             return Err(Error::Protocol(
                 "native media requires TURN in relay-only mode",
             ));
@@ -224,7 +224,7 @@ impl Connection {
 
 struct Leg {
     id: u32,
-    socket: UdpSocket,
+    network: NetworkLeg,
     wake: Option<Instant>,
     connected: bool,
     selected: bool,
@@ -242,43 +242,27 @@ impl Leg {
         }
     }
 
-    async fn open(
-        worker: &mut Worker,
-        id: u32,
-        destination: SocketAddr,
-        codec: rtc::Codec,
-        role: LegRole,
-    ) -> Result<Self, Error> {
-        let address = match destination {
-            SocketAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-            SocketAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-        };
-        let socket = UdpSocket::bind((address, 0)).await?;
-        socket.connect(destination).await?;
-        Self::start(worker, id, socket, codec, role).await
-    }
-
     async fn start(
         worker: &mut Worker,
         id: u32,
-        socket: UdpSocket,
+        network: NetworkLeg,
         codec: rtc::Codec,
         role: LegRole,
     ) -> Result<Self, Error> {
-        let local = socket.local_addr()?;
         done(
             worker,
             Command::OpenLeg {
                 leg: id,
-                local,
+                local: network.address(),
                 codec,
                 role,
+                relayed: network.is_relayed(),
             },
         )
         .await?;
         Ok(Self {
             id,
-            socket,
+            network,
             wake: None,
             connected: false,
             selected: false,
@@ -292,7 +276,7 @@ impl Leg {
         if data.is_empty() || data.len() > rtc::MAX_DATAGRAM {
             return Ok(());
         }
-        let source = self.socket.peer_addr()?;
+        let source = self.network.peer()?;
         worker
             .exchange(
                 Command::Datagram {
@@ -307,9 +291,9 @@ impl Leg {
     }
 }
 
-async fn receive(leg: Option<&Leg>, bytes: &mut [u8]) -> std::io::Result<usize> {
+async fn receive(leg: Option<&mut Leg>, bytes: &mut [u8]) -> std::io::Result<usize> {
     match leg {
-        Some(leg) => leg.socket.recv(bytes).await,
+        Some(leg) => leg.network.recv(bytes).await,
         None => pending().await,
     }
 }
@@ -436,8 +420,23 @@ async fn run(
 
     let mut offered = None;
     let mut publish_mid = None;
-    let mut publish = if let Some(purpose) = source {
-        let leg = Leg::open(worker, PUBLISH, destination, codec, LegRole::SfuPublish).await?;
+    let turn = connection
+        .welcome
+        .turn
+        .as_ref()
+        .filter(|_| connection.policy.relay_only);
+    let (publish_path, subscribe_path) = tokio::try_join!(
+        async {
+            if publishing {
+                NetworkLeg::open(destination, turn).await.map(Some)
+            } else {
+                Ok(None)
+            }
+        },
+        NetworkLeg::open(destination, turn)
+    )?;
+    let mut publish = if let (Some(purpose), Some(path)) = (source, publish_path) {
+        let leg = Leg::start(worker, PUBLISH, path, codec, LegRole::SfuPublish).await?;
         let mut description = describe(
             worker,
             Command::Offer {
@@ -469,8 +468,14 @@ async fn run(
     } else {
         None
     };
-    let mut subscribe =
-        Leg::open(worker, SUBSCRIBE, destination, codec, LegRole::SfuSubscribe).await?;
+    let mut subscribe = Leg::start(
+        worker,
+        SUBSCRIBE,
+        subscribe_path,
+        codec,
+        LegRole::SfuSubscribe,
+    )
+    .await?;
     let mut direct = if connection.policy.permits(Destination::DirectPeer) {
         Some(Direct::new(
             connection.socket.get_ref().get_ref().0.local_addr()?.ip(),
@@ -489,9 +494,18 @@ async fn run(
     loop {
         let attempt = direct.as_ref().and_then(|direct| direct.leg.as_ref());
         let selected = attempt.is_some_and(|attempt| attempt.transport.selected);
-        let direct_connected = attempt
+        let attempting_direct = attempt.is_some();
+        let direct_wake = attempt
             .filter(|attempt| attempt.answered)
-            .map(|attempt| &attempt.transport);
+            .and_then(|attempt| attempt.transport.wake);
+        let direct_deadline = direct.as_ref().and_then(Direct::deadline);
+        let direct_connected = direct
+            .as_mut()
+            .and_then(|direct| direct.leg.as_mut())
+            .filter(|attempt| attempt.answered)
+            .map(|attempt| &mut attempt.transport);
+        let publish_wake = publish.as_ref().and_then(|leg| leg.wake);
+        let subscribe_wake = subscribe.wake;
         let mut retreat = false;
         let mut notify = true;
         tokio::select! {
@@ -518,7 +532,7 @@ async fn run(
                     write(&mut connection.socket, &ClientMessage::Answer { sdp: answer.sdp }).await?;
                     // End old sources after queued frames and before any media from the new offer.
                     for track in subscribed.iter().filter(|track| !tracks.contains(track)) {
-                        retreat |= attempt.is_some();
+                        retreat |= attempting_direct;
                         if let Some(gate) = subscribe.video_gate(track.purpose) {
                             *gate = FrameGate::new();
                         }
@@ -606,10 +620,10 @@ async fn run(
                     }
                 }
             }
-            received = receive(publish.as_ref(), &mut pub_buffer) => {
+            received = receive(publish.as_mut(), &mut pub_buffer) => {
                 if let Some(leg) = &mut publish { leg.datagram(worker, &pub_buffer[..received?]).await?; }
             }
-            received = subscribe.socket.recv(&mut sub_buffer) => subscribe.datagram(worker, &sub_buffer[..received?]).await?,
+            received = subscribe.network.recv(&mut sub_buffer) => subscribe.datagram(worker, &sub_buffer[..received?]).await?,
             received = receive(direct_connected, &mut direct_buffer) => {
                 if let Some(attempt) = direct.as_mut().and_then(|direct| direct.leg.as_mut()) {
                     retreat = match received {
@@ -618,16 +632,16 @@ async fn run(
                     };
                 }
             }
-            () = wake(publish.as_ref().and_then(|leg| leg.wake)) => {
+            () = wake(publish_wake) => {
                 if let Some(leg) = &mut publish { drain(worker, leg, None, !selected, &output).await?; }
             }
-            () = wake(subscribe.wake) => { drain(worker, &mut subscribe, other.filter(|_| !selected), false, &output).await?; }
-            () = wake(direct_connected.and_then(|leg| leg.wake)) => {
+            () = wake(subscribe_wake) => { drain(worker, &mut subscribe, other.filter(|_| !selected), false, &output).await?; }
+            () = wake(direct_wake) => {
                 if let Some(attempt) = direct.as_mut().and_then(|direct| direct.leg.as_mut()) {
                     retreat = drain(worker, &mut attempt.transport, other.filter(|_| !publishing), selected && publishing, &output).await.is_err();
                 }
             }
-            () = wake(direct.as_ref().and_then(Direct::deadline)) => retreat = true,
+            () = wake(direct_deadline) => retreat = true,
         }
         if !sending && publish.as_ref().is_some_and(|leg| leg.connected) && pair.ready && publishing
         {
@@ -780,8 +794,8 @@ async fn drain(
                 leg.wake = Some(Instant::now() + Duration::from_millis(after_millis));
                 return Ok(());
             }
-            Reply::Datagram { destination, .. } if destination == leg.socket.peer_addr()? => {
-                leg.socket.send(&packet.data).await?;
+            Reply::Datagram { destination, .. } if destination == leg.network.peer()? => {
+                leg.network.send(&packet.data).await?;
             }
             Reply::Datagram { .. } => {}
             Reply::Event { event, .. } => {

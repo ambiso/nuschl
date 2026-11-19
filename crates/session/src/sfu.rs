@@ -17,6 +17,8 @@ use tokio_tungstenite::{
 #[cfg(target_os = "linux")]
 mod media;
 #[cfg(target_os = "linux")]
+mod turn;
+#[cfg(target_os = "linux")]
 pub use media::{Media, MediaEvent, MediaOptions, Purpose};
 
 const HANDSHAKE: Duration = Duration::from_secs(10);

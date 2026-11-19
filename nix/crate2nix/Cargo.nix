@@ -25773,6 +25773,11 @@ rec {
             packageId = "tokio-tungstenite";
           }
           {
+            name = "turn-client-proto";
+            packageId = "turn-client-proto";
+            target = { target, features }: ("linux" == target."os" or null);
+          }
+          {
             name = "uuid";
             packageId = "uuid";
             features = [ "v4" ];
@@ -37650,6 +37655,20 @@ rec {
         ];
 
       };
+      "sans-io-time" = rec {
+        crateName = "sans-io-time";
+        version = "0.2.0";
+        edition = "2021";
+        sha256 = "0llcgq36xjxlpwf1w3azwdxg650vj65xn6qrjk8yryzjjfpln73f";
+        libName = "sans_io_time";
+        authors = [
+          "Matthew Waters <matthew@centricular.com>"
+        ];
+        features = {
+          "default" = [ "std" ];
+        };
+        resolvedDefaultFeatures = [ "std" ];
+      };
       "schemars" = rec {
         crateName = "schemars";
         version = "1.2.3";
@@ -41255,6 +41274,165 @@ rec {
         ];
 
       };
+      "stun-proto" = rec {
+        crateName = "stun-proto";
+        version = "2.0.5";
+        edition = "2024";
+        sha256 = "14217j17f2rg0glxlxdx6hgm7chqbwav2klwbp5zfcrhk87gvjr5";
+        libName = "stun_proto";
+        authors = [
+          "Matthew Waters <matthew@centricular.com>"
+        ];
+        dependencies = [
+          {
+            name = "base64";
+            packageId = "base64 0.22.1";
+          }
+          {
+            name = "byteorder";
+            packageId = "byteorder";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "hashbrown";
+            packageId = "hashbrown 0.16.1";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "rand";
+            packageId = "rand 0.10.3";
+            usesDefaultFeatures = false;
+            features = [ "sys_rng" ];
+          }
+          {
+            name = "sans-io-time";
+            packageId = "sans-io-time";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "siphasher";
+            packageId = "siphasher";
+          }
+          {
+            name = "smallvec";
+            packageId = "smallvec";
+          }
+          {
+            name = "stun-types";
+            packageId = "stun-types";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "thiserror";
+            packageId = "thiserror 2.0.21";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "tracing";
+            packageId = "tracing";
+            usesDefaultFeatures = false;
+            features = [ "attributes" ];
+          }
+        ];
+        devDependencies = [
+          {
+            name = "sans-io-time";
+            packageId = "sans-io-time";
+            usesDefaultFeatures = false;
+            features = [ "std" ];
+          }
+          {
+            name = "tracing";
+            packageId = "tracing";
+            usesDefaultFeatures = false;
+            features = [ "attributes" "std" ];
+          }
+        ];
+        features = {
+          "default" = [ "std" ];
+          "std" = [ "stun-types/std" "thiserror/std" "rand/thread_rng" "sans-io-time/std" ];
+        };
+        resolvedDefaultFeatures = [ "std" ];
+      };
+      "stun-types" = rec {
+        crateName = "stun-types";
+        version = "2.0.5";
+        edition = "2024";
+        sha256 = "01bhf6hdikj13jxfzjjkw2q8v9yhcqgw498180jj9raiwz70h4fx";
+        libName = "stun_types";
+        authors = [
+          "Matthew Waters <matthew@centricular.com>"
+        ];
+        dependencies = [
+          {
+            name = "byteorder";
+            packageId = "byteorder";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "crc";
+            packageId = "crc";
+          }
+          {
+            name = "hmac";
+            packageId = "hmac 0.13.0";
+          }
+          {
+            name = "md-5";
+            packageId = "md-5 0.11.0";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "rand";
+            packageId = "rand 0.10.3";
+            usesDefaultFeatures = false;
+            features = [ "sys_rng" ];
+          }
+          {
+            name = "sha1";
+            packageId = "sha1 0.11.0";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "sha2";
+            packageId = "sha2 0.11.1";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "smallvec";
+            packageId = "smallvec";
+          }
+          {
+            name = "subtle";
+            packageId = "subtle";
+          }
+          {
+            name = "thiserror";
+            packageId = "thiserror 2.0.21";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "tracing";
+            packageId = "tracing";
+            usesDefaultFeatures = false;
+            features = [ "attributes" ];
+          }
+        ];
+        devDependencies = [
+          {
+            name = "tracing";
+            packageId = "tracing";
+            usesDefaultFeatures = false;
+            features = [ "attributes" "std" ];
+          }
+        ];
+        features = {
+          "arbitrary" = [ "dep:arbitrary" ];
+          "default" = [ "std" ];
+          "std" = [ "thiserror/std" "rand/thread_rng" ];
+        };
+        resolvedDefaultFeatures = [ "std" ];
+      };
       "stun_codec" = rec {
         crateName = "stun_codec";
         version = "0.4.0";
@@ -44522,6 +44700,114 @@ rec {
           "webpki-roots" = [ "dep:webpki-roots" ];
         };
         resolvedDefaultFeatures = [ "data-encoding" "handshake" "http" "httparse" "sha1" ];
+      };
+      "turn-client-proto" = rec {
+        crateName = "turn-client-proto";
+        version = "0.8.0";
+        edition = "2021";
+        sha256 = "18brszvqmbadsfzvc9ijb8v9b5g6gfw765jlnrn1vk66bijlr4ap";
+        libName = "turn_client_proto";
+        authors = [
+          "Matthew Waters <matthew@centricular.com>"
+        ];
+        dependencies = [
+          {
+            name = "byteorder";
+            packageId = "byteorder";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "smallvec";
+            packageId = "smallvec";
+          }
+          {
+            name = "stun-proto";
+            packageId = "stun-proto";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "thiserror";
+            packageId = "thiserror 2.0.21";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "tracing";
+            packageId = "tracing";
+            usesDefaultFeatures = false;
+            features = [ "attributes" ];
+          }
+          {
+            name = "turn-types";
+            packageId = "turn-types";
+            usesDefaultFeatures = false;
+          }
+        ];
+        devDependencies = [
+          {
+            name = "stun-proto";
+            packageId = "stun-proto";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "tracing";
+            packageId = "tracing";
+            usesDefaultFeatures = false;
+            features = [ "attributes" "std" ];
+          }
+        ];
+        features = {
+          "default" = [ "std" ];
+          "openssl" = [ "dep:openssl" ];
+          "rustls" = [ "dep:rustls" ];
+          "std" = [ "thiserror/std" "turn-types/std" "stun-proto/std" ];
+        };
+        resolvedDefaultFeatures = [ "default" "std" ];
+      };
+      "turn-types" = rec {
+        crateName = "turn-types";
+        version = "0.8.0";
+        edition = "2021";
+        sha256 = "10lcd9smf84fzfjd7z40dkqw21z54gaazklxiws1mn1mv4fil3xx";
+        libName = "turn_types";
+        authors = [
+          "Matthew Waters <matthew@centricular.com>"
+        ];
+        dependencies = [
+          {
+            name = "byteorder";
+            packageId = "byteorder";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "stun-proto";
+            packageId = "stun-proto";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "stun-types";
+            packageId = "stun-types";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "tracing";
+            packageId = "tracing";
+            usesDefaultFeatures = false;
+            features = [ "attributes" ];
+          }
+        ];
+        devDependencies = [
+          {
+            name = "tracing";
+            packageId = "tracing";
+            usesDefaultFeatures = false;
+            features = [ "attributes" "std" ];
+          }
+        ];
+        features = {
+          "default" = [ "std" ];
+          "std" = [ "stun-proto/std" "stun-types/std" ];
+        };
+        resolvedDefaultFeatures = [ "std" ];
       };
       "two-face" = rec {
         crateName = "two-face";

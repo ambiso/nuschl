@@ -88,7 +88,14 @@ impl Direct {
         self.next_leg = id
             .checked_add(1)
             .ok_or(Error::Protocol("direct leg limit"))?;
-        Leg::start(worker, id, socket, codec, LegRole::Direct).await
+        Leg::start(
+            worker,
+            id,
+            super::NetworkLeg::host(socket)?,
+            codec,
+            LegRole::Direct,
+        )
+        .await
     }
 
     pub(super) async fn offer(
@@ -99,7 +106,7 @@ impl Direct {
     ) -> Result<Signal, Error> {
         let transport = self.open(worker, codec).await?;
         let id = *uuid::Uuid::new_v4().as_bytes();
-        let endpoint = transport.socket.local_addr()?;
+        let endpoint = transport.network.address();
         let leg = transport.id;
         self.leg = Some(Attempt {
             transport,
@@ -150,7 +157,7 @@ impl Direct {
         track.publisher = Some(peer);
         let id = description.id;
         let transport = self.open(worker, codec).await?;
-        let local = transport.socket.local_addr()?;
+        let local = transport.network.address();
         let leg = transport.id;
         self.leg = Some(Attempt {
             transport,
@@ -229,7 +236,7 @@ impl Direct {
 
 impl Attempt {
     async fn connect(&mut self, endpoint: SocketAddr) -> Result<(), Error> {
-        self.transport.socket.connect(endpoint).await?;
+        self.transport.network.connect(endpoint).await?;
         self.transport.wake = Some(Instant::now());
         self.answered = true;
         Ok(())
