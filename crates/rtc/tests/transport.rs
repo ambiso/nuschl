@@ -2,7 +2,7 @@
 //! Deterministic ICE/DTLS/SRTP exchange: datagrams stay in memory, no public STUN.
 use nuschl_rtc::{
     Error, Event, Frame, Kind, MAX_DATAGRAM_BYTES, MAX_OPUS_BYTES, MAX_SDP_BYTES, Output, Peer,
-    Purpose, SignalingId, Track,
+    Purpose, SignalingId, Track, VideoCodec,
 };
 use std::{
     collections::VecDeque,
@@ -28,7 +28,7 @@ struct Pair {
 
 impl Pair {
     fn new(video: bool, corrupt_fingerprint: bool) -> Self {
-        Self::setup(video, corrupt_fingerprint, &[])
+        Self::setup(video, corrupt_fingerprint, &[], VideoCodec::Vp8)
     }
 
     fn multi() -> Self {
@@ -41,18 +41,24 @@ impl Pair {
                 Purpose::Camera,
                 Purpose::ScreenVideo,
             ],
+            VideoCodec::Vp8,
         )
     }
 
-    fn setup(video: bool, corrupt_fingerprint: bool, purposes: &[Purpose]) -> Self {
+    fn setup(
+        video: bool,
+        corrupt_fingerprint: bool,
+        purposes: &[Purpose],
+        codec: VideoCodec,
+    ) -> Self {
         let now = Instant::now();
         let addresses = [
             "127.0.0.1:41000".parse().unwrap(),
             "127.0.0.1:41001".parse().unwrap(),
         ];
         let mut peers = [
-            Peer::new(addresses[0], now).unwrap(),
-            Peer::new(addresses[1], now).unwrap(),
+            Peer::with_video(addresses[0], now, codec).unwrap(),
+            Peer::with_video(addresses[1], now, codec).unwrap(),
         ];
         let offer = if purposes.is_empty() {
             peers[0].offer(video).unwrap()
@@ -204,6 +210,29 @@ impl Pair {
 
 fn video() -> Arc<[u8]> {
     Arc::from(include_bytes!("fixtures/rtc-keyframe.vp8").as_slice())
+}
+
+#[test]
+fn selected_call_codecs_carry_fragmented_screen_frames() {
+    for (codec, header) in [
+        // AV1 sequence-header OBU and LEB128 size (4096 bytes).
+        (VideoCodec::Av1, &[0x0a, 0x80, 0x20][..]),
+        (VideoCodec::Vp9, &[0x82, 0x49, 0x83, 0x42][..]),
+    ] {
+        let mut pair = Pair::setup(true, false, &[Purpose::ScreenVideo], codec);
+        pair.connect();
+        let mut encoded = header.to_vec();
+        encoded.resize(4096 + header.len(), 0x42);
+        let encoded: Arc<[u8]> = encoded.into();
+        pair.write(0, Kind::Video, 9000, encoded.clone());
+        pair.advance(Duration::from_millis(160)).unwrap();
+        let [decoded] = pair.frames[1].as_slice() else {
+            panic!("expected one {codec:?} frame");
+        };
+        assert_eq!(decoded.purpose, Purpose::ScreenVideo);
+        assert_eq!(decoded.timestamp, 9000);
+        assert_eq!(decoded.data, encoded);
+    }
 }
 
 #[test]

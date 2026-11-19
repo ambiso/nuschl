@@ -46,16 +46,42 @@ pub enum Kind {
 }
 
 impl Kind {
-    fn codec(self) -> Codec {
+    fn codec(self, video: VideoCodec) -> Codec {
         match self {
             Self::Audio => Codec::Opus,
-            Self::Video => Codec::Vp8,
+            Self::Video => video.codec(),
         }
     }
     fn limit(self) -> usize {
         match self {
             Self::Audio => MAX_OPUS_BYTES,
             Self::Video => MAX_VIDEO_BYTES,
+        }
+    }
+}
+
+/// The codec selected for a call before negotiating its tracks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VideoCodec {
+    Av1,
+    Vp9,
+    Vp8,
+}
+
+impl VideoCodec {
+    fn codec(self) -> Codec {
+        match self {
+            Self::Av1 => Codec::Av1,
+            Self::Vp9 => Codec::Vp9,
+            Self::Vp8 => Codec::Vp8,
+        }
+    }
+
+    fn rtpmap(self) -> &'static str {
+        match self {
+            Self::Av1 => "AV1/90000",
+            Self::Vp9 => "VP9/90000",
+            Self::Vp8 => "VP8/90000",
         }
     }
 }
@@ -149,6 +175,7 @@ enum Signaling {
 pub struct Peer {
     rtc: Rtc,
     address: SocketAddr,
+    video: VideoCodec,
     signaling: Signaling,
     tracks: Vec<TrackState>,
     now: Instant,
@@ -162,6 +189,11 @@ impl Peer {
     /// Use an explicitly bound, reachable host address. TURN and interface
     /// discovery are separate future adapters, never implicit public services.
     pub fn new(address: SocketAddr, now: Instant) -> Result<Self, Error> {
+        Self::with_video(address, now, VideoCodec::Vp8)
+    }
+
+    /// Configure the call's video codec while retaining Opus for audio.
+    pub fn with_video(address: SocketAddr, now: Instant, video: VideoCodec) -> Result<Self, Error> {
         if address.port() == 0 || address.ip().is_unspecified() || address.ip().is_multicast() {
             return Err(Error::Address);
         }
@@ -169,7 +201,9 @@ impl Peer {
             .set_crypto_provider(Arc::new(str0m::crypto::from_feature_flags()))
             .clear_codecs()
             .enable_opus(true, false)
-            .enable_vp8(true)
+            .enable_av1(video == VideoCodec::Av1)
+            .enable_vp9(video == VideoCodec::Vp9)
+            .enable_vp8(video == VideoCodec::Vp8)
             .set_fingerprint_verification(true)
             .set_mtu(1200..=1200)
             .set_reordering_size_audio(8)
@@ -184,6 +218,7 @@ impl Peer {
         Ok(Self {
             rtc,
             address,
+            video,
             signaling: Signaling::New,
             tracks: Vec::with_capacity(4),
             now,
@@ -253,7 +288,7 @@ impl Peer {
             sdp: offer.to_sdp_string(),
             bindings,
         };
-        signaling::validate(&description, id)?;
+        signaling::validate(&description, id, self.video)?;
         self.bind_tracks(&description.bindings);
         self.signaling = Signaling::Offering {
             pending,
@@ -266,7 +301,7 @@ impl Peer {
     /// SDP fingerprints must arrive over authenticated signaling before use in a
     /// real call. Successful DTLS verifies that fingerprint, not a user identity.
     pub fn accept_offer(&mut self, sdp: &str) -> Result<String, Error> {
-        let bindings = signaling::legacy_bindings(sdp)?;
+        let bindings = signaling::legacy_bindings(sdp, self.video)?;
         let description = Description {
             id: SignalingId::new([1; 16])?,
             sdp: sdp.to_owned(),
@@ -285,7 +320,7 @@ impl Peer {
         if self.closed || !matches!(self.signaling, Signaling::New) {
             return Err(Error::SignalingState);
         }
-        signaling::validate(description, expected)?;
+        signaling::validate(description, expected, self.video)?;
         let offer = SdpOffer::from_sdp_string(&description.sdp).map_err(|_| Error::Sdp)?;
         let answer = self.rtc.sdp_api().accept_offer(offer)?;
         let answer = Description {
@@ -293,7 +328,7 @@ impl Peer {
             sdp: answer.to_sdp_string(),
             bindings: description.bindings.clone(),
         };
-        if let Err(error) = signaling::validate(&answer, expected) {
+        if let Err(error) = signaling::validate(&answer, expected, self.video) {
             self.close();
             return Err(error);
         }
@@ -311,7 +346,7 @@ impl Peer {
         else {
             return Err(Error::SignalingState);
         };
-        let bindings = signaling::legacy_bindings(sdp)?;
+        let bindings = signaling::legacy_bindings(sdp, self.video)?;
         let answer = Description {
             id: description.id,
             sdp: sdp.to_owned(),
@@ -337,7 +372,7 @@ impl Peer {
         else {
             return Err(Error::SignalingState);
         };
-        signaling::validate(description, expected)?;
+        signaling::validate(description, expected, self.video)?;
         if offered.id != expected
             || offered.bindings.len() != description.bindings.len()
             || !offered
@@ -475,7 +510,7 @@ impl Peer {
         let writer = self.rtc.writer(track.0).ok_or(Error::Frame)?;
         let params = *writer
             .payload_params()
-            .find(|p| p.spec().codec == kind.codec())
+            .find(|p| p.spec().codec == kind.codec(self.video))
             .ok_or(Error::Frame)?;
         writer.write(
             params.pt(),
@@ -585,13 +620,9 @@ impl Peer {
                         }
                     }
                     RtcEvent::MediaData(media) => {
-                        let kind = match media.params.spec().codec {
-                            Codec::Opus => Kind::Audio,
-                            Codec::Vp8 => Kind::Video,
-                            _ => return Err(Error::Frame),
-                        };
                         let purpose = self.purpose(Track(media.mid)).ok_or(Error::Frame)?;
-                        if purpose.kind() != kind
+                        let kind = purpose.kind();
+                        if media.params.spec().codec != kind.codec(self.video)
                             || media.data.is_empty()
                             || media.data.len() > kind.limit()
                         {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 //! Structured values stand in for a caller-authenticated signaling envelope.
 //! These tests do not pretend that an SDP fingerprint establishes user identity.
-use nuschl_rtc::{Description, Error, MAX_SDP_BYTES, Peer, Purpose, SignalingId};
+use nuschl_rtc::{Description, Error, MAX_SDP_BYTES, Peer, Purpose, SignalingId, VideoCodec};
 use std::time::Instant;
 
 const ROLES: &[Purpose] = &[
@@ -19,6 +19,22 @@ fn offer() -> Description {
     peer()
         .offer_tracks(ROLES, SignalingId::new([9; 16]).unwrap())
         .unwrap()
+}
+
+#[test]
+fn remote_sdp_must_use_the_locally_selected_video_codec() {
+    let id = SignalingId::new([10; 16]).unwrap();
+    let mut av1 = Peer::with_video(
+        "127.0.0.1:41101".parse().unwrap(),
+        Instant::now(),
+        VideoCodec::Av1,
+    )
+    .unwrap();
+    let offer = av1.offer_tracks(&[Purpose::ScreenVideo], id).unwrap();
+    assert!(matches!(
+        peer().accept_offer_tracks(&offer, id),
+        Err(Error::Sdp)
+    ));
 }
 
 #[test]
