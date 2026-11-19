@@ -39,6 +39,7 @@ pub struct Active {
     stop: Option<oneshot::Sender<()>>,
     after_stop: Option<AfterStop>,
     finished: bool,
+    minimized: bool,
     curtain: bool,
     curtain_ready: Option<oneshot::Sender<()>>,
 }
@@ -267,6 +268,7 @@ impl Desktop {
             stop: Some(stop),
             after_stop: None,
             finished: false,
+            minimized: false,
             curtain: false,
             curtain_ready: None,
         });
@@ -326,29 +328,60 @@ impl Desktop {
         let Some(call) = &self.native_call else {
             return;
         };
-        let current = self.selected_indices().is_some_and(|(index, channel)| {
-            let server = &self.client.servers[index];
-            server.status == nuschl_client::server::Status::Connected
-                && server.id == call.server
-                && server.generation == call.voice_generation
-                && server.channels[channel].target == call.conversation
-                && if call.owner {
-                    self.client
-                        .own_call()
-                        .is_some_and(|own| own.link == call.room)
-                } else {
-                    self.client
-                        .calls_in(index, &call.conversation)
-                        .iter()
-                        .any(|announced| announced.link == call.room)
-                }
-        });
+        let current = self
+            .client
+            .servers
+            .iter()
+            .enumerate()
+            .any(|(index, server)| {
+                server.status == nuschl_client::server::Status::Connected
+                    && server.id == call.server
+                    && server.generation == call.voice_generation
+                    && if call.owner {
+                        self.client
+                            .own_call()
+                            .is_some_and(|own| own.link == call.room)
+                    } else {
+                        self.client
+                            .calls_in(index, &call.conversation)
+                            .iter()
+                            .any(|announced| announced.link == call.room)
+                    }
+            });
         if self.settings.relay_only || !current {
             if call.finished {
                 self.native_call = None;
             } else {
                 self.stop_native(AfterStop::Close);
             }
+        }
+    }
+
+    fn minimize_native_call(&mut self, cx: &mut Context<Self>) {
+        if let Some(call) = &mut self.native_call {
+            call.minimized = true;
+            cx.notify();
+        }
+    }
+
+    fn restore_native_call(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(call) = &mut self.native_call else {
+            return;
+        };
+        if let Some((index, server)) = self
+            .client
+            .servers
+            .iter()
+            .enumerate()
+            .find(|(_, server)| server.id == call.server)
+            && let Some(channel) = server
+                .channels
+                .iter()
+                .find(|channel| channel.target == call.conversation)
+        {
+            call.minimized = false;
+            self.browse_channel(index, channel.id, window, cx);
+            cx.notify();
         }
     }
 
@@ -366,6 +399,7 @@ impl Desktop {
             && call.stop.is_some()
         {
             call.curtain = true;
+            call.minimized = false;
             call.curtain_ready = Some(ready);
         }
     }
@@ -408,7 +442,7 @@ pub fn curtain(
     cx: &mut Context<Desktop>,
 ) -> Option<AnyElement> {
     let call = this.native_call.as_mut()?;
-    if !call.curtain {
+    if !call.curtain || call.minimized {
         return None;
     }
     if let Some(ready) = call.curtain_ready.take() {
@@ -441,7 +475,21 @@ pub fn curtain(
 
 pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
     let call = this.native_call.as_ref()?;
+    if call.minimized {
+        return None;
+    }
     let actions = layout::actions()
+        .child(styled_button(
+            "native-call-minimize",
+            if call.curtain {
+                "Show app while sharing"
+            } else {
+                "Minimize call"
+            },
+            Tone::Secondary,
+            |this, _, cx| this.minimize_native_call(cx),
+            cx,
+        ))
         .child(styled_button(
             "native-call-browser",
             "Open in browser",
@@ -478,6 +526,52 @@ pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
             .bg(color(MAIN))
             .child(actions)
             .child(call.surface.clone())
+            .into_any_element(),
+    )
+}
+
+pub fn minimized(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
+    let call = this.native_call.as_ref()?;
+    if !call.minimized
+        && this.selected_indices().is_some_and(|(index, channel)| {
+            let server = &this.client.servers[index];
+            this.native_call_in(&server.id, &server.channels[channel].target)
+        })
+    {
+        return None;
+    }
+    Some(
+        div()
+            .id("native-call-minimized")
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .py_1()
+            .border_b_1()
+            .border_color(color(BORDER))
+            .when(call.curtain, |bar| {
+                bar.child("Screen sharing · Nuschl is visible in the share")
+            })
+            .child(styled_button(
+                "native-call-restore",
+                "Return to call",
+                Tone::Secondary,
+                |this, window, cx| this.restore_native_call(window, cx),
+                cx,
+            ))
+            .child(styled_button(
+                "native-call-stop",
+                if call.owner {
+                    "End call"
+                } else {
+                    "Leave video"
+                },
+                Tone::Danger,
+                |this, _, cx| this.leave_native_call(AfterStop::Close, cx),
+                cx,
+            ))
             .into_any_element(),
     )
 }

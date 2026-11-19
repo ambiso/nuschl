@@ -256,6 +256,13 @@ impl Render for Desktop {
             }))
             .child(chrome::title_bar(title.into(), window, cx))
             .when_some(update_bar(self, cx), |view, bar| view.child(bar))
+            .map(|view| {
+                #[cfg(target_os = "linux")]
+                let view = view.when_some(crate::native_call::minimized(self, cx), |view, bar| {
+                    view.child(bar)
+                });
+                view
+            })
             .child(body)
             .when(self.channels_open, |view| {
                 view.child(channels_sheet(self, &voice_places, window, cx))
