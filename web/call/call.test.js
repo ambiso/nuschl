@@ -9,6 +9,7 @@ import { join as joinPath } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { unsized } from "./frames.js";
+import { receiverRates } from "./receiver-stats.js";
 import { Call } from "./session.js";
 import { MAX_MESSAGE, MAX_PEERS, join, linkOf, parse } from "./signal.js";
 import { preferences, sendCodecs, support } from "./support.js";
@@ -203,5 +204,38 @@ test("frames: the AV1 depacketizer's size field comes off again", () => {
   for (const other of [[0x08, 1, 2], [0x28], [0x0a, 3, 1], [0x0a, 0x80], [0x2a]]) {
     const frame = Uint8Array.from(other);
     assert.deepEqual([...unsized(frame)], other, String(other));
+  }
+});
+
+test("receiver stats use interval frame, byte and jitter buffer counters", () => {
+  const previous = {
+    id: "video", timestamp: 4000, framesDecoded: 120, presentedFrames: 118,
+    bytesReceived: 500_000, jitterBufferDelay: 0.5, jitterBufferEmittedCount: 60,
+  };
+  const current = {
+    id: "video", timestamp: 5000, framesDecoded: 150, presentedFrames: 146,
+    bytesReceived: 625_000, jitterBufferDelay: 1, jitterBufferEmittedCount: 80,
+  };
+  assert.deepEqual(receiverRates(previous, current), {
+    decoded: 30, presented: 28, bitrate: 1_000_000, jitterBufferMs: 25,
+  });
+  assert.deepEqual(receiverRates(previous, { ...current, timestamp: 6000 }), {
+    decoded: 15, presented: 14, bitrate: 500_000, jitterBufferMs: 25,
+  });
+});
+
+test("receiver stats discard stale samples and handle unavailable or reset counters", () => {
+  const previous = {
+    id: "video", timestamp: 4000, framesDecoded: 120, presentedFrames: 118,
+    bytesReceived: 500_000, jitterBufferDelay: 0.5, jitterBufferEmittedCount: 60,
+  };
+  const current = { ...previous, timestamp: 5000, bytesReceived: 0, presentedFrames: undefined };
+  assert.deepEqual(receiverRates(previous, current), {
+    decoded: 0, presented: undefined, bitrate: undefined, jitterBufferMs: undefined,
+  });
+  assert.deepEqual(receiverRates(undefined, current), {});
+  assert.deepEqual(receiverRates(previous, { ...current, id: "replacement" }), {});
+  for (const timestamp of [undefined, 3999, 4000, 9001]) {
+    assert.deepEqual(receiverRates(previous, { ...current, timestamp }), {});
   }
 });
