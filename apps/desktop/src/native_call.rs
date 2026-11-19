@@ -776,7 +776,7 @@ fn video_stats(stats: Option<&VideoStats>, owned: bool, quality: Quality) -> imp
     .when_some(stats.limits.as_ref(), |body, limits| {
         body.child(limits.clone())
     })
-    .when(below_selected && stats.limits.is_none(), |body| {
+    .when(below_selected, |body| {
         body.child(
             "The selected tier is a ceiling. Source and connection limits can reduce resolution.",
         )
