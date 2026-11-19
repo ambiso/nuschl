@@ -28,6 +28,7 @@ duck_sensitivity = 50 # percent; higher counts quieter or less clear speech
 
 # Music libraries: any Subsonic or OpenSubsonic server (Navidrome, Gonic,
 # Ampache, Airsonic, ...). A search asks all of them.
+# Use HTTPS for remote libraries. Loopback libraries also accept HTTP.
 
 [[subsonic]]
 name = "Navidrome"

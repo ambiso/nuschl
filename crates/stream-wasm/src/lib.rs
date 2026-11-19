@@ -260,8 +260,7 @@ impl<R: TryCryptoRng> Worker<R> {
 
     fn admit(&self, nonce: &str) -> Result<Reply, String> {
         let link = self.link()?;
-        let mut bytes = [0; 32];
-        hex::decode_to_slice(nonce, &mut bytes).map_err(|_| "malformed nonce")?;
+        let bytes: [u8; 32] = hex::FromHex::from_hex(nonce).map_err(|_| "malformed nonce")?;
         let keys = link.keys();
         let host_key = link.publisher().map(nuschl_stream::host_key);
         Ok(Reply::Admitted {

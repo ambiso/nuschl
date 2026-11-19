@@ -243,9 +243,9 @@ impl Library {
         credentials: Credentials,
         key: String,
     ) -> Self {
-        let api_agent = transport_agent(Some(API_TIMEOUT), STREAM_READ_TIMEOUT);
-        let stream_agent = transport_agent(None, STREAM_READ_TIMEOUT);
         let base = config.url.trim_end_matches('/').to_owned();
+        let api_agent = transport_agent(&base, Some(API_TIMEOUT), STREAM_READ_TIMEOUT);
+        let stream_agent = transport_agent(&base, None, STREAM_READ_TIMEOUT);
         Self {
             index,
             name: config.name.clone(),
@@ -727,10 +727,11 @@ impl Library {
 }
 
 pub(crate) fn transport_agent(
+    url: &str,
     total_timeout: Option<Duration>,
     read_timeout: Duration,
 ) -> ureq::Agent {
-    ureq::Agent::config_builder()
+    let mut config = ureq::Agent::config_builder()
         .http_status_as_error(false)
         // Authentication lives in query parameters, which redirects can copy
         // even across an HTTPS downgrade. Require the canonical configured URL.
@@ -739,9 +740,15 @@ pub(crate) fn transport_agent(
         .timeout_connect(Some(Duration::from_secs(10)))
         .timeout_recv_response(Some(API_TIMEOUT))
         .timeout_per_read(Some(read_timeout))
-        .user_agent(CLIENT)
-        .build()
-        .new_agent()
+        .user_agent(CLIENT);
+    if url
+        .split_once("://")
+        .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("http"))
+    {
+        // Loopback HTTP reaches the local backend directly.
+        config = config.proxy(None);
+    }
+    config.build().new_agent()
 }
 
 /// What the decoder plays (`decode.rs`), for OpenSubsonic's transcode decision.
@@ -1437,8 +1444,11 @@ pub(crate) mod tests {
             });
             let mut library = library(&server);
             if endpoint != "scrobble-shutdown" {
-                library.api_agent =
-                    transport_agent(Some(Duration::from_millis(20)), Duration::from_secs(1));
+                library.api_agent = transport_agent(
+                    &library.base,
+                    Some(Duration::from_millis(20)),
+                    Duration::from_secs(1),
+                );
             }
             library
                 .extensions
@@ -1482,9 +1492,13 @@ pub(crate) mod tests {
                 let _ = socket.write_all(b"b");
             });
             let mut library = library(&server);
-            library.api_agent =
-                transport_agent(Some(Duration::from_millis(20)), Duration::from_secs(1));
+            library.api_agent = transport_agent(
+                &library.base,
+                Some(Duration::from_millis(20)),
+                Duration::from_secs(1),
+            );
             library.stream_agent = transport_agent(
+                &library.base,
                 None,
                 if stalled {
                     Duration::from_millis(50)

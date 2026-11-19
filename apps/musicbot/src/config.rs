@@ -281,7 +281,7 @@ impl Config {
             return Err("configure at least one [[channel]]".into());
         }
         for library in &self.libraries {
-            validate_url(
+            validate_backend_url(
                 &library.url,
                 &format!("subsonic library {}: url", library.name),
             )?;
@@ -335,7 +335,7 @@ impl Config {
             }
         }
         if let Some(import) = &self.import {
-            validate_import_url(&import.url)?;
+            validate_backend_url(&import.url, "import.url")?;
             if import.library_index(&self.libraries).is_none() {
                 return Err(format!(
                     "import.library {:?} names no [[subsonic]] library",
@@ -398,13 +398,12 @@ fn validate_url(value: &str, setting: &str) -> Result<(), String> {
     }
 }
 
-/// The import service's address: https, or http only on this machine, so the
-/// key never crosses a network in clear.
-fn validate_import_url(value: &str) -> Result<(), String> {
-    validate_url(value, "import.url")?;
+/// Backend services use HTTPS or an HTTP endpoint on the same machine.
+fn validate_backend_url(value: &str, setting: &str) -> Result<(), String> {
+    validate_url(value, setting)?;
     let uri: ureq::http::Uri = value
         .parse()
-        .map_err(|_| "import.url is not a valid URL".to_owned())?;
+        .map_err(|_| format!("{setting} is not a valid URL"))?;
     let host = uri.host().unwrap_or_default();
     let host = host
         .strip_prefix('[')
@@ -417,10 +416,9 @@ fn validate_import_url(value: &str) -> Result<(), String> {
     if uri.scheme_str() == Some("https") || loopback {
         Ok(())
     } else {
-        Err(
-            "import.url must use https://, or http:// only for 127.0.0.0/8, ::1 or localhost"
-                .into(),
-        )
+        Err(format!(
+            "{setting} must use https://, or http:// only for 127.0.0.0/8, ::1 or localhost"
+        ))
     }
 }
 
@@ -533,6 +531,21 @@ mod tests {
         assert!(parse(&key_only).is_ok());
         let half = MINIMAL.replace("password_file = \"home\"", "");
         assert!(parse(&half).is_err());
+    }
+
+    #[test]
+    fn remote_library_requires_https() {
+        let remote = MINIMAL.replace(
+            "https://navidrome.example.org",
+            "http://navidrome.example.org",
+        );
+        assert!(
+            parse(&remote)
+                .unwrap_err()
+                .contains("subsonic library home: url must use https://")
+        );
+        let local = MINIMAL.replace("https://navidrome.example.org", "http://127.0.0.1:4533");
+        assert!(parse(&local).is_ok());
     }
 
     #[test]
