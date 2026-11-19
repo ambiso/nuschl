@@ -100,7 +100,7 @@ let
       ]
       ++ lib.optionals (builtins.elem "vaapi" (attrs.features or [ ])) gstLibraries;
       NUSCHL_VIDEO_GST_PLUGINS = lib.concatStringsSep ":" [
-        "${gst.gstreamer}/lib/gstreamer-1.0/libgstcoreelements.so"
+        "${lib.getLib gst.gstreamer}/lib/gstreamer-1.0/libgstcoreelements.so"
         "${gst.gst-plugins-base}/lib/gstreamer-1.0/libgstapp.so"
         "${gst.gst-plugins-bad}/lib/gstreamer-1.0/libgstva.so"
         "${gst.gst-plugins-bad}/lib/gstreamer-1.0/libgstvideoparsersbad.so"
