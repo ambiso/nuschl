@@ -24,9 +24,13 @@ impl Drop for Sfu {
 /// The SFU with `settings` added to its configuration; `{directory}` in them
 /// names its temporary directory.
 pub fn start(executable: impl AsRef<std::path::Path>, settings: &str) -> Sfu {
+    start_with_turn(executable, settings, "turn:turn.test:3478?transport=udp")
+}
+
+pub fn start_with_turn(executable: impl AsRef<std::path::Path>, settings: &str, turn: &str) -> Sfu {
     let directory = crate::temp_dir();
     let secret = directory.path().join("turn-secret");
-    std::fs::write(&secret, "test-secret\n").expect("secret");
+    std::fs::write(&secret, crate::turn::TEST_SECRET).expect("secret");
     let config = directory.path().join("sfu.toml");
     std::fs::write(
         &config,
@@ -38,7 +42,7 @@ pub fn start(executable: impl AsRef<std::path::Path>, settings: &str) -> Sfu {
             max_peers_per_room = 6
             {}
             [turn]
-            urls = ["turn:turn.test:3478?transport=udp"]
+            urls = [{turn:?}]
             secret_file = "{}"
             "#,
             settings.replace("{directory}", &directory.path().display().to_string()),

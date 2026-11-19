@@ -9,6 +9,7 @@ mod direct;
 const CA: &str = "127.0.0.1";
 const LINK: &str = "v=1&k=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&h=8FkoEkvVnGXqAGKF9u7ezIde49CL2ZPe5AQZJ3_d3tQ";
 const OWNER: &str = "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8";
+static MEDIA_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn fixture(name: &str) -> std::path::PathBuf {
     // Cargo's workspace test builds standalone binaries beside the deps folder.
@@ -305,6 +306,12 @@ async fn native_publisher_in_call_page_vm() {
 
 #[tokio::test]
 async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
+    let _media = MEDIA_TEST.lock().await;
+    native_video_for_policy(false).await;
+    native_video_for_policy(true).await;
+}
+
+async fn native_video_for_policy(relay_only: bool) {
     use nuschl_ipc::video::{Decoder, Source};
 
     // Successive AV1 packets from a synthetic 32×32 color source.
@@ -352,7 +359,13 @@ async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
     let crypto = fixture("nuschl-crypto-worker");
     let rtc = fixture("nuschl-rtc-worker");
     let video = fixture("nuschl-video-worker");
-    let sfu = nuschl_testkit::sfu::start(fixture("nuschl-stream-sfu"), "");
+    let turn = relay_only.then(nuschl_testkit::turn::start);
+    let sfu = match &turn {
+        Some(turn) => {
+            nuschl_testkit::sfu::start_with_turn(fixture("nuschl-stream-sfu"), "", &turn.url)
+        }
+        None => nuschl_testkit::sfu::start(fixture("nuschl-stream-sfu"), ""),
+    };
     let (host, roots) = tls_proxy(&sfu).await;
     let directory = nuschl_testkit::temp_dir();
     let posted = format!("https://{host}/call#{LINK}");
@@ -362,7 +375,7 @@ async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
         host: &host,
         link,
         codecs: &[Codec::Av1],
-        policy: PeerPolicy::default(),
+        policy: PeerPolicy { relay_only },
     };
     let mut alice = Connection::connect_with_roots(
         CryptoHandle::start(crypto.clone(), directory.path().join("alice")),
@@ -372,6 +385,14 @@ async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
     .await
     .unwrap();
     let publisher = alice.welcome().peer;
+    if relay_only {
+        timeout(
+            HANDSHAKE,
+            relay_datagrams(alice.welcome().turn.as_ref().unwrap()),
+        )
+        .await
+        .unwrap();
+    }
     let bob = Connection::connect_with_roots(
         CryptoHandle::start(crypto, directory.path().join("bob")),
         connect(&posted),
@@ -529,4 +550,32 @@ async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
     alice.stop().await.unwrap();
     nuschl_testkit::none_running(&video, Duration::from_secs(3)).await;
     nuschl_testkit::none_running(&rtc, Duration::from_secs(3)).await;
+}
+
+async fn relay_datagrams(credentials: &nuschl_protocol::sfu::TurnCredentials) {
+    use super::turn::NetworkLeg;
+    use tokio::net::UdpSocket;
+
+    let peer = UdpSocket::bind((CA, 0)).await.unwrap();
+    let mut path = NetworkLeg::open(peer.local_addr().unwrap(), Some(credentials))
+        .await
+        .unwrap();
+    assert!(path.is_relayed());
+    assert_eq!(path.address().ip(), nuschl_testkit::turn::RELAY_IP);
+    path.send(b"relay").await.unwrap();
+    let mut packet = [0; 16];
+    let (size, from) = peer.recv_from(&mut packet).await.unwrap();
+    assert_eq!(from, path.address());
+    assert_eq!(&packet[..size], b"relay");
+
+    let wrong_port = UdpSocket::bind((CA, 0)).await.unwrap();
+    wrong_port.send_to(b"unexpected", from).await.unwrap();
+    assert!(
+        timeout(Duration::from_millis(100), path.recv(&mut packet))
+            .await
+            .is_err()
+    );
+    peer.send_to(b"answer", from).await.unwrap();
+    let size = path.recv(&mut packet).await.unwrap();
+    assert_eq!(&packet[..size], b"answer");
 }
