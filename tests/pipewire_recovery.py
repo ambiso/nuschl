@@ -741,11 +741,15 @@ def check_rnnoise_chain(binary, pipewire):
         time.sleep(0.2)
     before = defaults(pipewire)
     worker = Worker(binary, pipewire, muted=False)
+    # The graph about when the worker inspects it, for a failure report (#321).
+    started = links(pipewire)
     devices = worker.wait(lambda e: e["kind"] == "devices", "no device report")
     status = worker.ready()
     graph = links(pipewire)
     assert devices["input"] == "pipewire:effect_output.rnnoise", devices["input"]
-    assert devices["echo"] == {"kind": "upstream", "device": "Echo-Cancel Source"}, devices["echo"]
+    assert devices["echo"] == {"kind": "upstream", "device": "Echo-Cancel Source"}, \
+        f"{devices['echo']}; links at the worker's start {sorted(started, key=str)}, " \
+        f"once ready {sorted(graph, key=str)}"
     assert devices["noise"] == "Noise Canceling source", devices["noise"]
     assert devices["output"].endswith(":echo-cancel-sink"), \
         f"Nuschl's playback must reach the canceller's reference: {devices['output']}"
