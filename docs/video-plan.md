@@ -197,8 +197,8 @@ resolutions at once, so cameras publish three spatial layers (SVC) or three
 simulcast encodings, chosen by S0f; screens use temporal layers and, where the
 encoder offers them, spatial layers.
 
-Local S0f throughput sample on AMD render device `1002:744c`, Mesa 26.3.0
-and FFmpeg 9.0.2. The input is ten seconds of moving `testsrc2` with one
+Local S0f throughput sample on a Radeon RX 7900 XTX with Mesa 26.3.0 and
+FFmpeg 9.0.2. The input is ten seconds of moving `testsrc2` with one
 key frame per second. The encoding rate includes generating and uploading
 NV12 frames. The decoding rate measures VA-API output surfaces.
 
