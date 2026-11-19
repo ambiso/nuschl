@@ -300,7 +300,9 @@ the Windows sandbox has run in the Windows 11 VM only (above).
 `cargo test -p nuschl-video-worker` starts the real encoder through bubblewrap
 and prlimit, kills it and verifies recovery on a later frame. It also runs
 the synthetic `nuschl-video-probe` and verifies the AV1 dimensions and pixels
-with FFmpeg's libdav1d decoder. The flake's `nuschl-video-worker-unit` check
+with FFmpeg's libdav1d decoder. It runs a separate private PipeWire daemon to
+deliver a synthetic video stream through the same inherited file-descriptor
+path that the desktop uses for portal capture. The flake's `nuschl-video-worker-unit` check
 runs the same test.
 
 ## WebRTC transport trial

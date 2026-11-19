@@ -291,6 +291,7 @@
               mkdir -p "$out/share/licenses/nuschl"
               cp -R ${rtcNotices.bundle}/share/licenses/nuschl/. "$out/share/licenses/nuschl/"
             '';
+        videoProbeNoticeScope = "video-probe-${pkgs.stdenv.hostPlatform.rust.rustcTarget}";
         videoProbe =
           pkgs.runCommand "nuschl-video-probe"
             {
@@ -300,6 +301,8 @@
             ''
               mkdir -p "$out/bin"
               cp ${crates.project.workspaceMembers.nuschl-video-worker.build}/bin/nuschl-video-{worker,probe} "$out/bin/"
+              install -Dm644 ${./LICENSE} "$out/share/licenses/nuschl/EUPL-1.2"
+              ${installNotices (releaseNotices.forScope videoProbeNoticeScope).bundle}
               wrapProgram "$out/bin/nuschl-video-probe" --prefix PATH : ${
                 lib.makeBinPath [
                   pkgs.bubblewrap
@@ -347,7 +350,8 @@
               }")
             mkdir -p "$out/libexec/nuschl"
             mv "$out/bin/nuschl" "$out/libexec/nuschl/nuschl"
-            for worker in nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-media-worker nuschl-storage-worker nuschl-transfer-worker nuschl-update-verify-ed25519 nuschl-update-verify-mldsa44; do
+            install -Dm755 ${crates.project.workspaceMembers.nuschl-video-worker.build}/bin/nuschl-video-worker "$out/bin/nuschl-video-worker"
+            for worker in nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-media-worker nuschl-storage-worker nuschl-transfer-worker nuschl-video-worker nuschl-update-verify-ed25519 nuschl-update-verify-mldsa44; do
               test -f "$out/bin/$worker"
               ln -s "../../bin/$worker" "$out/libexec/nuschl/$worker"
             done
@@ -411,6 +415,7 @@
             pkgs.bubblewrap
             pkgs.util-linux
             pkgs.ffmpeg-headless
+            pkgs.pipewire
           ];
           # The math worker's confinement tests spawn sandboxed workers, and
           # the CLI's e2ee tests run the crypto worker through the sandbox.

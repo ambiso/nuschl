@@ -11,9 +11,9 @@ use tokio::{
     time::{Instant, sleep, timeout},
 };
 
-const DEADLINE: Duration = Duration::from_secs(5);
+pub(super) const DEADLINE: Duration = Duration::from_secs(5);
 const HEALTHY: Duration = Duration::from_secs(30);
-static SOURCES: Semaphore = Semaphore::const_new(2);
+pub(super) static SOURCES: Semaphore = Semaphore::const_new(2);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -29,6 +29,8 @@ pub enum Error {
     Timeout,
     #[error("video encoder has stopped")]
     Stopped,
+    #[error("a Tokio runtime is required to start a video source")]
+    Runtime,
 }
 
 pub enum Output {
@@ -57,10 +59,12 @@ impl Encoder {
         let frame_bytes = settings.frame_bytes()?;
         let permit = SOURCES.try_acquire().map_err(|_| Error::Busy)?;
         let (requests, queue) = mpsc::channel(1);
-        let task = tokio::spawn(async move {
-            let _permit = permit;
-            supervise(executable, settings, queue).await;
-        });
+        let task = tokio::runtime::Handle::try_current()
+            .map_err(|_| Error::Runtime)?
+            .spawn(async move {
+                let _permit = permit;
+                supervise(executable, settings, queue).await;
+            });
         Ok(Self {
             requests,
             task,

@@ -36,7 +36,10 @@ pub(crate) fn command(executable: &Path, role: Role) -> Result<Command, Error> {
     }
     command.arg("--").arg(helper("bwrap")?);
     command.args(["--die-with-parent", "--new-session", "--unshare-all"]);
-    if matches!(role, Role::Preview { .. } | Role::Media | Role::VideoEncode) {
+    if matches!(
+        role,
+        Role::Preview { .. } | Role::Media | Role::VideoEncode | Role::VideoCapture { .. }
+    ) {
         command.args(["--json-status-fd", "2"]);
     }
     bind_existing(
@@ -58,6 +61,14 @@ pub(crate) fn command(executable: &Path, role: Role) -> Result<Command, Error> {
     }
     if can.audio {
         media(&mut command);
+    }
+    if let Role::VideoCapture { node } = role {
+        bind_existing(&mut command, &["/usr/share/pipewire"]);
+        if let Some(node) = node {
+            command
+                .args(["--setenv", "NUSCHL_VIDEO_NODE"])
+                .arg(node.to_string());
+        }
     }
     if can.network {
         command.arg("--share-net");

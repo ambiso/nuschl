@@ -24,6 +24,7 @@ platform decisions reversible without duplicating the session model.
 | `nuschld` | Server session/routing authority and native transports | GPUI, content parser, audio decoding |
 | `nuschl-content-worker` | Parse and highlight untrusted content | Credentials, microphone, user files, network |
 | `nuschl-media-worker` | Audio device adapters, DSP, Opus | Server credentials, history database, arbitrary files, network |
+| `nuschl-video-worker` | Linux PipeWire capture and AV1 encoding | Server credentials, arbitrary files, network, the session bus |
 | `nuschl-storage-worker` | Own the explicitly selected history database | Server credentials, microphone, network |
 | `nuschl-musicbot` | Credential/network parent for Subsonic playback, queues/history and authenticated web controls (docs/musicbot.md) | Codec/DSP dependencies and execution, GPUI, user private identity keys |
 | `nuschl-musicbot-codec-worker` | The music bot's isolated decode/encode/duck roles: Symphonia, rubato, Opus, RNNoise | Credentials, network, audio devices, state files, session code |

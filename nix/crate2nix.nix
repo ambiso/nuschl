@@ -77,6 +77,10 @@ let
     };
     nuschl = attrs: withLibraries attrs // { NUSCHL_EMOJI_ASSETS = emojiAssets; };
     nuschl-media-worker = withLibraries;
+    nuschl-video-worker = _: {
+      nativeBuildInputs = pkgConfig;
+      buildInputs = [ pkgs.pipewire ];
+    };
     # The cli's e2ee tests exec the crypto worker beside the cli binary the
     # harness records at test-compile time (CARGO_BIN_EXE_nuschl-cli); the
     # merged dev dependency nuschld marks that compilation, and the worker

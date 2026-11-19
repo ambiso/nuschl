@@ -7674,7 +7674,9 @@ dependencies = [
  "nuschl-ipc",
  "nuschl-sandbox",
  "nuschl-testkit",
+ "pipewire",
  "rav1e",
+ "serde_json",
  "tokio",
 ]
 

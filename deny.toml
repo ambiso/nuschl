@@ -90,6 +90,11 @@ deny = [
   { name = "cpal", wrappers = [
     "nuschl-media-worker",
   ], reason = "Native audio APIs belong in the media worker" },
+  { name = "pipewire", wrappers = [
+    "cpal",
+    "nuschl-media-worker",
+    "nuschl-video-worker",
+  ], reason = "PipeWire bindings belong in the confined audio and video workers" },
   { name = "rav1e", wrappers = [
     "ravif",
     "nuschl-video-worker",

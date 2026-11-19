@@ -60,6 +60,8 @@ pub enum Role<'a> {
     MusicbotCodec { operation: &'static str },
     /// Video encoding, with the source supplied over its input pipe.
     VideoEncode,
+    /// Video capture from an inherited portal-granted PipeWire connection.
+    VideoCapture { node: Option<u32> },
     /// History storage: only `directory`, writable.
     Storage { directory: &'a Path },
     /// The crypto worker: only `directory`, writable.
@@ -135,6 +137,7 @@ impl<'a> Role<'a> {
             Role::Update { post_quantum: false } => Capabilities { name: "update.ed25519", memory: 256 * MIB, cpu_seconds: Some(5), ..NOTHING },
             Role::MusicbotCodec { .. } => Capabilities { name: "musicbot-codec", linux_only: true, ..NOTHING },
             Role::VideoEncode => Capabilities { name: "video-encode", cpu_seconds: Some(120), linux_only: true, ..NOTHING },
+            Role::VideoCapture { .. } => Capabilities { name: "video-capture", cpu_seconds: Some(3600), linux_only: true, ..NOTHING },
             Role::Storage { directory } => Capabilities { name: "storage", writable: Some(directory), ..NOTHING },
             Role::Crypto { directory } => Capabilities { name: "crypto", writable: Some(directory), ..NOTHING },
             Role::Media => Capabilities { name: "media", audio: true, lpac: false, ..NOTHING },
@@ -155,6 +158,7 @@ impl<'a> Role<'a> {
             Role::Content { arguments, .. } => arguments.to_vec(),
             Role::MusicbotCodec { operation } => vec!["--codec-worker".into(), operation.into()],
             Role::VideoEncode => vec!["--encode".into()],
+            Role::VideoCapture { .. } => vec!["--encode".into(), "--capture".into()],
             Role::Storage { .. } => vec!["--database".into(), data.join("history.sqlite3").into()],
             Role::Crypto { .. } => vec!["--data".into(), data.into()],
             Role::Media => vec!["--live".into()],

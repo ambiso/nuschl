@@ -81,8 +81,10 @@ or platform-wide confinement.
 The Linux video encoder diagnostic uses the fixed `--encode` sandbox role
 with generated I420 frames. Run `nix run .#video-probe` for a summary or
 `nix run .#video-probe -- --obu` for elementary AV1 on standard output.
-The CPU-only probe encodes independent frames. Live capture, interframe
-encoding and hardware codecs are tracked in #418.
+The software path encodes independent frames. Its capture integration test opens
+one connection to a private PipeWire daemon with a synthetic video node, starts
+the worker in bubblewrap and reads encoded AV1. Interframe encoding, hardware
+codecs, and desktop call integration are tracked in #418.
 
 ## Continuous integration
 

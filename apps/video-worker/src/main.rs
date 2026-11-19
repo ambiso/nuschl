@@ -1,19 +1,25 @@
 // SPDX-License-Identifier: EUPL-1.2
 
 #[cfg(target_os = "linux")]
+mod capture;
+
+#[cfg(target_os = "linux")]
 mod linux {
     use nuschl_ipc::video::{HEADER_BYTES, Header, Kind, Settings};
     use rav1e::prelude::*;
     use std::io::{self, Read, Write};
 
     pub fn run() -> Result<(), Box<dyn std::error::Error>> {
-        if !std::env::args_os()
-            .skip(1)
-            .eq([std::ffi::OsStr::new("--encode")])
-        {
-            return Err("usage: nuschl-video-worker --encode".into());
+        let args = std::env::args_os().skip(1).collect::<Vec<_>>();
+        match args.as_slice() {
+            [encode] if encode == "--encode" => {
+                encode_frames(&mut io::stdin().lock(), &mut io::stdout().lock())
+            }
+            [encode, capture] if encode == "--encode" && capture == "--capture" => {
+                super::capture::run()
+            }
+            _ => Err("usage: nuschl-video-worker --encode [--capture]".into()),
         }
-        encode_frames(&mut io::stdin().lock(), &mut io::stdout().lock())
     }
 
     fn encode_frames(
@@ -34,15 +40,7 @@ mod linux {
         let settings = Settings::from_bytes(settings)?;
         let frame_bytes = settings.frame_bytes()?;
 
-        let mut config = EncoderConfig::with_speed_preset(10);
-        config.width = usize::from(settings.width);
-        config.height = usize::from(settings.height);
-        config.time_base = Rational::new(1, u64::from(settings.fps));
-        config.low_latency = true;
-        config.bitrate = i32::try_from(settings.bitrate)?;
-        config.speed_settings.rdo_lookahead_frames = 1;
-        let config = Config::new().with_encoder_config(config).with_threads(1);
-
+        let config = config(settings);
         reply(output, Header::empty(Kind::Ready, 0), &[])?;
         let mut i420 = vec![0; frame_bytes];
         let mut previous = 0;
@@ -73,7 +71,18 @@ mod linux {
         Ok(())
     }
 
-    fn encode(
+    pub(super) fn config(settings: Settings) -> Config {
+        let mut config = EncoderConfig::with_speed_preset(10);
+        config.width = usize::from(settings.width);
+        config.height = usize::from(settings.height);
+        config.time_base = Rational::new(1, u64::from(settings.fps));
+        config.low_latency = true;
+        config.bitrate = i32::try_from(settings.bitrate).unwrap_or(i32::MAX);
+        config.speed_settings.rdo_lookahead_frames = 1;
+        Config::new().with_encoder_config(config).with_threads(1)
+    }
+
+    pub(super) fn encode(
         config: &Config,
         settings: Settings,
         i420: &[u8],
@@ -99,7 +108,7 @@ mod linux {
         Ok(packet.data)
     }
 
-    fn reply(output: &mut impl Write, header: Header, bytes: &[u8]) -> io::Result<()> {
+    pub(super) fn reply(output: &mut impl Write, header: Header, bytes: &[u8]) -> io::Result<()> {
         output.write_all(&header.to_bytes())?;
         output.write_all(bytes)?;
         output.flush()

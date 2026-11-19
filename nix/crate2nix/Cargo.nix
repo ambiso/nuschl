@@ -1916,7 +1916,7 @@ rec {
           "wayland-client" = [ "dep:wayland-client" ];
           "wayland-protocols" = [ "dep:wayland-protocols" ];
         };
-        resolvedDefaultFeatures = [ "async-io" "file_chooser" "global_shortcuts" "inhibit" "open_uri" "secret" "settings" "wayland" "wayland-backend" "wayland-client" "wayland-protocols" ];
+        resolvedDefaultFeatures = [ "async-io" "camera" "file_chooser" "global_shortcuts" "inhibit" "open_uri" "screencast" "secret" "settings" "wayland" "wayland-backend" "wayland-client" "wayland-protocols" ];
       };
       "asn1-rs" = rec {
         crateName = "asn1-rs";
@@ -23154,7 +23154,7 @@ rec {
             packageId = "ashpd";
             usesDefaultFeatures = false;
             target = { target, features }: ("linux" == target."os" or null);
-            features = [ "async-io" "global_shortcuts" ];
+            features = [ "async-io" "camera" "global_shortcuts" "screencast" ];
           }
           {
             name = "base64";
@@ -25575,6 +25575,12 @@ rec {
             target = { target, features }: ("linux" == target."os" or null);
           }
           {
+            name = "pipewire";
+            packageId = "pipewire";
+            usesDefaultFeatures = false;
+            target = { target, features }: ("linux" == target."os" or null);
+          }
+          {
             name = "rav1e";
             packageId = "rav1e";
             usesDefaultFeatures = false;
@@ -25591,6 +25597,10 @@ rec {
           {
             name = "nuschl-testkit";
             packageId = "nuschl-testkit";
+          }
+          {
+            name = "serde_json";
+            packageId = "serde_json";
           }
         ];
 

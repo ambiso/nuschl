@@ -2,8 +2,10 @@
 //! Video encoder settings and bounded binary pipe framing. Raw I420 crosses
 //! the local worker pipe; encoded AV1 is the only output.
 
+mod capture;
 mod supervisor;
 
+pub use capture::{Capture, VideoFrame};
 pub use supervisor::{Encoder, Error, Output};
 
 use std::io;
@@ -46,7 +48,7 @@ impl Settings {
     pub fn packet_limit(self, key: bool) -> usize {
         let key_limit = match self.source {
             Source::Camera => 256 * KIB,
-            Source::Screen if self.height >= 1440 => 1024 * KIB,
+            Source::Screen if self.width.min(self.height) >= 1440 => 1024 * KIB,
             Source::Screen => 512 * KIB,
         };
         if key { key_limit } else { key_limit / 2 }
@@ -91,6 +93,7 @@ pub enum Kind {
     Ready,
     Encoded,
     Dropped,
+    CaptureFrame,
 }
 
 /// Each reply carries the ID from its request.
@@ -141,10 +144,11 @@ impl Header {
             3 => Kind::Ready,
             4 => Kind::Encoded,
             5 => Kind::Dropped,
+            6 => Kind::CaptureFrame,
             _ => return Err(invalid()),
         };
         let key = flags == KEY;
-        if key && kind != Kind::Encoded {
+        if key && !matches!(kind, Kind::Encoded | Kind::CaptureFrame) {
             return Err(invalid());
         }
         Ok(Self {
