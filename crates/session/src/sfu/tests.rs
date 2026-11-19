@@ -4,6 +4,8 @@ use super::*;
 use nuschl_protocol::sfu::Role;
 use tokio::net::TcpListener;
 
+mod direct;
+
 const CA: &str = "127.0.0.1";
 const LINK: &str = "v=1&k=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8&h=8FkoEkvVnGXqAGKF9u7ezIde49CL2ZPe5AQZJ3_d3tQ";
 const OWNER: &str = "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8";
