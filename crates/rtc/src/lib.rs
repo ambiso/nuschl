@@ -31,6 +31,10 @@ pub const MAX_DATAGRAM_BYTES: usize = 2048;
 pub const MAX_OPUS_BYTES: usize = 1275;
 pub const MAX_VIDEO_BYTES: usize = 256 * 1024;
 const INITIAL_BITRATE: u64 = 2_000_000;
+const CALL_INITIAL_BITRATE: u64 = 5_000_000;
+const CALL_MAX_BITRATE: u64 = 25_000_000;
+const CALL_VIDEO_WINDOW: Duration = Duration::from_millis(300);
+const CALL_RTP_PACKETS: usize = 1024;
 /// The microphone role's reservation, including the overhead `write` charges:
 /// the largest frame the voice admission accepts at the highest selectable
 /// target (640 bytes per 20 ms at 256 kb/s, `nuschl_core::bitrate`) plus
@@ -54,10 +58,10 @@ impl Kind {
             Self::Video => video.codec(),
         }
     }
-    fn limit(self) -> usize {
+    fn limit(self, video_limit: usize) -> usize {
         match self {
             Self::Audio => MAX_OPUS_BYTES,
-            Self::Video => MAX_VIDEO_BYTES,
+            Self::Video => video_limit,
         }
     }
 }
@@ -188,6 +192,7 @@ pub struct Peer {
     now: Instant,
     closed: bool,
     bandwidth_bps: u64,
+    call_video_limit: Option<usize>,
     total_budget: Bucket,
     video_budget: Bucket,
 }
@@ -222,9 +227,39 @@ impl Peer {
     /// Configure the call's video codec while retaining Opus for audio. Socket
     /// adapters enforce the connection policy before creating a host candidate.
     pub fn with_video(address: SocketAddr, now: Instant, video: VideoCodec) -> Result<Self, Error> {
+        Self::build(address, now, video, None)
+    }
+
+    /// Video-call legs carry bounded encrypted frames and let the RTP pacer
+    /// spread a keyframe across the send interval of subsequent frames.
+    pub fn for_call(
+        address: SocketAddr,
+        now: Instant,
+        video: VideoCodec,
+        video_limit: usize,
+    ) -> Result<Self, Error> {
+        Self::build(address, now, video, Some(video_limit))
+    }
+
+    fn build(
+        address: SocketAddr,
+        now: Instant,
+        video: VideoCodec,
+        call_video_limit: Option<usize>,
+    ) -> Result<Self, Error> {
         if address.port() == 0 || address.ip().is_unspecified() || address.ip().is_multicast() {
             return Err(Error::Address);
         }
+        let (initial, reorder, send, window) = if call_video_limit.is_some() {
+            (
+                CALL_INITIAL_BITRATE,
+                CALL_RTP_PACKETS,
+                CALL_RTP_PACKETS,
+                CALL_VIDEO_WINDOW,
+            )
+        } else {
+            (INITIAL_BITRATE, 64, 512, WINDOW)
+        };
         let mut rtc = Rtc::builder()
             .set_crypto_provider(Arc::new(str0m::crypto::from_feature_flags()))
             .clear_codecs()
@@ -236,11 +271,17 @@ impl Peer {
             .set_mtu(1200..=1200)
             .set_reordering_size_audio(8)
             .set_reordering_timeout_audio(Some(Duration::from_millis(20)))
-            .set_reordering_size_video(64)
+            .set_reordering_size_video(reorder)
             .set_send_buffer_audio(32)
-            .set_send_buffer_video(512)
-            .enable_bwe(Some(str0m::bwe::Bitrate::bps(INITIAL_BITRATE)))
+            .set_send_buffer_video(send)
+            .enable_bwe(Some(str0m::bwe::Bitrate::bps(initial)))
             .build(now);
+        if call_video_limit.is_some() {
+            rtc.bwe().set_bitrate(
+                str0m::bwe::Bitrate::ZERO,
+                str0m::bwe::Bitrate::bps(CALL_MAX_BITRATE),
+            );
+        }
         rtc.add_local_candidate(Candidate::host(address, "udp").map_err(|_| Error::Address)?)
             .ok_or(Error::Address)?;
         Ok(Self {
@@ -252,9 +293,10 @@ impl Peer {
             tracks: Vec::with_capacity(4),
             now,
             closed: false,
-            bandwidth_bps: INITIAL_BITRATE,
-            total_budget: Bucket::new(now),
-            video_budget: Bucket::new(now),
+            bandwidth_bps: initial,
+            call_video_limit,
+            total_budget: Bucket::new(now, window),
+            video_budget: Bucket::new(now, window),
         })
     }
 
@@ -490,7 +532,14 @@ impl Peer {
             .map(|b| TrackState {
                 track: Track(Mid::from(b.mid.as_str())),
                 purpose: b.purpose,
-                bucket: Bucket::new(self.now),
+                bucket: Bucket::new(
+                    self.now,
+                    if self.call_video_limit.is_some() && b.purpose.kind() == Kind::Video {
+                        CALL_VIDEO_WINDOW
+                    } else {
+                        WINDOW
+                    },
+                ),
                 next: self.now,
                 timestamp: None,
             })
@@ -544,7 +593,7 @@ impl Peer {
             .ok_or(Error::Frame)?;
         let kind = self.tracks[index].purpose.kind();
         if data.is_empty()
-            || data.len() > kind.limit()
+            || data.len() > self.frame_limit(kind)
             || self.tracks[index]
                 .timestamp
                 .is_some_and(|last| timestamp <= last)
@@ -570,6 +619,23 @@ impl Peer {
         // Spacing each frame by its own size would refuse on-time frames.
         let interval = if kind == Kind::Audio {
             Duration::from_micros(2500)
+        } else if self.call_video_limit.is_some() {
+            let queued = self
+                .rtc
+                .direct_api()
+                .stream_tx_by_mid(track.0, None)
+                .and_then(|stream| {
+                    stream
+                        .queue_info()
+                        .map(|q| (q.byte_size(), q.first_unsent()))
+                });
+            if let Some((bytes, oldest)) = queued
+                && (oldest.is_some_and(|at| now.saturating_duration_since(at) >= CALL_VIDEO_WINDOW)
+                    || (bits + bytes as f64 * 8.0) / rate as f64 > CALL_VIDEO_WINDOW.as_secs_f64())
+            {
+                return Err(Error::Backpressure);
+            }
+            Duration::from_millis(1)
         } else {
             Duration::from_secs_f64(bits / rate as f64).max(Duration::from_millis(1))
         };
@@ -599,7 +665,12 @@ impl Peer {
     }
 
     fn rates(&self, purpose: Purpose) -> (u64, u64, u64) {
-        let total = self.bandwidth_bps.min(10_000_000) * 4 / 5;
+        let maximum = if self.call_video_limit.is_some() {
+            CALL_MAX_BITRATE
+        } else {
+            10_000_000
+        };
+        let total = self.bandwidth_bps.min(maximum) * 4 / 5;
         let microphone = if self.track_for(Purpose::Microphone).is_some() {
             MICROPHONE_RESERVE_BPS
         } else {
@@ -627,6 +698,10 @@ impl Peer {
             }
         };
         (total, video, role_rate)
+    }
+
+    fn frame_limit(&self, kind: Kind) -> usize {
+        kind.limit(self.call_video_limit.unwrap_or(MAX_VIDEO_BYTES))
     }
 
     /// Malformed datagrams return an error; a socket adapter may discard them
@@ -698,7 +773,7 @@ impl Peer {
                         let kind = purpose.kind();
                         if media.params.spec().codec != kind.codec(self.video)
                             || media.data.is_empty()
-                            || media.data.len() > kind.limit()
+                            || media.data.len() > self.frame_limit(kind)
                         {
                             if self.subscription {
                                 continue;

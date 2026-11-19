@@ -20,6 +20,7 @@ use std::{
 };
 
 const MAX_LEGS: usize = 4;
+const MAX_WIRE_VIDEO: usize = wire::MAX_VIDEO + 64;
 
 enum Input {
     Commands(Packet<Command>),
@@ -109,6 +110,7 @@ struct Leg {
     wake: Instant,
     local: SocketAddr,
     from: Vec<Track>,
+    discontinuous: [bool; MAX_ENCODINGS as usize],
 }
 
 struct Sending {
@@ -194,7 +196,7 @@ impl Call {
                     Codec::Av1 => VideoCodec::Av1,
                     Codec::Vp9 => VideoCodec::Vp9,
                 };
-                let peer = Peer::with_video(local, now, codec).map_err(|_| ())?;
+                let peer = Peer::for_call(local, now, codec, MAX_WIRE_VIDEO).map_err(|_| ())?;
                 self.legs.insert(
                     leg,
                     Leg {
@@ -203,6 +205,7 @@ impl Call {
                         wake: now,
                         local,
                         from: Vec::new(),
+                        discontinuous: [false; MAX_ENCODINGS as usize],
                     },
                 );
                 self.last_leg = leg;
@@ -318,9 +321,14 @@ impl Call {
         let encrypted = sender.keys[index]
             .encrypt(key_frame, data)
             .map_err(|_| ())?;
-        leg.peer
+        if leg
+            .peer
             .write(track, timestamp, now, encrypted.into())
-            .map_err(|_| ())?;
+            .is_err()
+        {
+            self.keyframe[index] = false;
+            return Err(());
+        }
         if key_frame {
             self.keyframe[index] = true;
         }
@@ -337,8 +345,11 @@ impl Call {
             match leg.peer.poll().map_err(|_| ())? {
                 Output::WakeAt(at) => {
                     leg.wake = at;
-                    let after_millis =
-                        at.saturating_duration_since(now).as_millis().min(60_000) as u64;
+                    let after_millis = at
+                        .saturating_duration_since(now)
+                        .as_nanos()
+                        .div_ceil(1_000_000)
+                        .min(60_000) as u64;
                     return Ok((
                         Reply::Wake {
                             leg: id,
@@ -385,19 +396,22 @@ impl Call {
                                 continue;
                             }
                             let purpose = from_purpose(frame.purpose);
+                            let lost = &mut leg.discontinuous[usize::from(encoding(purpose))];
                             let Ok((key_frame, data)) =
                                 decryptor.decrypt_encoding(encoding(purpose), &frame.data, millis)
                             else {
+                                *lost = true;
                                 continue;
                             };
                             if data.is_empty() || data.len() > purpose.frame_limit() {
+                                *lost = true;
                                 continue;
                             }
                             let event = Event::Frame {
                                 publisher: *publisher,
                                 purpose,
                                 timestamp: frame.timestamp,
-                                contiguous: frame.contiguous,
+                                contiguous: !std::mem::take(lost) && frame.contiguous,
                                 key_frame,
                             };
                             return Ok((Reply::Event { leg: id, event }, data));
