@@ -204,7 +204,9 @@ double-click on a channel joins its voice with the microphone closed, and a touc
 double-tap opens the channel's chat), reloads it with two saved servers
 (`tests/web_autoconnect.browser.mjs`: Murmur connects without a click and rejoins
 the channel last joined, the refusing service is tried once, no microphone is
-requested), and checks that other origins,
+requested), checks its shortcuts (`tests/web_shortcuts.browser.mjs`: Ctrl+K, typing
+and Enter switch to a channel, Escape closes the switcher, Ctrl+F finds a sent
+message), and checks that other origins,
 other ports, loopback and private addresses and a service that is not Mumble are
 refused.
 
@@ -301,6 +303,13 @@ DOM, so a Web Worker can host it.
   with an app-opening explanation until the browser implements that negotiation;
   they must never silently fall back to legacy Mumble. Malformed or ambiguous
   security options also fail closed. `npm test` covers these fragment rules.
+- Ctrl+K (Cmd+K on macOS) opens the quick switcher. It lists and ranks channels,
+  people and direct conversations of every server with the SDK's
+  `nuschl_client::finder`, as the desktop does: arrows and Page Up/Down move,
+  Enter opens, Shift+Enter joins a channel's voice or shows the channel a person
+  is in, and Escape closes it. Ctrl+F opens the search of the conversation's loaded
+  messages. Pressing Ctrl+F again in the search field opens the browser's own find,
+  and both shortcuts go to the browser while another dialog is open.
 - Emoji in messages are Twemoji images served from the same origin, and the smiley
   button beside the composer (or Ctrl+.) opens the picker; the composer stays a
   plain textarea ([emoji.md](emoji.md)).

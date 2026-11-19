@@ -153,7 +153,8 @@ onmessage = async ({ data }) => {
       } else value = client[data.method](...data.args);
       if (data.id !== undefined) postMessage({ kind: "result", id: data.id, value });
       // Encoding is frequent; its route has already been admitted in Rust.
-      if (data.method === "voice_packet") return;
+      // Finding changes nothing to publish.
+      if (data.method === "voice_packet" || data.method === "find") return;
       if(data.method === "content_complete" || data.method === "content_request") {
         // The real ACK above releases its exact credit immediately. Refill the
         // bounded codec lane before coalescing only the model publication.
