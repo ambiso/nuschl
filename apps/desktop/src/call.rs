@@ -125,9 +125,15 @@ pub async fn run(
 }
 
 impl Desktop {
-    /// Start a call in our channel on server `index` (the open conversation)
-    /// and open its page, where the camera and screen start.
-    pub fn start_call(&mut self, index: usize, cx: &mut Context<Self>) {
+    /// Start a call in conversation `target` on server `index` (the open
+    /// conversation: our channel or a direct conversation) and open its page,
+    /// where the camera and screen start.
+    pub fn start_call(
+        &mut self,
+        index: usize,
+        target: nuschl_core::model::TextTarget,
+        cx: &mut Context<Self>,
+    ) {
         let host = match self.settings.call_host.as_str() {
             "" => DEFAULT_HOST,
             host => host,
@@ -135,7 +141,7 @@ impl Desktop {
         let started = Link::generate(host, &mut getrandom::SysRng)
             .map_err(|error| format!("No call: {error}"))
             .and_then(|link| {
-                self.client.start_call(index, link.url())?;
+                self.client.start_call(index, target, link.url())?;
                 Ok(link)
             });
         match started {

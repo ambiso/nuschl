@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: EUPL-1.2
 //! Call cards: the typed plugin data (#93) a call's creator sends to the people
-//! in its channel ([desktop](../../../docs/desktop.md#calls)). The call link
+//! in its channel, or to the other person of a direct conversation
+//! ([desktop](../../../docs/desktop.md#calls)). The call link
 //! itself, its secrets and their keys are `nuschl-stream`'s (#267):
 //!
 //! ```text
-//! https://<host>/call#v=1&k=<S>&h=<V>          the Join link, posted to the channel
+//! https://<host>/call#v=1&k=<S>&h=<V>          the Join link, posted as text
 //! https://<host>/call#v=1&k=<S>&h=<V>&p=<P>    the creator's page
 //! ```
 //!
@@ -12,14 +13,17 @@
 //!
 //! ```text
 //! uint8 version = 1; uint8 kind;
-//! kind 1, a call:  the Join link, UTF-8
-//! kind 2, ended:   nothing
+//! kind 1, a channel call:  the Join link, UTF-8
+//! kind 2, ended:           nothing
+//! kind 3, a direct call:   the Join link, UTF-8
 //! ```
 //!
 //! Decoding checks the card's shape and the link's origin; `nuschl-stream`'s
 //! parser checks the link itself before anyone opens it. A card belongs to its
-//! sender's presence and to the channel the sender is in when it arrives;
-//! receivers drop it when the sender leaves that channel or the server. Any
+//! sender's presence: a channel call to the channel the sender is in when it
+//! arrives, which receivers drop when the sender leaves that channel or the
+//! server; a direct call to the direct conversation with the sender, dropped
+//! when the sender leaves the server. Any
 //! client on the server can send one, so its link is the sender's claim and the
 //! Mumble server sees S.
 
@@ -34,12 +38,15 @@ pub const MAX_CARD: usize = 2 + MAX_LINK;
 const VERSION: u8 = 1;
 const ACTIVE: u8 = 1;
 const ENDED: u8 = 2;
+const DIRECT: u8 = 3;
 
 /// What a call card says.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Card {
-    /// A call and its Join link.
+    /// A call in the sender's channel and its Join link.
     Active(String),
+    /// A call with the receiver alone and its Join link.
+    Direct(String),
     Ended,
 }
 
@@ -47,6 +54,7 @@ impl Card {
     pub fn encode(&self) -> Vec<u8> {
         match self {
             Self::Active(link) => [&[VERSION, ACTIVE], link.as_bytes()].concat(),
+            Self::Direct(link) => [&[VERSION, DIRECT], link.as_bytes()].concat(),
             Self::Ended => vec![VERSION, ENDED],
         }
     }
@@ -56,11 +64,18 @@ impl Card {
             return Err("call card too long");
         }
         match data {
-            [VERSION, ACTIVE, link @ ..] => std::str::from_utf8(link)
-                .ok()
-                .filter(|link| link_host(link).is_some())
-                .map(|link| Self::Active(link.to_owned()))
-                .ok_or("call card link"),
+            [VERSION, kind @ (ACTIVE | DIRECT), link @ ..] => {
+                let link = std::str::from_utf8(link)
+                    .ok()
+                    .filter(|link| link_host(link).is_some())
+                    .ok_or("call card link")?
+                    .to_owned();
+                Ok(if *kind == ACTIVE {
+                    Self::Active(link)
+                } else {
+                    Self::Direct(link)
+                })
+            }
             [VERSION, ENDED] => Ok(Self::Ended),
             [VERSION, ..] => Err("call card kind"),
             _ => Err("unsupported call card"),
@@ -86,6 +101,9 @@ mod tests {
         let encoded = card.encode();
         assert_eq!(encoded[..2], [1, 1]);
         assert_eq!(Card::decode(&encoded), Ok(card));
+        let direct = Card::Direct(LINK.into());
+        assert_eq!(direct.encode()[..2], [1, 3]);
+        assert_eq!(Card::decode(&direct.encode()), Ok(direct));
         assert_eq!(Card::decode(&Card::Ended.encode()), Ok(Card::Ended));
         let link = |link: &str| [&[1, 1], link.as_bytes()].concat();
         for data in [
@@ -94,6 +112,7 @@ mod tests {
             &[2, 1],
             &[1, 3],
             &[1, 2, 0],
+            &[1, 4],
             &[1, 1, 0xff],
             &link("http://stream.nuschl.eu/call#v=1"),
             &link("https:///call#v=1"),
