@@ -43,6 +43,7 @@ pub enum Action {
         #[serde(with = "base64_bytes")]
         data: Vec<u8>,
     },
+    AttachMedia,
     Close,
 }
 
@@ -132,7 +133,7 @@ impl Reply {
                     Outcome::Done,
                 )
                 | (Action::Key { .. }, Outcome::Done)
-                | (Action::Close, Outcome::Done) => true,
+                | (Action::AttachMedia | Action::Close, Outcome::Done) => true,
                 (
                     Action::Pair {
                         peer,

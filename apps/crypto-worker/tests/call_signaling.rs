@@ -1,10 +1,27 @@
 // SPDX-License-Identifier: EUPL-1.2
 #![cfg(target_os = "linux")]
 
-use nuschl_ipc::crypto::CryptoRequest;
 use nuschl_ipc::crypto::call::{Action, Outcome, Request};
+use nuschl_ipc::crypto::{CryptoRequest, epoch};
 use nuschl_session::identity::CryptoHandle;
 use nuschl_stream::Link;
+use std::{os::unix::net::UnixStream, time::Duration};
+
+fn media_socket() -> (tokio::net::UnixStream, std::os::fd::OwnedFd) {
+    let (receive, send) = UnixStream::pair().unwrap();
+    receive.set_nonblocking(true).unwrap();
+    (
+        tokio::net::UnixStream::from_std(receive).unwrap(),
+        send.into(),
+    )
+}
+
+async fn next_epoch(socket: &mut tokio::net::UnixStream) -> Option<epoch::Update> {
+    tokio::time::timeout(Duration::from_secs(2), epoch::read_async(socket))
+        .await
+        .unwrap()
+        .unwrap()
+}
 
 async fn request(worker: &CryptoHandle, generation: u64, action: Action) -> Outcome {
     worker
@@ -91,6 +108,16 @@ async fn native_call_signaling_keeps_keys_in_two_confined_workers() {
         }
     }
 
+    let (mut alice_rtc, alice_media) = media_socket();
+    let (mut bob_rtc, bob_media) = media_socket();
+    let file = std::fs::File::open("/dev/null").unwrap();
+    assert!(alice.attach_media(1, file.into()).await.is_err());
+    alice.attach_media(1, alice_media).await.unwrap();
+    bob.attach_media(1, bob_media).await.unwrap();
+    let (mut duplicate, endpoint) = media_socket();
+    assert!(alice.attach_media(1, endpoint).await.is_err());
+    assert!(next_epoch(&mut duplicate).await.is_none());
+
     request(
         &alice,
         1,
@@ -117,6 +144,22 @@ async fn native_call_signaling_keeps_keys_in_two_confined_workers() {
     let seal = |peer, data| Action::Seal { peer, data };
     let grant = send(request(&alice, 1, key(2, join)).await, 2, false);
     let ack = send(request(&bob, 1, key(1, grant)).await, 1, true);
+    let receive = next_epoch(&mut bob_rtc).await.unwrap();
+    assert_eq!(
+        (
+            receive.generation,
+            receive.peer,
+            receive.epoch,
+            receive.direction
+        ),
+        (1, 1, 1, epoch::Direction::Receive)
+    );
+    let mut byte = [0];
+    assert_eq!(
+        alice_rtc.try_read(&mut byte).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+
     let candidate = b"a=candidate:1 1 UDP 1 127.0.0.1 54321 typ host";
     assert!(
         alice
@@ -131,6 +174,18 @@ async fn native_call_signaling_keeps_keys_in_two_confined_workers() {
         request(&alice, 1, key(2, ack)).await,
         Outcome::Ready { peer: 2 }
     ));
+
+    let send_key = next_epoch(&mut alice_rtc).await.unwrap();
+    assert_eq!(
+        (
+            send_key.generation,
+            send_key.peer,
+            send_key.epoch,
+            send_key.direction
+        ),
+        (1, 2, 1, epoch::Direction::Send)
+    );
+    assert!(send_key.key == receive.key);
 
     let offer = send(
         request(&alice, 1, seal(2, candidate.to_vec())).await,
@@ -170,6 +225,13 @@ async fn native_call_signaling_keeps_keys_in_two_confined_workers() {
     );
 
     request(&bob, 1, Action::Close).await;
+    assert!(next_epoch(&mut bob_rtc).await.is_none());
+    request(&alice, 2, open(true, false)).await;
+    assert!(next_epoch(&mut alice_rtc).await.is_none());
+    let (mut old, endpoint) = media_socket();
+    assert!(alice.attach_media(1, endpoint).await.is_err());
+    assert!(next_epoch(&mut old).await.is_none());
+
     request(&bob, 2, open(false, true)).await;
     let disabled = bob
         .call_signal(Request {

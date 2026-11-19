@@ -153,6 +153,18 @@ impl Worker {
             .unwrap_or_else(CryptoResponse::Rejected)
     }
 
+    #[cfg(target_os = "linux")]
+    pub fn attach_call_media(
+        &mut self,
+        generation: u64,
+        endpoint: std::os::fd::OwnedFd,
+    ) -> CryptoResponse {
+        self.call
+            .attach_media(generation, endpoint)
+            .map(CryptoResponse::Call)
+            .unwrap_or_else(CryptoResponse::Rejected)
+    }
+
     fn dispatch(&mut self, request: CryptoRequest) -> Result<CryptoResponse, String> {
         Ok(match request {
             CryptoRequest::Call(request) => {

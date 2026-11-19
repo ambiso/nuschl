@@ -13,6 +13,9 @@
 use serde::{Deserialize, Serialize};
 
 pub mod call;
+#[cfg(target_os = "linux")]
+pub mod descriptor;
+pub mod epoch;
 
 /// Bytes as a base64 string.
 pub mod base64_bytes {

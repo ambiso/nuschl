@@ -24745,6 +24745,12 @@ rec {
             packageId = "nuschl-sandbox";
           }
           {
+            name = "rustix";
+            packageId = "rustix 1.1.6";
+            target = { target, features }: ("linux" == target."os" or null);
+            features = [ "net" ];
+          }
+          {
             name = "serde";
             packageId = "serde";
             features = [ "derive" ];
@@ -24767,6 +24773,10 @@ rec {
             packageId = "tokio";
             target = { target, features }: ("linux" == target."os" or null);
             features = [ "net" ];
+          }
+          {
+            name = "zeroize";
+            packageId = "zeroize";
           }
         ];
         devDependencies = [

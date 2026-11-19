@@ -7468,10 +7468,12 @@ dependencies = [
  "nuschl-core",
  "nuschl-sandbox",
  "nuschl-testkit",
+ "rustix 1.1.6",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]

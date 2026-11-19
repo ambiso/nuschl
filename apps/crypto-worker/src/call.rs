@@ -3,7 +3,17 @@
 //! opaque messages between workers. This worker keeps the cryptographic state.
 
 use nuschl_ipc::crypto::call::{Action, Create, Outcome, Reply, Request};
-use nuschl_stream::{Link, Publisher, PublisherEvent, Subscriber, SubscriberEvent, SubscriberId};
+use nuschl_ipc::crypto::epoch::{Direction, Update};
+use nuschl_stream::{
+    EpochKey, Link, Publisher, PublisherEvent, Subscriber, SubscriberEvent, SubscriberId,
+};
+#[cfg(target_os = "linux")]
+use std::{
+    net::Shutdown,
+    os::{fd::OwnedFd, unix::net::UnixStream},
+    time::Duration,
+};
+use zeroize::Zeroize as _;
 
 #[derive(Default)]
 pub(crate) struct Signaling {
@@ -15,6 +25,8 @@ struct Call {
     link: Link,
     relay_only: bool,
     pair: Option<Pair>,
+    #[cfg(target_os = "linux")]
+    media: Option<UnixStream>,
 }
 
 struct Pair {
@@ -26,6 +38,7 @@ enum Keys {
     Publisher {
         exchange: Publisher,
         subscriber: Option<SubscriberId>,
+        pending_media: Option<Update>,
     },
     Subscriber(Subscriber),
 }
@@ -52,6 +65,8 @@ impl Signaling {
                 link,
                 relay_only,
                 pair: None,
+                #[cfg(target_os = "linux")]
+                media: None,
             });
             outcome
         } else if matches!(action, Action::Close)
@@ -66,17 +81,40 @@ impl Signaling {
             self.call
                 .as_mut()
                 .ok_or("no open call")?
-                .handle(action, now)?
+                .handle(generation, action, now)?
         };
         Ok(Reply {
             generation,
             outcome,
         })
     }
+    #[cfg(target_os = "linux")]
+    pub(crate) fn attach_media(&mut self, generation: u64, fd: OwnedFd) -> Result<Reply, String> {
+        if generation != self.generation {
+            return Err("stale call media generation".into());
+        }
+        let call = self.call.as_mut().ok_or("no open call")?;
+        if call.media.is_some() || call.pair.is_some() {
+            return Err("call media endpoint is already committed".into());
+        }
+        let media = nuschl_ipc::crypto::descriptor::connected_stream(fd)
+            .map_err(|_| "invalid call media endpoint")?;
+        media
+            .shutdown(Shutdown::Read)
+            .map_err(|_| "invalid call media endpoint")?;
+        media
+            .set_write_timeout(Some(Duration::from_millis(100)))
+            .map_err(|_| "cannot bound call media writes")?;
+        call.media = Some(media);
+        Ok(Reply {
+            generation,
+            outcome: Outcome::Done,
+        })
+    }
 }
 
 impl Call {
-    fn handle(&mut self, action: Action, now: u64) -> Result<Outcome, String> {
+    fn handle(&mut self, generation: u64, action: Action, now: u64) -> Result<Outcome, String> {
         match action {
             Action::Admit { nonce } => {
                 let (proof, host_proof) = self.link.admission_proofs(&nonce);
@@ -101,6 +139,7 @@ impl Call {
                         Keys::Publisher {
                             exchange,
                             subscriber: None,
+                            pending_media: None,
                         },
                         Outcome::Done,
                     )
@@ -126,7 +165,9 @@ impl Call {
                     return Ok(Outcome::Signal { peer, data });
                 }
                 let pair = self.pair(peer)?;
-                pair.receive(&data, now)
+                let (reply, update) = pair.receive(generation, &data, now)?;
+                self.deliver(update)?;
+                Ok(reply)
             }
             Action::Seal { peer, data } => {
                 self.direct_allowed()?;
@@ -139,6 +180,18 @@ impl Call {
             }
             _ => Err("invalid call action".into()),
         }
+    }
+
+    fn deliver(&mut self, update: Option<Update>) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        if let (Some(media), Some(update)) = (&mut self.media, &update)
+            && nuschl_ipc::crypto::epoch::write(media, update).is_err()
+        {
+            self.media = None;
+            return Err("RTC media endpoint closed".into());
+        }
+        drop(update);
+        Ok(())
     }
 
     fn direct_allowed(&self) -> Result<(), String> {
@@ -158,12 +211,18 @@ impl Call {
 }
 
 impl Pair {
-    fn receive(&mut self, data: &[u8], now: u64) -> Result<Outcome, String> {
+    fn receive(
+        &mut self,
+        generation: u64,
+        data: &[u8],
+        now: u64,
+    ) -> Result<(Outcome, Option<Update>), String> {
         let peer = self.peer;
         match &mut self.keys {
             Keys::Publisher {
                 exchange,
                 subscriber,
+                pending_media,
             } => match exchange.receive(data, now).map_err(text)? {
                 PublisherEvent::Requested(id) => {
                     if subscriber.is_some() {
@@ -177,29 +236,40 @@ impl Pair {
                             return Err(text(error));
                         }
                     };
+                    let update = media_update(generation, peer, Direction::Send, rekey.key);
                     let [(_, data)] = rekey
                         .messages
                         .try_into()
                         .map_err(|_| "missing call grant")?;
                     *subscriber = Some(id);
-                    Ok(Outcome::Send {
-                        peer,
-                        data,
-                        ready: false,
-                    })
+                    *pending_media = Some(update);
+                    Ok((
+                        Outcome::Send {
+                            peer,
+                            data,
+                            ready: false,
+                        },
+                        None,
+                    ))
                 }
-                PublisherEvent::Confirmed(_) => Ok(Outcome::Ready { peer }),
+                PublisherEvent::Confirmed(_) => Ok((Outcome::Ready { peer }, pending_media.take())),
             },
             Keys::Subscriber(subscriber) => match subscriber
                 .receive(data, now, &mut getrandom::SysRng)
                 .map_err(text)?
             {
-                SubscriberEvent::Granted { ack, .. } => Ok(Outcome::Send {
-                    peer,
-                    data: ack,
-                    ready: true,
-                }),
-                SubscriberEvent::Rekeyed(_) => Ok(Outcome::Done),
+                SubscriberEvent::Granted { ack, key } => Ok((
+                    Outcome::Send {
+                        peer,
+                        data: ack,
+                        ready: true,
+                    },
+                    Some(media_update(generation, peer, Direction::Receive, key)),
+                )),
+                SubscriberEvent::Rekeyed(key) => Ok((
+                    Outcome::Done,
+                    Some(media_update(generation, peer, Direction::Receive, key)),
+                )),
             },
         }
     }
@@ -211,6 +281,7 @@ impl Keys {
             Self::Publisher {
                 exchange,
                 subscriber: Some(id),
+                ..
             } => exchange.seal_direct(id, data),
             Self::Subscriber(subscriber) => subscriber.seal_direct(data),
             _ => return Err("call peer is waiting for a grant".into()),
@@ -223,12 +294,25 @@ impl Keys {
             Self::Publisher {
                 exchange,
                 subscriber: Some(id),
+                ..
             } => exchange.open_direct(id, data),
             Self::Subscriber(subscriber) => subscriber.open_direct(data),
             _ => return Err("call peer is waiting for a grant".into()),
         }
         .map_err(text)
     }
+}
+
+fn media_update(generation: u64, peer: u64, direction: Direction, mut key: EpochKey) -> Update {
+    let update = Update {
+        generation,
+        peer,
+        direction,
+        epoch: key.epoch,
+        key: key.key,
+    };
+    key.key.zeroize();
+    update
 }
 
 fn text(error: nuschl_stream::Error) -> String {
