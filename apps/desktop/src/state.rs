@@ -206,7 +206,7 @@ pub struct Desktop {
     #[cfg(target_os = "linux")]
     pub native_call_generation: u64,
     #[cfg(target_os = "linux")]
-    pub native_call_fullscreen: bool,
+    pub native_call_fullscreen: Option<std::time::Instant>,
     pub link_preview: crate::link_preview::ComposerPreview,
     pub profile: Profile,
     pub form: Option<ServerForm>,
@@ -539,7 +539,7 @@ impl Desktop {
             #[cfg(target_os = "linux")]
             native_call_generation: 0,
             #[cfg(target_os = "linux")]
-            native_call_fullscreen: false,
+            native_call_fullscreen: None,
             link_preview: crate::link_preview::ComposerPreview::default(),
             profile,
             form: None,

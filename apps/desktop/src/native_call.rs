@@ -460,8 +460,8 @@ impl Desktop {
         });
         if expanded {
             window.focus(&self.window_focus, cx);
-            if !window.is_fullscreen() {
-                self.native_call_fullscreen = true;
+            if !window.is_fullscreen() && self.native_call_fullscreen.is_none() {
+                self.native_call_fullscreen = Some(Instant::now());
                 window.toggle_fullscreen();
             }
         } else {
@@ -471,8 +471,13 @@ impl Desktop {
     }
 
     fn restore_call_window(&mut self, window: &Window) {
-        if std::mem::take(&mut self.native_call_fullscreen) && window.is_fullscreen() {
-            window.toggle_fullscreen();
+        if let Some(started) = self.native_call_fullscreen {
+            if window.is_fullscreen() {
+                self.native_call_fullscreen = None;
+                window.toggle_fullscreen();
+            } else if started.elapsed() >= Duration::from_secs(2) {
+                self.native_call_fullscreen = None;
+            }
         }
     }
 
