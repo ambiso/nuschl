@@ -1,7 +1,7 @@
 {
   "linux-nix": {
     "targets": ["x86_64-unknown-linux-gnu"],
-    "packages": ["nuschl", "nuschl-cli", "nuschl-tui", "nuschld", "nuschl-witness", "nuschl-web-relay", "nuschl-content-worker", "nuschl-crypto-worker", "nuschl-math-worker", "nuschl-media-worker", "nuschl-storage-worker", "nuschl-transfer-worker", "nuschl-video-worker", "nuschl-update-worker"],
+    "packages": ["nuschl", "nuschl-cli", "nuschl-tui", "nuschld", "nuschl-witness", "nuschl-web-relay", "nuschl-content-worker", "nuschl-crypto-worker", "nuschl-math-worker", "nuschl-media-worker", "nuschl-storage-worker", "nuschl-transfer-worker", "nuschl-video-worker", "nuschl-rtc-worker", "nuschl-update-worker"],
     "features": ["nuschl-update-worker/ed25519", "nuschl-update-worker/mldsa44", "nuschl-video-worker/vaapi"],
     "components": ["rust-standard-library", "mumble-protocol", "newcm-math-font", "syntect-default-assets", "emoji-assets"]
   },
@@ -19,7 +19,7 @@
   },
   "linux-aarch64-nix": {
     "targets": ["aarch64-unknown-linux-gnu"],
-    "packages": ["nuschl", "nuschl-cli", "nuschl-tui", "nuschld", "nuschl-witness", "nuschl-web-relay", "nuschl-content-worker", "nuschl-crypto-worker", "nuschl-math-worker", "nuschl-media-worker", "nuschl-storage-worker", "nuschl-transfer-worker", "nuschl-video-worker", "nuschl-update-worker"],
+    "packages": ["nuschl", "nuschl-cli", "nuschl-tui", "nuschld", "nuschl-witness", "nuschl-web-relay", "nuschl-content-worker", "nuschl-crypto-worker", "nuschl-math-worker", "nuschl-media-worker", "nuschl-storage-worker", "nuschl-transfer-worker", "nuschl-video-worker", "nuschl-rtc-worker", "nuschl-update-worker"],
     "features": ["nuschl-update-worker/ed25519", "nuschl-update-worker/mldsa44", "nuschl-video-worker/vaapi"],
     "components": ["rust-standard-library", "mumble-protocol", "newcm-math-font", "syntect-default-assets", "emoji-assets"]
   },

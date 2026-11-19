@@ -354,7 +354,8 @@
             mkdir -p "$out/libexec/nuschl"
             mv "$out/bin/nuschl" "$out/libexec/nuschl/nuschl"
             install -Dm755 ${videoWorker}/bin/nuschl-video-worker "$out/bin/nuschl-video-worker"
-            for worker in nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-media-worker nuschl-storage-worker nuschl-transfer-worker nuschl-video-worker nuschl-update-verify-ed25519 nuschl-update-verify-mldsa44; do
+            install -Dm755 ${crates.project.workspaceMembers.nuschl-rtc-worker.build}/bin/nuschl-rtc-worker "$out/bin/nuschl-rtc-worker"
+            for worker in nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-media-worker nuschl-storage-worker nuschl-transfer-worker nuschl-video-worker nuschl-rtc-worker nuschl-update-verify-ed25519 nuschl-update-verify-mldsa44; do
               test -f "$out/bin/$worker"
               ln -s "../../bin/$worker" "$out/libexec/nuschl/$worker"
             done
@@ -414,6 +415,10 @@
             pkgs.bubblewrap
             pkgs.util-linux
           ];
+          nuschl-rtc-worker.testInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            pkgs.bubblewrap
+            pkgs.util-linux
+          ];
           nuschl-video-worker = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
             features = [ "vaapi" ];
             testInputs = [
@@ -442,6 +447,9 @@
             pkgs.util-linux
             crates.project.workspaceMembers.nuschl-crypto-worker.build
             crates.project.workspaceMembers.nuschl-stream-sfu.build
+          ]
+          ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            crates.project.workspaceMembers.nuschl-rtc-worker.build
           ];
           # The signer's tests need its feature; the default build has none.
           nuschl-update-worker.features = [ "signer" ];
