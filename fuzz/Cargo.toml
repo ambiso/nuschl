@@ -34,7 +34,7 @@ image = { version = "0.25", default-features = false }
 nuschl-client = { path = "../crates/client" }
 nuschl-legacy-html = { path = "../crates/legacy-html" }
 nuschl-session = { path = "../crates/session" }
-opus-rs = { version = "0.1.42", git = "https://github.com/ambiso/opus-rs" }
+opus-rs = { version = "0.1.42", git = "https://github.com/ambiso/opus-rs", features = ["deep-plc"] }
 
 [[bin]]
 name = "html"

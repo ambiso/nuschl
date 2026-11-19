@@ -16,7 +16,7 @@ pub fn live() -> Result<OpusEncoder, &'static str> {
 }
 
 #[cfg(test)]
-mod cvbr;
+pub(crate) mod cvbr;
 
 #[cfg(test)]
 mod tests {

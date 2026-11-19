@@ -29,7 +29,7 @@ impl Noise {
 }
 
 #[derive(Clone, Copy, Debug)]
-enum Signal {
+pub(crate) enum Signal {
     /// Voiced syllables with a gliding pitch, formant weighting and
     /// fricative noise between them.
     Speech,
@@ -41,7 +41,7 @@ enum Signal {
     Music,
 }
 
-fn synthesize(signal: Signal) -> Vec<f32> {
+pub(crate) fn synthesize(signal: Signal) -> Vec<f32> {
     let mut noise = Noise(0x6e75_7363_686c);
     (0..FRAMES * FRAME)
         .map(|index| {

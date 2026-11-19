@@ -2,7 +2,7 @@
 //! Voice from a hostile server as the media worker plays it: packets with any
 //! sequence numbers through a speaker's jitter buffer (the media worker's own
 //! `jitter.rs`, included as a module: the worker is a binary) and the Opus
-//! decoder (opus-rs), with in-band FEC, concealment and resets as
+//! decoder (opus-rs, with Deep PLC), with in-band FEC, concealment and resets as
 //! `Speaker::fill` asks for them. Nothing may panic (debug assertions are on,
 //! so neither may the arithmetic overflow), and no decode may produce more
 //! samples than it was given room for.
@@ -67,8 +67,11 @@ impl Speaker {
 }
 
 fuzz_target!(|data: &[u8]| {
+    let mut decoder = OpusDecoder::new(48_000, 1).expect("a mono decoder");
+    // Exercise neural concealment in every Opus mode.
+    decoder.set_complexity(5).expect("a valid complexity");
     let mut speaker = Speaker {
-        decoder: OpusDecoder::new(48_000, 1).expect("a mono decoder"),
+        decoder,
         jitter: JitterBuffer::default(),
         scratch: vec![0.; MAX_PACKET_SAMPLES],
     };
