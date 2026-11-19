@@ -88,11 +88,12 @@ hardware setup fails before opening the granted connection. Starting again
 after a running PipeWire stream fails requests a fresh portal connection.
 The native capture adapter applies live bitrate targets through its bounded
 socket protocol and coalesces pending targets to the latest value.
-The software path encodes independent frames. Its capture integration test opens
-one connection to a private PipeWire daemon with a synthetic video node, starts
-the worker in bubblewrap and reads encoded AV1. Interframe encoding and
-compositor DMA-BUF verification are tracked in #418. The native RTC and
-desktop integration are tracked in #424 and #419.
+The VA-API path emits keyframes and interframes. The software path encodes
+independent frames at up to 15 fps. The capture integration test opens one
+connection to a private PipeWire daemon with a synthetic video node. The local
+GPU variant checks interframes and recovery after a requested keyframe.
+The native SFU test encodes, sends and decodes AV1 in confined workers and
+checks the resulting pixels. Compositor DMA-BUF verification is tracked in #418.
 
 ## Continuous integration
 

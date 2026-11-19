@@ -45,10 +45,14 @@ decisions (§11).
   rekeying and RFC 9605 SFrame. The native crypto worker supports SFU
   admission and sealed pairwise signaling. The Linux RTC worker receives media
   epochs directly from the crypto worker. Two native SDK participants can send
-  and receive authenticated video frames through the SFU.
-- The Linux video probe captures from one portal-granted PipeWire FD in the
-  video worker. The worker encodes AV1 through VA-API or rav1e. The GPUI call
-  workflow and native playback are tracked in #419.
+  and receive authenticated AV1 keyframes and interframes through the SFU.
+- On Linux the desktop can publish a camera or screen source or play incoming
+  AV1. A fresh portal grant supplies one PipeWire FD to the capture worker.
+  VA-API handles encoding and decoding where available. The software fallbacks
+  are rav1e and rav1d. The decoder returns bounded BGRA to GPUI.
+- The native path uses the SFU and supports one publisher and one viewer.
+  The browser handles group calls or relay-only connections while native TURN
+  and direct paths remain open. Receiver limits currently adjust native bitrate.
 - The companion browser page captures camera and screen, sets receive
   quality per tile and switches two-person video between the SFU and a direct
   connection. The chat web app uses the companion page for video.
