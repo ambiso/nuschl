@@ -8,6 +8,7 @@ pub mod crypt;
 pub mod nuschl;
 pub mod plugin;
 pub mod relay;
+pub mod sfu;
 pub mod tunnel;
 pub mod voice;
 

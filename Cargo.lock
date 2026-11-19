@@ -7606,9 +7606,12 @@ version = "0.2.0"
 dependencies = [
  "aes 0.8.4",
  "bytes",
+ "hex",
  "prost",
  "prost-build",
  "semver",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
@@ -7659,6 +7662,7 @@ version = "0.2.0"
 dependencies = [
  "bytes",
  "directories",
+ "futures-util",
  "hex",
  "nuschl-core",
  "nuschl-ipc",
@@ -7666,6 +7670,7 @@ dependencies = [
  "nuschl-link-preview",
  "nuschl-protocol",
  "nuschl-sandbox",
+ "nuschl-testkit",
  "p12-keystore",
  "prost",
  "rcgen",
@@ -7678,6 +7683,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-rustls",
+ "tokio-tungstenite",
  "uuid",
  "webpki-roots",
 ]
@@ -7751,6 +7757,7 @@ dependencies = [
  "hmac 0.13.0",
  "httparse",
  "jiff",
+ "nuschl-protocol",
  "nuschl-stream-quality",
  "nuschl-testkit",
  "serde",

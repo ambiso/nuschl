@@ -437,6 +437,12 @@
             pkgs.bubblewrap
             pkgs.util-linux
           ];
+          nuschl-session.testInputs = [
+            pkgs.bubblewrap
+            pkgs.util-linux
+            crates.project.workspaceMembers.nuschl-crypto-worker.build
+            crates.project.workspaceMembers.nuschl-stream-sfu.build
+          ];
           # The signer's tests need its feature; the default build has none.
           nuschl-update-worker.features = [ "signer" ];
           nuschl-link-preview.testInputs = [ pkgs.python3 ];

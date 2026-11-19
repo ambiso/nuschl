@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
-//! Call signaling through the crypto worker. Only room metadata, proofs,
-//! opaque envelopes and opened signaling cross IPC.
+//! Call signaling through the crypto worker. IPC carries room metadata, scoped
+//! SFU credentials, proofs, opaque envelopes and opened signaling.
 
 use super::base64_bytes;
 use serde::{Deserialize, Serialize};

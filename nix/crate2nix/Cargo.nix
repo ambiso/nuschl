@@ -25280,12 +25280,21 @@ rec {
             packageId = "bytes";
           }
           {
+            name = "hex";
+            packageId = "hex";
+          }
+          {
             name = "prost";
             packageId = "prost";
           }
           {
             name = "semver";
             packageId = "semver";
+          }
+          {
+            name = "serde";
+            packageId = "serde";
+            features = [ "derive" ];
           }
           {
             name = "thiserror";
@@ -25296,6 +25305,12 @@ rec {
           {
             name = "prost-build";
             packageId = "prost-build";
+          }
+        ];
+        devDependencies = [
+          {
+            name = "serde_json";
+            packageId = "serde_json";
           }
         ];
 
@@ -25444,6 +25459,12 @@ rec {
             packageId = "directories";
           }
           {
+            name = "futures-util";
+            packageId = "futures-util";
+            usesDefaultFeatures = false;
+            features = [ "sink" "std" ];
+          }
+          {
             name = "hex";
             packageId = "hex";
           }
@@ -25527,6 +25548,10 @@ rec {
             features = [ "ring" "tls12" ];
           }
           {
+            name = "tokio-tungstenite";
+            packageId = "tokio-tungstenite";
+          }
+          {
             name = "uuid";
             packageId = "uuid";
             features = [ "v4" ];
@@ -25537,6 +25562,10 @@ rec {
           }
         ];
         devDependencies = [
+          {
+            name = "nuschl-testkit";
+            packageId = "nuschl-testkit";
+          }
           {
             name = "tempfile";
             packageId = "tempfile";
@@ -25784,6 +25813,10 @@ rec {
             packageId = "jiff";
             usesDefaultFeatures = false;
             features = [ "std" ];
+          }
+          {
+            name = "nuschl-protocol";
+            packageId = "nuschl-protocol";
           }
           {
             name = "nuschl-stream-quality";

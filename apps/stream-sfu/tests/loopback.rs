@@ -15,9 +15,7 @@ use nuschl_stream_sfu::quality::{DESCRIPTOR_ID, Descriptor, descriptor_extension
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
-    io::{BufRead, BufReader},
     net::UdpSocket,
-    process::{Child, Command, Stdio},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -36,60 +34,8 @@ const ADMIT: [u8; 32] = [1; 32];
 const HOST: [u8; 32] = [2; 32];
 const ROOM: [u8; 16] = [3; 16];
 
-struct Sfu {
-    child: Child,
-    url: String,
-    directory: nuschl_testkit::TempDir,
-}
-
-impl Drop for Sfu {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-/// The SFU with `settings` added to its configuration; `{directory}` in them
-/// names its temporary directory.
-fn start(settings: &str) -> Sfu {
-    let directory = nuschl_testkit::temp_dir();
-    let secret = directory.path().join("turn-secret");
-    std::fs::write(&secret, "test-secret\n").expect("secret");
-    let config = directory.path().join("sfu.toml");
-    std::fs::write(
-        &config,
-        format!(
-            r#"
-            listen = "127.0.0.1:0"
-            media_listen = "127.0.0.1:0"
-            media_addresses = ["127.0.0.1"]
-            max_peers_per_room = 6
-            {}
-            [turn]
-            urls = ["turn:turn.test:3478?transport=udp"]
-            secret_file = "{}"
-            "#,
-            settings.replace("{directory}", &directory.path().display().to_string()),
-            secret.display()
-        ),
-    )
-    .expect("config");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_nuschl-stream-sfu"))
-        .arg("--config")
-        .arg(&config)
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("start the SFU");
-    let mut line = String::new();
-    BufReader::new(child.stdout.take().expect("stdout"))
-        .read_line(&mut line)
-        .expect("ready line");
-    let signalling = line.split_whitespace().nth(2).expect("signalling address");
-    Sfu {
-        child,
-        url: format!("ws://{signalling}/sfu"),
-        directory,
-    }
+fn start(settings: &str) -> nuschl_testkit::sfu::Sfu {
+    nuschl_testkit::sfu::start(env!("CARGO_BIN_EXE_nuschl-stream-sfu"), settings)
 }
 
 /// `POST` or `DELETE /sfu/lease`; returns the status code.

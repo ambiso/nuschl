@@ -242,6 +242,10 @@ peers; no microphone, camera, public STUN service or external server is used. Th
 probe reports encoded-frame delivery delay and checks received bytes; it is not a
 microphone-to-speaker latency measurement. Video admission follows the bandwidth
 estimate, reserves room for audio and drops frames rather than accumulating a stale
-queue. Desktop video calls, authenticated server signaling, TURN, browser
-interoperability and adaptive playout remain future work
-([tests/README.md](../tests/README.md#webrtc-transport-trial), [clients.md](clients.md#video-queued)).
+queue. The transport test details are in [tests/README.md](../tests/README.md#webrtc-transport-trial).
+
+The native session's WSS admission and key signaling test uses a loopback TLS
+terminator, a real SFU and two sandboxed crypto workers. Run the Nix
+`nuschl-session-unit` check, or build `nuschl-stream-sfu` and `nuschl-crypto-worker`
+with Cargo before running `cargo test -p nuschl-session sfu::tests`. Native media
+transport and rendering are separate from this signaling check.

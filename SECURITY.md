@@ -237,8 +237,12 @@ key messages and direct signaling authenticated with the pairwise key. Replies b
 to the current call generation and its selected peer. Relay-only sessions reject
 direct signals. Pairwise and media keys remain in the worker. The creator's reply
 carries the two credentials the configured SFU needs to create its room.
+The session authenticates that host over WSS using WebPKI roots before requesting
+the proofs and sending the join. The WebSocket handshake uses the configured host
+and `/sfu`, and caps frames and messages at 256 KiB. Key messages share the SFU's
+16 KiB binary limit.
 
-**Companion SFU** (`nuschl-stream-sfu`, [protocol](apps/stream-sfu/src/protocol.rs)).
+**Companion SFU** (`nuschl-stream-sfu`, [protocol](crates/protocol/src/sfu.rs)).
 A network service under its hardened systemd unit; its state lives in memory,
 except its traffic count per billing period, kept in its state directory. A
 room holds the `admit_key` and `host_key` its creator hands over. Media keys stay

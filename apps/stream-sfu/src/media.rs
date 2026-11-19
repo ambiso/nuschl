@@ -10,7 +10,9 @@
 
 use crate::{
     config::Config,
-    protocol::{self, ClientMessage, Decoders, PeerInfo, ServerMessage, Track, TurnCredentials},
+    protocol::{
+        self, ClientMessage, Decoders, PeerInfo, ServerMessage, Track, TurnCredentials, Welcome,
+    },
     quality::{self, VideoAdmission},
     rooms::{self, Bucket, Join, Nonce, PeerId, Refusal, RoomId, Rooms},
     routing::Routing,
@@ -357,16 +359,14 @@ impl Core {
         now: Instant,
     ) {
         if self.traffic.as_ref().is_some_and(Traffic::exhausted) {
-            let _ = out.try_send(ServerMessage::Error { reason: "traffic" });
+            let _ = out.try_send(ServerMessage::error("traffic"));
             return;
         }
         let decoders = join.decoders;
         let role = match self.rooms.join(id, &join, nonce, client, now) {
             Ok(role) => role,
             Err(refusal) => {
-                let _ = out.try_send(ServerMessage::Error {
-                    reason: refusal.reason(),
-                });
+                let _ = out.try_send(ServerMessage::error(refusal.reason()));
                 return;
             }
         };
@@ -381,7 +381,7 @@ impl Core {
         let others_decoders = others.iter().map(|other| self.peers[&other.id].decoders);
         let Some(codec) = protocol::call_codec(others_decoders.chain([decoders])) else {
             self.rooms.leave(&join.room, id);
-            let _ = out.try_send(ServerMessage::Error { reason: "codec" });
+            let _ = out.try_send(ServerMessage::error("codec"));
             return;
         };
         let turn = self.turn.as_ref().map(|turn| {
@@ -427,9 +427,7 @@ impl Core {
             let peer = self.peers.remove(&id).expect("inserted");
             self.rooms.leave(&peer.room, id);
             self.routing.remove(|(route, _)| route == id);
-            let _ = peer.out.try_send(ServerMessage::Error {
-                reason: "bandwidth",
-            });
+            let _ = peer.out.try_send(ServerMessage::error("bandwidth"));
             return;
         }
         // Give the estimator enough initial capacity to send the admitted
@@ -447,13 +445,13 @@ impl Core {
         }
         self.send(
             id,
-            ServerMessage::Welcome {
+            ServerMessage::Welcome(Welcome {
                 peer: id,
                 role,
                 peers: others.clone(),
                 codec,
                 turn,
-            },
+            }),
         );
         for other in others {
             self.send(other.id, ServerMessage::Joined { peer: id, role });
@@ -636,7 +634,7 @@ impl Core {
                     mid: f.mid?.to_string(),
                     peer: f.from,
                     source: f.source.to_string(),
-                    kind: f.label,
+                    kind: f.label.into(),
                 })
             })
             .collect();
@@ -664,7 +662,7 @@ impl Core {
             return;
         };
         if let Some(reason) = reason {
-            let _ = peer.out.try_send(ServerMessage::Error { reason });
+            let _ = peer.out.try_send(ServerMessage::error(reason));
         }
         self.rooms.leave(&peer.room, id);
         self.routing.remove(|(route, _)| route == id);

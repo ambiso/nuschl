@@ -312,9 +312,7 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(
         _ => None,
     };
     let Some(first) = first else {
-        let _ = socket
-            .send(text(&ServerMessage::Error { reason: "join" }))
-            .await;
+        let _ = socket.send(text(&ServerMessage::error("join"))).await;
         return;
     };
     let (out, mut outgoing) = mpsc::channel(OUTGOING);
@@ -346,7 +344,7 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(
                         }
                         Err(_) => "message",
                     };
-                    let _ = socket.send(self::text(&ServerMessage::Error { reason })).await;
+                    let _ = socket.send(self::text(&ServerMessage::error(reason))).await;
                     break;
                 }
                 Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
