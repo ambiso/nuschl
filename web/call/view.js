@@ -4,6 +4,8 @@
 // strings (the stream host requires Trusted Types). This page's own sources show as
 // tiles too; `controls.js` starts and stops them.
 
+import { qualityOptions } from "./controls.js";
+import { fitTier, qualityRequest } from "./signal.js";
 import { ReceiverStats } from "./receiver-stats.js";
 
 const endings = {
@@ -18,9 +20,10 @@ const endings = {
   full: ["Call full", ""],
   busy: ["Call host busy", "Try again later."],
   rate: ["Call host busy", "Try again later."],
+  bandwidth: ["Call bandwidth is full", "Try rejoining when a video stops or its quality drops."],
   relay: ["Relay unavailable", "This call host offers no relay."],
 };
-const rejoin = new Set(["lost", "media", "slow", "busy", "rate"]);
+const rejoin = new Set(["lost", "media", "slow", "busy", "rate", "bandwidth"]);
 
 const element = (document, name, attributes = {}, ...children) => {
   const node = document.createElement(name);
@@ -37,11 +40,22 @@ export class View {
   pinned = null;
   /** A tile per video track mid, kept while the track lasts. */
   tiles = new Map();
+  /** Explicit viewer choices survive a publisher's encoder restart. */
+  tiers = new Map();
+  sizes = new Map();
 
   constructor(document, call) {
     this.document = document;
     this.call = call;
     this.stats = new ReceiverStats(document);
+    this.observer = new document.defaultView.ResizeObserver((entries) => {
+      for (const { target, contentRect, devicePixelContentBoxSize } of entries) {
+        const device = devicePixelContentBoxSize?.[0];
+        const pixels = device ? Math.min(device.inlineSize, device.blockSize) :
+          Math.min(contentRect.width, contentRect.height) * document.defaultView.devicePixelRatio;
+        this.sizes.get(target)?.resize(pixels);
+      }
+    });
     const $ = (id) => document.getElementById(id);
     this.nodes = {
       status: $("status"), stage: $("stage"), large: $("large"), grid: $("grid"), empty: $("empty"),
@@ -61,6 +75,9 @@ export class View {
     const [title, detail] = endings[reason] ?? ["Disconnected", ""];
     const { ending, main } = this.nodes;
     this.stats.close();
+    this.observer.disconnect();
+    for (const size of this.sizes.values()) size.cancel();
+    this.sizes.clear();
     main.hidden = true;
     const actions = [];
     if (rejoin.has(reason) || !(reason in endings)) {
@@ -89,12 +106,17 @@ export class View {
     const videos = [...call.tracks].filter(([, track]) => track.kind === "video").concat(own);
     const shown = new Map(videos);
     for (const [key, tile] of this.tiles) {
-      if (shown.get(key)?.stream === tile.querySelector("video").srcObject) continue;
+      const video = tile.querySelector("video");
+      if (shown.get(key)?.stream === video.srcObject) continue;
+      this.observer.unobserve(video);
+      this.sizes.get(video)?.cancel();
+      this.sizes.delete(video);
       const stats = tile.querySelector(".video-stats");
       if (stats) this.stats.close(stats);
       tile.remove();
       this.tiles.delete(key);
     }
+    for (const peer of this.tiers.keys()) if (!call.peers.has(peer)) this.tiers.delete(peer);
     // A pin stays while its source is away, as during an encoder restart.
     const pinned = videos.find(([, track]) => pin(track) === this.pinned)?.[0];
     const featured = pinned ?? videos.find(([, track]) => track.screen && !track.own)?.[0] ?? null;
@@ -132,13 +154,13 @@ export class View {
       video, element(this.document, "figcaption", {}, label), toggle);
     if (track.screen) tile.dataset.screen = "";
     if (track.own) tile.dataset.own = "";
-    else if (track.receiver) tile.append(this.videoStats(video, track.receiver, label));
+    else if (track.receiver) tile.append(this.videoStats(mid, video, track, label));
     video.addEventListener("loadeddata", () => { tile.dataset.state = "playing"; });
     this.tiles.set(mid, tile);
     return tile;
   }
 
-  videoStats(video, receiver, label) {
+  videoStats(mid, video, track, label) {
     const doc = this.document;
     const details = element(doc, "details", { class: "video-stats" });
     const list = element(doc, "dl");
@@ -150,12 +172,46 @@ export class View {
         return value;
       });
     const message = element(doc, "p", { hidden: "" });
-    details.append(element(doc, "summary", { "aria-label": `Video stats for ${label}` }, "Video stats"), message, list);
+    details.append(element(doc, "summary", { "aria-label": `Video stats for ${label}` }, "Video stats"),
+      this.viewerQuality(mid, video, track, label), message, list);
     details.addEventListener("toggle", () => {
-      if (details.open && details.isConnected) this.stats.open({ details, receiver, video, message, values });
+      if (details.open && details.isConnected) this.stats.open({ details, receiver: track.receiver, video, message, values });
       else this.stats.close(details);
     });
     return details;
+  }
+
+  viewerQuality(mid, video, track, label) {
+    const kind = track.screen ? "screen" : "camera";
+    const select = element(this.document, "select", { "aria-label": `Quality for ${label}` });
+    qualityOptions(select, kind);
+    const tiers = this.tiers.get(track.peer) ?? {};
+    this.tiers.set(track.peer, tiers);
+    select.value = tiers[kind] ?? "";
+
+    let size = 0, lastTier, sentAt = -Infinity, timer;
+    const send = () => {
+      clearTimeout(timer);
+      if (this.call.tracks.get(mid) !== track || this.call.ended) return;
+      const tier = select.value === "" ? fitTier(kind, size) : Number(select.value);
+      if (tier === lastTier || !size) return;
+      // The SFU accepts one request per second. Keep the latest choice until then.
+      const wait = sentAt + 1100 - performance.now();
+      if (wait > 0) {
+        timer = setTimeout(send, wait);
+        return;
+      }
+      this.call.send(qualityRequest(track.peer, kind, tier));
+      lastTier = tier;
+      sentAt = performance.now();
+    };
+    select.addEventListener("change", () => {
+      tiers[kind] = select.value;
+      send();
+    });
+    this.sizes.set(video, { resize: (pixels) => { size = pixels; send(); }, cancel: () => clearTimeout(timer) });
+    this.observer.observe(video, { box: "device-pixel-content-box" });
+    return element(this.document, "label", { class: "viewer-quality" }, "Receive quality", select);
   }
 
   person(id, role) {

@@ -3,7 +3,7 @@
 // subscribe connection with each publisher's frames decrypted in the stream worker,
 // who is in the call, and this page's own camera and screen on the publish
 // connection, encrypted in the stream worker and encoded in the call codec.
-import { MAX_PEERS, join, parse } from "./signal.js";
+import { MAX_PEERS, TIERS, join, parse } from "./signal.js";
 import { preferences, sendCodecs } from "./support.js";
 
 /** A publisher whose keys have not arrived is asked again after this. */
@@ -16,14 +16,11 @@ const ENCODINGS = { camera: 0, screen: 1 };
 export class Call extends EventTarget {
   /** The other peers: id → role. */
   peers = new Map();
-  /** Forwarded sources by mid on the subscribe connection: {peer, source, screen, kind,
-   * receiver, stream, quality}. `quality` is "auto": the SFU's choice. Q1 (#414) adds the
-   * tier ladder and sends each source's quality request from here. */
+  /** Forwarded sources by mid on the subscribe connection. */
   tracks = new Map();
   /** Publishers asked for their keys: id → {keyed, asked}. */
   keys = new Map();
-  /** This page's sources: "camera" or "screen" → {track, transceiver, stream, quality}.
-   * `quality` is "auto"; the SFU sends the encoder limits for each source. */
+  /** This page's camera and screen, with their local tier and the SFU limits. */
   sources = new Map();
   self = null;
   role = null;
@@ -115,6 +112,7 @@ export class Call extends EventTarget {
         if (!this.publisher) throw new Error("answer without an offer");
         await this.publisher.setRemoteDescription({ type: "answer", sdp: message.sdp });
         this.offering = false;
+        for (const [kind, source] of this.sources) await this.applyCap(kind, source);
         if (this.again) await this.offer();
         break;
       case "offer":
@@ -151,7 +149,8 @@ export class Call extends EventTarget {
       if (!track || transceiver.currentDirection === "stopped") continue;
       const { receiver } = transceiver;
       const known = this.tracks.get(transceiver.mid);
-      if (!known || known.receiver !== receiver) {
+      const sameSource = known?.receiver === receiver && known.peer === track.peer && known.source === track.source;
+      if (!sameSource) {
         receiver.transform = new RTCRtpScriptTransform(this.stream.worker, { side: "receive", peer: track.peer });
         try {
           transceiver.setCodecPreferences(preferences(globalThis, receiver.track.kind));
@@ -159,14 +158,13 @@ export class Call extends EventTarget {
           // The browser keeps its own order.
         }
       }
-      current.set(transceiver.mid, known?.receiver === receiver ? known : {
+      current.set(transceiver.mid, sameSource ? known : {
         peer: track.peer,
         source: track.source,
         screen: track.kind === "screen",
         kind: receiver.track.kind,
         receiver,
         stream: new MediaStream([receiver.track]),
-        quality: "auto",
       });
     }
     this.tracks = current;
@@ -196,7 +194,7 @@ export class Call extends EventTarget {
 
   /** Publishes `track`, from the user's own Start camera or Share screen, as this
    * page's `kind` source ("camera" or "screen"). */
-  async publish(kind, track) {
+  async publish(kind, track, tier) {
     if (this.ended || this.sources.has(kind)) return track.stop();
     if (!this.publisher) {
       this.deliver(await this.stream.request({ kind: "publish" }));
@@ -210,7 +208,7 @@ export class Call extends EventTarget {
       }, TICK_MS);
     }
     const transceiver = this.sender(kind, track);
-    this.sources.set(kind, { track, transceiver, stream: new MediaStream([track]), quality: "auto" });
+    this.sources.set(kind, { track, transceiver, stream: new MediaStream([track]), tier });
     // The browser's own Stop sharing, or an unplugged camera.
     track.addEventListener("ended", () => this.unpublish(kind));
     this.changed();
@@ -229,23 +227,43 @@ export class Call extends EventTarget {
   }
 
   /** Apply the SFU's limits to the encoder for this publish MID. */
-  async capSource({ source: mid, max_height: heightLimit, max_fps: fpsLimit, max_bitrate: bitrateLimit }) {
-    const source = [...this.sources.values()].find(({ transceiver }) => transceiver.mid === mid);
-    if (!source) return;
-    const { sender } = source.transceiver;
-    const parameters = sender.getParameters();
-    const encoding = parameters.encodings?.[0];
-    if (!encoding) return;
-    const { width, height } = source.track.getSettings();
-    const shortSide = Math.min(width ?? 0, height ?? 0);
-    encoding.scaleResolutionDownBy = Math.max(1, shortSide / heightLimit);
-    encoding.maxFramerate = fpsLimit;
-    encoding.maxBitrate = bitrateLimit;
-    try {
-      await sender.setParameters(parameters);
-    } catch {
-      // A stopped sender or a browser with fewer encoding controls keeps its settings.
+  async capSource({ source: mid, max_height: height, max_fps: fps, max_bitrate: bitrate }) {
+    for (const [kind, source] of this.sources) {
+      if (source.transceiver.mid !== mid) continue;
+      source.remoteCap = [height, fps, bitrate];
+      await this.applyCap(kind, source);
+      return;
     }
+  }
+
+  setPublishTier(kind, tier) {
+    const source = this.sources.get(kind);
+    if (!source) return;
+    source.tier = tier;
+    return this.applyCap(kind, source);
+  }
+
+  applyCap(kind, source) {
+    source.applying = Promise.resolve(source.applying).then(async () => {
+      const local = TIERS[kind][source.tier] ?? TIERS[kind].at(-1);
+      const [height, fps, bitrate] = local.map((value, index) => Math.min(value, source.remoteCap?.[index] ?? value));
+      const { sender } = source.transceiver;
+      const parameters = sender.getParameters();
+      const encoding = parameters.encodings?.[0];
+      if (!encoding) return;
+      const settings = source.track.getSettings();
+      const scale = Math.max(1, Math.min(settings.width ?? 0, settings.height ?? 0) / height);
+      if (encoding.scaleResolutionDownBy === scale && encoding.maxFramerate === fps && encoding.maxBitrate === bitrate) return;
+      encoding.scaleResolutionDownBy = scale;
+      encoding.maxFramerate = fps;
+      encoding.maxBitrate = bitrate;
+      try {
+        await sender.setParameters(parameters);
+      } catch {
+        // A stopped sender or a browser with fewer encoding controls keeps its settings.
+      }
+    });
+    return source.applying;
   }
 
   /** Restarts each source's encoder in the new call codec on a new transceiver: the

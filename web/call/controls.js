@@ -1,22 +1,31 @@
 // SPDX-License-Identifier: EUPL-1.2
 // Start camera and Share screen (docs/video-plan.md §7): the camera opens only on the
 // user's own Start camera, every share asks the browser's picker again, and this
-// page never opens the microphone. Each source's quality is Auto; Q1 (#414) adds its
-// tiers to QUALITIES.
+// page never opens the microphone.
 
-/** Each source's quality choices: [value, label]. */
-export const QUALITIES = [["auto", "Auto"]];
+import { TIERS } from "./signal.js";
+
+export function qualityOptions(select, kind) {
+  const option = (label, value) => {
+    const entry = select.ownerDocument.createElement("option");
+    entry.textContent = label;
+    entry.value = value;
+    return entry;
+  };
+  select.replaceChildren(option("Auto", ""), ...TIERS[kind].map(([height, fps], index) =>
+    option(`${height}p${fps}`, index)));
+}
 
 const capture = {
   camera: (media) =>
     media.getUserMedia({
-      video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+      video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
       audio: false,
     }),
   // Window sharing first in the picker; a whole monitor stays possible and shows a warning.
   screen: (media) =>
     media.getDisplayMedia({
-      video: { displaySurface: "window", frameRate: { ideal: 30 } },
+      video: { displaySurface: "window", frameRate: { ideal: 60 } },
       audio: false,
       selfBrowserSurface: "exclude",
       surfaceSwitching: "exclude",
@@ -43,11 +52,8 @@ export class Controls {
     for (const kind of ["camera", "screen"]) {
       const button = $(kind);
       const quality = $(`${kind}-quality`);
-      quality.replaceChildren(...QUALITIES.map(([value, label]) => new Option(label, value)));
-      quality.addEventListener("change", () => {
-        const source = call.sources.get(kind);
-        if (source) source.quality = quality.value;
-      });
+      qualityOptions(quality, kind);
+      quality.addEventListener("change", () => call.setPublishTier(kind, quality.value));
       button.addEventListener("click", () => this.toggle(kind));
       this.sources[kind] = { button, quality };
     }
@@ -63,7 +69,7 @@ export class Controls {
     try {
       const [track] = (await capture[kind](this.media)).getVideoTracks();
       if (kind === "screen") track.contentHint = "detail";
-      await this.call.publish(kind, track);
+      await this.call.publish(kind, track, this.sources[kind].quality.value);
     } catch (error) {
       // A cancelled screen picker is the user's choice and needs no notice.
       if (kind === "camera" || error.name !== "NotAllowedError") {
@@ -77,12 +83,11 @@ export class Controls {
 
   render() {
     const { call } = this;
-    for (const [kind, { button, quality }] of Object.entries(this.sources)) {
+    for (const [kind, { button }] of Object.entries(this.sources)) {
       const on = call.sources.has(kind);
       button.textContent = labels[kind][Number(on)];
       button.setAttribute("aria-pressed", String(on));
       button.disabled = Boolean(call.ended) || this.busy.has(kind) || (!on && !call.canPublish);
-      quality.value = call.sources.get(kind)?.quality ?? quality.value;
     }
     const monitor = call.sources.get("screen")?.track.getSettings().displaySurface === "monitor";
     const unsupported = call.codec && !call.canPublish ? `Can't send ${call.codec.toUpperCase()}` : "";

@@ -47,6 +47,23 @@ const messages = {
   error: { reason: text(64) },
 };
 
+/** The camera and screen ladders in crates/stream-quality, lowest tier first. */
+export const TIERS = {
+  camera: [[180, 15, 200_000], [360, 30, 600_000], [720, 30, 2_000_000], [1080, 30, 4_000_000]],
+  screen: [[720, 15, 800_000], [1080, 30, 3_000_000], [1440, 60, 8_000_000], [2160, 60, 15_000_000]],
+};
+
+export function fitTier(kind, pixels) {
+  const tiers = TIERS[kind];
+  const fit = tiers.findIndex(([height]) => height >= pixels);
+  return fit < 0 ? tiers.length - 1 : fit;
+}
+
+/** The v1 QualityRequest: version, publisher (u64 big-endian), kind and tier. */
+export function qualityRequest(peer, kind, tier) {
+  return { type: "quality", request: `01${peer.toString(16).padStart(16, "0")}0${Number(kind === "screen")}0${tier}` };
+}
+
 /** The SFU message in `data`, or null for a type the page does not use. Throws when
  * the message breaks a bound. */
 export function parse(data) {

@@ -11,7 +11,7 @@ import { pathToFileURL } from "node:url";
 import { unsized } from "./frames.js";
 import { receiverRates } from "./receiver-stats.js";
 import { Call } from "./session.js";
-import { MAX_MESSAGE, MAX_PEERS, join, linkOf, parse } from "./signal.js";
+import { MAX_MESSAGE, MAX_PEERS, fitTier, join, linkOf, parse, qualityRequest } from "./signal.js";
 import { preferences, sendCodecs, support } from "./support.js";
 
 const directory = process.env.STREAM_WASM;
@@ -144,6 +144,17 @@ test("SFU messages: the page's bounds", () => {
   assert.throws(() => parse("{"));
 });
 
+test("viewer quality uses tile pixels and the v1 request layout", () => {
+  assert.equal(fitTier("camera", 300), 1);
+  assert.equal(fitTier("camera", 700), 2);
+  assert.equal(fitTier("screen", 720), 0);
+  assert.equal(fitTier("screen", 1200), 2);
+  assert.equal(fitTier("screen", 4000), 3);
+  assert.deepEqual(qualityRequest(0x01020304050607, "screen", 3),
+    { type: "quality", request: "0100010203040506070103" });
+  assert.equal(qualityRequest(23, "camera", 0).request, "0100000000000000170000");
+});
+
 test("publisher quality applies bounded encoder limits to the matching MID", async () => {
   const request = "0100000000000000040100";
   const quality = { type: "quality", request, source: "3", max_height: 720, max_fps: 15, max_bitrate: 800_000 };
@@ -169,6 +180,12 @@ test("publisher quality applies bounded encoder limits to the matching MID", asy
   assert.equal(applied.length, 1);
   await call.receive({ ...quality, source: "4", max_height: 2160, max_fps: 60, max_bitrate: 15_000_000 });
   assert.deepEqual(applied[1], { scaleResolutionDownBy: 1, maxFramerate: 60, maxBitrate: 15_000_000 });
+  await call.setPublishTier("screen", "1");
+  assert.deepEqual(applied[2], {
+    scaleResolutionDownBy: 1440 / 1080, maxFramerate: 30, maxBitrate: 3_000_000,
+  });
+  await call.receive({ ...quality, source: "4" });
+  assert.deepEqual(applied[3], { scaleResolutionDownBy: 2, maxFramerate: 15, maxBitrate: 800_000 });
 });
 
 test("support: encoded transforms and AV1 or VP9, AV1 first", () => {
