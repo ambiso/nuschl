@@ -363,7 +363,10 @@ with a call link opens it ([desktop](desktop.md#calls)); the creator's link adds
   "Can't send AV1" (or VP9).
 - **Quality:** Auto lets the SFU select video quality. The call page applies
   the SFU's publisher limits to the matching encoder's resolution, frame rate
-  and bitrate. Embedding the call view in the web client is a follow-up.
+  and bitrate. Open **Video stats** on a remote tile to see its received
+  resolution, decoded and presented frame rates, receive bitrate, and mean
+  time in the receiver's jitter buffer. Embedding the call view in the web
+  client is a follow-up.
 - **Tests:** `checks.call-page` runs `web/call/call.test.js` against the
   stream worker's wasm; `checks.vm-call-page` (`nix/call-page-vm.nix`,
   `tests/call_page.py`) runs headless Chromium and Firefox against the SFU and
