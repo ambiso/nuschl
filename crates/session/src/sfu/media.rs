@@ -21,7 +21,7 @@ use tokio::{
 };
 
 mod direct;
-use direct::{Direct, Signal};
+use direct::{Candidates, Direct, Signal};
 
 pub use rtc::Purpose;
 
@@ -222,9 +222,54 @@ impl Connection {
     }
 }
 
+enum Network {
+    Sfu(NetworkLeg),
+    Direct {
+        socket: tokio::net::UdpSocket,
+        remote: Option<Candidates>,
+    },
+}
+
+impl Network {
+    fn address(&self) -> std::io::Result<SocketAddr> {
+        match self {
+            Self::Sfu(leg) => Ok(leg.address()),
+            Self::Direct { socket, .. } => socket.local_addr(),
+        }
+    }
+
+    fn permits(&self, address: SocketAddr) -> std::io::Result<bool> {
+        match self {
+            Self::Sfu(leg) => Ok(leg.peer()? == address),
+            Self::Direct { remote, .. } => {
+                Ok(remote.is_some_and(|remote| remote.contains(address)))
+            }
+        }
+    }
+
+    async fn receive(&mut self, data: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+        match self {
+            Self::Sfu(leg) => Ok((leg.recv(data).await?, leg.peer()?)),
+            Self::Direct { socket, .. } => socket.recv_from(data).await,
+        }
+    }
+
+    async fn send(&mut self, data: &[u8], destination: SocketAddr) -> std::io::Result<()> {
+        if self.permits(destination)? {
+            match self {
+                Self::Sfu(leg) => leg.send(data).await?,
+                Self::Direct { socket, .. } => {
+                    socket.send_to(data, destination).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 struct Leg {
     id: u32,
-    network: NetworkLeg,
+    network: Network,
     wake: Option<Instant>,
     connected: bool,
     selected: bool,
@@ -245,7 +290,7 @@ impl Leg {
     async fn start(
         worker: &mut Worker,
         id: u32,
-        network: NetworkLeg,
+        network: Network,
         codec: rtc::Codec,
         role: LegRole,
     ) -> Result<Self, Error> {
@@ -253,10 +298,10 @@ impl Leg {
             worker,
             Command::OpenLeg {
                 leg: id,
-                local: network.address(),
+                local: network.address()?,
                 codec,
                 role,
-                relayed: network.is_relayed(),
+                relayed: matches!(&network, Network::Sfu(leg) if leg.is_relayed()),
             },
         )
         .await?;
@@ -272,11 +317,15 @@ impl Leg {
         })
     }
 
-    async fn datagram(&mut self, worker: &mut Worker, data: &[u8]) -> Result<(), Error> {
-        if data.is_empty() || data.len() > rtc::MAX_DATAGRAM {
+    async fn datagram(
+        &mut self,
+        worker: &mut Worker,
+        source: SocketAddr,
+        data: &[u8],
+    ) -> Result<(), Error> {
+        if data.is_empty() || data.len() > rtc::MAX_DATAGRAM || !self.network.permits(source)? {
             return Ok(());
         }
-        let source = self.network.peer()?;
         worker
             .exchange(
                 Command::Datagram {
@@ -291,9 +340,9 @@ impl Leg {
     }
 }
 
-async fn receive(leg: Option<&mut Leg>, bytes: &mut [u8]) -> std::io::Result<usize> {
+async fn receive(leg: Option<&mut Leg>, bytes: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
     match leg {
-        Some(leg) => leg.network.recv(bytes).await,
+        Some(leg) => leg.network.receive(bytes).await,
         None => pending().await,
     }
 }
@@ -436,7 +485,14 @@ async fn run(
         NetworkLeg::open(destination, turn)
     )?;
     let mut publish = if let (Some(purpose), Some(path)) = (source, publish_path) {
-        let leg = Leg::start(worker, PUBLISH, path, codec, LegRole::SfuPublish).await?;
+        let leg = Leg::start(
+            worker,
+            PUBLISH,
+            Network::Sfu(path),
+            codec,
+            LegRole::SfuPublish,
+        )
+        .await?;
         let mut description = describe(
             worker,
             Command::Offer {
@@ -471,7 +527,7 @@ async fn run(
     let mut subscribe = Leg::start(
         worker,
         SUBSCRIBE,
-        subscribe_path,
+        Network::Sfu(subscribe_path),
         codec,
         LegRole::SfuSubscribe,
     )
@@ -479,10 +535,16 @@ async fn run(
     let mut direct = if connection.policy.permits(Destination::DirectPeer) {
         Some(Direct::new(
             connection.socket.get_ref().get_ref().0.local_addr()?.ip(),
+            connection
+                .welcome
+                .turn
+                .as_ref()
+                .map_or(&[], |turn| turn.urls.as_slice()),
         ))
     } else {
         None
     };
+    let mut discovery = None;
     let mut desired = None;
     let mut direct_buffer = [0; rtc::MAX_DATAGRAM + 1];
     let mut subscribed = Vec::<Track>::new();
@@ -494,7 +556,7 @@ async fn run(
     loop {
         let attempt = direct.as_ref().and_then(|direct| direct.leg.as_ref());
         let selected = attempt.is_some_and(|attempt| attempt.transport.selected);
-        let attempting_direct = attempt.is_some();
+        let attempting_direct = attempt.is_some() || discovery.is_some();
         let direct_wake = attempt
             .filter(|attempt| attempt.answered)
             .and_then(|attempt| attempt.transport.wake);
@@ -558,13 +620,13 @@ async fn run(
                                 direct.ready = true;
                                 Ok(())
                             }
-                            Signal::Offer { endpoint, description } if !publishing && direct.can_accept() => {
-                                match direct.accept(worker, codec, from, endpoint, description, &subscribed).await {
-                                    Ok(answer) => direct::send(connection, from, &answer).await,
-                                    Err(error) => Err(error),
-                                }
+                            Signal::Offer { candidates, description }
+                                if !publishing && direct.can_accept() && discovery.is_none() =>
+                            {
+                                discovery = direct.accept(from, candidates, description, &subscribed);
+                                Ok(())
                             }
-                            Signal::Answer { endpoint, description } if publishing => direct.answer(worker, from, endpoint, description).await,
+                            Signal::Answer { candidates, description } if publishing => direct.answer(worker, from, candidates, description).await,
                             Signal::Connected { id } if publishing => {
                                 if let Some(attempt) = &mut direct.leg && attempt.id == id {
                                     attempt.confirmed = true;
@@ -621,13 +683,31 @@ async fn run(
                 }
             }
             received = receive(publish.as_mut(), &mut pub_buffer) => {
-                if let Some(leg) = &mut publish { leg.datagram(worker, &pub_buffer[..received?]).await?; }
+                if let Some(leg) = &mut publish {
+                    let (size, source) = received?;
+                    leg.datagram(worker, source, &pub_buffer[..size]).await?;
+                }
             }
-            received = subscribe.network.recv(&mut sub_buffer) => subscribe.datagram(worker, &sub_buffer[..received?]).await?,
+            received = subscribe.network.receive(&mut sub_buffer) => {
+                let (size, source) = received?;
+                subscribe.datagram(worker, source, &sub_buffer[..size]).await?;
+            }
             received = receive(direct_connected, &mut direct_buffer) => {
                 if let Some(attempt) = direct.as_mut().and_then(|direct| direct.leg.as_mut()) {
                     retreat = match received {
-                        Ok(size) => attempt.transport.datagram(worker, &direct_buffer[..size]).await.is_err(),
+                        Ok((size, source)) => attempt.transport.datagram(worker, source, &direct_buffer[..size]).await.is_err(),
+                        Err(_) => true,
+                    };
+                }
+            }
+            result = direct::next_prepared(&mut discovery) => {
+                discovery = None;
+                if let (Some(direct), Some(peer)) = (&mut direct, pair.peer) {
+                    retreat = match result {
+                        Ok(prepared) => match direct.complete(worker, codec, prepared).await {
+                            Ok(signal) => direct::send(connection, peer, &signal).await.is_err(),
+                            Err(_) => true,
+                        },
                         Err(_) => true,
                     };
                 }
@@ -686,6 +766,7 @@ async fn run(
                 .is_some_and(|(_, rate)| rate.saturating_mul(4) / 5 < desired);
         }
         if retreat {
+            discovery = None;
             let was_selected = direct
                 .leg
                 .as_ref()
@@ -726,13 +807,8 @@ async fn run(
             (Some(purpose), Some(publish), Some(desired))
                 if sending && direct::enough(publish.bandwidth, desired) =>
             {
-                if direct.can_offer() {
-                    if let Ok(offer) = direct.offer(worker, codec, purpose).await
-                        && direct::send(connection, peer, &offer).await.is_ok()
-                    {
-                        continue;
-                    }
-                    direct.close(worker, None).await?;
+                if direct.can_offer() && discovery.is_none() {
+                    discovery = Some(direct.discover(direct::Setup::Offer(purpose)));
                 } else if let Some(attempt) = &mut direct.leg
                     && attempt.transport.connected
                     && attempt.confirmed
@@ -794,10 +870,9 @@ async fn drain(
                 leg.wake = Some(Instant::now() + Duration::from_millis(after_millis));
                 return Ok(());
             }
-            Reply::Datagram { destination, .. } if destination == leg.network.peer()? => {
-                leg.network.send(&packet.data).await?;
+            Reply::Datagram { destination, .. } => {
+                leg.network.send(&packet.data, destination).await?;
             }
-            Reply::Datagram { .. } => {}
             Reply::Event { event, .. } => {
                 let event = match event {
                     Event::Connected => {

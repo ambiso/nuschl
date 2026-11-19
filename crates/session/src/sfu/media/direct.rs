@@ -2,31 +2,85 @@
 //! One optional native peer leg. The SFU transports sealed signaling.
 
 use super::{
-    Command, Connection, Description, Error, Instant, Leg, LegRole, Purpose, Track, Worker,
-    describe, done,
+    Command, Connection, Description, Error, Instant, Leg, LegRole, Network, Purpose, Track,
+    Worker, describe, done,
 };
+use crate::sfu::turn::turn_address;
+use futures_util::{FutureExt, future::BoxFuture};
 use nuschl_ipc::{crypto::call::Action, rtc::Codec};
 use serde::{Deserialize, Serialize};
 use std::{
+    future::pending,
     net::{IpAddr, SocketAddr},
     time::Duration,
 };
-use tokio::net::UdpSocket;
+use tokio::{
+    net::{UdpSocket, lookup_host},
+    time::timeout,
+};
+use turn_client_proto::stun::types::{
+    attribute::XorMappedAddress,
+    message::{BINDING, Message, MessageClass, MessageWrite, MessageWriteVec},
+};
 
 const SETUP: Duration = Duration::from_secs(10);
 const COOLDOWN: Duration = Duration::from_secs(15);
 const SAMPLE_AGE: Duration = Duration::from_secs(5);
+const DISCOVERY: Duration = Duration::from_millis(900);
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Candidates {
+    host: SocketAddr,
+    reflexive: Option<SocketAddr>,
+}
+
+impl Candidates {
+    pub(super) fn contains(self, address: SocketAddr) -> bool {
+        address == self.host || self.reflexive == Some(address)
+    }
+
+    fn valid(self, interface: IpAddr) -> bool {
+        allowed(interface, self.host)
+            && self
+                .reflexive
+                .is_none_or(|address| address != self.host && allowed(interface, address))
+    }
+}
+
+pub(super) enum Setup {
+    Offer(Purpose),
+    Answer {
+        description: Description,
+        remote: Candidates,
+    },
+}
+
+pub(super) struct Prepared {
+    socket: UdpSocket,
+    local: Candidates,
+    setup: Setup,
+}
+
+pub(super) type Discovery = BoxFuture<'static, Result<Prepared, Error>>;
+
+pub(super) async fn next_prepared(active: &mut Option<Discovery>) -> Result<Prepared, Error> {
+    match active {
+        Some(wake) => wake.await,
+        None => pending().await,
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "native_direct", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Signal {
     Ready,
     Offer {
-        endpoint: SocketAddr,
+        candidates: Candidates,
         description: Description,
     },
     Answer {
-        endpoint: SocketAddr,
+        candidates: Candidates,
         description: Description,
     },
     Connected {
@@ -39,6 +93,7 @@ pub(super) enum Signal {
 
 pub(super) struct Direct {
     interface: IpAddr,
+    stun: Option<(String, u16)>,
     next_leg: u32,
     pub(super) ready: bool,
     pub(super) asked: bool,
@@ -56,9 +111,14 @@ pub(super) struct Attempt {
 }
 
 impl Direct {
-    pub(super) fn new(interface: IpAddr) -> Self {
+    pub(super) fn new(interface: IpAddr, urls: &[String]) -> Self {
         Self {
             interface,
+            stun: urls
+                .iter()
+                .take(6)
+                .find_map(|url| turn_address(url))
+                .map(|(host, port)| (host.to_owned(), port)),
             next_leg: 3,
             ready: false,
             asked: false,
@@ -82,84 +142,86 @@ impl Direct {
             .map(|leg| leg.deadline)
     }
 
-    async fn open(&mut self, worker: &mut Worker, codec: Codec) -> Result<Leg, Error> {
-        let socket = UdpSocket::bind(SocketAddr::new(self.interface, 0)).await?;
-        let id = self.next_leg;
-        self.next_leg = id
-            .checked_add(1)
-            .ok_or(Error::Protocol("direct leg limit"))?;
-        Leg::start(
-            worker,
-            id,
-            super::NetworkLeg::host(socket)?,
-            codec,
-            LegRole::Direct,
-        )
-        .await
-    }
-
-    pub(super) async fn offer(
-        &mut self,
-        worker: &mut Worker,
-        codec: Codec,
-        purpose: Purpose,
-    ) -> Result<Signal, Error> {
-        let transport = self.open(worker, codec).await?;
-        let id = *uuid::Uuid::new_v4().as_bytes();
-        let endpoint = transport.network.address();
-        let leg = transport.id;
-        self.leg = Some(Attempt {
-            transport,
-            id,
-            deadline: Instant::now() + SETUP,
-            tracks: Vec::new(),
-            answered: false,
-            confirmed: false,
-        });
-        let description = describe(
-            worker,
-            Command::Offer {
-                leg,
-                id,
-                purposes: vec![purpose],
-            },
-        )
-        .await?;
-        if let Some(attempt) = &mut self.leg {
-            attempt.tracks = description.tracks.clone();
+    pub(super) fn discover(&self, setup: Setup) -> Discovery {
+        let interface = self.interface;
+        let stun = self.stun.clone();
+        async move {
+            let socket = UdpSocket::bind(SocketAddr::new(interface, 0)).await?;
+            let host = socket.local_addr()?;
+            let reflexive = match stun {
+                Some((server, port)) => {
+                    timeout(DISCOVERY, binding(&socket, &server, port, interface))
+                        .await
+                        .ok()
+                        .flatten()
+                        .filter(|&address| address != host && allowed(interface, address))
+                }
+                None => None,
+            };
+            Ok(Prepared {
+                socket,
+                local: Candidates { host, reflexive },
+                setup,
+            })
         }
-        Ok(Signal::Offer {
-            endpoint,
-            description,
-        })
+        .boxed()
     }
 
-    pub(super) async fn accept(
-        &mut self,
-        worker: &mut Worker,
-        codec: Codec,
+    pub(super) fn accept(
+        &self,
         peer: u64,
-        endpoint: SocketAddr,
+        candidates: Candidates,
         mut description: Description,
         subscribed: &[Track],
-    ) -> Result<Signal, Error> {
+    ) -> Option<Discovery> {
         let [track] = description.tracks.as_mut_slice() else {
-            return Err(Error::Protocol("invalid native direct track"));
+            return None;
         };
         if track.publisher.is_some()
             || !subscribed
                 .iter()
                 .any(|known| known.publisher == Some(peer) && known.purpose == track.purpose)
-            || !allowed(self.interface, endpoint)
+            || !valid_sdp(self.interface, candidates, &description.sdp)
         {
-            return Err(Error::Protocol("invalid native direct offer"));
+            return None;
         }
         track.publisher = Some(peer);
-        let id = description.id;
-        let transport = self.open(worker, codec).await?;
-        let local = transport.network.address();
-        let leg = transport.id;
-        self.leg = Some(Attempt {
+        Some(self.discover(Setup::Answer {
+            description,
+            remote: candidates,
+        }))
+    }
+
+    pub(super) async fn complete(
+        &mut self,
+        worker: &mut Worker,
+        codec: Codec,
+        Prepared {
+            socket,
+            mut local,
+            setup,
+        }: Prepared,
+    ) -> Result<Signal, Error> {
+        let leg = self.next_leg;
+        self.next_leg = leg
+            .checked_add(1)
+            .ok_or(Error::Protocol("direct leg limit"))?;
+        let id = match &setup {
+            Setup::Offer(_) => *uuid::Uuid::new_v4().as_bytes(),
+            Setup::Answer { description, .. } => description.id,
+        };
+        let transport = Leg::start(
+            worker,
+            leg,
+            Network::Direct {
+                socket,
+                remote: None,
+            },
+            codec,
+            LegRole::Direct,
+        )
+        .await?;
+        let attempt = self.leg.insert(Attempt {
             transport,
             id,
             deadline: Instant::now() + SETUP,
@@ -167,21 +229,54 @@ impl Direct {
             answered: false,
             confirmed: false,
         });
-        let answer = describe(worker, Command::AcceptOffer { leg, description }).await?;
-        if let Some(attempt) = &mut self.leg {
-            attempt.connect(endpoint).await?;
+        if let Some(address) = local.reflexive
+            && !matches!(
+                worker
+                    .exchange(Command::AddReflexive { leg, address }, Vec::new())
+                    .await?
+                    .kind,
+                nuschl_ipc::rtc::Reply::Done
+            )
+        {
+            local.reflexive = None;
         }
-        Ok(Signal::Answer {
-            endpoint: local,
-            description: answer,
-        })
+        match setup {
+            Setup::Offer(purpose) => {
+                let description = describe(
+                    worker,
+                    Command::Offer {
+                        leg,
+                        id,
+                        purposes: vec![purpose],
+                    },
+                )
+                .await?;
+                attempt.tracks = description.tracks.clone();
+                Ok(Signal::Offer {
+                    candidates: local,
+                    description,
+                })
+            }
+            Setup::Answer {
+                description,
+                remote,
+            } => {
+                let description =
+                    describe(worker, Command::AcceptOffer { leg, description }).await?;
+                attempt.connect(remote);
+                Ok(Signal::Answer {
+                    candidates: local,
+                    description,
+                })
+            }
+        }
     }
 
     pub(super) async fn answer(
         &mut self,
         worker: &mut Worker,
         peer: u64,
-        endpoint: SocketAddr,
+        candidates: Candidates,
         mut description: Description,
     ) -> Result<(), Error> {
         let Some(attempt) = self
@@ -191,7 +286,9 @@ impl Direct {
         else {
             return Ok(());
         };
-        if description.tracks != attempt.tracks || !allowed(self.interface, endpoint) {
+        if description.tracks != attempt.tracks
+            || !valid_sdp(self.interface, candidates, &description.sdp)
+        {
             return Err(Error::Protocol("invalid native direct answer"));
         }
         for track in &mut description.tracks {
@@ -205,7 +302,8 @@ impl Direct {
             },
         )
         .await?;
-        attempt.connect(endpoint).await
+        attempt.connect(candidates);
+        Ok(())
     }
 
     pub(super) async fn close(
@@ -235,11 +333,12 @@ impl Direct {
 }
 
 impl Attempt {
-    async fn connect(&mut self, endpoint: SocketAddr) -> Result<(), Error> {
-        self.transport.network.connect(endpoint).await?;
+    fn connect(&mut self, candidates: Candidates) {
+        if let Network::Direct { remote, .. } = &mut self.transport.network {
+            *remote = Some(candidates);
+        }
         self.transport.wake = Some(Instant::now());
         self.answered = true;
-        Ok(())
     }
 }
 
@@ -257,6 +356,70 @@ pub(super) fn enough(sample: Option<(Instant, u64)>, desired: u64) -> bool {
     sample.is_some_and(|(observed, rate)| {
         observed.elapsed() <= SAMPLE_AGE && rate.saturating_mul(4) / 5 >= desired
     })
+}
+
+async fn binding(
+    socket: &UdpSocket,
+    host: &str,
+    port: u16,
+    interface: IpAddr,
+) -> Option<SocketAddr> {
+    let server = lookup_host((host, port)).await.ok()?.find(|address| {
+        address.is_ipv4() == interface.is_ipv4()
+            && !address.ip().is_unspecified()
+            && !address.ip().is_multicast()
+    })?;
+    let request = Message::builder_request(BINDING, MessageWriteVec::new()).finish();
+    let id = Message::from_bytes(&request).ok()?.transaction_id();
+    socket.send_to(&request, server).await.ok()?;
+    let mut packet = [0; nuschl_ipc::rtc::MAX_DATAGRAM + 1];
+    loop {
+        let (size, source) = socket.recv_from(&mut packet).await.ok()?;
+        if source != server || size == packet.len() {
+            continue;
+        }
+        let Ok(reply) = Message::from_bytes(&packet[..size]) else {
+            continue;
+        };
+        if reply.transaction_id() == id
+            && reply.method() == BINDING
+            && reply.class() == MessageClass::Success
+        {
+            return Some(reply.attribute::<XorMappedAddress>().ok()?.addr(id));
+        }
+    }
+}
+
+fn valid_sdp(interface: IpAddr, candidates: Candidates, sdp: &str) -> bool {
+    if !candidates.valid(interface) {
+        return false;
+    }
+    let mut host = false;
+    let mut reflexive = false;
+    for line in sdp
+        .lines()
+        .filter_map(|line| line.strip_prefix("a=candidate:"))
+    {
+        let mut fields = line.split_ascii_whitespace();
+        let Some(ip) = fields.nth(4).and_then(|field| field.parse().ok()) else {
+            return false;
+        };
+        let Some(port) = fields.next().and_then(|field| field.parse().ok()) else {
+            return false;
+        };
+        if fields.next() != Some("typ") {
+            return false;
+        }
+        let endpoint = SocketAddr::new(ip, port);
+        match fields.next() {
+            Some("host") if endpoint == candidates.host && !host => host = true,
+            Some("srflx") if Some(endpoint) == candidates.reflexive && !reflexive => {
+                reflexive = true
+            }
+            _ => return false,
+        }
+    }
+    host && (candidates.reflexive.is_some() == reflexive)
 }
 
 fn allowed(interface: IpAddr, endpoint: SocketAddr) -> bool {
@@ -280,5 +443,41 @@ fn allowed(interface: IpAddr, endpoint: SocketAddr) -> bool {
                 && remote.scope_id() == 0
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use turn_client_proto::stun::types::message::MessageWriteExt;
+
+    #[tokio::test]
+    async fn binding_observes_the_mapping_on_the_same_socket() {
+        let host = "127.0.0.1";
+        let socket = UdpSocket::bind((host, 0)).await.unwrap();
+        let server = UdpSocket::bind((host, 0)).await.unwrap();
+        let mapped = "127.0.0.2:49000".parse().unwrap();
+        let request = binding(
+            &socket,
+            host,
+            server.local_addr().unwrap().port(),
+            host.parse().unwrap(),
+        );
+        let respond = async {
+            let mut data = [0; 256];
+            let (size, source) = server.recv_from(&mut data).await.unwrap();
+            assert_eq!(source, socket.local_addr().unwrap());
+            let incoming = Message::from_bytes(&data[..size]).unwrap();
+            assert_eq!(incoming.method(), BINDING);
+            let mut response = Message::builder_success(&incoming, MessageWriteVec::new());
+            response
+                .add_attribute(&XorMappedAddress::new(mapped, incoming.transaction_id()))
+                .unwrap();
+            server.send_to(&response.finish(), source).await.unwrap();
+        };
+        let (address, ()) = timeout(DISCOVERY, async { tokio::join!(request, respond) })
+            .await
+            .unwrap();
+        assert_eq!(address, Some(mapped));
     }
 }

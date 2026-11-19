@@ -116,19 +116,12 @@ impl NetworkLeg {
         Ok(path)
     }
 
-    pub(super) fn host(socket: UdpSocket) -> io::Result<Self> {
+    fn host(socket: UdpSocket) -> io::Result<Self> {
         Ok(Self {
             address: socket.local_addr()?,
             socket,
             relay: None,
         })
-    }
-
-    pub(super) async fn connect(&self, peer: SocketAddr) -> io::Result<()> {
-        if self.relay.is_some() {
-            return Err(failure("TURN leg is bound to its original peer"));
-        }
-        self.socket.connect(peer).await
     }
 
     pub(super) fn peer(&self) -> io::Result<SocketAddr> {
