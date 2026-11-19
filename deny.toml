@@ -64,6 +64,14 @@ deny = [
     "nuschl-rtc",
     "nuschl-stream-sfu",
   ], reason = "Keep the WebRTC implementation behind the encoded-media transport boundary and in the SFU, which forwards RTP unchanged" },
+  { name = "nuschl-rtc", wrappers = [
+    "nuschl-rtc-probe",
+    "nuschl-rtc-worker",
+  ], reason = "Run the native WebRTC state machine in the confined call worker or in the loopback diagnostic" },
+  { name = "nuschl-sframe", wrappers = [
+    "nuschl-rtc-worker",
+    "nuschl-stream-wasm",
+  ], reason = "Keep call media encryption in the native RTC worker and the browser stream worker" },
   { name = "openssl", reason = "Use rustls for transport security" },
   { name = "ml-dsa", wrappers = [
     "nuschl-update-worker",
@@ -194,7 +202,7 @@ deny = [
     "nuschl",
     "nuschl-crypto-worker",
     "nuschl-stream-wasm",
-  ], reason = "Call key agreement belongs to the crypto worker and the browser call page's stream worker; the desktop parses call links and derives the lease keys (SECURITY.md); the SDK driver waits for its SECURITY.md row (docs/video-plan.md §4)" },
+  ], reason = "Call key agreement belongs to the crypto worker and the browser call page's stream worker; the desktop parses call links and derives the lease keys (SECURITY.md)" },
   { name = "aes-gcm", wrappers = [
     "dimpl",
     "noise-rust-crypto",
