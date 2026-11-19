@@ -20,6 +20,7 @@ let
     mkdir "$out"
     openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 3650 \
       -subj /CN=stream.test -addext subjectAltName=DNS:stream.test \
+      -addext basicConstraints=critical,CA:FALSE \
       -keyout "$out/key.pem" -out "$out/cert.pem" 2>/dev/null
   '';
   site = pkgs.runCommand "nuschl-call-test-site" { } ''
