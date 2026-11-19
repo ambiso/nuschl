@@ -240,7 +240,8 @@ key messages and direct signaling authenticated with the pairwise key. Replies b
 to the current call generation and its selected peer. Relay-only sessions reject
 direct signals. Pairwise keys stay in the crypto worker. The RTC process receives
 active call media epochs through a private worker-to-worker socket. The desktop
-brokers the socket handles. The creator's reply
+is the trusted launcher and handle broker. It assigns the endpoints to the two
+workers and releases its copies. The creator's reply
 carries the two credentials the configured SFU needs to create its room.
 The session authenticates that host over WSS using WebPKI roots before requesting
 the proofs and sending the join. The WebSocket handshake uses the configured host
