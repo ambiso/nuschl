@@ -41,7 +41,11 @@ pub(crate) fn command(executable: &Path, role: Role) -> Result<Command, Error> {
     command.args(["--die-with-parent", "--new-session", "--unshare-all"]);
     if matches!(
         role,
-        Role::Preview { .. } | Role::Media | Role::VideoEncode | Role::VideoCapture { .. }
+        Role::Preview { .. }
+            | Role::Media
+            | Role::VideoEncode
+            | Role::VideoCapture { .. }
+            | Role::Rtc
     ) {
         command.args(["--json-status-fd", "2"]);
     }
@@ -246,12 +250,13 @@ mod tests {
             arguments: &[],
         });
         assert!(!ordinary.iter().any(|arg| arg == "--json-status-fd"));
-        let media = arguments(Role::Media);
-        assert!(
-            media
-                .windows(2)
-                .any(|pair| pair == ["--json-status-fd", "2"])
-        );
+        for role in [Role::Media, Role::Rtc] {
+            assert!(
+                arguments(role)
+                    .windows(2)
+                    .any(|pair| pair == ["--json-status-fd", "2"])
+            );
+        }
     }
 
     #[test]
@@ -274,6 +279,7 @@ mod tests {
             directory: &directory,
         });
         let media = arguments(Role::Media);
+        let rtc = arguments(Role::Rtc);
         let offer = arguments(Role::Transfer {
             file: Some(&executable),
         });
@@ -281,6 +287,7 @@ mod tests {
         assert_eq!(content[..3], ["--as=536870912", "--cpu=7", "--"]);
         assert_eq!(math[..3], ["--as=536870912", "--cpu=120", "--"]);
         assert_eq!(update[..3], ["--as=268435456", "--cpu=5", "--"]);
+        assert_eq!(rtc[..3], ["--as=1073741824", "--cpu=3600", "--"]);
         for persistent in [&codec, &storage, &media, &crypto, &offer, &receive] {
             assert_eq!(persistent[..2], ["--as=1073741824", "--"]);
         }
@@ -294,6 +301,7 @@ mod tests {
                 &["/worker", "--database", "/data/history.sqlite3"],
             ),
             (&media, &["/worker", "--live"]),
+            (&rtc, &["/worker", "--call"]),
             (&crypto, &["/worker", "--data", "/data"]),
             (&offer, &["/worker", "--file", "/input"]),
             (&receive, &["/worker"]),

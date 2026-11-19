@@ -62,6 +62,8 @@ pub enum Role<'a> {
     VideoEncode,
     /// Video capture from an inherited portal-granted PipeWire connection.
     VideoCapture { node: Option<u32>, vaapi: bool },
+    /// Encoded call media and opaque datagrams over inherited IPC.
+    Rtc,
     /// History storage: only `directory`, writable.
     Storage { directory: &'a Path },
     /// The crypto worker: only `directory`, writable.
@@ -138,6 +140,7 @@ impl<'a> Role<'a> {
             Role::MusicbotCodec { .. } => Capabilities { name: "musicbot-codec", linux_only: true, ..NOTHING },
             Role::VideoEncode => Capabilities { name: "video-encode", cpu_seconds: Some(120), linux_only: true, ..NOTHING },
             Role::VideoCapture { .. } => Capabilities { name: "video-capture", cpu_seconds: Some(3600), linux_only: true, ..NOTHING },
+            Role::Rtc => Capabilities { name: "rtc", cpu_seconds: Some(3600), linux_only: true, ..NOTHING },
             Role::Storage { directory } => Capabilities { name: "storage", writable: Some(directory), ..NOTHING },
             Role::Crypto { directory } => Capabilities { name: "crypto", writable: Some(directory), ..NOTHING },
             Role::Media => Capabilities { name: "media", audio: true, lpac: false, ..NOTHING },
@@ -159,6 +162,7 @@ impl<'a> Role<'a> {
             Role::MusicbotCodec { operation } => vec!["--codec-worker".into(), operation.into()],
             Role::VideoEncode => vec!["--encode".into()],
             Role::VideoCapture { .. } => vec!["--encode".into(), "--capture".into()],
+            Role::Rtc => vec!["--call".into()],
             Role::Storage { .. } => vec!["--database".into(), data.join("history.sqlite3").into()],
             Role::Crypto { .. } => vec!["--data".into(), data.into()],
             Role::Media => vec!["--live".into()],
@@ -252,7 +256,7 @@ pub async fn spawn(command: Command) -> Result<Worker, Error> {
 }
 
 /// Start a fixed role with its trusted Linux namespace-init receipt piped on
-/// standard error (preview, audio, and video). Its owner acquires the
+/// standard error (preview, audio, video and RTC). Its owner acquires the
 /// receipt before input and waits for the whole sandbox to exit.
 pub async fn spawn_receipted(executable: &Path, role: Role<'_>) -> Result<Worker, Error> {
     let stderr = if cfg!(target_os = "linux") {
