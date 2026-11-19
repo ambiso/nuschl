@@ -855,15 +855,21 @@
         '';
         # The call page and its stream worker, served by the stream host at /call
         # (nix/stream-module.nix).
-        packages.call-site = pkgs.runCommand "nuschl-call-site" { } ''
-          mkdir -p "$out/licenses/nuschl"
-          cp ${./web/call}/*.{html,css,js} "$out/"
-          cp ${./web/site/nuschl.svg} "$out/nuschl.svg"
-          rm "$out"/*.test.js
-          cp ${webClient.streamWasm}/nuschl_stream_wasm{.js,_bg.wasm} "$out/"
-          cp ${./LICENSE} "$out/licenses/nuschl/EUPL-1.2"
-          cp -R ${releaseNotices.callPage.bundle}/share/licenses/nuschl/. "$out/licenses/nuschl/"
-        '';
+        packages.call-site =
+          let
+            site = lib.cleanSourceWith {
+              src = ./web/call;
+              filter = path: _: !(lib.hasSuffix ".test.js" path);
+            };
+          in
+          pkgs.runCommand "nuschl-call-site" { } ''
+            mkdir -p "$out/licenses/nuschl"
+            cp ${site}/*.{html,css,js} "$out/"
+            cp ${./web/site/nuschl.svg} "$out/nuschl.svg"
+            cp ${webClient.streamWasm}/nuschl_stream_wasm{.js,_bg.wasm} "$out/"
+            cp ${./LICENSE} "$out/licenses/nuschl/EUPL-1.2"
+            cp -R ${releaseNotices.callPage.bundle}/share/licenses/nuschl/. "$out/licenses/nuschl/"
+          '';
         apps.rtc-probe =
           (flake-utils.lib.mkApp {
             drv = rtcPackage;
