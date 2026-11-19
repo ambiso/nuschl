@@ -5,21 +5,38 @@
 //! Each peer has up to two WebRTC connections. On its publish connection the
 //! peer offers and the SFU answers (`offer` → `answer`); on its subscribe
 //! connection the SFU offers and the peer answers. Each side is always the
-//! offerer on its own connection, so offers never cross.
+//! offerer on its own connection, so offers never cross. The subscribe
+//! connection also carries an unused data channel, `sfu`, which keeps its
+//! transport up while no source is forwarded.
 //!
 //! ```text
 //! SFU → peer  hello {nonce}
-//! peer → SFU  join {room, verifier, proof, host_proof?, create?: {admit_key, host_key}}
-//! SFU → peer  welcome {peer, role, peers: [{id, role}], turn?: {urls, username, credential}}
+//! peer → SFU  join {room, verifier, proof, host_proof?, create?: {admit_key, host_key}, codecs}
+//! SFU → peer  welcome {peer, role, peers: [{id, role}], codec, turn?: {urls, username, credential}}
 //!             | error {reason}
-//! peer → SFU  offer {sdp}                  publish connection
+//! peer → SFU  offer {sdp, screens?: [mid]} publish connection; screens names
+//!                                          the video mids that carry a screen
 //! SFU → peer  answer {sdp}
-//! SFU → peer  offer {sdp, tracks: [{mid, peer, source}]}   subscribe connection
+//! SFU → peer  offer {sdp, tracks: [{mid, peer, source, kind}]}   subscribe connection
 //! peer → SFU  answer {sdp}
 //! peer → SFU  key {to, data}               relayed as key {from, data}
+//! peer → SFU  quality {request}            hex QualityRequest, per source, ≤ 1/s
+//! peer → SFU  capacity {decode}            hex DecodeCapacity, ≤ 1/s
+//! SFU → peer  quality {request}            the largest tier asked of a source
 //! peer → SFU  remove {peer} | end          hosts only
 //! SFU → peer  joined {peer, role} | left {peer}
+//! SFU → peer  codec {codec}
 //! ```
+//!
+//! A later publish offer that stops or deactivates a mid ends that source:
+//! its tracks leave the subscribers' next offers.
+//!
+//! **One codec per call** (docs/video-plan.md §6). `codecs` lists the video
+//! codecs the peer decodes in WebRTC, `"av1"` and `"vp9"`, at least one. The
+//! call codec is AV1 while every peer decodes it, otherwise VP9; a join that
+//! leaves no codec every peer decodes fails with `error {reason: "codec"}`.
+//! `welcome` carries the call codec and `codec` each change after a join or a
+//! leave; publishers encode in it.
 //!
 //! **Keys and proofs.** S and P are the link's two 32-byte secrets (`crates/stream`):
 //!
@@ -81,9 +98,12 @@ pub enum ClientMessage {
         host_proof: Option<String>,
         #[serde(default)]
         create: Option<Create>,
+        codecs: Vec<Codec>,
     },
     Offer {
         sdp: String,
+        #[serde(default)]
+        screens: Vec<String>,
     },
     Answer {
         sdp: String,
@@ -92,10 +112,55 @@ pub enum ClientMessage {
         to: PeerId,
         data: String,
     },
+    Quality {
+        request: String,
+    },
+    Capacity {
+        decode: String,
+    },
     Remove {
         peer: PeerId,
     },
     End,
+}
+
+/// A video codec a call can use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Codec {
+    Av1,
+    Vp9,
+}
+
+/// The video codecs a peer decodes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Decoders {
+    pub av1: bool,
+    pub vp9: bool,
+}
+
+impl Decoders {
+    /// `None` for an empty list.
+    pub fn new(codecs: &[Codec]) -> Option<Self> {
+        let decoders = Self {
+            av1: codecs.contains(&Codec::Av1),
+            vp9: codecs.contains(&Codec::Vp9),
+        };
+        (decoders != Self::default()).then_some(decoders)
+    }
+}
+
+/// The call codec of peers that decode `peers`: AV1 when all of them do, else
+/// VP9 when all of them do.
+pub fn call_codec(peers: impl IntoIterator<Item = Decoders>) -> Option<Codec> {
+    let (av1, vp9) = peers
+        .into_iter()
+        .fold((true, true), |(av1, vp9), d| (av1 && d.av1, vp9 && d.vp9));
+    match (av1, vp9) {
+        (true, _) => Some(Codec::Av1),
+        (false, true) => Some(Codec::Vp9),
+        (false, false) => None,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -115,6 +180,7 @@ pub enum ServerMessage {
         peer: PeerId,
         role: Role,
         peers: Vec<PeerInfo>,
+        codec: Codec,
         turn: Option<TurnCredentials>,
     },
     Joined {
@@ -123,6 +189,9 @@ pub enum ServerMessage {
     },
     Left {
         peer: PeerId,
+    },
+    Codec {
+        codec: Codec,
     },
     Offer {
         sdp: String,
@@ -134,6 +203,9 @@ pub enum ServerMessage {
     Key {
         from: PeerId,
         data: String,
+    },
+    Quality {
+        request: String,
     },
     Error {
         reason: &'static str,
@@ -160,6 +232,8 @@ pub struct Track {
     pub mid: String,
     pub peer: PeerId,
     pub source: String,
+    /// `camera`, `screen` or `audio`.
+    pub kind: &'static str,
 }
 
 pub fn from_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
@@ -181,9 +255,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn quality_messages() {
+        let quality: ClientMessage =
+            serde_json::from_str(r#"{"type":"quality","request":"0100"}"#).expect("quality");
+        assert!(matches!(quality, ClientMessage::Quality { request } if request == "0100"));
+        let offer: ClientMessage =
+            serde_json::from_str(r#"{"type":"offer","sdp":"","screens":["1"]}"#).expect("offer");
+        assert!(matches!(offer, ClientMessage::Offer { screens, .. } if screens == ["1"]));
+        let demand = ServerMessage::Quality {
+            request: "01".into(),
+        };
+        assert_eq!(
+            serde_json::to_string(&demand).expect("json"),
+            r#"{"type":"quality","request":"01"}"#
+        );
+    }
+
+    #[test]
     fn wire_format() {
         let join: ClientMessage = serde_json::from_str(
-            r#"{"type":"join","room":"00","verifier":"44","proof":"11","create":{"admit_key":"22","host_key":"33"}}"#,
+            r#"{"type":"join","room":"00","verifier":"44","proof":"11","create":{"admit_key":"22","host_key":"33"},"codecs":["vp9","av1"]}"#,
         )
         .expect("join");
         assert!(matches!(
@@ -191,9 +282,16 @@ mod tests {
             ClientMessage::Join {
                 host_proof: None,
                 create: Some(_),
+                ref codecs,
                 ..
-            }
+            } if codecs == &[Codec::Vp9, Codec::Av1]
         ));
+        assert!(
+            serde_json::from_str::<ClientMessage>(
+                r#"{"type":"join","room":"00","verifier":"44","proof":"11","codecs":["h264"]}"#
+            )
+            .is_err()
+        );
         assert!(matches!(
             serde_json::from_str(r#"{"type":"end"}"#).expect("end"),
             ClientMessage::End
@@ -206,13 +304,28 @@ mod tests {
                 id: 1,
                 role: Role::Participant,
             }],
+            codec: Codec::Vp9,
             turn: None,
         })
         .expect("json");
         assert_eq!(
             welcome,
-            r#"{"type":"welcome","peer":3,"role":"host","peers":[{"id":1,"role":"participant"}],"turn":null}"#
+            r#"{"type":"welcome","peer":3,"role":"host","peers":[{"id":1,"role":"participant"}],"codec":"vp9","turn":null}"#
         );
+    }
+
+    #[test]
+    fn one_codec_per_call() {
+        let decoders = |codecs: &[Codec]| Decoders::new(codecs).expect("a codec");
+        let both = decoders(&[Codec::Av1, Codec::Vp9]);
+        let vp9 = decoders(&[Codec::Vp9]);
+        let av1 = decoders(&[Codec::Av1]);
+        assert_eq!(Decoders::new(&[]), None);
+        assert_eq!(call_codec([both, both]), Some(Codec::Av1));
+        assert_eq!(call_codec([both, vp9]), Some(Codec::Vp9));
+        assert_eq!(call_codec([av1, both]), Some(Codec::Av1));
+        assert_eq!(call_codec([av1, vp9]), None);
+        assert_eq!(call_codec([vp9]), Some(Codec::Vp9));
     }
 
     #[test]

@@ -3279,6 +3279,7 @@ fn call_card(
 ) -> Option<AnyElement> {
     let server = &this.client.servers[index];
     let join = |url: String, cx: &mut Context<Desktop>| {
+        let url = crate::call::page_url(&url, this.settings.relay_only);
         styled_button(
             "call-join",
             "Join",

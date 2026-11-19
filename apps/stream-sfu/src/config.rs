@@ -85,8 +85,15 @@ pub struct Config {
     pub receiver_bitrate: u64,
     /// Forwarded media per room, in bits per second.
     pub room_bitrate: u64,
+    /// The host's upload, in bits per second; forwarding uses at most 70 % of it.
+    pub upload_bitrate: u64,
     /// WebSocket connections at once, joined or not.
     pub max_connections: usize,
+    /// Bytes the SFU sends per period at most (`traffic`); none without.
+    pub traffic_budget: Option<u64>,
+    pub period: crate::traffic::Period,
+    /// Where the traffic count lives; required with `traffic_budget`.
+    pub state_directory: Option<PathBuf>,
     /// WebSocket connections at once per client address (IPv6 per /64).
     pub connections_per_address: usize,
 }
@@ -108,7 +115,11 @@ impl Default for Config {
             creations_per_hour: 20,
             receiver_bitrate: 25_000_000,
             room_bitrate: 150_000_000,
+            upload_bitrate: 1_000_000_000,
             max_connections: 4096,
+            traffic_budget: None,
+            period: crate::traffic::Period::Month,
+            state_directory: None,
             connections_per_address: 32,
         }
     }
@@ -140,9 +151,16 @@ impl Config {
             || self.messages_per_second == 0
             || self.receiver_bitrate == 0
             || self.room_bitrate == 0
+            || self.upload_bitrate == 0
             || self.max_connections == 0
             || self.connections_per_address == 0
         {
+            return Err("a limit is zero or too small".into());
+        }
+        if self.traffic_budget.is_some() && self.state_directory.is_none() {
+            return Err("traffic_budget needs state_directory".into());
+        }
+        if self.traffic_budget == Some(0) {
             return Err("a limit is zero or too small".into());
         }
         if self

@@ -1,6 +1,6 @@
-# The screen-share stream host (#143): the static watch and share pages with
-# the plan's isolation headers, no cookies and no access log, and the
-# companion SFU (apps/stream-sfu) behind /sfu with its media on one UDP port.
+# The call host (#143): the static call page at /call (web/call) with the
+# plan's isolation headers, no cookies and no access log, and the companion
+# SFU (apps/stream-sfu) behind /sfu with its media on one UDP port.
 # `services.nuschl-stream`.
 { self }:
 {
@@ -20,6 +20,11 @@ let
       listen = "unix:${socket}";
       media_listen = "[::]:${toString cfg.sfu.port}";
       media_addresses = cfg.sfu.addresses;
+    }
+    // lib.optionalAttrs (cfg.sfu.trafficBudget != null) {
+      traffic_budget = cfg.sfu.trafficBudget;
+      inherit (cfg.sfu) period;
+      state_directory = "/var/lib/nuschl-stream-sfu";
     }
     // lib.optionalAttrs (cfg.sfu.turn.secretFile != null) {
       turn = {
@@ -48,16 +53,16 @@ let
     "frame-ancestors 'none'"
     "require-trusted-types-for 'script'"
   ];
-  # No identity code runs here, so passkeys are denied too. nginx drops
-  # inherited add_header lines in a block with its own, so /share, which
-  # allows display capture, repeats the full set.
-  headers = displayCapture: ''
+  # No identity code runs here, so passkeys are denied too. The call page alone
+  # may ask for the camera and screen; nginx drops inherited add_header lines in a
+  # block with its own, so /call repeats the full set.
+  headers = capture: ''
     add_header Content-Security-Policy "${csp}" always;
     add_header Cross-Origin-Opener-Policy same-origin always;
     add_header Cross-Origin-Embedder-Policy require-corp always;
     add_header Cross-Origin-Resource-Policy same-origin always;
     add_header Origin-Agent-Cluster "?1" always;
-    add_header Permissions-Policy "display-capture=${displayCapture}, camera=(), microphone=(), geolocation=(), publickey-credentials-get=(), publickey-credentials-create=()" always;
+    add_header Permissions-Policy "display-capture=${capture}, camera=${capture}, microphone=(), geolocation=(), publickey-credentials-get=(), publickey-credentials-create=()" always;
     add_header Referrer-Policy no-referrer always;
     add_header X-Content-Type-Options nosniff always;
     ${lib.optionalString cfg.forceSSL ''add_header Strict-Transport-Security "max-age=31536000" always;''}
@@ -65,7 +70,7 @@ let
 in
 {
   options.services.nuschl-stream = {
-    enable = lib.mkEnableOption "the Nuschl screen-share stream host";
+    enable = lib.mkEnableOption "the Nuschl call host";
     hostName = lib.mkOption {
       type = lib.types.str;
       example = "stream.nuschl.eu";
@@ -83,8 +88,9 @@ in
     };
     site = lib.mkOption {
       type = lib.types.nullOr lib.types.package;
-      default = null;
-      description = "watch.html (served at /watch), share.html (at /share) and their assets; null serves only 404s.";
+      default = self.packages.${pkgs.stdenv.hostPlatform.system}.call-site;
+      defaultText = lib.literalExpression "inputs.nuschl.packages.\${pkgs.stdenv.hostPlatform.system}.call-site";
+      description = "call.html (served at /call) and its assets; null serves only 404s.";
     };
     sfu = {
       enable = lib.mkEnableOption "the companion SFU: signalling at /sfu, media on one UDP port";
@@ -107,6 +113,25 @@ in
         description = "Public addresses peers reach the media port at, one host candidate each.";
       };
       openFirewall = lib.mkEnableOption "the media port";
+      trafficBudget = mkOption {
+        type = types.nullOr types.ints.positive;
+        default = null;
+        example = 20000000000000;
+        description = ''
+          Bytes the SFU sends per period at most, null for no budget. Above the
+          paced share (the budget times the elapsed fraction of the period) it
+          lowers every receiver's quality step by step; at the budget it refuses
+          new video. The count survives restarts in the state directory.
+        '';
+      };
+      period = mkOption {
+        type = types.enum [
+          "day"
+          "month"
+        ];
+        default = "month";
+        description = "The traffic budget's period, in UTC.";
+      };
       turn = {
         urls = mkOption {
           type = types.listOf types.str;
@@ -138,6 +163,7 @@ in
             creations_per_hour = limit 20 "Room creations per client address (IPv6 per /64) and hour.";
             receiver_bitrate = limit 25000000 "Forwarded media per receiver, bits per second.";
             room_bitrate = limit 150000000 "Forwarded media per room, bits per second.";
+            upload_bitrate = limit 1000000000 "The host's upload, bits per second; forwarding uses at most 70 % of it.";
             max_connections = limit 4096 "Signalling connections at once.";
             connections_per_address = limit 32 "Signalling connections at once per client address (IPv6 per /64).";
           };
@@ -175,9 +201,8 @@ in
             else
               {
                 "/".tryFiles = "$uri =404";
-                "= /watch".tryFiles = "/watch.html =404";
-                "= /share" = {
-                  tryFiles = "/share.html =404";
+                "= /call" = {
+                  tryFiles = "/call.html =404";
                   extraConfig = headers "(self)";
                 };
               }
@@ -231,6 +256,8 @@ in
         User = "nuschl-stream-sfu";
         Group = "nuschl-stream-sfu";
         RuntimeDirectory = "nuschl-stream-sfu";
+        StateDirectory = "nuschl-stream-sfu";
+        StateDirectoryMode = "0700";
         RuntimeDirectoryMode = "0750";
         UMask = "0007";
         Restart = "on-failure";

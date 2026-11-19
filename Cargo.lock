@@ -7540,6 +7540,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nuschl-stream-quality"
+version = "0.2.0"
+
+[[package]]
 name = "nuschl-stream-sfu"
 version = "0.2.0"
 dependencies = [
@@ -7550,6 +7554,8 @@ dependencies = [
  "hex",
  "hmac 0.13.0",
  "httparse",
+ "jiff",
+ "nuschl-stream-quality",
  "nuschl-testkit",
  "serde",
  "serde_json",
@@ -7561,6 +7567,20 @@ dependencies = [
  "toml 1.2.1+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "nuschl-stream-wasm"
+version = "0.2.0"
+dependencies = [
+ "hex",
+ "libcrux-hmac 0.0.9",
+ "nuschl-sframe",
+ "nuschl-stream",
+ "rand_core 0.10.1",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
 ]
 
 [[package]]

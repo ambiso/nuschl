@@ -14,8 +14,7 @@
 let
   site = pkgs.runCommand "nuschl-stream-test-site" { } ''
     mkdir -p "$out"
-    echo '<!doctype html><title>watch page</title>' > "$out/watch.html"
-    echo '<!doctype html><title>share page</title>' > "$out/share.html"
+    echo '<!doctype html><title>call page</title>' > "$out/call.html"
     echo 'console.log("asset")' > "$out/app.js"
   '';
   restSecret = "turn-test-rest-secret";
@@ -109,6 +108,8 @@ pkgs.testers.runNixOSTest {
               secretFile = "/var/lib/sfu-test/rest-secret";
             };
             settings.max_peers_per_room = 2;
+            trafficBudget = 1000000000;
+            period = "day";
           };
         };
       };
@@ -210,13 +211,13 @@ pkgs.testers.runNixOSTest {
               assert "set-cookie" not in out, (path, out)
               return out
 
-          watch = head("/watch")
-          assert watch.startswith("http/1.1 200") and "display-capture=()" in watch
-          assert "display-capture=(self)" in head("/share")
+          call = head("/call")
+          assert call.startswith("http/1.1 200") and "display-capture=(self), camera=(self), microphone=()" in call
+          assert "display-capture=(), camera=()" in head("/app.js")
           assert head("/app.js").startswith("http/1.1 200")
           for missing in ["/", "/missing"]:
               assert head(missing).startswith("http/1.1 404"), missing
-          sfu.fail("grep -rqE '/watch|/share|/sfu' /var/log/nginx/")
+          sfu.fail("grep -rqE '/call|/sfu' /var/log/nginx/")
 
       with subtest("SFU: admission at /sfu, TURN credentials coturn accepts"):
           client.succeed("cat > /tmp/sfu.py <<'EOF'\n" + """
@@ -228,7 +229,7 @@ pkgs.testers.runNixOSTest {
               nonce = bytes.fromhex(json.loads(ws.recv())["nonce"])
               mac = lambda key, label: hmac.new(key, label + nonce, hashlib.sha256).hexdigest()
               message = {"type": "join", "room": "03" * 16, "verifier": hashlib.sha256(bytes([2]) * 32).hexdigest(),
-                         "proof": mac(admit, b"nuschl/stream/v2 sfu admit")}
+                         "proof": mac(admit, b"nuschl/stream/v2 sfu admit"), "codecs": ["av1", "vp9"]}
               if host:
                   message["host_proof"] = mac(host, b"nuschl/stream/v2 sfu host")
               if create:
@@ -246,6 +247,8 @@ pkgs.testers.runNixOSTest {
           assert turn_credentials["urls"] == ["turn:turn.test:3478?transport=udp"], turn_credentials
           assert echoed(relay(turn_credentials["username"], "${sfu4}", password=turn_credentials["credential"])) == (3, 3)
           sfu.succeed("ss -lun | grep -q ':40010 '")
+          # The traffic count, saved each second in the state directory.
+          sfu.wait_until_succeeds("test -s /var/lib/nuschl-stream-sfu/traffic", timeout=10)
           lease = lambda method, key: client.succeed(
               f"curl -sS -o /dev/null -w '%{{http_code}}' -X {method} http://stream.test/sfu/lease "
               f"--data '{{\"stream_id\": \"{'03' * 16}\", \"host_key\": \"{key}\"}}'"

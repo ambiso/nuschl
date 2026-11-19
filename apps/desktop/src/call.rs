@@ -12,7 +12,9 @@
 //! same body. The call ends when the room is gone after it existed, when the
 //! room fails to appear within [`GRACE`] (the page creates it), when renewals
 //! fail for [`TIMEOUT`], and after [`MAX`]. Hosts `localhost` and `127.0.0.1` take
-//! the lease over `http://`, for development and tests.
+//! the lease over `http://`, for development and tests. With relay-only on, the page
+//! opens as `/call?relay#…` and connects through the call host's TURN server only
+//! (docs/web.md, "The call page").
 use crate::{services::ServiceEvent, state::Desktop};
 use gpui_kit::Context;
 use nuschl_core::call::DEFAULT_HOST;
@@ -166,7 +168,8 @@ impl Desktop {
     /// Open the creator's page, post the Join link as text for stock Mumble
     /// clients and keep the lease; a previous lease ends.
     fn open_call(&mut self, link: Link, label: &str, cx: &mut Context<Self>) {
-        cx.open_url(&link.creator_url().expect("the creator's link"));
+        let url = link.creator_url().expect("the creator's link");
+        cx.open_url(&page_url(&url, self.settings.relay_only));
         let _ = self.client.send_text(format!("{label}: {}", link.url()));
         let (url, body) = lease_request(&link);
         self.call_leases += 1;
@@ -205,6 +208,15 @@ impl Desktop {
             self.call = None;
             self.client.end_call();
         }
+    }
+}
+
+/// The call page for a call link: `/call?relay#…` for relay-only users.
+pub fn page_url(link: &str, relay_only: bool) -> String {
+    if relay_only {
+        link.replacen("/call#", "/call?relay#", 1)
+    } else {
+        link.to_owned()
     }
 }
 
@@ -257,6 +269,16 @@ mod tests {
         );
         assert!(join_link(&link.url().replace("&h=", "&x=")).is_none());
         assert!(join_link("https://stream.example/call#v=1").is_none());
+    }
+
+    #[test]
+    fn relay_only_users_open_the_page_with_relay() {
+        let link = "https://stream.example/call#v=1&k=a&h=b";
+        assert_eq!(page_url(link, false), link);
+        assert_eq!(
+            page_url(link, true),
+            "https://stream.example/call?relay#v=1&k=a&h=b"
+        );
     }
 
     #[test]

@@ -10,13 +10,15 @@ pub mod config;
 pub mod http;
 pub mod media;
 pub mod protocol;
+pub mod quality;
 pub mod rooms;
 pub mod routing;
+pub mod traffic;
 
 use config::{Config, Listen};
 use futures_util::{SinkExt, StreamExt};
 use media::{Command, Core};
-use protocol::{ClientMessage, ServerMessage, from_hex};
+use protocol::{ClientMessage, Decoders, ServerMessage, from_hex};
 use rooms::{Bucket, Join, PeerId};
 use std::{
     collections::HashMap,
@@ -60,7 +62,19 @@ pub async fn serve(config: Config) -> std::io::Result<()> {
         }),
         None => None,
     };
-    let core = Core::new(config.clone(), socket.clone(), turn)?;
+    let traffic = match (config.traffic_budget, &config.state_directory) {
+        (Some(budget), Some(directory)) => Some(
+            traffic::Traffic::load(
+                directory.join("traffic"),
+                budget,
+                config.period,
+                media::unix_seconds(),
+            )
+            .map_err(std::io::Error::other)?,
+        ),
+        _ => None,
+    };
+    let core = Core::new(config.clone(), socket.clone(), turn, traffic)?;
     let (commands, receiver) = mpsc::channel(1024);
     tokio::spawn(core.run(receiver));
     let connections = Arc::default();
@@ -189,6 +203,7 @@ fn join(message: ClientMessage) -> Option<Join> {
         proof,
         host_proof,
         create,
+        codecs,
     } = message
     else {
         return None;
@@ -204,6 +219,7 @@ fn join(message: ClientMessage) -> Option<Join> {
             Some(create) => Some((from_hex(&create.admit_key)?, from_hex(&create.host_key)?)),
             None => None,
         },
+        decoders: Decoders::new(&codecs)?,
     })
 }
 

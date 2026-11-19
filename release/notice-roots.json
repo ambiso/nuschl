@@ -41,6 +41,12 @@
     "features": [],
     "components": ["rust-standard-library", "mumble-protocol", "syntect-default-assets", "emoji-assets", "web-runtime-assets"]
   },
+  "call-page": {
+    "targets": ["wasm32-unknown-unknown"],
+    "packages": ["nuschl-stream-wasm"],
+    "features": [],
+    "components": ["rust-standard-library"]
+  },
   "musicbot-x86_64-unknown-linux-gnu": {
     "targets": ["x86_64-unknown-linux-gnu"],
     "packages": ["nuschl-musicbot", "nuschl-musicbot-codec-worker", "nuschl-content-worker"],

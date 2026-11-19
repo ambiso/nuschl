@@ -37,6 +37,7 @@ change alone is no reason to change a cryptographic protocol.
 | `image` codecs | Images and avatars from untrusted peers, music-bot covers | Content worker only (native process, or the web client's content-worker WASM), with dimension and allocation limits. Nuschl's own UIs receive validated RGBA; pages served to other browsers receive PNGs the content worker re-encoded. |
 | `akd` | Key transparency with VRF and audit proofs | Through `nuschl-kt` only, in the crypto worker, `nuschld` and `nuschl-witness`. akd_core enables ed25519-dalek's `legacy_compatibility` binary-wide, so `nuschl-kt` checks `s < ℓ` itself and `nuschl-identity` verifies with libcrux. Verifiers run under `catch_unwind` behind a strict decoder ([e2ee §5.2](docs/e2ee.md)). |
 | libcrux and OpenMLS (with `rayon`) | Post-quantum MLS and identity signatures (X-Wing HPKE, ML-KEM, ML-DSA); no memory-safe Rust alternative | In the crypto worker, `nuschld` and `nuschl-witness`; in the desktop, `nuschl-stream` only parses call links and derives `stream_id` and `host_key` (HKDF and SHA-256) from secrets the desktop made itself. OpenMLS only through `nuschl-e2ee` (crypto worker, `nuschld`): every key package, tree and message is checked structurally first, and calls run under `catch_unwind`. Patched versions: `vendor/*/NUSCHEL-PATCH.md`. |
+| libcrux's portable wasm32 build with hpke-rs (X-Wing, HKDF, HMAC, SHA-256, ChaCha20-Poly1305), and `aes-gcm` through `nuschl-sframe` | Call keys and SFrame in the browser (docs/video-plan.md §4) | `nuschl-stream-wasm` only, in the call page's dedicated stream worker, which is also its encoded-transform worker. It holds S, P and every key and draws randomness from `crypto.getRandomValues`; the page receives the SFU's join fields and proofs, key messages and frames, the last two encrypted. Requests are bounded before parsing (key messages 16 KiB, 256 peers); `nuschl-stream` and `nuschl-sframe` bound pending requests and replay windows. |
 | Global shortcuts (`ashpd`; `global-hotkey` on Windows and macOS) | System-wide push-to-talk | Desktop shell; press and release of one bound key. |
 | Typst (`typst`, `typst-render`) | LaTeX formulas; Typst scripts can reach files, packages, plugins and data | Math worker only. It receives code-free math markup from Nuschl's converter, in a one-file world without packages, clock or system fonts, with a library stripped of file, plugin, image, data, `eval` and `std` access, under per-formula limits ([math](docs/math.md)). |
 | `psm` (assembly, through `stacker`) | Stack growth in Typst's evaluator | Through `stacker` and `typst-eval` only, in the math worker. |
@@ -226,7 +227,8 @@ Mumble servers can show it to other clients. RTC adapters apply
 relay candidates in relay-only mode, on every application call path.
 
 **Companion SFU** (`nuschl-stream-sfu`, [protocol](apps/stream-sfu/src/protocol.rs)).
-A network service under its hardened systemd unit; its state lives in memory. A
+A network service under its hardened systemd unit; its state lives in memory,
+except its traffic count per billing period, kept in its state directory. A
 room holds the `admit_key` and `host_key` its creator hands over. Media keys stay
 with the participants, and RTP payloads and key messages pass through unread. Its
 configuration bounds every network input; key messages are at most 16 KiB and UDP

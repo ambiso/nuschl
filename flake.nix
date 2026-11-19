@@ -862,6 +862,7 @@
         packages.web-wasm = webClient.wasm;
         packages.web-audio-wasm = webClient.audioWasm;
         packages.web-content-wasm = webClient.contentWasm;
+        packages.web-stream-wasm = webClient.streamWasm;
         packages.release-notices-linux = releaseNotices.linux.bundle;
         packages.release-notices-linux-portable = releaseNotices.portable.bundle;
         packages.release-notices-server-static = releaseNotices.serverStatic.bundle;
@@ -877,6 +878,17 @@
           cp -R ${webClient.app}/. "$out/app/"
           mkdir -p "$out/licenses/nuschl"
           cp -R ${releaseNotices.web.bundle}/share/licenses/nuschl/. "$out/licenses/nuschl/"
+        '';
+        # The call page and its stream worker, served by the stream host at /call
+        # (nix/stream-module.nix).
+        packages.call-site = pkgs.runCommand "nuschl-call-site" { } ''
+          mkdir -p "$out/licenses/nuschl"
+          cp ${./web/call}/*.{html,css,js} "$out/"
+          cp ${./web/site/nuschl.svg} "$out/nuschl.svg"
+          rm "$out"/*.test.js
+          cp ${webClient.streamWasm}/nuschl_stream_wasm{.js,_bg.wasm} "$out/"
+          cp ${./LICENSE} "$out/licenses/nuschl/EUPL-1.2"
+          cp -R ${releaseNotices.callPage.bundle}/share/licenses/nuschl/. "$out/licenses/nuschl/"
         '';
         apps.rtc-probe =
           (flake-utils.lib.mkApp {
@@ -944,6 +956,18 @@
             node --test tests/content_window.unit.mjs tests/sdk_rpc.unit.mjs tests/sdk_rpc_startup.unit.mjs \
               tests/web_audio.unit.mjs tests/web_content.unit.mjs tests/share_links.mjs \
               tests/web_output_quality.mjs tests/web_playout_clock.mjs
+            touch $out
+          '';
+          # The call page's stream worker on wasm32 replays the native transcript.
+          stream-wasm = pkgs.runCommand "nuschl-stream-wasm" { nativeBuildInputs = [ pkgs.nodejs ]; } ''
+            node ${./tests/stream_wasm.mjs} ${webClient.streamWasm} \
+              ${./crates/stream-wasm/test-vectors/transcript.txt}
+            touch $out
+          '';
+          # The call page's link handling, admission, worker messages and bounds.
+          call-page = pkgs.runCommand "nuschl-call-page" { nativeBuildInputs = [ pkgs.nodejs ]; } ''
+            cp -R ${./web/call} call
+            STREAM_WASM=${webClient.streamWasm} node --test call/*.test.js
             touch $out
           '';
           # Unit tests of the repository's Python tools; cases that need private
@@ -1070,6 +1094,14 @@
               inherit pkgs;
               turnModule = self.nixosModules.turn;
               streamModule = self.nixosModules.stream;
+            };
+            # The call page in headless Chromium and Firefox, subscribing through the
+            # SFU and TURN to synthetic publishers (`nix build .#checks.x86_64-linux.vm-call-page`).
+            vm-call-page = import ./nix/call-page-vm.nix {
+              inherit pkgs;
+              turnModule = self.nixosModules.turn;
+              streamModule = self.nixosModules.stream;
+              callSite = self.packages.${system}.call-site;
             };
             # The music bot under its module, against Murmur and a fake library
             # (`nix build .#checks.x86_64-linux.vm-musicbot`).

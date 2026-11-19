@@ -1,16 +1,23 @@
 // SPDX-License-Identifier: EUPL-1.2
 //! The core: one task owns every room, every peer's WebRTC state (str0m in RTP
 //! mode) and the one UDP socket. It forwards RTP packets from a publisher to
-//! each subscriber with their payload, timestamp and marker unchanged, in
-//! whatever codec the publisher negotiated; it never decrypts, depacketizes or
-//! transcodes. Each subscriber gets its own sequence numbers, starting near
-//! zero, and packets a budget drops leave a gap the receiver sees.
+//! each subscriber with their payload, timestamp and marker unchanged, in the
+//! codec the publisher negotiated (AV1, VP9 or Opus); it never decrypts,
+//! depacketizes or transcodes. A source whose packets carry the Dependency
+//! Descriptor reaches each receiver in the decode target chosen for it
+//! (`quality`). Each subscriber gets its own sequence numbers from zero: frames
+//! it skips leave no gap, and packets a budget drops leave one it sees.
 
 use crate::{
     config::Config,
-    protocol::{self, ClientMessage, PeerInfo, ServerMessage, Track, TurnCredentials},
+    protocol::{self, ClientMessage, Decoders, PeerInfo, ServerMessage, Track, TurnCredentials},
+    quality,
     rooms::{self, Bucket, Join, Nonce, PeerId, Refusal, RoomId, Rooms},
     routing::Routing,
+    traffic::Traffic,
+};
+use nuschl_stream_quality::{
+    DecodeCapacity, Kind, QualityRequest, Throttle, adapt::Stepper, budget, dd::Choice,
 };
 use std::{
     cmp::Reverse,
@@ -21,8 +28,10 @@ use std::{
 };
 use str0m::{
     Candidate, Event, IceConnectionState, Input, Output, Rtc,
+    bwe::{Bitrate, BweKind},
     change::{SdpAnswer, SdpOffer, SdpPendingOffer},
-    media::{Direction, KeyframeRequestKind, MediaKind, Mid, Rid},
+    format::{Codec, CodecConfig, FormatParams, PayloadParams},
+    media::{Direction, Frequency, KeyframeRequestKind, MediaKind, Mid, Pt, Rid},
     net::{Protocol, Receive},
     rtp::{RtpPacket, RtpWrite},
 };
@@ -31,12 +40,17 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 
+/// The payload types of the AV1 format with level-idx 9, unused by str0m's defaults.
+const PT_AV1_LEVEL_9: u8 = 47;
+const PT_AV1_LEVEL_9_RTX: u8 = 48;
 /// One keyframe request per source in this interval reaches its publisher.
 const KEYFRAME_INTERVAL: Duration = Duration::from_secs(2);
 /// Per-packet overhead counted against media budgets (IP, UDP, SRTP).
 const PACKET_OVERHEAD: usize = 48;
 /// The largest UDP datagram read; longer ones are dropped.
 pub const MAX_DATAGRAM: usize = 2048;
+/// A subscribe connection's bandwidth estimate before its first measurement.
+const INITIAL_ESTIMATE: u64 = 2_000_000;
 
 pub enum Command {
     Join {
@@ -72,6 +86,8 @@ enum Leg {
 struct Source {
     mid: Mid,
     kind: MediaKind,
+    /// Video sources only.
+    video: Option<quality::Video>,
     /// The simulcast layer forwarded, fixed by the first packet.
     layer: Option<Option<Rid>>,
     keyframe_asked: Option<Instant>,
@@ -81,24 +97,46 @@ struct Forward {
     from: PeerId,
     source: Mid,
     kind: MediaKind,
+    /// `camera`, `screen` or `audio`.
+    label: &'static str,
     /// The receiver-side mid, once offered.
     mid: Option<Mid>,
     open: bool,
     stopping: bool,
-    /// The publisher's sequence number that maps to zero for this receiver.
-    base: Option<u64>,
+    view: quality::View,
 }
 
 struct Peer {
     room: RoomId,
+    decoders: Decoders,
     out: mpsc::Sender<ServerMessage>,
     publish: Option<Rtc>,
     subscribe: Rtc,
     pending: Option<SdpPendingOffer>,
+    /// Whether the subscribe connection has offered its data channel, which keeps
+    /// the transport up while no source is forwarded: a browser closes it when
+    /// every media section is stopped.
+    channel: bool,
     sources: Vec<Source>,
     forwards: Vec<Forward>,
     budget: Bucket,
     deadlines: [Option<Instant>; 2],
+    /// The video mids of its publish connection that carry a screen.
+    screens: Vec<Mid>,
+    /// The subscribe connection's bandwidth estimate, bits per second.
+    estimate: u64,
+    decode: DecodeCapacity,
+    decode_throttle: Throttle,
+}
+
+impl Source {
+    fn label(&self) -> &'static str {
+        match &self.video {
+            None => "audio",
+            Some(video) if video.kind == Kind::Screen => "screen",
+            Some(_) => "camera",
+        }
+    }
 }
 
 impl Peer {
@@ -129,6 +167,11 @@ pub struct Core {
     timers: BinaryHeap<Reverse<(Instant, PeerId, u8)>>,
     dirty: Vec<(PeerId, Leg)>,
     kicks: Vec<(PeerId, &'static str)>,
+    /// The origin of the quality logic's time.
+    origin: Instant,
+    traffic: Option<Traffic>,
+    /// How many tiers the traffic budget lowers every receiver's caps.
+    step: u64,
 }
 
 fn canonical(address: SocketAddr) -> SocketAddr {
@@ -145,6 +188,7 @@ impl Core {
         config: Arc<Config>,
         socket: Arc<UdpSocket>,
         turn: Option<Turn>,
+        traffic: Option<Traffic>,
     ) -> std::io::Result<Self> {
         let port = socket.local_addr()?.port();
         let local = config
@@ -171,6 +215,9 @@ impl Core {
             timers: BinaryHeap::new(),
             dirty: Vec::new(),
             kicks: Vec::new(),
+            origin: Instant::now(),
+            traffic,
+            step: 0,
         })
     }
 
@@ -178,6 +225,7 @@ impl Core {
         let socket = self.socket.clone();
         let mut buffer = vec![0; MAX_DATAGRAM];
         let mut expiry = tokio::time::interval(Duration::from_secs(10));
+        let mut quality = tokio::time::interval(Throttle::INTERVAL);
         loop {
             let next = self.timers.peek().map_or_else(
                 || Instant::now() + Duration::from_secs(1),
@@ -196,6 +244,7 @@ impl Core {
                     }
                 }
                 _ = tokio::time::sleep_until(next.into()) => self.timeouts(Instant::now()),
+                _ = quality.tick() => self.quality(Instant::now()),
                 _ = expiry.tick() => {
                     self.routing.expire(Instant::now());
                     for id in self.rooms.expire(Instant::now()) {
@@ -246,11 +295,34 @@ impl Core {
 
     /// A connection for `route`, with its ufrag in the routing map.
     fn new_rtc(&mut self, route: (PeerId, Leg), now: Instant) -> Rtc {
-        let mut rtc = Rtc::builder()
+        let mut builder = Rtc::builder();
+        if route.1 == Leg::Subscribe {
+            builder = builder.enable_bwe(Some(Bitrate::bps(INITIAL_ESTIMATE)));
+        }
+        let mut config = builder
             .set_crypto_provider(self.crypto.clone())
             .set_rtp_mode(true)
             .set_ice_lite(true)
-            .build(now);
+            // Royalty-free codecs only: a call uses AV1 or VP9, and Opus for audio.
+            .clear_codecs()
+            .enable_av1(true)
+            .enable_vp9(true)
+            .enable_opus(true, false)
+            .set_extension(quality::DESCRIPTOR_ID, quality::descriptor_extension());
+        // str0m pairs AV1 formats only at equal levels. Chromium states none
+        // (level-idx 5) and Firefox level-idx 9, so both are offered and accepted.
+        config.codec_config().add_config(
+            PT_AV1_LEVEL_9.into(),
+            Some(PT_AV1_LEVEL_9_RTX.into()),
+            Codec::Av1,
+            Frequency::NINETY_KHZ,
+            None,
+            FormatParams {
+                level_idx: Some(9),
+                ..FormatParams::default()
+            },
+        );
+        let mut rtc = config.build(now);
         for address in &self.local {
             if let Ok(candidate) = Candidate::host(*address, "udp") {
                 rtc.add_local_candidate(candidate);
@@ -259,6 +331,16 @@ impl Core {
         let ufrag = rtc.direct_api().local_ice_credentials().ufrag;
         self.routing.add_ufrag(ufrag, route);
         rtc
+    }
+
+    /// The call codec of `room`'s peers.
+    fn codec(&self, room: &RoomId) -> Option<protocol::Codec> {
+        let room = self.rooms.get(room)?;
+        protocol::call_codec(
+            room.peers
+                .iter()
+                .filter_map(|(id, _)| Some(self.peers.get(id)?.decoders)),
+        )
     }
 
     fn join(
@@ -270,6 +352,11 @@ impl Core {
         out: mpsc::Sender<ServerMessage>,
         now: Instant,
     ) {
+        if self.traffic.as_ref().is_some_and(Traffic::exhausted) {
+            let _ = out.try_send(ServerMessage::Error { reason: "traffic" });
+            return;
+        }
+        let decoders = join.decoders;
         let role = match self.rooms.join(id, &join, nonce, client, now) {
             Ok(role) => role,
             Err(refusal) => {
@@ -286,6 +373,13 @@ impl Core {
             .filter(|(other, _)| *other != id)
             .map(|&(id, role)| PeerInfo { id, role })
             .collect();
+        let before = self.codec(&join.room).filter(|_| !others.is_empty());
+        let others_decoders = others.iter().map(|other| self.peers[&other.id].decoders);
+        let Some(codec) = protocol::call_codec(others_decoders.chain([decoders])) else {
+            self.rooms.leave(&join.room, id);
+            let _ = out.try_send(ServerMessage::Error { reason: "codec" });
+            return;
+        };
         let turn = self.turn.as_ref().map(|turn| {
             let (username, credential) =
                 rooms::turn_credentials(&turn.secret, turn.lifetime, SystemTime::now());
@@ -298,32 +392,55 @@ impl Core {
         let mut forwards = Vec::new();
         for other in &others {
             for source in &self.peers[&other.id].sources {
-                forwards.push(forward(other.id, source.mid, source.kind));
+                forwards.push(forward(other.id, source.mid, source.kind, source.label()));
             }
         }
         let peer = Peer {
             room: join.room,
+            decoders,
             out,
             publish: None,
             subscribe: self.new_rtc((id, Leg::Subscribe), now),
             pending: None,
+            channel: false,
             sources: Vec::new(),
             forwards,
             budget: rooms::media_budget(self.config.receiver_bitrate, now),
             deadlines: [None; 2],
+            screens: Vec::new(),
+            estimate: INITIAL_ESTIMATE,
+            decode: quality::full_capacity(),
+            decode_throttle: Throttle::default(),
         };
         self.peers.insert(id, peer);
+        // A join fails when some stream's base layer no longer fits.
+        let planned = self.plan().0;
+        let rates = rates(&planned);
+        let (receivers, streams) = self.streams(&planned, &rates);
+        if !budget::admits(&self.limits(), &receivers, &streams) {
+            let peer = self.peers.remove(&id).expect("inserted");
+            self.rooms.leave(&peer.room, id);
+            self.routing.remove(|(route, _)| route == id);
+            let _ = peer.out.try_send(ServerMessage::Error {
+                reason: "bandwidth",
+            });
+            return;
+        }
         self.send(
             id,
             ServerMessage::Welcome {
                 peer: id,
                 role,
                 peers: others.clone(),
+                codec,
                 turn,
             },
         );
         for other in others {
             self.send(other.id, ServerMessage::Joined { peer: id, role });
+            if before != Some(codec) {
+                self.send(other.id, ServerMessage::Codec { codec });
+            }
         }
         self.negotiate(id);
     }
@@ -337,8 +454,19 @@ impl Core {
         let room = self.peers.get(&id).ok_or("unknown")?.room;
         match message {
             ClientMessage::Join { .. } => return Err("joined"),
-            ClientMessage::Offer { sdp } => {
+            ClientMessage::Offer { .. }
+                if self.traffic.as_ref().is_some_and(Traffic::exhausted) =>
+            {
+                return Err("traffic");
+            }
+            ClientMessage::Offer { sdp, screens } => {
                 let offer = SdpOffer::from_sdp_string(&sdp).map_err(|_| "sdp")?;
+                let limit = self.config.max_sources_per_peer;
+                self.peers.get_mut(&id).expect("exists").screens = screens
+                    .iter()
+                    .take(limit)
+                    .map(|mid| Mid::from(mid.as_str()))
+                    .collect();
                 if self.peers[&id].publish.is_none() {
                     let rtc = self.new_rtc((id, Leg::Publish), now);
                     self.peers.get_mut(&id).expect("exists").publish = Some(rtc);
@@ -382,6 +510,43 @@ impl Core {
                 self.dirty.push((id, Leg::Subscribe));
                 self.negotiate(id);
             }
+            ClientMessage::Quality { request } => {
+                let request = protocol::from_hex::<{ QualityRequest::SIZE }>(&request)
+                    .and_then(|bytes| QualityRequest::from_bytes(&bytes))
+                    .ok_or("quality")?;
+                let since = now.saturating_duration_since(self.origin);
+                let publisher = self.peers.get(&request.publisher);
+                let sources: Vec<Mid> = publisher
+                    .map(|p| {
+                        p.sources
+                            .iter()
+                            .filter(|s| s.video.as_ref().is_some_and(|v| v.kind == request.kind))
+                            .map(|s| s.mid)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let peer = self.peers.get_mut(&id).expect("exists");
+                for forward in peer
+                    .forwards
+                    .iter_mut()
+                    .filter(|f| f.from == request.publisher && sources.contains(&f.source))
+                {
+                    // A sooner request is dropped; the receiver sends its latest later.
+                    if forward.view.throttle.allow(since) {
+                        forward.view.request = Some(usize::from(request.tier));
+                    }
+                }
+            }
+            ClientMessage::Capacity { decode } => {
+                let decode = protocol::from_hex::<{ DecodeCapacity::SIZE }>(&decode)
+                    .and_then(|bytes| DecodeCapacity::from_bytes(&bytes))
+                    .ok_or("capacity")?;
+                let since = now.saturating_duration_since(self.origin);
+                let peer = self.peers.get_mut(&id).expect("exists");
+                if peer.decode_throttle.allow(since) {
+                    peer.decode = decode;
+                }
+            }
             ClientMessage::Key { to, data } => {
                 if !protocol::valid_key_message(&data) {
                     return Err("key");
@@ -418,6 +583,9 @@ impl Core {
         }
         // Without a pending offer, every forward with a mid is open.
         let mut api = peer.subscribe.sdp_api();
+        if !std::mem::replace(&mut peer.channel, true) {
+            api.add_channel("sfu".into());
+        }
         peer.forwards
             .retain_mut(|forward| match (forward.mid, forward.stopping) {
                 (None, true) => false,
@@ -449,6 +617,7 @@ impl Core {
                     mid: f.mid?.to_string(),
                     peer: f.from,
                     source: f.source.to_string(),
+                    kind: f.label,
                 })
             })
             .collect();
@@ -471,6 +640,7 @@ impl Core {
     }
 
     fn remove(&mut self, id: PeerId, reason: Option<&'static str>) {
+        let before = self.peers.get(&id).and_then(|peer| self.codec(&peer.room));
         let Some(peer) = self.peers.remove(&id) else {
             return;
         };
@@ -484,7 +654,13 @@ impl Core {
             .get(&peer.room)
             .map(|room| room.peers.iter().map(|(id, _)| *id).collect())
             .unwrap_or_default();
+        let codec = self
+            .codec(&peer.room)
+            .filter(|&codec| Some(codec) != before);
         for other in others {
+            if let Some(codec) = codec {
+                self.send(other, ServerMessage::Codec { codec });
+            }
             if let Some(other_peer) = self.peers.get_mut(&other) {
                 for forward in other_peer.forwards.iter_mut().filter(|f| f.from == id) {
                     forward.stopping = true;
@@ -593,6 +769,10 @@ impl Core {
                 }
                 Ok(Output::Transmit(transmit)) => {
                     self.routing.learn(transmit.destination, (id, leg), now);
+                    if let Some(traffic) = &mut self.traffic {
+                        // With the IPv4 and UDP headers.
+                        traffic.add(transmit.contents.len() + 28);
+                    }
                     let mut destination = transmit.destination;
                     if let (IpAddr::V4(v4), Ok(local)) =
                         (destination.ip(), self.socket.local_addr())
@@ -617,7 +797,15 @@ impl Core {
             (Leg::Publish, Event::MediaAdded(added)) if added.direction.is_receiving() => {
                 self.add_source(id, added.mid, added.kind);
             }
+            (Leg::Publish, Event::MediaChanged(changed)) if !changed.direction.is_receiving() => {
+                self.remove_source(id, changed.mid);
+            }
             (Leg::Publish, Event::RtpPacket(packet)) => self.forward(id, packet, now),
+            (Leg::Subscribe, Event::EgressBitrateEstimate(BweKind::Twcc { estimate, .. })) => {
+                if let Some(peer) = self.peers.get_mut(&id) {
+                    peer.estimate = estimate.as_u64();
+                }
+            }
             (Leg::Subscribe, Event::KeyframeRequest(request)) => {
                 let Some(peer) = self.peers.get(&id) else {
                     return;
@@ -642,12 +830,21 @@ impl Core {
             self.kicks.push((id, "sources"));
             return;
         }
+        let video = (kind == MediaKind::Video).then(|| {
+            quality::Video::new(if peer.screens.contains(&mid) {
+                Kind::Screen
+            } else {
+                Kind::Camera
+            })
+        });
         peer.sources.push(Source {
             mid,
             kind,
+            video,
             layer: None,
             keyframe_asked: None,
         });
+        let label = peer.sources.last().expect("pushed").label();
         let room = peer.room;
         let others: Vec<PeerId> = self.rooms.get(&room).map_or_else(Vec::new, |r| {
             r.peers
@@ -658,7 +855,35 @@ impl Core {
         });
         for other in others {
             if let Some(peer) = self.peers.get_mut(&other) {
-                peer.forwards.push(forward(id, mid, kind));
+                peer.forwards.push(forward(id, mid, kind, label));
+                self.negotiate(other);
+            }
+        }
+    }
+
+    /// A publisher stopped a source: its forwards end on every subscribe connection.
+    fn remove_source(&mut self, id: PeerId, mid: Mid) {
+        let Some(peer) = self.peers.get_mut(&id) else {
+            return;
+        };
+        let count = peer.sources.len();
+        peer.sources.retain(|source| source.mid != mid);
+        if peer.sources.len() == count {
+            return;
+        }
+        let others: Vec<PeerId> = self.peers.keys().copied().filter(|p| *p != id).collect();
+        for other in others {
+            let peer = self.peers.get_mut(&other).expect("listed");
+            let mut stopped = false;
+            for forward in peer
+                .forwards
+                .iter_mut()
+                .filter(|f| f.from == id && f.source == mid)
+            {
+                forward.stopping = true;
+                stopped = true;
+            }
+            if stopped {
                 self.negotiate(other);
             }
         }
@@ -691,6 +916,23 @@ impl Core {
         let Some(source) = publisher.sources.iter_mut().find(|s| s.mid == mid) else {
             return;
         };
+        let descriptor = packet
+            .header
+            .ext_vals
+            .user_values
+            .get::<quality::Descriptor>();
+        // None: no descriptor, every receiver gets every packet. Some(None): a
+        // descriptor this source's structure cannot read yet, which a key frame
+        // brings.
+        let since = now.saturating_duration_since(self.origin);
+        let frame = match (&mut source.video, descriptor) {
+            (Some(video), Some(descriptor)) => Some(video.layers.packet(
+                &descriptor.0,
+                packet.payload.len(),
+                since,
+            )),
+            _ => None,
+        };
         // Q1 hook: per-receiver layer choice (docs/video-plan.md §5.3) replaces
         // this. Today every receiver gets the first layer a source sends, and
         // all of a single stream's packets, including every temporal layer.
@@ -706,7 +948,7 @@ impl Core {
                 .filter(|p| *p != from)
                 .collect()
         });
-        let mut dropped = false;
+        let mut dropped = matches!(frame, Some(None));
         for id in receivers {
             let Some(peer) = self.peers.get_mut(&id) else {
                 continue;
@@ -721,16 +963,28 @@ impl Core {
             let Some(out_mid) = forward.mid else {
                 continue;
             };
+            let view = &mut forward.view;
+            let keep = match &frame {
+                None => true,
+                Some(None) => false,
+                Some(Some(frame)) => view.selector.forward(frame),
+            };
+            dropped |= view.selector.waiting();
+            if !keep {
+                view.rewrite.skip(*packet.seq_no);
+                continue;
+            }
+            // The last packet of the highest spatial layer forwarded ends the
+            // receiver's picture.
+            let marker = packet.header.marker
+                || frame
+                    .flatten()
+                    .is_some_and(|frame| frame.end && Some(frame.layer.spatial) == view.spatial());
             let Some(pt) = peer
                 .subscribe
-                .codec_config()
-                .match_params(params)
-                .map(|p| p.pt())
-                .filter(|pt| {
-                    peer.subscribe
-                        .media(out_mid)
-                        .is_some_and(|m| m.remote_pts().contains(pt))
-                })
+                .media(out_mid)
+                .map(|media| media.remote_pts().to_vec())
+                .and_then(|pts| receiver_pt(peer.subscribe.codec_config(), &pts, params))
             else {
                 continue;
             };
@@ -739,8 +993,7 @@ impl Core {
                 dropped = true;
                 continue;
             }
-            let base = *forward.base.get_or_insert(*packet.seq_no);
-            let Some(seq) = packet.seq_no.checked_sub(base) else {
+            let Some(seq) = forward.view.rewrite.forward(*packet.seq_no) else {
                 continue;
             };
             let mut api = peer.subscribe.direct_api();
@@ -755,13 +1008,163 @@ impl Core {
                     packet.timestamp,
                     packet.payload.clone(),
                 )
-                .marker(packet.header.marker)
+                .marker(marker)
+                .ext_vals(quality::forwarded(&packet.header.ext_vals))
                 .nackable(video),
             );
             self.dirty.push((id, Leg::Subscribe));
         }
         if dropped {
             self.keyframe(from, mid, now);
+        }
+    }
+
+    /// The decode targets each receiver's tier allows of each layered source,
+    /// and the largest tier asked of each video source.
+    fn plan(&self) -> (Vec<Planned>, HashMap<(PeerId, Mid), usize>) {
+        let mut demands: HashMap<(PeerId, Mid), usize> = HashMap::new();
+        let mut planned = Vec::new();
+        for (&id, peer) in &self.peers {
+            for (index, forward) in peer.forwards.iter().enumerate() {
+                let Some(video) = self.peers.get(&forward.from).and_then(|p| {
+                    p.sources
+                        .iter()
+                        .find(|s| s.mid == forward.source)
+                        .and_then(|s| s.video.as_ref())
+                }) else {
+                    continue;
+                };
+                let tier = quality::tier(video.kind, &forward.view, peer.decode, self.step);
+                let mut choices = video.layers.choices(video.kind, tier);
+                // Past the lowest tier the traffic budget leaves base layers only.
+                if self.step > video.kind.top() as u64 {
+                    choices.truncate(1);
+                }
+                let demand = demands.entry((forward.from, forward.source)).or_default();
+                *demand = (*demand).max(tier);
+                planned.push(Planned {
+                    receiver: id,
+                    forward: index,
+                    choices,
+                    ceiling: video.kind.ladder()[tier].ceiling,
+                });
+            }
+        }
+        (planned, demands)
+    }
+
+    fn limits(&self) -> budget::Limits {
+        budget::Limits {
+            host: self.config.upload_bitrate / 10 * 7,
+            room: self.config.room_bitrate,
+            receiver: self.config.receiver_bitrate,
+        }
+    }
+
+    /// Q1's budget inputs for `planned`: each receiver's bandwidth estimate and
+    /// one stream per receiver and source.
+    fn streams<'a>(
+        &self,
+        planned: &[Planned],
+        rates: &'a [Vec<u64>],
+    ) -> (Vec<u64>, Vec<budget::Stream<'a>>) {
+        let mut rooms = HashMap::new();
+        let mut receivers = HashMap::new();
+        let mut estimates = Vec::new();
+        let mut streams = Vec::new();
+        for (planned, rates) in planned.iter().zip(rates) {
+            let peer = &self.peers[&planned.receiver];
+            let next = rooms.len();
+            let room = *rooms.entry(peer.room).or_insert(next);
+            let receiver = *receivers.entry(planned.receiver).or_insert_with(|| {
+                estimates.push(peer.estimate);
+                estimates.len() - 1
+            });
+            let stepper = peer.forwards[planned.forward].view.stepper;
+            streams.push(budget::Stream {
+                room,
+                receiver,
+                rates,
+                current: stepper.map_or(0, |s| s.current() + 1),
+            });
+        }
+        (estimates, streams)
+    }
+
+    /// Once a second: shares the budgets (Q1's `allocate`) over every
+    /// receiver's layered sources, moves each receiver's decode target toward
+    /// its share at Q1's `Stepper` pace, asks each subscribe connection's
+    /// bandwidth estimator to probe for the receiver's tiers, and tells each
+    /// publisher the largest tier asked of each of its video sources, when it
+    /// changed.
+    fn quality(&mut self, now: Instant) {
+        let since = now.saturating_duration_since(self.origin);
+        if let Some(traffic) = &mut self.traffic {
+            let step = traffic.step(unix_seconds());
+            if step != self.step {
+                tracing::info!(step, sent = traffic.sent(), "traffic budget step");
+                self.step = step;
+            }
+            if let Err(error) = traffic.save() {
+                tracing::warn!("saving the traffic count: {error}");
+            }
+        }
+        let (planned, demands) = self.plan();
+        let rates = rates(&planned);
+        let (receivers, streams) = self.streams(&planned, &rates);
+        let shares = budget::allocate(&self.limits(), &receivers, &streams);
+        let mut desired: HashMap<PeerId, u64> = HashMap::new();
+        for (planned, share) in planned.into_iter().zip(shares) {
+            *desired.entry(planned.receiver).or_default() += planned.ceiling;
+            let view = &mut self
+                .peers
+                .get_mut(&planned.receiver)
+                .expect("listed")
+                .forwards[planned.forward]
+                .view;
+            let target = share.checked_sub(1).map(|ceiling| {
+                let resolutions: Vec<u32> = planned
+                    .choices
+                    .iter()
+                    .map(|c| u32::from(c.layer.spatial))
+                    .collect();
+                let point = view
+                    .stepper
+                    .get_or_insert_with(|| Stepper::new(ceiling))
+                    .update(&resolutions, ceiling, since);
+                planned.choices[point].target
+            });
+            view.selector.want(target);
+            view.choices = planned.choices;
+        }
+        for (id, desired) in desired {
+            let peer = self.peers.get_mut(&id).expect("listed");
+            let desired = desired.min(self.config.receiver_bitrate);
+            peer.subscribe
+                .bwe()
+                .set_bitrate(Bitrate::bps(0), Bitrate::bps(desired));
+            self.dirty.push((id, Leg::Subscribe));
+        }
+        let mut messages = Vec::new();
+        for (&id, peer) in &mut self.peers {
+            for source in &mut peer.sources {
+                let Some(video) = &mut source.video else {
+                    continue;
+                };
+                let demand = demands.get(&(id, source.mid)).copied();
+                if demand.is_some() && demand != video.demand && video.throttle.allow(since) {
+                    video.demand = demand;
+                    let request = QualityRequest {
+                        publisher: id,
+                        kind: video.kind,
+                        tier: demand.unwrap_or(0) as u8,
+                    };
+                    messages.push((id, hex::encode(request.to_bytes())));
+                }
+            }
+        }
+        for (id, request) in messages {
+            self.send(id, ServerMessage::Quality { request });
         }
     }
 
@@ -792,14 +1195,89 @@ impl Core {
     }
 }
 
-fn forward(from: PeerId, source: Mid, kind: MediaKind) -> Forward {
+pub fn unix_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
+/// One receiver's stream of one video source, for the budgets.
+struct Planned {
+    receiver: PeerId,
+    /// An index into the receiver's forwards.
+    forward: usize,
+    /// The decode targets its tier allows, lowest first; none without a descriptor.
+    choices: Vec<Choice>,
+    /// The most its tier needs, bits per second.
+    ceiling: u64,
+}
+
+fn rates(planned: &[Planned]) -> Vec<Vec<u64>> {
+    planned
+        .iter()
+        .map(|p| p.choices.iter().map(|c| c.rate).collect())
+        .collect()
+}
+
+/// The receiver's payload type, among its negotiated `pts`, for packets sent in
+/// `sent`: the same format, else any AV1 format for AV1. An AV1 format's
+/// level-idx states what its side receives (AV1 RTP §7.2), so it says nothing
+/// about the stream a publisher sends.
+fn receiver_pt(config: &CodecConfig, pts: &[Pt], sent: PayloadParams) -> Option<Pt> {
+    let negotiated = |p: &&PayloadParams| pts.contains(&p.pt());
+    let exact = config.match_params(sent).filter(negotiated);
+    let av1 = || {
+        let mut params = config.params().iter().filter(negotiated);
+        params.find(|p| sent.spec().codec == Codec::Av1 && p.spec().codec == Codec::Av1)
+    };
+    exact.or_else(av1).map(|p| p.pt())
+}
+fn forward(from: PeerId, source: Mid, kind: MediaKind, label: &'static str) -> Forward {
     Forward {
         from,
         source,
         kind,
+        label,
+        view: quality::View::default(),
         mid: None,
         open: false,
         stopping: false,
-        base: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn av1(pt: u8, profile: u8, level_idx: u8) -> PayloadParams {
+        let format = FormatParams {
+            profile: Some(profile),
+            level_idx: Some(level_idx),
+            ..FormatParams::default()
+        };
+        let spec = str0m::format::CodecSpec {
+            codec: Codec::Av1,
+            clock_rate: Frequency::NINETY_KHZ,
+            channels: None,
+            format,
+        };
+        PayloadParams::new(pt.into(), None, spec)
+    }
+
+    #[test]
+    fn av1_goes_to_the_receivers_av1_format_at_any_level() {
+        let config = CodecConfig::new_from_payload_params(vec![av1(45, 0, 5), av1(47, 0, 9)]);
+        let (both, firefox) = ([45.into(), 47.into()], [47.into()]);
+        assert_eq!(receiver_pt(&config, &both, av1(35, 0, 5)), Some(45.into()));
+        assert_eq!(receiver_pt(&config, &both, av1(35, 0, 9)), Some(47.into()));
+        assert_eq!(
+            receiver_pt(&config, &firefox, av1(35, 0, 5)),
+            Some(47.into())
+        );
+        assert_eq!(
+            receiver_pt(&config, &[], av1(35, 0, 5)),
+            None,
+            "not negotiated"
+        );
     }
 }
