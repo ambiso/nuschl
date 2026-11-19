@@ -9,6 +9,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     os::unix::net::UnixStream,
     path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 use tokio::{
@@ -23,6 +24,8 @@ pub use rtc::Purpose;
 const PUBLISH: u32 = 1;
 const SUBSCRIBE: u32 = 2;
 const UDP_BURST: usize = 64;
+const MAX_PENDING_FRAME_AGE: Duration = Duration::from_millis(150);
+const KEYFRAME_INTERVAL: Duration = Duration::from_secs(1);
 
 pub struct MediaOptions {
     /// Path of the installed `nuschl-rtc-worker`.
@@ -55,28 +58,54 @@ pub enum MediaEvent {
 }
 
 struct Video {
+    sequence: u64,
+    queued: Instant,
     timestamp: u64,
+    key_frame: bool,
     data: Vec<u8>,
 }
 
 pub struct Media {
     input: mpsc::Sender<Video>,
+    sequence: AtomicU64,
     events: mpsc::Receiver<Result<MediaEvent, Error>>,
+    keyframes: mpsc::Receiver<()>,
     task: JoinHandle<()>,
     source: Option<Purpose>,
 }
 
 impl Media {
     /// Submit an independent encoded frame after [`MediaEvent::SendReady`].
-    /// A full queue drops this frame. RTP timestamps use the 90 kHz clock.
     pub fn send_keyframe(&self, timestamp: u64, data: Vec<u8>) -> Result<bool, Error> {
+        self.send_frame(timestamp, true, data)
+    }
+
+    /// Submit an encoded video frame. Timestamps use the 90 kHz RTP clock. A
+    /// full queue drops the frame and dependent frames wait for a keyframe.
+    pub fn send_frame(
+        &self,
+        timestamp: u64,
+        key_frame: bool,
+        data: Vec<u8>,
+    ) -> Result<bool, Error> {
         let source = self
             .source
             .ok_or(Error::Protocol("call has no publisher"))?;
         if data.is_empty() || data.len() > source.frame_limit() {
             return Err(Error::Protocol("invalid encoded frame size"));
         }
-        match self.input.try_send(Video { timestamp, data }) {
+        let sequence = self
+            .sequence
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        let frame = Video {
+            sequence,
+            queued: Instant::now(),
+            timestamp,
+            key_frame,
+            data,
+        };
+        match self.input.try_send(frame) {
             Ok(()) => Ok(true),
             Err(mpsc::error::TrySendError::Full(_)) => Ok(false),
             Err(mpsc::error::TrySendError::Closed(_)) => Err(Error::Protocol("media ended")),
@@ -84,12 +113,20 @@ impl Media {
     }
 
     pub async fn next(&mut self) -> Option<Result<MediaEvent, Error>> {
-        self.events.recv().await
+        tokio::select! {
+            biased;
+            requested = self.keyframes.recv() => match requested {
+                Some(()) => Some(Ok(MediaEvent::KeyframeRequired)),
+                None => self.events.recv().await,
+            },
+            event = self.events.recv() => event,
+        }
     }
 
     pub async fn stop(self) -> Result<(), Error> {
         drop(self.input);
         drop(self.events);
+        drop(self.keyframes);
         self.task
             .await
             .map_err(|_| Error::Protocol("media task stopped"))
@@ -140,6 +177,7 @@ impl Connection {
         let source = options.publish;
         let (input, frames) = mpsc::channel(1);
         let (output, events) = mpsc::channel(4);
+        let (requests, keyframes) = mpsc::channel(1);
         let task = tokio::spawn(async move {
             let mut connection = self;
             let result = run(
@@ -149,7 +187,10 @@ impl Connection {
                 codec,
                 source,
                 frames,
-                &output,
+                Output {
+                    events: &output,
+                    keyframes: &requests,
+                },
             )
             .await;
             let _ = connection.close().await;
@@ -160,7 +201,9 @@ impl Connection {
         });
         Ok(Media {
             input,
+            sequence: AtomicU64::new(0),
             events,
+            keyframes,
             task,
             source,
         })
@@ -171,6 +214,8 @@ struct Leg {
     id: u32,
     socket: UdpSocket,
     wake: Option<Instant>,
+    camera: FrameGate,
+    screen: FrameGate,
 }
 
 impl Leg {
@@ -202,6 +247,8 @@ impl Leg {
             id,
             socket,
             wake: None,
+            camera: FrameGate::new(),
+            screen: FrameGate::new(),
         })
     }
 
@@ -258,6 +305,43 @@ struct Pair {
     publishing: bool,
 }
 
+struct Output<'a> {
+    events: &'a mpsc::Sender<Result<MediaEvent, Error>>,
+    keyframes: &'a mpsc::Sender<()>,
+}
+
+struct FrameGate {
+    awaiting_key: bool,
+    requested: Option<Instant>,
+}
+
+impl FrameGate {
+    fn new() -> Self {
+        Self {
+            awaiting_key: true,
+            requested: None,
+        }
+    }
+
+    fn request(&mut self) -> bool {
+        let now = Instant::now();
+        if self
+            .requested
+            .is_some_and(|at| now - at < KEYFRAME_INTERVAL)
+        {
+            return false;
+        }
+        self.requested = Some(now);
+        true
+    }
+
+    fn arrived(&mut self, key_frame: bool) {
+        if key_frame {
+            self.awaiting_key = false;
+        }
+    }
+}
+
 impl Pair {
     async fn connect(&mut self, connection: &mut Connection, peer: u64) -> Result<(), Error> {
         if peer == 0 || peer == connection.welcome.peer || self.peer.is_some() {
@@ -302,7 +386,7 @@ async fn run(
     codec: rtc::Codec,
     source: Option<Purpose>,
     mut frames: mpsc::Receiver<Video>,
-    events: &mpsc::Sender<Result<MediaEvent, Error>>,
+    output: Output<'_>,
 ) -> Result<(), Error> {
     let publishing = source.is_some();
     let mut pair = Pair {
@@ -356,6 +440,8 @@ async fn run(
     let mut sub_buffer = [0; rtc::MAX_DATAGRAM + 1];
     let mut connected = false;
     let mut sending = false;
+    let mut send_gate = FrameGate::new();
+    let mut sequence = 0_u64;
     loop {
         tokio::select! {
             message = connection.next() => match message? {
@@ -390,17 +476,35 @@ async fn run(
                 ServerMessage::Key { from, data } => pair.key(connection, from, &data).await,
                 ServerMessage::Quality { source, max_height, max_fps, max_bitrate, .. }
                     if publish_mid.as_ref() == Some(&source) && (16..=2160).contains(&max_height) && (1..=120).contains(&max_fps) && (64_000..=50_000_000).contains(&max_bitrate) => {
-                    let _ = events.try_send(Ok(MediaEvent::EncoderLimits { height: max_height, fps: max_fps, bitrate: max_bitrate }));
+                    let _ = output.events.try_send(Ok(MediaEvent::EncoderLimits { height: max_height, fps: max_fps, bitrate: max_bitrate }));
                 }
                 ServerMessage::Codec { codec: changed } if changed != connection.welcome.codec => return Err(Error::Protocol("native call codec changed")),
                 ServerMessage::Error { reason } => return Err(Error::Refused(reason.into_owned())),
                 _ => {}
             },
             frame = frames.recv() => {
-                let Some(Video { timestamp, data }) = frame else { return Ok(()); };
+                let Some(frame) = frame else { return Ok(()); };
                 if let (Some(purpose), Some(publish), true) = (source, &mut publish, sending) {
-                    worker.exchange(Command::Write { purpose, timestamp, key_frame: true }, data).await?;
-                    publish.wake = Some(Instant::now());
+                    if frame.sequence != sequence.wrapping_add(1) {
+                        send_gate.awaiting_key = true;
+                    }
+                    sequence = frame.sequence;
+                    if frame.queued.elapsed() <= MAX_PENDING_FRAME_AGE && (!send_gate.awaiting_key || frame.key_frame) {
+                        let command = Command::Write { purpose, timestamp: frame.timestamp, key_frame: frame.key_frame };
+                        match worker.exchange(command, frame.data).await?.kind {
+                            Reply::Done => {
+                                send_gate.arrived(frame.key_frame);
+                                publish.wake = Some(Instant::now());
+                                continue;
+                            }
+                            Reply::Rejected => {}
+                            _ => return Err(Error::Protocol("invalid RTC write reply")),
+                        }
+                    }
+                    send_gate.awaiting_key = true;
+                    if send_gate.request() {
+                        let _ = output.keyframes.try_send(());
+                    }
                 }
             }
             received = receive(publish.as_ref(), &mut pub_buffer) => {
@@ -408,9 +512,9 @@ async fn run(
             }
             received = subscribe.socket.recv(&mut sub_buffer) => subscribe.datagram(worker, &sub_buffer[..received?]).await?,
             () = wake(publish.as_ref()) => {
-                if let Some(leg) = &mut publish { connected |= drain(worker, leg, other, events).await?; }
+                if let Some(leg) = &mut publish { connected |= drain(worker, leg, other, &output).await?; }
             }
-            () = wake(Some(&subscribe)) => { drain(worker, &mut subscribe, other, events).await?; }
+            () = wake(Some(&subscribe)) => { drain(worker, &mut subscribe, other, &output).await?; }
         }
         if !sending && connected && pair.ready && publishing {
             // The crypto worker sent the epoch on a separate socket. Wait for
@@ -432,7 +536,7 @@ async fn run(
             .await
             .map_err(|_| Error::Timeout)??;
             sending = true;
-            if events.send(Ok(MediaEvent::SendReady)).await.is_err() {
+            if output.events.send(Ok(MediaEvent::SendReady)).await.is_err() {
                 return Ok(());
             }
         }
@@ -443,7 +547,7 @@ async fn drain(
     worker: &mut Worker,
     leg: &mut Leg,
     peer: Option<u64>,
-    events: &mpsc::Sender<Result<MediaEvent, Error>>,
+    output: &Output<'_>,
 ) -> Result<bool, Error> {
     let mut connected = false;
     for _ in 0..UDP_BURST {
@@ -471,24 +575,55 @@ async fn drain(
                     Event::BandwidthEstimate { bitrate } if leg.id == PUBLISH => {
                         MediaEvent::BandwidthEstimate { bitrate }
                     }
-                    Event::Keyframe { .. } if leg.id == PUBLISH => MediaEvent::KeyframeRequired,
+                    Event::Keyframe { .. } if leg.id == PUBLISH => {
+                        let _ = output.keyframes.try_send(());
+                        continue;
+                    }
                     Event::Frame {
                         publisher,
                         purpose,
                         timestamp,
                         contiguous,
                         key_frame,
-                    } if leg.id == SUBSCRIBE && peer == Some(publisher) => MediaEvent::Frame {
-                        publisher,
-                        purpose,
-                        timestamp,
-                        contiguous,
-                        key_frame,
-                        data: packet.data,
-                    },
+                    } if leg.id == SUBSCRIBE && peer == Some(publisher) => {
+                        let gate = match purpose {
+                            Purpose::Camera => &mut leg.camera,
+                            Purpose::ScreenVideo => &mut leg.screen,
+                            _ => continue,
+                        };
+                        if (key_frame || (contiguous && !gate.awaiting_key))
+                            && output
+                                .events
+                                .try_send(Ok(MediaEvent::Frame {
+                                    publisher,
+                                    purpose,
+                                    timestamp,
+                                    contiguous,
+                                    key_frame,
+                                    data: packet.data,
+                                }))
+                                .is_ok()
+                        {
+                            gate.arrived(key_frame);
+                        } else {
+                            gate.awaiting_key = true;
+                            if gate.request() {
+                                worker
+                                    .exchange(
+                                        Command::RequestKeyframe {
+                                            leg: leg.id,
+                                            purpose,
+                                        },
+                                        Vec::new(),
+                                    )
+                                    .await?;
+                            }
+                        }
+                        continue;
+                    }
                     _ => continue,
                 };
-                let _ = events.try_send(Ok(event));
+                let _ = output.events.try_send(Ok(event));
             }
             _ => return Err(Error::Protocol("invalid RTC worker output")),
         }

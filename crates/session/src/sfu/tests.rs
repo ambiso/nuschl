@@ -208,11 +208,47 @@ async fn two_native_peers_admit_and_signal_through_the_sfu_over_wss() {
 
 #[tokio::test]
 async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
-    // An independent 32×32 black AV1 frame encoded from a synthetic color source.
-    const VIDEO: [u8; 30] = [
+    // Successive AV1 packets from a synthetic 32×32 color source.
+    const KEY: [u8; 30] = [
         0x12, 0x00, 0x0a, 0x0a, 0x00, 0x00, 0x00, 0x02, 0x27, 0xfe, 0x6d, 0x7c, 0x80, 0x20, 0x32,
-        0x0e, 0x10, 0x00, 0xc0, 0x00, 0x00, 0x02, 0x80, 0x00, 0x00, 0x02, 0xe5, 0xd6, 0xf7, 0x40,
+        0x0e, 0x10, 0x00, 0x8c, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x3e, 0xfc, 0xc1, 0x08,
     ];
+    const DELTAS: [[u8; 21]; 3] = [
+        [
+            0x12, 0, 0x32, 0x11, 0x30, 3, 0xc0, 0x80, 0, 0, 0x46, 0xb8, 0, 0, 2, 0x40, 0, 0x20, 0,
+            0x8c, 0x70,
+        ],
+        [
+            0x12, 0, 0x32, 0x11, 0x30, 4, 1, 4, 0, 0, 0x46, 0xb8, 0, 0, 2, 0x40, 0, 0x20, 0, 0x89,
+            0x40,
+        ],
+        [
+            0x12, 0, 0x32, 0x11, 0x30, 6, 2, 8, 0x80, 0, 0x46, 0xb8, 0, 0, 2, 0x40, 0, 0x20, 0,
+            0x86, 0x80,
+        ],
+    ];
+    async fn rendered(media: &mut Media, publisher: u64, key: bool) -> Vec<u8> {
+        loop {
+            if let MediaEvent::Frame {
+                publisher: sender,
+                purpose,
+                key_frame,
+                data,
+                ..
+            } = media
+                .next()
+                .await
+                .expect("viewer remains live")
+                .expect("RTC viewer")
+            {
+                assert_eq!(sender, publisher);
+                assert_eq!(purpose, Purpose::ScreenVideo);
+                if key_frame == key {
+                    return data;
+                }
+            }
+        }
+    }
     nuschl_testkit::sandbox();
     let crypto = fixture("nuschl-crypto-worker");
     let rtc = fixture("nuschl-rtc-worker");
@@ -262,7 +298,14 @@ async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
 
     timeout(HANDSHAKE, async {
         loop {
-            if matches!(alice.next().await.expect("publisher remains live").expect("RTC publisher"), MediaEvent::SendReady) {
+            if matches!(
+                alice
+                    .next()
+                    .await
+                    .expect("publisher remains live")
+                    .expect("RTC publisher"),
+                MediaEvent::SendReady
+            ) {
                 break;
             }
         }
@@ -272,20 +315,71 @@ async fn native_video_crosses_the_sfu_between_confined_rtc_workers() {
             tokio::select! {
                 _ = tick.tick() => {
                     frame += 1;
-                    alice.send_keyframe(frame * 3_060, VIDEO.to_vec()).unwrap();
+                    alice.send_keyframe(frame * 3_060, KEY.to_vec()).unwrap();
                 }
-                event = bob.next() => {
-                    if let MediaEvent::Frame { publisher: sender, purpose, key_frame, data, .. } = event.expect("viewer remains live").expect("RTC viewer") {
-                        assert_eq!(sender, publisher);
-                        assert_eq!(purpose, Purpose::ScreenVideo);
-                        assert!(key_frame);
-                        assert_eq!(data, VIDEO);
-                        break;
-                    }
+                data = rendered(&mut bob, publisher, true) => {
+                    assert_eq!(data, KEY);
+                    break;
                 }
             }
         }
-    }).await.expect("a native frame crosses the owned SFU");
+        tick.tick().await;
+        frame += 1;
+        assert!(
+            alice
+                .send_frame(frame * 3_060, false, DELTAS[0].to_vec())
+                .unwrap()
+        );
+        assert!(
+            !alice
+                .send_frame((frame + 1) * 3_060, false, DELTAS[1].to_vec())
+                .unwrap()
+        );
+        assert_eq!(rendered(&mut bob, publisher, false).await, DELTAS[0]);
+
+        // Dropping an input frame invalidates later dependent frames until a
+        // fresh keyframe. The RTC worker remains live through the recovery.
+        tick.tick().await;
+        frame += 2;
+        assert!(
+            alice
+                .send_frame(frame * 3_060, false, DELTAS[2].to_vec())
+                .unwrap()
+        );
+        assert!(
+            timeout(
+                Duration::from_millis(200),
+                rendered(&mut bob, publisher, false)
+            )
+            .await
+            .is_err()
+        );
+        loop {
+            if matches!(
+                alice
+                    .next()
+                    .await
+                    .expect("publisher remains live")
+                    .expect("RTC publisher"),
+                MediaEvent::KeyframeRequired
+            ) {
+                break;
+            }
+        }
+        frame += 1;
+        assert!(alice.send_keyframe(frame * 3_060, KEY.to_vec()).unwrap());
+        assert_eq!(rendered(&mut bob, publisher, true).await, KEY);
+        tick.tick().await;
+        frame += 1;
+        assert!(
+            alice
+                .send_frame(frame * 3_060, false, DELTAS[0].to_vec())
+                .unwrap()
+        );
+        assert_eq!(rendered(&mut bob, publisher, false).await, DELTAS[0]);
+    })
+    .await
+    .expect("a native frame crosses the owned SFU");
     bob.stop().await.unwrap();
     alice.stop().await.unwrap();
     nuschl_testkit::none_running(&rtc, Duration::from_secs(3)).await;
