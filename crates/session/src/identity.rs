@@ -16,7 +16,7 @@ use nuschl_ipc::{
     Envelope, MAX_FRAME_BYTES,
     crypto::{
         ContactView, CryptoRequest, CryptoResponse, CryptoServer, HeadOutcome, IdentityView,
-        KeyTransparencySettings, KtRecordBytes, MonitorOutcome,
+        KeyTransparencySettings, KtRecordBytes, MonitorOutcome, call,
     },
     read_frame_async, write_frame,
 };
@@ -26,7 +26,14 @@ use nuschl_protocol::nuschl::{
 };
 use nuschl_sandbox::{Role, Worker};
 use prost::Message as _;
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 use tokio::{
     io::AsyncWriteExt,
     process::Command,
@@ -57,6 +64,7 @@ struct Job {
 #[derive(Clone)]
 pub struct CryptoHandle {
     jobs: mpsc::Sender<Job>,
+    last_call_generation: Arc<AtomicU64>,
 }
 
 impl CryptoHandle {
@@ -76,8 +84,16 @@ impl CryptoHandle {
     /// The worker from a custom command (tests, platforms without a sandbox).
     pub fn start_with(spawn: Spawn) -> Self {
         let (jobs, receiver) = mpsc::channel(64);
-        tokio::spawn(supervise(Arc::new(spawn), receiver));
-        Self { jobs }
+        let last_call_generation = Arc::new(AtomicU64::new(0));
+        tokio::spawn(supervise(
+            Arc::new(spawn),
+            receiver,
+            last_call_generation.clone(),
+        ));
+        Self {
+            jobs,
+            last_call_generation,
+        }
     }
 
     pub async fn request(&self, request: CryptoRequest) -> Result<CryptoResponse, Error> {
@@ -101,10 +117,28 @@ impl CryptoHandle {
     }
 
     /// Send a scoped call request to the worker using the existing supervisor.
-    pub async fn call_signal(
+    pub async fn call_signal(&self, request: call::Request) -> Result<call::Reply, Error> {
+        if matches!(request.action, call::Action::Open { .. }) {
+            self.reserve_call_generation(request.generation)?;
+        }
+        self.call_signal_reserved(request).await
+    }
+
+    pub(crate) fn reserve_call_generation(&self, generation: u64) -> Result<(), Error> {
+        // Keep reservations for the life of the handle, across worker restarts.
+        let previous = self
+            .last_call_generation
+            .fetch_max(generation, Ordering::Relaxed);
+        if generation <= previous {
+            return Err(Error::Worker("call generation is already in use".into()));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn call_signal_reserved(
         &self,
-        request: nuschl_ipc::crypto::call::Request,
-    ) -> Result<nuschl_ipc::crypto::call::Reply, Error> {
+        request: call::Request,
+    ) -> Result<call::Reply, Error> {
         match self.submit(CryptoRequest::Call(request)).await? {
             CryptoResponse::Call(reply) => Ok(reply),
             _ => Err(Error::Worker("crypto worker call response mismatch".into())),
@@ -120,26 +154,24 @@ fn create_private_directory(directory: &std::path::Path) -> std::io::Result<()> 
     builder.create(directory)
 }
 
-async fn supervise(spawn: Arc<Spawn>, mut jobs: mpsc::Receiver<Job>) {
-    use nuschl_ipc::crypto::call::{Action, Request};
-
+async fn supervise(
+    spawn: Arc<Spawn>,
+    mut jobs: mpsc::Receiver<Job>,
+    last_call_generation: Arc<AtomicU64>,
+) {
     let mut running: Option<Worker> = None;
     let mut next_id = 0_u64;
-    let mut last_call_generation = 0;
     while let Some(job) = jobs.recv().await {
-        if let CryptoRequest::Call(Request {
+        if let CryptoRequest::Call(call::Request {
             generation,
-            action: Action::Open { .. },
+            action: call::Action::Open { .. },
         }) = &job.request
+            && *generation != last_call_generation.load(Ordering::Relaxed)
         {
-            if *generation <= last_call_generation {
-                let _ = job.reply.send(Err(Error::Worker(
-                    "call generation is already in use".into(),
-                )));
-                continue;
-            }
-            // Reserve before exchanging, since the worker can exit before its reply.
-            last_call_generation = *generation;
+            let _ = job
+                .reply
+                .send(Err(Error::Worker("stale call generation".into())));
+            continue;
         }
         if running.is_none() {
             match start(&spawn).await {

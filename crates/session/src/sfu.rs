@@ -37,14 +37,68 @@ pub struct Connect<'a> {
     pub host: &'a str,
     pub link: &'a str,
     pub codecs: &'a [Codec],
+    /// The configured SFU remains available in relay-only mode. The media
+    /// adapter applies this policy before gathering any candidates.
     pub policy: PeerPolicy,
 }
 
 pub struct Connection {
     welcome: Welcome,
     socket: Socket,
+    scope: CallScope,
+}
+
+struct CallScope {
     crypto: CryptoHandle,
     generation: u64,
+    cleanup: Option<tokio::runtime::Handle>,
+}
+
+impl CallScope {
+    fn new(crypto: CryptoHandle, generation: u64) -> Result<Self, Error> {
+        let runtime = tokio::runtime::Handle::try_current()
+            .map_err(|_| Error::Protocol("call signaling requires a Tokio runtime"))?;
+        crypto.reserve_call_generation(generation)?;
+        Ok(Self {
+            crypto,
+            generation,
+            cleanup: Some(runtime),
+        })
+    }
+
+    async fn request(&self, action: Action) -> Result<Outcome, Error> {
+        Ok(self
+            .crypto
+            .call_signal_reserved(Request {
+                generation: self.generation,
+                action,
+            })
+            .await?
+            .outcome)
+    }
+
+    async fn close(mut self) -> Result<(), Error> {
+        let result = self.request(Action::Close).await.map(|_| ());
+        self.cleanup = None;
+        result
+    }
+}
+
+impl Drop for CallScope {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.cleanup.take() {
+            let crypto = self.crypto.clone();
+            let generation = self.generation;
+            runtime.spawn(async move {
+                let _ = crypto
+                    .call_signal_reserved(Request {
+                        generation,
+                        action: Action::Close,
+                    })
+                    .await;
+            });
+        }
+    }
 }
 
 impl Connection {
@@ -59,24 +113,22 @@ impl Connection {
         options: Connect<'_>,
         roots: rustls::RootCertStore,
     ) -> Result<Self, Error> {
-        let generation = options.generation;
         if options.codecs.is_empty() || options.codecs.len() > 2 {
             return Err(Error::Protocol("invalid decoder list"));
         }
-        let Outcome::Opened { room, verifier } = call(
-            &crypto,
-            generation,
-            Action::Open {
+        // Reserve before queueing Open so cleanup also covers an in-flight reply.
+        let scope = CallScope::new(crypto, options.generation)?;
+        let Outcome::Opened { room, verifier } = scope
+            .request(Action::Open {
                 host: options.host.to_owned(),
                 link: options.link.to_owned(),
                 relay_only: options.policy.relay_only,
-            },
-        )
-        .await?
+            })
+            .await?
         else {
             return Err(Error::Protocol("invalid room metadata"));
         };
-        let result = timeout(HANDSHAKE, async {
+        let (socket, welcome) = timeout(HANDSHAKE, async {
             let mut socket = open(options.host, roots).await?;
             let ServerMessage::Hello { nonce } = read(&mut socket).await? else {
                 return Err(Error::Protocol("expected a challenge"));
@@ -86,7 +138,7 @@ impl Connection {
                 proof,
                 host_proof,
                 create,
-            } = call(&crypto, generation, Action::Admit { nonce }).await?
+            } = scope.request(Action::Admit { nonce }).await?
             else {
                 return Err(Error::Protocol("invalid admission proof"));
             };
@@ -123,19 +175,12 @@ impl Connection {
             }
         })
         .await
-        .unwrap_or(Err(Error::Timeout));
-        match result {
-            Ok((socket, welcome)) => Ok(Self {
-                welcome,
-                socket,
-                crypto,
-                generation,
-            }),
-            Err(error) => {
-                let _ = call(&crypto, generation, Action::Close).await;
-                Err(error)
-            }
-        }
+        .map_err(|_| Error::Timeout)??;
+        Ok(Self {
+            welcome,
+            socket,
+            scope,
+        })
     }
 
     pub fn welcome(&self) -> &Welcome {
@@ -156,7 +201,7 @@ impl Connection {
         ) {
             return Err(Error::Protocol("invalid key action"));
         }
-        let outcome = call(&self.crypto, self.generation, action).await?;
+        let outcome = self.scope.request(action).await?;
         if let Outcome::Send { peer, data, .. } = &outcome {
             write(
                 &mut self.socket,
@@ -172,16 +217,8 @@ impl Connection {
 
     pub async fn close(mut self) -> Result<(), Error> {
         let _ = timeout(HANDSHAKE, self.socket.close(None)).await;
-        call(&self.crypto, self.generation, Action::Close).await?;
-        Ok(())
+        self.scope.close().await
     }
-}
-
-async fn call(crypto: &CryptoHandle, generation: u64, action: Action) -> Result<Outcome, Error> {
-    Ok(crypto
-        .call_signal(Request { generation, action })
-        .await?
-        .outcome)
 }
 
 async fn open(host: &str, roots: rustls::RootCertStore) -> Result<Socket, Error> {

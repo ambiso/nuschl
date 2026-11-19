@@ -83,6 +83,26 @@ async fn next_key(connection: &mut Connection) -> Outcome {
     .unwrap()
 }
 
+async fn retired(worker: &CryptoHandle, generation: u64) {
+    timeout(HANDSHAKE, async {
+        loop {
+            let response = worker
+                .call_signal(Request {
+                    generation,
+                    action: Action::Admit { nonce: [0; 32] },
+                })
+                .await;
+            if let Err(error) = response {
+                assert!(error.to_string().contains("no open call"), "{error}");
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn two_native_peers_admit_and_signal_through_the_sfu_over_wss() {
     nuschl_testkit::sandbox();
@@ -91,7 +111,7 @@ async fn two_native_peers_admit_and_signal_through_the_sfu_over_wss() {
     let (host, roots) = tls_proxy(&sfu).await;
     let directory = nuschl_testkit::temp_dir();
     let alice = CryptoHandle::start(worker.clone(), directory.path().join("alice"));
-    let bob = CryptoHandle::start(worker, directory.path().join("bob"));
+    let bob_worker = CryptoHandle::start(worker, directory.path().join("bob"));
     let posted = format!("https://{host}/call#{LINK}");
     let owner = format!("{posted}&p={OWNER}");
     let connect = |generation, link| Connect {
@@ -108,9 +128,10 @@ async fn two_native_peers_admit_and_signal_through_the_sfu_over_wss() {
     let mut alice = Connection::connect_with_roots(alice, connect(2, &owner), roots.clone())
         .await
         .unwrap();
-    let mut bob = Connection::connect_with_roots(bob, connect(1, &posted), roots)
-        .await
-        .unwrap();
+    let mut bob =
+        Connection::connect_with_roots(bob_worker.clone(), connect(1, &posted), roots.clone())
+            .await
+            .unwrap();
     let (a, b) = (alice.welcome().peer, bob.welcome().peer);
     assert_eq!(alice.welcome().role, Role::Host);
     assert_eq!(bob.welcome().role, Role::Participant);
@@ -147,6 +168,40 @@ async fn two_native_peers_admit_and_signal_through_the_sfu_over_wss() {
     assert!(
         matches!(next_key(&mut bob).await, Outcome::Signal { peer, data } if peer == a && data == candidate)
     );
-    alice.close().await.unwrap();
+    drop(bob);
+    retired(&bob_worker, 1).await;
+    let bob = Connection::connect_with_roots(bob_worker.clone(), connect(2, &posted), roots)
+        .await
+        .unwrap();
+    assert_eq!(bob.welcome().role, Role::Participant);
     bob.close().await.unwrap();
+    alice.close().await.unwrap();
+
+    let listener = TcpListener::bind((CA, 0)).await.unwrap();
+    let stalled_host = listener.local_addr().unwrap().to_string();
+    let attempt = tokio::spawn({
+        let worker = bob_worker.clone();
+        async move {
+            let link = format!("https://{stalled_host}/call#{LINK}");
+            Connection::connect(
+                worker,
+                Connect {
+                    generation: 3,
+                    host: &stalled_host,
+                    link: &link,
+                    codecs: &[Codec::Av1],
+                    policy: PeerPolicy::default(),
+                },
+            )
+            .await
+        }
+    });
+    // A connection attempt opens the worker slot before dialing the SFU.
+    let _stalled = timeout(HANDSHAKE, listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    attempt.abort();
+    assert!(matches!(attempt.await, Err(error) if error.is_cancelled()));
+    retired(&bob_worker, 3).await;
 }
