@@ -296,10 +296,19 @@ pub struct SecondServer {
     pub talking: Vec<usize>,
 }
 
+enum TextDestination {
+    Composer(usize),
+    Invite {
+        target: TextTarget,
+        expected_peer: Option<u64>,
+    },
+}
+
 struct PendingSend {
     preview_id: Option<crate::preview::SendId>,
     notice_lease: Option<u64>,
-    conversation: Conversation,
+    server: String,
+    composer_channel: Option<u32>,
     target: TextTarget,
     body: String,
     /// The outgoing body a legacy HTML send reports; never the logical draft.
@@ -718,7 +727,7 @@ impl Client {
         if self
             .sending
             .as_ref()
-            .is_some_and(|pending| pending.conversation.server == server.id)
+            .is_some_and(|pending| pending.server == server.id)
         {
             self.sending = None;
         }
@@ -1430,7 +1439,10 @@ impl Client {
     }
 
     fn finish_pending_send(&mut self, pending: PendingSend, generation: u64) {
-        if let Some(index) = self.current(&pending.conversation.server, generation) {
+        let Some(channel) = pending.composer_channel else {
+            return;
+        };
+        if let Some(index) = self.current(&pending.server, generation) {
             self.servers[index].clear_sent_refusal(pending.notice_lease);
         }
         let unchanged = match pending.preview {
@@ -1441,7 +1453,10 @@ impl Client {
         // intent may clear the composer or its saved conversation draft.
         if unchanged {
             self.updates.push(Update::Sent {
-                conversation: pending.conversation,
+                conversation: Conversation {
+                    server: pending.server,
+                    channel,
+                },
                 body: pending.body,
             });
         }
@@ -1453,14 +1468,30 @@ impl Client {
         let Some((server, channel)) = self.selected_indices() else {
             return Err(SendError::Nothing);
         };
+        self.send_text_to(server, TextDestination::Composer(channel), body)
+    }
+
+    fn send_text_to(
+        &mut self,
+        server: usize,
+        destination: TextDestination,
+        body: String,
+    ) -> Result<(), SendError> {
         if self.sending.is_some() || body.trim().is_empty() {
             return Err(SendError::Nothing);
         }
         if body.len() > MAX_CONTENT_BYTES {
             return Err(SendError::TooLong);
         }
-        let preview_wire = self.link_preview_wire(&body);
-        let preview = self.link_preview_submission(&body);
+        let composer = matches!(destination, TextDestination::Composer(_));
+        let (preview_wire, preview) = if composer {
+            (
+                self.link_preview_wire(&body),
+                self.link_preview_submission(&body),
+            )
+        } else {
+            (None, None)
+        };
         let server = &mut self.servers[server];
         if server.status != Status::Connected {
             return Err(SendError::Refused(server.refuse_send(
@@ -1468,13 +1499,19 @@ impl Client {
                 self.now_ms,
             )));
         }
-        let (target, expected_peer) = match server.message_target(channel) {
-            Ok(target) => target,
-            Err(reason) => {
-                return Err(SendError::Refused(
-                    server.refuse_send(reason.into(), self.now_ms),
-                ));
-            }
+        let (channel, target, expected_peer) = match destination {
+            TextDestination::Composer(channel) => match server.message_target(channel) {
+                Ok((target, expected_peer)) => (Some(channel), target, expected_peer),
+                Err(reason) => {
+                    return Err(SendError::Refused(
+                        server.refuse_send(reason.into(), self.now_ms),
+                    ));
+                }
+            },
+            TextDestination::Invite {
+                target,
+                expected_peer,
+            } => (None, target, expected_peer),
         };
         if !server.mls {
             let defaults = nuschl_core::model::ServerLimits::default();
@@ -1496,14 +1533,12 @@ impl Client {
         } else {
             None
         };
-        let channel = &server.channels[channel];
+        let channel = channel.map(|position| &server.channels[position]);
         let pending = PendingSend {
             preview_id,
             notice_lease: server.send_refusal_lease(),
-            conversation: Conversation {
-                server: server.id.clone(),
-                channel: channel.id,
-            },
+            server: server.id.clone(),
+            composer_channel: channel.map(|channel| channel.id),
             target: target.clone(),
             body: body.clone(),
             wire: preview_wire.as_ref().map(|(_, _, html, _)| html.clone()),
@@ -1524,15 +1559,14 @@ impl Client {
                     },
                 );
         let request = if server.mls {
-            let Some(conversation) = channel.conversation else {
+            let Some(conversation) = channel.and_then(|channel| channel.conversation) else {
                 return Err(SendError::Refused(server.refuse_send(
                     "End-to-end encryption is being set up.".into(),
                     self.now_ms,
                 )));
             };
             if let Some(reason) = channel
-                .encryption
-                .as_ref()
+                .and_then(|channel| channel.encryption.as_ref())
                 .and_then(|state| state.blocked.clone())
             {
                 return Err(SendError::Refused(server.refuse_send(reason, self.now_ms)));
@@ -1555,9 +1589,11 @@ impl Client {
         match submitted {
             Ok(()) => {
                 self.sending = Some(pending);
-                // Sent: we are no longer typing it.
-                self.typing_sent = None;
-                self.pause_submitted_link_preview(self.now_ms);
+                if composer {
+                    // Sent: we are no longer typing it.
+                    self.typing_sent = None;
+                    self.pause_submitted_link_preview(self.now_ms);
+                }
                 Ok(())
             }
             Err(error) => Err(SendError::Refused(server.refuse_send(error, self.now_ms))),
@@ -1917,7 +1953,7 @@ impl Client {
             } => {
                 if self.current(&server, generation).is_some()
                     && self.sending.as_ref().is_some_and(|pending| {
-                        pending.conversation.server == server && pending.preview_id == Some(id)
+                        pending.server == server && pending.preview_id == Some(id)
                     })
                     && let Some(pending) = self.sending.take()
                 {
@@ -1945,7 +1981,7 @@ impl Client {
                     .iter()
                     .any(|entry| entry.id == server && entry.generation == generation)
                     && self.sending.as_ref().is_some_and(|pending| {
-                        pending.conversation.server == server
+                        pending.server == server
                             && pending.preview_id.is_none()
                             && pending.target == target
                             && pending.wire.as_ref().unwrap_or(&pending.body) == &body
@@ -1962,7 +1998,7 @@ impl Client {
             } => {
                 if let Some(index) = self.current(&server, generation) {
                     if self.sending.as_ref().is_some_and(|pending| {
-                        pending.conversation.server == server && pending.preview_id.is_none()
+                        pending.server == server && pending.preview_id.is_none()
                     }) {
                         self.sending = None;
                     }
@@ -3255,7 +3291,7 @@ impl Client {
                 if self
                     .sending
                     .as_ref()
-                    .is_some_and(|pending| pending.conversation.server == server.id)
+                    .is_some_and(|pending| pending.server == server.id)
                 {
                     self.sending = None;
                 }
@@ -5143,6 +5179,146 @@ mod tests {
         assert_eq!(
             client.send_text("x".repeat(MAX_CONTENT_BYTES + 1)),
             Err(SendError::TooLong)
+        );
+    }
+
+    #[test]
+    fn a_queued_call_invite_uses_its_original_peer_and_preserves_the_next_draft() {
+        let (mut client, recorder, id) = connected();
+        client.servers[0].users.insert(
+            4,
+            User {
+                session: 4,
+                instance: 10,
+                ..Default::default()
+            },
+        );
+        client.open(0, 2).unwrap();
+        client.send_text("previous message".into()).unwrap();
+        let link = "https://stream.example/call#test";
+        client
+            .start_call(0, TextTarget::Direct(4), link.into())
+            .unwrap();
+        client.announce_own_call();
+        client.open(0, 3).unwrap();
+        client.set_link_preview_settings(
+            crate::preview::Settings {
+                mode: crate::preview::Mode::Direct,
+            },
+            0,
+        );
+        client.composing_link_preview("https://example.org/ ", false, false, false, 0);
+        client.poll_link_preview(crate::preview::DEBOUNCE_MS);
+        let preview = recorder.previews.lock().unwrap().last().unwrap().id;
+        let typing = Some(((id.clone(), 3), 0));
+        client.typing_sent.clone_from(&typing);
+
+        let sent = |generation, target, body: &str| Input::Sent {
+            server: id.clone(),
+            generation,
+            target,
+            body: body.into(),
+        };
+        client.handle(sent(0, TextTarget::Channel(2), "previous message"));
+        client.settle();
+        assert_eq!(
+            recorder
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, request)| matches!(request, Request::SendText { .. }))
+                .count(),
+            1,
+        );
+        client.handle(sent(1, TextTarget::Channel(2), "previous message"));
+        client.take_updates();
+        client.settle();
+        let invite = format!("Call: {link}");
+        assert!(client.sending());
+        assert!(recorder.requests.lock().unwrap().contains(&(
+            id.clone(),
+            Request::SendText {
+                target: TextTarget::Direct(4),
+                body: invite.clone(),
+                expected_peer: Some(10)
+            },
+        )));
+        client.handle(sent(1, TextTarget::Direct(4), &invite));
+        client.announce_own_call();
+        client.settle();
+
+        assert!(!client.sending());
+        assert_eq!(client.typing_sent, typing);
+        assert!(
+            !recorder
+                .cancelled_previews
+                .lock()
+                .unwrap()
+                .contains(&preview)
+        );
+        assert!(
+            client
+                .take_updates()
+                .iter()
+                .all(|update| !matches!(update, Update::Sent { .. }))
+        );
+        assert_eq!(
+            recorder
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, request)| matches!(request, Request::SendText { .. }))
+                .count(),
+            2,
+        );
+    }
+
+    #[test]
+    fn a_queued_call_invite_expires_when_the_direct_peer_is_replaced() {
+        let (mut client, recorder, id) = connected();
+        client.servers[0].users.insert(
+            4,
+            User {
+                session: 4,
+                instance: 10,
+                ..Default::default()
+            },
+        );
+        client.open(0, 2).unwrap();
+        client.send_text("previous message".into()).unwrap();
+        client
+            .start_call(
+                0,
+                TextTarget::Direct(4),
+                "https://stream.example/call#test".into(),
+            )
+            .unwrap();
+        client.announce_own_call();
+        client.servers[0].users.get_mut(&4).unwrap().instance = 11;
+        client.handle(Input::Sent {
+            server: id,
+            generation: 1,
+            target: TextTarget::Channel(2),
+            body: "previous message".into(),
+        });
+        client.settle();
+        assert!(client.own_call().is_none());
+        assert!(!client.sending());
+        assert!(
+            recorder
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(_, request)| !matches!(
+                    request,
+                    Request::SendText {
+                        target: TextTarget::Direct(_),
+                        ..
+                    }
+                ))
         );
     }
 
