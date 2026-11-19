@@ -930,6 +930,7 @@
             node --test tests/content_window.unit.mjs tests/sdk_rpc.unit.mjs tests/sdk_rpc_startup.unit.mjs \
               tests/web_audio.unit.mjs tests/web_content.unit.mjs tests/share_links.mjs \
               tests/web_output_quality.mjs tests/web_playout_clock.mjs
+            node tests/web_playout_worker.mjs ${webClient.audioWasm}
             touch $out
           '';
           # The call page's stream worker on wasm32 replays the native transcript.

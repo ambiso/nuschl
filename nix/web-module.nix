@@ -82,6 +82,9 @@ let
     add_header X-Content-Type-Options nosniff always;
     add_header X-DNS-Prefetch-Control off always;
     add_header Cross-Origin-Opener-Policy same-origin always;
+    # With COOP, makes the page cross-origin isolated: voice shares memory
+    # between its codec worker and audio worklets (docs/browser-audio.md).
+    add_header Cross-Origin-Embedder-Policy require-corp always;
     add_header Permissions-Policy "camera=(), geolocation=(), microphone=(self)" always;
   '';
   # Refused to the relay by the kernel as well as by its own checks (docs/web.md).

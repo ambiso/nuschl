@@ -1,5 +1,8 @@
 # Browser Worklet clock component proof
 
+This records the original MessageChannel playout implementation. The current
+shared-memory transport is described in [Browser voice](browser-audio.md).
+
 The direct port contract is specified in `browser-playout-port.md`. This note
 covers the Worklet component only; codec-worker, generated WASM, private-browser
 integration and physical device timing remain separate verification gates.

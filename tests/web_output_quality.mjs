@@ -4,36 +4,21 @@ import assert from "node:assert/strict";
 import {readFile,writeFile} from "node:fs/promises";
 import {resolve,join} from "node:path";
 import {pathToFileURL} from "node:url";
+import {renderStereo} from "./web_output_render.mjs";
 
 const arguments_=process.argv.slice(2),requireParity=arguments_.includes("--require-parity");
 const option=name=>{const at=arguments_.indexOf(name);return at<0?null:arguments_[at+1];};
-const classes=new Map();
-globalThis.AudioWorkletProcessor=class {constructor(){this.port={postMessage(){}};}};
-globalThis.registerProcessor=(name,type)=>classes.set(name,type);
-globalThis.sampleRate=48000;
-const {PcmMixer}=await import(pathToFileURL(resolve("web/app/src/audio-worklet.js")).href);
-delete globalThis.AudioWorkletProcessor;delete globalThis.registerProcessor;delete globalThis.sampleRate;
-function render(samples,volume=1){
-  const mixer=new PcmMixer();mixer.configure("audit",true);
-  assert.equal(mixer.enqueue({epoch:"audit",speaker:7,samples,volume}),true);
-  const hold=new Float32Array(960),output=new Float32Array(samples.length);
-  mixer.render(hold);mixer.render(output);return output;
+function render(samples,volume=1,mono=true) {
+  return renderStereo([{samples:Float32Array.from({length:samples.length*2},(_,index)=>samples[index>>1]),volume}],{mono});
 }
 const unity=Float32Array.from({length:960},(_,i)=>Math.sin(2*Math.PI*997*i/48000)*.2);
 assert.deepEqual(render(unity),unity,"safe unity PCM must not change");
 const over=new Float32Array(960).fill(2),attenuated=render(over,.25);
 const gainBeforeClipping=Math.max(...attenuated)===.5;
-const Processor=classes.get("nuschl-playback");assert.ok(Processor);
-const processor=new Processor();processor.mixer.configure("audit",true);
-processor.mixer.enqueue({epoch:"audit",speaker:7,samples:unity,volume:1});
-const outputs=[[new Float32Array(960),new Float32Array(960)]];
-processor.process([],outputs);processor.process([],outputs);
-const duplicatedMono=outputs[0][0].every((value,i)=>value===outputs[0][1][i]);
-processor.mixer.configure("stereo",true);
+const stereo=render(unity,1,false);
+const duplicatedMono=stereo.every((value,index)=>value===unity[index>>1]);
 const distinct=Float32Array.from({length:1920},(_,i)=>i%2===0?.2:-.3);
-assert.ok(processor.mixer.enqueue({epoch:"stereo",speaker:7,samples:distinct,channels:2,frames:960}));
-processor.process([],outputs);processor.process([],outputs);
-const stereoPreserved=outputs[0][0].every(v=>Math.abs(v-.2)<1e-6)&&outputs[0][1].every(v=>Math.abs(v+.3)<1e-6);
+const stereoPreserved=renderStereo([{samples:distinct}]).every((value,index)=>value===distinct[index]);
 const result={worklet_unity_exact:true,gain_before_clipping:gainBeforeClipping,
   diagnostic_overshoot_attenuated:{input:2,volume:.25,expected:.5,observed:attenuated[0]},
   actual_processor_duplicates_mono:duplicatedMono,actual_processor_stereo_preserved:stereoPreserved,codec:null,

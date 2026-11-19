@@ -109,7 +109,9 @@ One nginx virtual host with `enableACME` and `forceSSL` (both on by default) ser
 Every response carries a strict Content-Security-Policy (only this origin; the relay
 as the one connection; `wasm-unsafe-eval` for WebAssembly; media only from `blob:`
 for a call's silent keep-alive), `Referrer-Policy:
-no-referrer`, `nosniff` and a Permissions-Policy allowing only the microphone. The
+no-referrer`, `nosniff`, a Permissions-Policy allowing only the microphone, and
+`Cross-Origin-Opener-Policy: same-origin` with `Cross-Origin-Embedder-Policy:
+require-corp`, which make the page cross-origin isolated for voice. The
 relay runs as its own system user (static, so nginx can share the socket's group)
 under the server module's systemd hardening. `installUrl` sets where "Get Nuschl"
 leads.

@@ -23,7 +23,7 @@ const server=createServer(async(req,res)=>{
     assert.ok(path===directory||path.startsWith(directory+sep));
     const target=extname(mounted)?path:resolve(path,"index.html");
     const body=await readFile(target);
-    res.writeHead(200,{"Content-Type":types[extname(target)]||"application/octet-stream","Content-Security-Policy":csp,"Permissions-Policy":"camera=(), geolocation=(), microphone=(self)","Cross-Origin-Opener-Policy":"same-origin","Referrer-Policy":"no-referrer","X-Content-Type-Options":"nosniff"});res.end(body);
+    res.writeHead(200,{"Content-Type":types[extname(target)]||"application/octet-stream","Content-Security-Policy":csp,"Permissions-Policy":"camera=(), geolocation=(), microphone=(self)","Cross-Origin-Opener-Policy":"same-origin","Cross-Origin-Embedder-Policy":"require-corp","Referrer-Policy":"no-referrer","X-Content-Type-Options":"nosniff"});res.end(body);
   } catch {res.writeHead(404);res.end();}
 });
 const tunnels=new Set();

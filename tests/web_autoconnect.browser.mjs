@@ -3,7 +3,8 @@
 // Mumble server with a channel named Lobby: when the page is opened again and
 // reloaded while connected, the working server connects without a click and
 // rejoins Lobby, the channel last joined, with voice and the microphone closed;
-// a server that refuses ends disconnected with its notice. Run by nix/vm-web.nix.
+// a server that refuses ends disconnected with its notice. The page is
+// cross-origin isolated. Run by nix/vm-web.nix.
 //   node tests/web_autoconnect.browser.mjs APP_URL SERVER_HOST SERVER_PORT REFUSING_PORT
 import assert from "node:assert/strict";
 import {pathToFileURL} from "node:url";
@@ -39,6 +40,8 @@ try {
   const disconnected=port=>page.waitForFunction(port=>__proof.servers.find(server=>server.port===Number(port))?.status==="disconnected",port);
   // Save both servers through server links.
   await page.goto(`${app}#s=${host}:${port}&u=autoconnect`);
+  // COOP and COEP make the app cross-origin isolated (nix/web-module.nix).
+  assert.equal(await page.evaluate(()=>crossOriginIsolated),true);
   await page.getByRole("button",{name:"Trust this certificate",exact:true}).click();
   await connected(port);
   // Join Lobby's voice once, with the Join voice control.
