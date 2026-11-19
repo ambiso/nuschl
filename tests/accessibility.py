@@ -130,7 +130,7 @@ class Node:
 
 def snapshot(application):
     """(depth, node, role, name) for the whole tree. A node that disappears while
-    the UI updates raises Stale, so eventually() takes a fresh snapshot."""
+    the UI updates raises Stale, and the walk starts again within eventually()'s bound."""
     entries = []
 
     def visit(node, depth):
@@ -145,8 +145,12 @@ def snapshot(application):
             raise
         for child in children:
             visit(child, depth + 1)
-    visit(application, 0)
-    return entries
+
+    def walk():
+        entries.clear()
+        visit(application, 0)
+        return entries
+    return eventually(walk, "the accessibility tree kept changing during every walk")
 
 
 def items(application):
