@@ -2033,44 +2033,11 @@ fn conversation_header(
                     .own_call()
                     .is_none_or(|call| call.server != server.id),
             |controls| {
-                #[cfg(target_os = "linux")]
-                if this.native_call.is_none()
-                    && !this.settings.relay_only
-                    && matches!(channel.target, TextTarget::Direct(_))
-                {
-                    use nuschl_ipc::video::Source;
-                    let button = |id, icon, label, source, cx: &mut Context<Desktop>| {
-                        let target = channel.target.clone();
-                        icon_button(
-                            id,
-                            icon,
-                            label,
-                            TEXT_MUTED,
-                            None,
-                            move |this, _, cx| {
-                                this.start_native_call(index, target.clone(), source, cx);
-                                cx.notify();
-                            },
-                            cx,
-                        )
-                    };
-                    return controls
-                        .child(button(
-                            "start-call",
-                            "video",
-                            "Start camera",
-                            Source::Camera,
-                            cx,
-                        ))
-                        .child(button(
-                            "share-screen",
-                            "screen",
-                            "Share screen",
-                            Source::Screen,
-                            cx,
-                        ));
-                }
-                let start = |id, icon, label, cx: &mut Context<Desktop>| {
+                let button = |id,
+                              icon,
+                              label,
+                              start: fn(&mut Desktop, usize, TextTarget, &mut Context<Desktop>),
+                              cx: &mut Context<Desktop>| {
                     let target = channel.target.clone();
                     icon_button(
                         id,
@@ -2079,15 +2046,57 @@ fn conversation_header(
                         TEXT_MUTED,
                         None,
                         move |this, _, cx| {
-                            this.start_call(index, target.clone(), cx);
+                            start(this, index, target.clone(), cx);
                             cx.notify();
                         },
                         cx,
                     )
                 };
+                #[cfg(target_os = "linux")]
+                if this.native_call.is_none() && this.native_available(this.call_host()) {
+                    use nuschl_ipc::video::Source;
+                    return controls
+                        .child(button(
+                            "start-call",
+                            "link",
+                            "Start call",
+                            Desktop::start_call,
+                            cx,
+                        ))
+                        .child(button(
+                            "native-camera",
+                            "video",
+                            "Start camera",
+                            |this, index, target, cx| {
+                                this.start_native_call(index, target, Source::Camera, cx)
+                            },
+                            cx,
+                        ))
+                        .child(button(
+                            "share-screen",
+                            "screen",
+                            "Share screen",
+                            |this, index, target, cx| {
+                                this.start_native_call(index, target, Source::Screen, cx)
+                            },
+                            cx,
+                        ));
+                }
                 controls
-                    .child(start("start-call", "video", "Start call", cx))
-                    .child(start("share-screen", "screen", "Share screen", cx))
+                    .child(button(
+                        "start-call",
+                        "video",
+                        "Start call",
+                        Desktop::start_call,
+                        cx,
+                    ))
+                    .child(button(
+                        "share-screen",
+                        "screen",
+                        "Share screen",
+                        Desktop::start_call,
+                        cx,
+                    ))
             },
         )
         .when(!connected, |controls| {
@@ -2425,8 +2434,10 @@ fn conversation(
         })
         .map(|view| {
             #[cfg(target_os = "linux")]
-            let view = view.when_some(crate::native_call::panel(this, cx), |view, panel| {
-                view.child(panel)
+            let view = view.when(this.native_call_in(&server.id, &channel.target), |view| {
+                view.when_some(crate::native_call::panel(this, cx), |view, panel| {
+                    view.child(panel)
+                })
             });
             view
         })
@@ -3330,11 +3341,7 @@ fn call_card(
 ) -> Option<AnyElement> {
     let server = &this.client.servers[index];
     #[cfg(target_os = "linux")]
-    if this
-        .native_call
-        .as_ref()
-        .is_some_and(|call| call.server == server.id && call.conversation == *target)
-    {
+    if this.native_call_in(&server.id, target) {
         return None;
     }
     let join = |url: String, cx: &mut Context<Desktop>| {
@@ -3382,9 +3389,7 @@ fn call_card(
         let actions = layout::actions().child(join(link.url(), cx));
         #[cfg(target_os = "linux")]
         let actions = actions.when(
-            matches!(target, TextTarget::Direct(_))
-                && this.native_call.is_none()
-                && this.native_available(link.host()),
+            this.native_call.is_none() && this.native_available(link.host()),
             |actions| {
                 let url = link.url();
                 let server = server.id.clone();

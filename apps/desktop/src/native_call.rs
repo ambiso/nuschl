@@ -16,18 +16,24 @@ use nuschl_protocol::sfu::Codec;
 use nuschl_session::{config::ClientSettings, identity::CryptoHandle};
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, LazyLock, Mutex},
     time::Duration,
 };
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 
 const SFU_PORT: u16 = 3479;
+static WORKERS: LazyLock<Option<(PathBuf, PathBuf)>> = LazyLock::new(|| {
+    let rtc = nuschl_sandbox::sibling("nuschl-rtc-worker").ok()?;
+    let video = nuschl_sandbox::sibling("nuschl-video-worker").ok()?;
+    (rtc.is_file() && video.is_file()).then_some((rtc, video))
+});
 
 pub struct Active {
-    pub owner: bool,
-    pub room: String,
-    pub server: String,
-    pub conversation: TextTarget,
+    owner: bool,
+    room: String,
+    server: String,
+    conversation: TextTarget,
+    voice_generation: u64,
     browser: String,
     surface: Entity<Surface>,
     stop: Option<oneshot::Sender<()>>,
@@ -55,6 +61,7 @@ pub struct Start {
 struct Update {
     status: String,
     frame: Option<DecodedFrame>,
+    finished: bool,
 }
 
 struct Latest {
@@ -69,6 +76,18 @@ impl Latest {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         update.status = status.into();
+        drop(update);
+        self.ready.notify_one();
+    }
+
+    fn finished(&self, status: String) {
+        let mut update = self
+            .update
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        update.status = status;
+        update.frame = None;
+        update.finished = true;
         drop(update);
         self.ready.notify_one();
     }
@@ -98,23 +117,28 @@ impl Surface {
         let observe = cx.spawn(async move |this, cx| {
             loop {
                 updates.ready.notified().await;
-                let (status, frame) = {
+                let (status, frame, finished) = {
                     let mut update = updates
                         .update
                         .lock()
                         .unwrap_or_else(|error| error.into_inner());
-                    (update.status.clone(), update.frame.take())
+                    (update.status.clone(), update.frame.take(), update.finished)
                 };
                 if this
                     .update(cx, |this, cx| {
                         this.status = status;
-                        if let Some(frame) = frame.and_then(render_frame) {
+                        if finished {
+                            this.image = None;
+                        } else if let Some(frame) = frame.and_then(render_frame) {
                             this.image = Some(frame);
                         }
                         cx.notify();
                     })
                     .is_err()
                 {
+                    break;
+                }
+                if finished {
                     break;
                 }
             }
@@ -171,7 +195,16 @@ fn render_frame(frame: DecodedFrame) -> Option<Arc<RenderImage>> {
 
 impl Desktop {
     pub fn native_available(&self, host: &str) -> bool {
-        !self.settings.relay_only && self.call_host().eq_ignore_ascii_case(host)
+        WORKERS.is_some()
+            && !self.settings.relay_only
+            && self.call_host().eq_ignore_ascii_case(host)
+            && !matches!(host.split(':').next(), Some("localhost" | "127.0.0.1"))
+    }
+
+    pub fn native_call_in(&self, server: &str, target: &TextTarget) -> bool {
+        self.native_call
+            .as_ref()
+            .is_some_and(|call| call.server == server && call.conversation == *target)
     }
 
     pub fn open_native_call(
@@ -185,9 +218,17 @@ impl Desktop {
         if self.native_call.is_some() || !self.native_available(link.host()) {
             return;
         }
+        let Some((server_index, channel_index)) = self.selected_indices() else {
+            return;
+        };
+        let selected = &self.client.servers[server_index];
+        if selected.id != server || selected.channels[channel_index].target != conversation {
+            return;
+        }
         let Some(generation) = self.native_call_generation.checked_add(1) else {
             return;
         };
+        let voice_generation = selected.generation;
         let owner = source.is_some();
         let room = link.url();
         let browser = if owner {
@@ -207,6 +248,7 @@ impl Desktop {
             update: Mutex::new(Update {
                 status: status.into(),
                 frame: None,
+                finished: false,
             }),
             ready: Notify::new(),
         });
@@ -217,6 +259,7 @@ impl Desktop {
             room,
             server,
             conversation,
+            voice_generation,
             browser: browser.clone(),
             surface: cx.new(|cx| Surface::new(updates.clone(), status, cx)),
             stop: Some(stop),
@@ -243,7 +286,7 @@ impl Desktop {
         source: Source,
         cx: &mut Context<Self>,
     ) {
-        if self.native_call.is_some() || self.settings.relay_only {
+        if self.native_call.is_some() || !self.native_available(self.call_host()) {
             return;
         }
         match self.create_call(index, target.clone()) {
@@ -281,20 +324,24 @@ impl Desktop {
         let Some(call) = &self.native_call else {
             return;
         };
-        let selected = self.selected_indices().is_some_and(|(server, channel)| {
-            let server = &self.client.servers[server];
+        let current = self.selected_indices().is_some_and(|(index, channel)| {
+            let server = &self.client.servers[index];
             server.status == nuschl_client::server::Status::Connected
                 && server.id == call.server
+                && server.generation == call.voice_generation
                 && server.channels[channel].target == call.conversation
+                && if call.owner {
+                    self.client
+                        .own_call()
+                        .is_some_and(|own| own.link == call.room)
+                } else {
+                    self.client
+                        .calls_in(index, &call.conversation)
+                        .iter()
+                        .any(|announced| announced.link == call.room)
+                }
         });
-        if self.settings.relay_only
-            || !selected
-            || (call.owner
-                && self
-                    .client
-                    .own_call()
-                    .is_none_or(|own| own.link != call.room))
-        {
+        if self.settings.relay_only || !current {
             if call.finished {
                 self.native_call = None;
             } else {
@@ -338,9 +385,13 @@ impl Desktop {
                 self.native_call = None;
             }
             Some(AfterStop::Close) => {
-                let owner = call.owner;
+                let ends_our_call = call.owner
+                    && self
+                        .client
+                        .own_call()
+                        .is_some_and(|own| own.link == call.room);
                 self.native_call = None;
-                if owner {
+                if ends_our_call {
                     self.end_call();
                 }
             }
@@ -434,6 +485,23 @@ pub async fn run(
     mut settings: watch::Receiver<ClientSettings>,
     events: mpsc::Sender<ServiceEvent>,
 ) {
+    let generation = start.generation;
+    let updates = start.updates.clone();
+    let status = match drive(start, &mut settings, &events).await {
+        Ok(()) => "Video call ended".into(),
+        Err(error) => format!("Video unavailable. {error}"),
+    };
+    updates.finished(status);
+    let _ = events
+        .send(ServiceEvent::NativeFinished { generation })
+        .await;
+}
+
+async fn drive(
+    start: Start,
+    settings: &mut watch::Receiver<ClientSettings>,
+    events: &mpsc::Sender<ServiceEvent>,
+) -> Result<(), String> {
     let Start {
         crypto,
         generation,
@@ -457,66 +525,68 @@ pub async fn run(
         }
     };
     tokio::pin!(cancel);
+    let (mut media, grant, video_worker) = tokio::select! {
+        biased;
+        () = &mut cancel => return Ok(()),
+        result = prepare(crypto, generation, &host, &url, source, &updates) => result?,
+    };
+    let result = if let Some(grant) = grant {
+        publish_video(
+            &mut media,
+            grant,
+            video_worker,
+            &updates,
+            generation,
+            events,
+            cancel,
+        )
+        .await
+    } else {
+        updates.status("Waiting for video");
+        receive_video(&mut media, video_worker, &updates, cancel).await
+    };
+    result.and(media.stop().await.map_err(text))
+}
+
+async fn publish_video(
+    media: &mut Media,
+    grant: portal::Grant,
+    worker: PathBuf,
+    updates: &Latest,
+    generation: u64,
+    events: &mpsc::Sender<ServiceEvent>,
+    mut cancel: std::pin::Pin<&mut impl Future<Output = ()>>,
+) -> Result<(), String> {
+    if grant.requires_curtain() {
+        let hide_conversations = async {
+            let (ready, painted) = oneshot::channel();
+            events
+                .send(ServiceEvent::NativeCurtain { generation, ready })
+                .await
+                .map_err(text)?;
+            tokio::time::timeout(Duration::from_secs(5), painted)
+                .await
+                .map_err(text)?
+                .map_err(text)
+        };
+        tokio::select! {
+            biased;
+            () = &mut cancel => return Ok(()),
+            result = hide_conversations => result?,
+        }
+    }
+    let rate = match grant.source() {
+        Source::Screen => 4_000_000,
+        Source::Camera => 2_000_000,
+    };
+    let mut capture = grant.start(worker, rate).map_err(text)?;
+    updates.status("Waiting for a viewer");
     let result = tokio::select! {
         biased;
         () = &mut cancel => Ok(()),
-        result = prepare(crypto, generation, &host, &url, source, &updates) => {
-            match result {
-                Err(error) => Err(error),
-                Ok((mut media, grant, video_worker)) => {
-                    let result = if let Some(grant) = grant {
-                        let share = async {
-                            if grant.requires_curtain() {
-                                let (ready, painted) = oneshot::channel();
-                                events.send(ServiceEvent::NativeCurtain { generation, ready })
-                                    .await.map_err(text)?;
-                                tokio::time::timeout(Duration::from_secs(5), painted)
-                                    .await.map_err(text)?.map_err(text)?;
-                            }
-                            let bitrate = match grant.source() {
-                                Source::Screen => 15_000_000,
-                                Source::Camera => 2_000_000,
-                            };
-                            let capture = grant.start(video_worker, bitrate).map_err(text)?;
-                            Ok::<_, String>((capture, bitrate))
-                        };
-                        match tokio::select! {
-                            biased;
-                            () = &mut cancel => Ok(None),
-                            result = share => result.map(Some),
-                        } {
-                            Ok(Some((mut capture, bitrate))) => {
-                                updates.status("Waiting for a viewer");
-                                let result = tokio::select! {
-                                    biased;
-                                    () = &mut cancel => Ok(()),
-                                    result = send_video(&mut media, &mut capture, bitrate, &updates) => result,
-                                };
-                                result.and(capture.stop().await.map_err(text))
-                            }
-                            Ok(None) => Ok(()),
-                            Err(error) => Err(error),
-                        }
-                    } else {
-                        updates.status("Waiting for video");
-                        tokio::select! {
-                            biased;
-                            () = &mut cancel => Ok(()),
-                            result = receive_video(&mut media, video_worker, &updates) => result,
-                        }
-                    };
-                    result.and(media.stop().await.map_err(text))
-                }
-            }
-        }
+        result = send_video(media, &mut capture, rate, updates) => result,
     };
-    match result {
-        Ok(()) => updates.status("Video call ended"),
-        Err(error) => updates.status(format!("Video unavailable. {error}")),
-    }
-    let _ = events
-        .send(ServiceEvent::NativeFinished { generation })
-        .await;
+    result.and(capture.stop().await.map_err(text))
 }
 
 async fn prepare(
@@ -527,8 +597,10 @@ async fn prepare(
     source: Option<Source>,
     updates: &Latest,
 ) -> Result<(Media, Option<portal::Grant>, PathBuf), String> {
-    let executable = nuschl_sandbox::sibling("nuschl-rtc-worker").map_err(text)?;
-    let video_worker = nuschl_sandbox::sibling("nuschl-video-worker").map_err(text)?;
+    let (executable, video_worker) = WORKERS
+        .as_ref()
+        .ok_or("The native video workers are unavailable.")?
+        .clone();
     let grant = match source {
         Some(source) => Some(portal::request(source, None).await.map_err(text)?),
         None => None,
@@ -605,36 +677,58 @@ async fn receive_video(
     media: &mut Media,
     executable: PathBuf,
     updates: &Latest,
+    cancel: std::pin::Pin<&mut impl Future<Output = ()>>,
 ) -> Result<(), String> {
     let mut decoder = None;
-    while let Some(event) = media.next().await {
-        let MediaEvent::Frame {
-            purpose,
-            contiguous,
-            key_frame,
-            data,
-            ..
-        } = event.map_err(text)?
-        else {
-            continue;
-        };
-        let source = match purpose {
-            Purpose::Camera => Source::Camera,
-            Purpose::ScreenVideo => Source::Screen,
-            _ => continue,
-        };
-        let decoder = match &mut decoder {
-            Some(decoder) => decoder,
-            None => decoder.insert(Decoder::start(executable.clone(), source).map_err(text)?),
-        };
-        if !contiguous {
-            decoder.reset();
+    let receive = async {
+        while let Some(event) = media.next().await {
+            let MediaEvent::Frame {
+                purpose,
+                contiguous,
+                key_frame,
+                data,
+                ..
+            } = event.map_err(text)?
+            else {
+                continue;
+            };
+            let source = match purpose {
+                Purpose::Camera => Source::Camera,
+                Purpose::ScreenVideo => Source::Screen,
+                _ => continue,
+            };
+            // One decoded source per native viewer. The browser can show every track.
+            let decoder = match &mut decoder {
+                Some((chosen, decoder)) if *chosen == source => decoder,
+                Some(_) => continue,
+                None => {
+                    &mut decoder
+                        .insert((
+                            source,
+                            Decoder::start(executable.clone(), source).map_err(text)?,
+                        ))
+                        .1
+                }
+            };
+            if !contiguous {
+                decoder.reset();
+            }
+            if let Some(frame) = decoder.decode(key_frame, data).await.map_err(text)? {
+                updates.frame(frame);
+            }
         }
-        if let Some(frame) = decoder.decode(key_frame, data).await.map_err(text)? {
-            updates.frame(frame);
-        }
+        Ok(())
+    };
+    let result = tokio::select! {
+        biased;
+        () = cancel => Ok(()),
+        result = receive => result,
+    };
+    if let Some((_, decoder)) = decoder {
+        result.and(decoder.stop().await.map_err(text))
+    } else {
+        result
     }
-    Ok(())
 }
 
 fn video_rate(bitrate: u64) -> u32 {
