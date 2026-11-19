@@ -177,7 +177,21 @@ async fn two_native_peers_admit_and_signal_through_the_sfu_over_wss() {
         .await
         .unwrap();
     assert_eq!(bob.welcome().role, Role::Participant);
-    bob.close().await.unwrap();
+    {
+        let _media = MEDIA_TEST.lock().await;
+        let mut bob = bob
+            .into_media(MediaOptions {
+                executable: fixture("nuschl-rtc-worker"),
+                sfu_port: sfu.media.port(),
+                publish: None,
+            })
+            .await
+            .unwrap();
+        write(&mut alice.socket, &ClientMessage::End).await.unwrap();
+        let event = timeout(HANDSHAKE, bob.next()).await.unwrap();
+        assert!(matches!(event, Some(Err(Error::Refused(reason))) if reason == "ended"));
+        bob.stop().await.unwrap();
+    }
     alice.close().await.unwrap();
 
     let listener = TcpListener::bind((CA, 0)).await.unwrap();
