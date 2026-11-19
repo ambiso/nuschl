@@ -24,7 +24,7 @@ ignore = [
   { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.38 namespaces in Typst's citation styles, math worker only, unreachable as RUSTSEC-2026-0194" },
   { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml (serde_yaml) behind Typst's yaml() and bibliographies, removed from the math worker's Typst library; its formulas cannot contain code" },
   { id = "RUSTSEC-2024-0320", reason = "yaml-rust loads syntect syntax definitions in Typst's raw-text highlighting, which formulas from the math worker's LaTeX converter never use" },
-  { id = "RUSTSEC-2023-0071", reason ="rsa (Marvin timing side channel in private-key operations) only generates the local Mumble client key; TLS signing uses ring, and no RSA decryption or signing runs on untrusted input" },
+  { id = "RUSTSEC-2023-0071", reason = "rsa (Marvin timing side channel in private-key operations) only generates the local Mumble client key; TLS signing uses ring, and no RSA decryption or signing runs on untrusted input" },
 ]
 
 [licenses]
@@ -47,11 +47,21 @@ allow = [
 # its Noise transit encryption, compiled in although 0.8 does not negotiate it,
 # and its WebAssembly-only WebSocket stack.
 exceptions = [
-  { allow = ["Unlicense"], crate = "noise-protocol" },
-  { allow = ["Unlicense"], crate = "noise-rust-crypto" },
-  { allow = ["Unlicense"], crate = "ws_stream_wasm" },
-  { allow = ["Unlicense"], crate = "async_io_stream" },
-  { allow = ["Unlicense"], crate = "pharos" },
+  { allow = [
+    "Unlicense",
+  ], crate = "noise-protocol" },
+  { allow = [
+    "Unlicense",
+  ], crate = "noise-rust-crypto" },
+  { allow = [
+    "Unlicense",
+  ], crate = "ws_stream_wasm" },
+  { allow = [
+    "Unlicense",
+  ], crate = "async_io_stream" },
+  { allow = [
+    "Unlicense",
+  ], crate = "pharos" },
 ]
 
 [bans]
@@ -60,7 +70,8 @@ wildcards = "deny"
 deny = [
   { name = "str0m", wrappers = [
     "nuschl-rtc",
-  ], reason = "Keep the WebRTC implementation behind the encoded-media transport boundary" },
+    "nuschl-stream-sfu",
+  ], reason = "Keep the WebRTC implementation behind the encoded-media transport boundary and in the SFU, which forwards RTP unchanged" },
   { name = "openssl", reason = "Use rustls for transport security" },
   { name = "ml-dsa", wrappers = [
     "nuschl-update-worker",
@@ -170,6 +181,18 @@ deny = [
     "nuschl-transfer-worker",
     "nuschl-update-worker",
   ], reason = "The one first-party crate with unsafe code (Win32 AppContainer launch) runs only as the workers' own launch stage" },
+  { name = "nuschl-stream", wrappers = [
+    "nuschl",
+    "nuschl-crypto-worker",
+    "nuschl-stream-wasm",
+  ], reason = "Call key agreement belongs to the crypto worker and the browser call page's stream worker; the desktop parses call links and derives the lease keys (SECURITY.md); the SDK driver waits for its SECURITY.md row (docs/video-plan.md §4)" },
+  { name = "aes-gcm", wrappers = [
+    "dimpl",
+    "noise-rust-crypto",
+    "nuschl-sframe",
+    "pkcs5",
+    "str0m-rust-crypto",
+  ], reason = "RustCrypto AES-GCM (AES-NI intrinsics) only through its current users and nuschl-sframe, so nuschl-stream and the crypto worker that links it carry none (docs/video-plan.md §4)" },
   { name = "nuschl-identity", wrappers = [
     "nuschl-kt",
     "nuschl-e2ee",
@@ -204,7 +227,7 @@ deny = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# opus-rs, the Opus codec: the owner's fork, pinned by commit in Cargo.toml.
+# opus-rs, the Opus codec: the owner's fork, at the commit Cargo.lock pins.
 allow-git = ["https://github.com/ambiso/opus-rs"]
 
 [[bans.features]]

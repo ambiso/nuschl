@@ -333,6 +333,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "nuschl-sframe" = rec {
+      packageId = "nuschl-sframe";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "nuschl-sframe";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "nuschl-storage" = rec {
       packageId = "nuschl-storage";
       build = internal.buildRustCrateWithFeatures {
@@ -347,6 +357,46 @@ rec {
       packageId = "nuschl-storage-worker";
       build = internal.buildRustCrateWithFeatures {
         packageId = "nuschl-storage-worker";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
+    "nuschl-stream" = rec {
+      packageId = "nuschl-stream";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "nuschl-stream";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
+    "nuschl-stream-quality" = rec {
+      packageId = "nuschl-stream-quality";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "nuschl-stream-quality";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
+    "nuschl-stream-sfu" = rec {
+      packageId = "nuschl-stream-sfu";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "nuschl-stream-sfu";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
+    "nuschl-stream-wasm" = rec {
+      packageId = "nuschl-stream-wasm";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "nuschl-stream-wasm";
       };
 
       # Debug support which might change between releases.
@@ -23110,6 +23160,11 @@ rec {
             packageId = "futures-util";
           }
           {
+            name = "getrandom";
+            packageId = "getrandom 0.4.3";
+            features = [ "sys_rng" ];
+          }
+          {
             name = "global-hotkey";
             packageId = "global-hotkey";
             target = { target, features }: (("windows" == target."os" or null) || ("macos" == target."os" or null));
@@ -23164,6 +23219,10 @@ rec {
           {
             name = "nuschl-session";
             packageId = "nuschl-session";
+          }
+          {
+            name = "nuschl-stream";
+            packageId = "nuschl-stream";
           }
           {
             name = "nuschl-update";
@@ -24779,6 +24838,30 @@ rec {
         ];
 
       };
+      "nuschl-sframe" = rec {
+        crateName = "nuschl-sframe";
+        version = "0.2.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/sframe; };
+        libName = "nuschl_sframe";
+        dependencies = [
+          {
+            name = "aes-gcm";
+            packageId = "aes-gcm 0.11.1";
+            usesDefaultFeatures = false;
+            features = [ "aes" ];
+          }
+          {
+            name = "libcrux-hkdf";
+            packageId = "libcrux-hkdf 0.0.9";
+          }
+          {
+            name = "thiserror";
+            packageId = "thiserror 2.0.21";
+          }
+        ];
+
+      };
       "nuschl-storage" = rec {
         crateName = "nuschl-storage";
         version = "0.2.0";
@@ -24872,6 +24955,226 @@ rec {
           {
             name = "tempfile";
             packageId = "tempfile";
+          }
+        ];
+
+      };
+      "nuschl-stream" = rec {
+        crateName = "nuschl-stream";
+        version = "0.2.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/stream; };
+        libName = "nuschl_stream";
+        dependencies = [
+          {
+            name = "base64ct";
+            packageId = "base64ct";
+          }
+          {
+            name = "hpke-rs";
+            packageId = "hpke-rs 0.8.0";
+          }
+          {
+            name = "hpke-rs-libcrux";
+            packageId = "hpke-rs-libcrux 0.8.0";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "libcrux-chacha20poly1305";
+            packageId = "libcrux-chacha20poly1305 0.0.10";
+          }
+          {
+            name = "libcrux-hkdf";
+            packageId = "libcrux-hkdf 0.0.9";
+          }
+          {
+            name = "libcrux-kem";
+            packageId = "libcrux-kem";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "libcrux-sha2";
+            packageId = "libcrux-sha2 0.0.9";
+          }
+          {
+            name = "rand_core";
+            packageId = "rand_core 0.10.1";
+          }
+          {
+            name = "subtle";
+            packageId = "subtle";
+          }
+          {
+            name = "thiserror";
+            packageId = "thiserror 2.0.21";
+          }
+        ];
+
+      };
+      "nuschl-stream-quality" = rec {
+        crateName = "nuschl-stream-quality";
+        version = "0.2.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/stream-quality; };
+        libName = "nuschl_stream_quality";
+
+      };
+      "nuschl-stream-sfu" = rec {
+        crateName = "nuschl-stream-sfu";
+        version = "0.2.0";
+        edition = "2024";
+        crateBin = [
+          {
+            name = "nuschl-stream-sfu";
+            path = "src/main.rs";
+            requiredFeatures = [ ];
+          }
+        ];
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../apps/stream-sfu; };
+        libName = "nuschl_stream_sfu";
+        dependencies = [
+          {
+            name = "base64";
+            packageId = "base64 0.22.1";
+          }
+          {
+            name = "clap";
+            packageId = "clap";
+            features = [ "derive" ];
+          }
+          {
+            name = "futures-util";
+            packageId = "futures-util";
+            usesDefaultFeatures = false;
+            features = [ "sink" "std" ];
+          }
+          {
+            name = "getrandom";
+            packageId = "getrandom 0.4.3";
+          }
+          {
+            name = "hex";
+            packageId = "hex";
+          }
+          {
+            name = "hmac";
+            packageId = "hmac 0.13.0";
+          }
+          {
+            name = "httparse";
+            packageId = "httparse";
+          }
+          {
+            name = "jiff";
+            packageId = "jiff";
+            usesDefaultFeatures = false;
+            features = [ "std" ];
+          }
+          {
+            name = "nuschl-stream-quality";
+            packageId = "nuschl-stream-quality";
+          }
+          {
+            name = "serde";
+            packageId = "serde";
+            features = [ "derive" ];
+          }
+          {
+            name = "serde_json";
+            packageId = "serde_json";
+          }
+          {
+            name = "sha1";
+            packageId = "sha1 0.11.0";
+          }
+          {
+            name = "sha2";
+            packageId = "sha2 0.11.1";
+          }
+          {
+            name = "str0m";
+            packageId = "str0m";
+            usesDefaultFeatures = false;
+            features = [ "rust-crypto" ];
+          }
+          {
+            name = "tokio";
+            packageId = "tokio";
+            features = [ "macros" "rt" "net" "signal" "sync" "time" ];
+          }
+          {
+            name = "tokio-tungstenite";
+            packageId = "tokio-tungstenite";
+          }
+          {
+            name = "toml";
+            packageId = "toml 1.2.1+spec-1.1.0";
+            usesDefaultFeatures = false;
+            features = [ "std" "parse" "serde" ];
+          }
+          {
+            name = "tracing";
+            packageId = "tracing";
+          }
+          {
+            name = "tracing-subscriber";
+            packageId = "tracing-subscriber";
+            features = [ "env-filter" ];
+          }
+        ];
+        devDependencies = [
+          {
+            name = "nuschl-testkit";
+            packageId = "nuschl-testkit";
+          }
+          {
+            name = "tokio";
+            packageId = "tokio";
+            features = [ "rt-multi-thread" ];
+          }
+        ];
+
+      };
+      "nuschl-stream-wasm" = rec {
+        crateName = "nuschl-stream-wasm";
+        version = "0.2.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/stream-wasm; };
+        libName = "nuschl_stream_wasm";type = [ "cdylib" "rlib" ];
+        dependencies = [
+          {
+            name = "hex";
+            packageId = "hex";
+          }
+          {
+            name = "libcrux-hmac";
+            packageId = "libcrux-hmac 0.0.9";
+          }
+          {
+            name = "nuschl-sframe";
+            packageId = "nuschl-sframe";
+          }
+          {
+            name = "nuschl-stream";
+            packageId = "nuschl-stream";
+          }
+          {
+            name = "rand_core";
+            packageId = "rand_core 0.10.1";
+          }
+          {
+            name = "serde";
+            packageId = "serde";
+            features = [ "derive" ];
+          }
+          {
+            name = "serde_json";
+            packageId = "serde_json";
+          }
+          {
+            name = "wasm-bindgen";
+            packageId = "wasm-bindgen";
+            target = { target, features }: (("wasm32" == target."arch" or null) && ("unknown" == target."os" or null));
           }
         ];
 
@@ -29509,8 +29812,8 @@ rec {
         workspace_member = null;
         src = pkgs.fetchgit {
           url = "https://github.com/ambiso/opus-rs";
-          rev = "1666bbc5730bd3f6ac624a2d056e0ec7b18093c6";
-          sha256 = "14p3gpv0igz41qmp2hbn476b8g7xmvvsalbzxmhf5aipx94yq4lf";
+          rev = "6e2284cedd4df9a5c958cc4f2975619eee5dec33";
+          sha256 = "1i1h1d1fzx5ax9rf88vnwsw2bc9li2x6q7grjy31vljjiiwpj049";
         };
         libName = "opus_rs";
         authors = [

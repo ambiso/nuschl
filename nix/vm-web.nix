@@ -1,7 +1,10 @@
 # The web host under its NixOS module (docs/web.md): nginx serving the site, the
 # share-link landing page and the app-link files, and the tunnel relay behind it.
 # A client without a browser logs in to a stock Murmur through the relay (TLS on
-# the client, as the web client will do in WebAssembly), and what the relay must
+# the client, as the web client will do in WebAssembly), the packaged web app in
+# headless Chromium joins voice by double-click, connects its saved servers on
+# load, counts the people inside a collapsed channel, mutes when the browser
+# stops its microphone and answers Ctrl+K and Ctrl+F, and what the relay must
 # refuse is refused. No ACME in the VM: plain HTTP.
 {
   pkgs,
@@ -47,7 +50,11 @@ pkgs.testers.runNixOSTest {
           enable = true;
           openFirewall = true;
           welcometext = "Welcome through the relay";
+          # Every client reaches Murmur from the relay's one address; the browser
+          # steps open more connections than the default autoban allows.
+          autobanAttempts = 0;
         };
+        environment.systemPackages = [ pkgs.sqlite ];
         # Another TCP service on a port the relay would forward to: not Mumble.
         networking.firewall.allowedTCPPorts = [ 64740 ];
         systemd.services.not-mumble = {
@@ -64,7 +71,14 @@ pkgs.testers.runNixOSTest {
           relay
           pkgs.curl
           pkgs.jq
+          pkgs.nodejs
         ];
+        environment.variables = {
+          NUSCHL_PLAYWRIGHT = "${pkgs.playwright-driver}/index.mjs";
+          NUSCHL_CHROMIUM = "${pkgs.chromium}/bin/chromium";
+        };
+        fonts.packages = [ pkgs.dejavu_fonts ];
+        virtualisation.memorySize = 2048;
       };
   };
   testScript = ''
@@ -77,6 +91,14 @@ pkgs.testers.runNixOSTest {
     web.wait_for_unit("nginx.service")
     web.wait_for_open_port(80)
     murmur.wait_for_unit("murmur.service")
+    # Channels for the web app's tests, added to the database Murmur created.
+    murmur.wait_for_open_port(64738)
+    murmur.succeed(
+        "systemctl stop murmur",
+        "sqlite3 /var/lib/murmur/murmur.sqlite \"INSERT INTO channels (server_id, channel_id, parent_id, name, inheritacl)"
+        " VALUES (1, 1, 0, 'Lobby', 1), (1, 2, 0, 'Music', 1), (1, 3, 0, 'AFK', 1), (1, 4, 1, 'Games', 1)\"",
+        "systemctl start murmur",
+    )
     murmur.wait_for_open_port(64738)
     murmur.wait_for_open_port(64740)
     client.wait_for_unit("multi-user.target")
@@ -90,6 +112,7 @@ pkgs.testers.runNixOSTest {
     headers = client.succeed("curl -sfI http://web/join/AAAAAAAAAAAAAAAAAAAAAA")
     assert "Content-Security-Policy" in headers and "no-referrer" in headers, headers
     assert "X-DNS-Prefetch-Control: off" in headers, headers
+    assert "Cross-Origin-Embedder-Policy: require-corp" in headers, headers
     client.succeed("curl -sf http://web/.well-known/assetlinks.json | jq -e '.[0].target.package_name == \"org.nuschl.android\"'")
     client.succeed("curl -sfI http://web/.well-known/assetlinks.json | grep -qi 'content-type: application/json'")
     client.succeed("curl -sf http://web/.well-known/apple-app-site-association | jq -e '.applinks.details[0].appIDs[0] == \"ABCDE12345.org.nuschl.Nuschl\"'")
@@ -111,6 +134,13 @@ pkgs.testers.runNixOSTest {
             break
         assert time.monotonic() < deadline, out
         time.sleep(5)
+    # The packaged app: a mouse or pen double-click joins voice, touch opens chat.
+    client.succeed("node ${../tests/web_channel_dblclick.browser.mjs} http://web/app/ murmur 64738")
+
+    # The packaged app connects saved servers on load and rejoins Lobby; the
+    # service on 64740 refuses.
+    client.succeed("node ${../tests/web_autoconnect.browser.mjs} http://web/app/ murmur 64738 64740")
+
     # The relay never logs payloads; its journal names no user.
     web.fail("journalctl -u nuschl-web-relay | grep -q relay-probe")
 
@@ -127,5 +157,16 @@ pkgs.testers.runNixOSTest {
     assert "TLS" in out or "NotMumble" in out, out
     # The kernel refuses loopback to the relay as well (IPAddressDeny).
     web.succeed("systemctl show nuschl-web-relay -p IPAddressDeny | grep -q 127.0.0.0/8")
+
+    # The app's collapsed Lobby counts bob in Games below it (#451).
+    client.succeed("mkdir -p /tmp/shots")
+    print(client.succeed("node ${../tests/web_tree.browser.mjs} ${pkgs.chromium}/bin/chromium ${pkgs.playwright-driver} /tmp/shots"))
+    client.copy_from_machine("/tmp/shots", "screenshots")
+
+    # When the browser ends or mutes capture, the app mutes and opens nothing (#447).
+    print(client.succeed("node ${../tests/web_mic_stopped.browser.mjs} ${pkgs.chromium}/bin/chromium ${pkgs.playwright-driver}"))
+
+    # The packaged app: Ctrl+K switches channels, Ctrl+F finds a sent message.
+    client.succeed("node ${../tests/web_shortcuts.browser.mjs} http://web/app/ murmur 64738")
   '';
 }

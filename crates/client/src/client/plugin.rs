@@ -3,10 +3,12 @@
 //! the wire rules are in `nuschl_protocol::plugin`): opaque bytes between
 //! clients for an embedder's own features. The client never interprets,
 //! executes or decrypts them, and the reserved `nuschl/` data IDs are neither
-//! sent nor delivered here.
+//! sent nor delivered here; call cards (`super::call`) are the one reserved
+//! ID the client sends and reads itself.
 //!
-//! Receiving is off until [`Client::accept_plugin_data`]; while it is off the
-//! connections skip plugin frames undecoded. What arrives waits in one queue
+//! Connections decode plugin frames for call cards. Delivering other plugin
+//! data is off until
+//! [`Client::accept_plugin_data`]. What arrives waits in one queue
 //! for all servers, at most [`MAX_PLUGIN_QUEUE`] items and
 //! [`MAX_PLUGIN_QUEUE_BYTES`]; when it is full, new items are dropped and
 //! counted ([`Client::plugin_data_dropped`]). Each item names the connection
@@ -23,8 +25,7 @@
 //! ones are read past and dropped), a per-connection receive budget (64
 //! items and 64 KiB a second), the session's event channel (128) and the
 //! driver's (512). Plugin data never waits for room in those channels; it is
-//! dropped instead. With receiving off nothing is retained, but frames still
-//! pass the read-ahead buffer.
+//! dropped instead. With delivery off only call cards are retained.
 //!
 //! Sending ([`Client::send_plugin_data`]) names each receiver by session and
 //! presence instance. The connection checks them again right before the
@@ -126,15 +127,14 @@ impl PluginQueue {
 }
 
 impl Client {
-    /// Receive plugin data on every connection (off by default). Turning it
-    /// off discards what is queued and stops the connections decoding it.
+    /// Deliver plugin data from every connection (off by default). Turning it
+    /// off discards what is queued.
     pub fn accept_plugin_data(&mut self, accept: bool) {
         self.plugin_data.accept = accept;
         if !accept {
             self.plugin_data
                 .retain(|item| matches!(item, PluginDataEvent::Admission { .. }));
         }
-        self.platform.accept_plugin_data(accept);
     }
 
     /// Send plugin data on server `index` to these receivers, each named by
@@ -149,6 +149,21 @@ impl Client {
         data_id: &str,
         data: &[u8],
     ) -> Result<u64, Refusal> {
+        if plugin::is_reserved(data_id) {
+            return Err(Refusal::Reserved);
+        }
+        let payload = Payload::new(data_id.to_owned(), data.to_vec()).map_err(Refusal::Payload)?;
+        self.send_payload(index, receivers, payload)
+    }
+
+    /// [`Self::send_plugin_data`] without the reserved namespace's check, for
+    /// Nuschl's own features.
+    pub(super) fn send_payload(
+        &mut self,
+        index: usize,
+        receivers: &[(u32, u64)],
+        payload: Payload,
+    ) -> Result<u64, Refusal> {
         let server = self.servers.get(index).ok_or(Refusal::NotConnected)?;
         if server.status != Status::Connected {
             return Err(Refusal::NotConnected);
@@ -156,16 +171,6 @@ impl Client {
         if server.has(capability::E2EE) {
             return Err(Refusal::EndToEnd);
         }
-        if plugin::is_reserved(data_id) {
-            return Err(Refusal::Reserved);
-        }
-        if data.len() > plugin::MAX_DATA_BYTES {
-            return Err(Refusal::Payload(plugin::Error::DataTooLarge));
-        }
-        if data_id.len() > plugin::MAX_DATA_ID_BYTES {
-            return Err(Refusal::Payload(plugin::Error::DataIdTooLong));
-        }
-        let payload = Payload::new(data_id.to_owned(), data.to_vec()).map_err(Refusal::Payload)?;
         if receivers.is_empty() || receivers.len() > MAX_PLUGIN_RECEIVERS {
             return Err(Refusal::Receivers(MAX_PLUGIN_RECEIVERS));
         }
@@ -248,6 +253,16 @@ impl Client {
                 .is_some_and(|own| own.instance != 0);
         match event {
             ServerEvent::PluginData(data)
+                if connected && data.payload.data_id() == nuschl_core::call::CARD_DATA_ID =>
+            {
+                self.call_card(index, &data);
+            }
+            ServerEvent::PluginDataAdmission { request, result } if self.call_request(request) => {
+                if result.is_err() {
+                    self.call_refused(request);
+                }
+            }
+            ServerEvent::PluginData(data)
                 if connected && self.plugin_data.accept && !data.payload.is_reserved() =>
             {
                 self.plugin_data.push(PluginDataEvent::Received {
@@ -280,6 +295,10 @@ mod tests {
     use super::*;
     use crate::{HistoryTicket, input::Input, model::User, platform::Platform, timeline::Page};
     use nuschl_core::{audio::Sound, bookmark::ServerBookmark, model::MetadataAuthority};
+    use nuschl_core::{
+        call::{CARD_DATA_ID, Card},
+        model::TextTarget,
+    };
     use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
@@ -592,11 +611,10 @@ mod tests {
 
     #[test]
     fn received_data_is_opt_in_bound_to_its_connection_and_bounded() {
-        let (mut client, recorder) = connected();
+        let (mut client, _) = connected();
         client.handle(input(&client, 0, data(2, 22, b"early")));
         assert!(client.take_plugin_data().is_empty(), "off by default");
         client.accept_plugin_data(true);
-        assert_eq!(*recorder.accept.lock().unwrap(), [true]);
         client.handle(input(&client, 0, data(2, 22, b"one")));
         client.handle(input(&client, 1, data(3, 133, b"two")));
         let items = client.take_plugin_data();
@@ -693,6 +711,218 @@ mod tests {
         client.handle(input(&client, 1, data(3, 133, b"waiting")));
         client.accept_plugin_data(false);
         assert!(client.take_plugin_data().is_empty());
-        assert_eq!(*recorder.accept.lock().unwrap(), [true, false]);
+        // Connections keep decoding plugin data, for call cards.
+        assert_eq!(*recorder.accept.lock().unwrap(), [true]);
+    }
+
+    /// A Join link.
+    fn link(seed: char) -> String {
+        let value = seed.to_string().repeat(43);
+        format!("https://stream.example/call#v=1&k={value}&h={value}")
+    }
+
+    /// A sent call card: its request, receivers and card.
+    type Sent = (u64, Vec<(u32, u64)>, Card);
+
+    /// The call cards sent since the last call.
+    fn cards(recorder: &Recorder) -> Vec<Sent> {
+        recorder
+            .sent
+            .lock()
+            .unwrap()
+            .drain(..)
+            .filter_map(|(_, _, request)| match request {
+                Request::PluginData {
+                    request,
+                    receivers,
+                    payload,
+                } if payload.data_id() == CARD_DATA_ID => {
+                    Some((request, receivers, Card::decode(payload.data()).unwrap()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The one call card sent since the last call.
+    fn one(recorder: &Recorder) -> Sent {
+        let mut sent = cards(recorder);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        sent.remove(0)
+    }
+
+    fn card(sender: u32, instance: u64, card: &Card) -> ServerEvent {
+        ServerEvent::PluginData(ReceivedPluginData {
+            payload: Payload::new(CARD_DATA_ID.into(), card.encode()).unwrap(),
+            ..match data(sender, instance, b"") {
+                ServerEvent::PluginData(data) => data,
+                _ => unreachable!(),
+            }
+        })
+    }
+
+    #[test]
+    fn our_call_card_reaches_the_channel_and_whoever_enters_it() {
+        let (mut client, recorder) = connected();
+        client
+            .start_call(0, TextTarget::Channel(0), link('a'))
+            .unwrap();
+        let active = Card::Active(link('a'));
+        let (_, receivers, sent) = one(&recorder);
+        assert_eq!((receivers, &sent), (vec![(2, 22), (3, 33)], &active));
+        // Someone enters: only they get it. A refused send is sent again.
+        client.handle(input(&client, 0, ServerEvent::User(user(4, 44))));
+        client.settle();
+        let (request, receivers, _) = one(&recorder);
+        assert_eq!(receivers, [(4, 44)]);
+        let refused = ServerEvent::PluginDataAdmission {
+            request,
+            result: Err(Refusal::RateLimited { retry_after_ms: 9 }),
+        };
+        client.handle(input(&client, 0, refused));
+        assert!(client.take_plugin_data().is_empty(), "our own admission");
+        client.settle();
+        assert_eq!(cards(&recorder)[0].1, [(4, 44)]);
+        client.settle();
+        assert!(cards(&recorder).is_empty());
+        // A new link reaches everyone; ending tells everyone.
+        client.rotate_call(link('b'));
+        let (_, receivers, Card::Active(rotated)) = one(&recorder) else {
+            panic!("a new card");
+        };
+        assert_eq!(receivers, [(2, 22), (3, 33), (4, 44)]);
+        assert_eq!(rotated, link('b'));
+        client.end_call();
+        let (_, receivers, Card::Ended) = one(&recorder) else {
+            panic!("an ended card");
+        };
+        assert_eq!(receivers, [(2, 22), (3, 33), (4, 44)]);
+        assert!(client.own_call().is_none());
+        // Leaving the channel ends the call.
+        client
+            .start_call(0, TextTarget::Channel(0), link('c'))
+            .unwrap();
+        let moved = User {
+            channel: 5,
+            ..user(1, 11)
+        };
+        client.handle(input(&client, 0, ServerEvent::User(moved)));
+        client.settle();
+        assert!(client.own_call().is_none());
+        assert!(
+            client
+                .start_call(0, TextTarget::Channel(0), link('c'))
+                .is_err()
+        );
+        assert!(
+            client
+                .start_call(0, TextTarget::Channel(5), link('c'))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn received_calls_follow_their_senders_presence_and_channel() {
+        let (mut client, _) = connected();
+        let link = link('a');
+        let active = Card::Active(link.clone());
+        // Delivered without opting in to generic plugin data.
+        client.handle(input(&client, 0, card(2, 22, &active)));
+        let calls = client.calls_in(0, &TextTarget::Channel(0));
+        assert_eq!(calls.len(), 1);
+        assert_eq!((calls[0].sender, &calls[0].link), (2, &link));
+        assert!(client.take_plugin_data().is_empty());
+        client.handle(input(&client, 0, card(2, 22, &Card::Ended)));
+        assert!(client.calls_in(0, &TextTarget::Channel(0)).is_empty());
+        // A stale presence, garbage and our own card are ignored.
+        client.handle(input(&client, 0, card(3, 34, &active)));
+        client.handle(input(&client, 0, card(1, 11, &active)));
+        let mut garbage = card(3, 33, &Card::Ended);
+        if let ServerEvent::PluginData(data) = &mut garbage {
+            data.payload = Payload::new(CARD_DATA_ID.into(), vec![1, 1, b'x']).unwrap();
+        }
+        client.handle(input(&client, 0, garbage));
+        assert!(client.calls_in(0, &TextTarget::Channel(0)).is_empty());
+        // The card stays with the channel its sender announced it in.
+        client.handle(input(&client, 0, card(3, 33, &active)));
+        assert_eq!(client.calls_in(0, &TextTarget::Channel(0)).len(), 1);
+        let moved = User {
+            channel: 7,
+            ..user(3, 33)
+        };
+        client.handle(input(&client, 0, ServerEvent::User(moved)));
+        assert!(
+            client.calls_in(0, &TextTarget::Channel(0)).is_empty()
+                && client.calls_in(0, &TextTarget::Channel(7)).is_empty()
+        );
+        client.handle(input(&client, 0, card(3, 33, &active)));
+        assert_eq!(client.calls_in(0, &TextTarget::Channel(7)).len(), 1);
+        client.connect(0, None, false);
+        assert!(client.servers[0].calls.is_empty());
+    }
+
+    #[test]
+    fn a_direct_call_card_reaches_only_the_other_person() {
+        let (mut client, recorder) = connected();
+        assert!(
+            client
+                .start_call(0, TextTarget::Direct(1), link('d'))
+                .is_err()
+        );
+        assert!(
+            client
+                .start_call(0, TextTarget::Direct(9), link('d'))
+                .is_err()
+        );
+        assert!(
+            client
+                .start_call(0, TextTarget::Channel(5), link('d'))
+                .is_err()
+        );
+        client
+            .start_call(0, TextTarget::Direct(2), link('d'))
+            .unwrap();
+        let (_, receivers, sent) = one(&recorder);
+        assert_eq!((receivers, sent), (vec![(2, 22)], Card::Direct(link('d'))));
+        // Someone entering the channel, or our own move, leaves it alone.
+        client.handle(input(&client, 0, ServerEvent::User(user(4, 44))));
+        let moved = User {
+            channel: 5,
+            ..user(1, 11)
+        };
+        client.handle(input(&client, 0, ServerEvent::User(moved)));
+        client.settle();
+        assert!(cards(&recorder).is_empty());
+        assert!(client.own_call().is_some());
+        client.end_call();
+        let (_, receivers, Card::Ended) = one(&recorder) else {
+            panic!("an ended card");
+        };
+        assert_eq!(receivers, [(2, 22)]);
+        // The other person leaving ends it.
+        client
+            .start_call(0, TextTarget::Direct(3), link('e'))
+            .unwrap();
+        one(&recorder);
+        client.handle(input(&client, 0, ServerEvent::User(user(3, 34))));
+        client.settle();
+        assert!(client.own_call().is_none());
+    }
+
+    #[test]
+    fn a_received_direct_call_belongs_to_the_conversation_with_its_sender() {
+        let (mut client, _) = connected();
+        client.handle(input(&client, 0, card(2, 22, &Card::Direct(link('a')))));
+        assert!(client.calls_in(0, &TextTarget::Channel(0)).is_empty());
+        let calls = client.calls_in(0, &TextTarget::Direct(2));
+        assert_eq!((calls.len(), &calls[0].link), (1, &link('a')));
+        let moved = User {
+            channel: 7,
+            ..user(2, 22)
+        };
+        client.handle(input(&client, 0, ServerEvent::User(moved)));
+        assert_eq!(client.calls_in(0, &TextTarget::Direct(2)).len(), 1);
+        client.handle(input(&client, 0, card(2, 22, &Card::Ended)));
+        assert!(client.calls_in(0, &TextTarget::Direct(2)).is_empty());
     }
 }

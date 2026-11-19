@@ -10,4 +10,7 @@ vm-link-previews/scenario-time          #376   a desktop scenario takes over 300
 vm-smoke/echo-test-reduction            #376   the canceller removes less than 15 dB or sends over a quarter on a loaded host
 vm-smoke/double-talk-level              #376   double talk is ducked over 3 dB or gated on a loaded host
 vm-smoke/sound-loudness                 #376   dropped playback periods change the measured loudness on a loaded host
+vm-smoke/jitter-gaps                    #376   dropped playback periods leave silent windows after loss concealment on a loaded host
 stock-client/first-voice-time           #376   stock Mumble opens its microphone after over 180 s on a loaded host
+vm-smoke/pipewire-mute-silence          #376   playback drops 60 ms or more across a mute or unmute on a loaded host
+vm-smoke/pipewire-mute-close-time       #376   the worker confirms a mute after 100 ms on a loaded host

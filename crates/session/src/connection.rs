@@ -2234,7 +2234,7 @@ impl State {
         if self.encrypted_server() {
             return Err(Refusal::EndToEnd);
         }
-        if payload.is_reserved() {
+        if payload.is_reserved() && payload.data_id() != nuschl_core::call::CARD_DATA_ID {
             return Err(Refusal::Reserved);
         }
         // Servers before Mumble 1.4 do not relay it (API_v_1_x_x.cpp).
@@ -2284,8 +2284,9 @@ impl State {
     /// for it, we are logged in and the server is not end to end; then
     /// budgeted, bounded before it is decoded, and surfaced with its sender's
     /// identity as known right now, without waiting for the event channel.
-    /// Nothing here interprets the bytes, and the reserved namespace has no
-    /// generic consumer. Nothing in it can end the connection.
+    /// Nothing here interprets the bytes. Of the reserved namespace only call
+    /// cards are surfaced, for the client's own call feature. Nothing in it can
+    /// end the connection.
     fn plugin_data(&mut self, frame: &ControlFrame, events: &mpsc::Sender<SessionEvent>) {
         if !self.accept_plugin_data || self.own_session.is_none() || self.encrypted_server() {
             return;
@@ -2303,7 +2304,9 @@ impl State {
         let Ok(message) = plugin::PluginData::decode(&frame.payload, MAX_RECEIVED_RECEIVERS) else {
             return dropped();
         };
-        if message.payload.is_reserved() {
+        if message.payload.is_reserved()
+            && message.payload.data_id() != nuschl_core::call::CARD_DATA_ID
+        {
             return;
         }
         // Stock clients ignore data without a sender they know; one sent to
@@ -8397,8 +8400,7 @@ mod plugin_data_tests {
             state.handle(frame, &tx).await.unwrap();
         }
         assert_eq!(dropped(&state), 8);
-        // The reserved namespace has no generic consumer: not surfaced, and
-        // not a failure either.
+        // Other reserved IDs are dropped quietly, outside the drop count.
         state
             .handle(
                 incoming(Some(2), Some("nuschl/signal"), Some(b"x".as_slice())),
@@ -8535,6 +8537,26 @@ mod plugin_data_tests {
             (Some(vec![]), Some(String::new()), vec![1])
         );
         assert_eq!(admissions(&drain(&mut rx)), [(6, Ok(()))]);
+    }
+
+    #[tokio::test]
+    async fn call_cards_are_the_reserved_data_sent_and_surfaced() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut state = connected();
+        let card = nuschl_core::call::CARD_DATA_ID;
+        state
+            .command(send(1, vec![(2, 22)], card), &tx)
+            .await
+            .unwrap();
+        assert_eq!(admissions(&drain(&mut rx)), [(1, Ok(()))]);
+        assert_eq!(state.outbound.len(), 1);
+        state
+            .handle(incoming(Some(2), Some(card), Some(b"x".as_slice())), &tx)
+            .await
+            .unwrap();
+        let received = received(drain(&mut rx));
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].payload, payload(card, b"x"));
     }
 
     #[tokio::test]

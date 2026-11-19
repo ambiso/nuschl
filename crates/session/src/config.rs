@@ -308,6 +308,10 @@ pub struct ClientSettings {
     /// The web host for share links (`web.example.org`, docs/web.md) when the
     /// server names none; empty: the project's, if it has one.
     pub share_web_host: String,
+    /// The host of call pages and their rooms (`stream.example.org[:port]`,
+    /// docs/desktop.md "Calls"); empty: the project's.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub call_host: String,
     /// The requested voice bitrate (mono Opus, bits per second); a server's
     /// bandwidth limit can lower it (`nuschl_core::bitrate`). Kept in
     /// voice-quality.json, never written to settings.json: earlier versions
@@ -424,6 +428,7 @@ impl Default for ClientSettings {
             e2ee_direct_messages: true,
             key_transparency: Default::default(),
             share_web_host: String::new(),
+            call_host: String::new(),
             voice_bitrate: nuschl_core::audio::DEFAULT_VOICE_BITRATE,
         }
     }
@@ -482,6 +487,9 @@ impl ClientSettings {
         }
         if !self.wormhole_relay.starts_with("tcp://") || self.wormhole_relay.len() > 256 {
             self.wormhole_relay = nuschl_core::transfer::PUBLIC_RELAY.into();
+        }
+        if self.call_host.len() > 255 {
+            self.call_host.clear();
         }
         // Never repair a security policy by silently dropping witnesses or
         // reducing its quorum. Invalid keys remain required in the crypto worker.

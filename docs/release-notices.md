@@ -1,123 +1,76 @@
-# Release notices and source evidence
+# Release notices
 
-The notice pipeline collects the normal dependency union of explicitly packaged
-Rust roots and targets, including both fixed updater verifier features. Build,
-development and procedural-macro dependencies are excluded. Actual bundled
-npm code is measured separately from Vite's emitted main and worker chunk graph;
-Svelte's runtime is included despite its package being a development dependency.
-Generated WASM/glue hashes are associated with the client/audio/content Cargo
-roots and the exact Cargo.lock used by the build.
+Every shipped binary set carries its third-party notices in
+`share/licenses/nuschl/` (Windows: `licenses/`, macOS:
+`Contents/Resources/licenses/`, web: `licenses/nuschl/`):
 
-`release/notice-roots.json` and `release/notice-scopes.json` are the source
-authority. Package builders and the publisher choose the expected scope from a
-fixed package/platform mapping; an artifact's own scope claim grants no authority.
-Universal macOS requires both slices. The ARM Linux entry is metadata coverage
-for an existing flake export, with no new ARM runtime or CI proof.
+- `THIRD-PARTY.txt`: the crate list with each crate's declared license, the
+  license texts with the crates that use them, and the components outside Cargo.
+- `THIRD-PARTY.json`: the scope, its policy entry, the crate list and the
+  SHA-256 of `THIRD-PARTY.txt`.
+- `Cargo.lock`.
 
-| Scope | Target coverage | External runtime/asset terms |
+## Scopes
+
+`release/notice-roots.json` names each scope's targets, packaged root crates
+(desktop with its workers, server, music bot, RTC probe, web WASM), features and
+components outside Cargo. `nix/release-notices.nix` builds one bundle per scope;
+`nix build .#release-notices-linux` (also `-linux-portable`, `-server-static`,
+`-windows`, `-macos`, `-web`, `-musicbot`, `-rtc`) builds them on their own.
+
+## Rust crates
+
+[cargo-about](https://github.com/EmbarkStudios/cargo-about) reads the vendored
+`Cargo.lock` graph offline, once per root and target, without build and dev
+dependencies. `about.toml` holds the accepted licenses from `deny.toml`, ordered
+by preference: of an OR expression, the first accepted alternative is the one
+whose text ships. `release/notices.py` merges the reports and fails the build
+when a crate has no license text of its own; cargo-about's canonical SPDX text
+counts as missing. Proc-macro crates run only at
+build time and are left out. Workspace members are first-party and covered by
+`LICENSE` (EUPL-1.2).
+
+A crate whose package lacks its license text, or whose file cargo-about does not
+recognize, gets a clarification in `about.toml`: the license and the files, each
+pinned by SHA-256. Files outside the package are upstream texts of the published
+revision (`.cargo_vcs_info.json`), kept in `release/licenses/crates/`;
+`@licenses@` in their paths becomes that directory during the build. Further
+clarifications add the notices of bundled third-party code and data (Apache
+`NOTICE` files, `LICENSE-THIRD-PARTY`, embedded fonts, Unicode tables).
+
+hpke-rs, hpke-rs-crypto and hpke-rs-libcrux declare MPL-2.0 and publish no MPL
+text; they ship the Mozilla text and the source locations in
+`release/licenses/crates/hpke-rs/`. The modified hpke-rs-libcrux 0.7.0 is
+`vendor/hpke-rs-libcrux` in the Nuschl source.
+
+## Components outside Cargo
+
+| Component | Texts | Scopes |
 | --- | --- | --- |
-| `linux-nix` | x86_64 Linux native/server/relay | Rust standard library, NewCM math, syntect data, emoji assets |
-| `linux-aarch64-nix` | ARM Linux native/server/relay | Same families, independently selected normal target graph |
-| `windows-x86_64` | Windows x86_64 desktop/helpers | Rust, GCC runtime exception, MinGW runtime/winpthreads, NewCM, syntect, emoji assets |
-| `macos-universal` | x86_64 and ARM Darwin desktop/helpers | Rust, NewCM, syntect, emoji assets |
-| `web` | Client/audio/content WASM build roots | Rust, syntect, actual emitted npm/helpers and retained Temml ancestry, emoji assets |
-| `all` | Complete target union | Complete inspectable source audit, retained with CI diagnostic artifacts |
+| `rust-standard-library` | The toolchain's `COPYRIGHT-library.html` and `licenses/` | all |
+| `mumble-protocol` | `crates/protocol/proto/LICENSE.mumble` | all |
+| `newcm-math-font` | `release/licenses/newcm/` (the math worker's font) | native desktop |
+| `syntect-default-assets` | `release/licenses/syntect-assets/` (syntax and theme grants) | desktop, web, music bot |
+| `emoji-assets` | Twemoji (CC-BY 4.0) attribution, emojibase-data and CLDR licenses from `nix/emoji.nix` ([emoji](emoji.md)) | desktop, web |
+| `gcc-runtime`, `mingw-w64-runtime` | `COPYING.RUNTIME`, `COPYING3`, the MinGW runtime and winpthreads licenses, from the pinned source archives | Windows |
+| `musl` | musl's `COPYRIGHT` (MIT), from the zig package's bundled musl | portable Linux, static server |
+| `zig-runtime` | Zig's `LICENSE` (MIT, its compiler-rt) and LLVM libunwind's `LICENSE.TXT` (Apache-2.0 WITH LLVM-exception), from the zig package | portable Linux, static server |
+| `glibc-startup` | glibc's `LICENSES` from the zig package and the LGPL-2.1 text (`COPYING.LESSERv2`) from the glibc source: the start-up objects and `libc_nonshared.a` zig builds for the glibc-linked programs (LGPL-2.1 with the linking exception; `csu/init.c`, which only defines `_IO_stdin_used`, without it) | portable Linux |
+| `web-runtime-assets` | The web app's `licenses/`: npm notices of the modules Vite emits, and Temml's | web |
+| `musicbot-web-runtime-assets` | The music bot page's npm notices | music bot |
 
-The emoji assets are Twemoji's graphics (CC-BY 4.0, with the attribution it asks
-for), emojibase-data (MIT) and the Unicode License v3 of the CLDR release its names
-and keywords derive from, all pinned in `nix/emoji.nix` ([emoji.md](emoji.md)).
-The license check requires them wherever the desktop (`nuschl`) or the web client
-(`nuschl-client-wasm`) is a root. The pickers also credit Twemoji.
+`web/app/build-runtime-notices.js` collects the npm notices during the Vite
+build and stops it when an emitted package has no license file.
 
-Native and cross notice derivations do not depend on the web App/WASM output
-builds. The Linux CI job separately checks native-package and static-web notices.
-Downloadable payload upload and release preparation reject missing inventories,
-wrong roots/features/scope, absent notice bytes and source/hash mismatches.
-Diagnostic logs remain available after failure. Signing secrets are only exposed
-after prepared platform artifacts pass these gates.
+## Checks
 
-## Compact payload and corresponding source
+The notice derivation fails on a crate without license text, a clarification
+whose file hash differs, or a component missing from the scope or without its notice files.
+`release/check-notices.py --scope <scope> <directory>` and the release tools
+(`release/prepare-artifacts.py`, `release/local-release.py`) check a bundle's
+scope, policy entry and text hash against `release/notice-roots.json` before
+upload and signing.
 
-The original inventory remains inspectable as
-`nix build .#release-license-inventory`. Each strict
-platform bundle carries `THIRD-PARTY.txt`, `THIRD-PARTY.json`, Cargo.lock and a
-README. Native scopes also contain the patched HPKE source archive. This keeps
-notice delivery within the updater's existing 256-file installation bound.
-
-Format 2 preserves exact original notice bytes, with a whole-payload digest and
-per-source-file byte ranges/hashes in the index. Consumers verify bounds,
-nonoverlap, aliases, every indexed body and every package/external reference.
-Compaction neither clears nor reclassifies unresolved entries. The five-file
-native bundles and four-file web bundle replace hundreds of per-crate files;
-no notice is abbreviated to a license identifier or truncated.
-
-Six exact `hpke-rs`, `hpke-rs-crypto` and `hpke-rs-libcrux` 0.7/0.8 pins have an
-explicit curated declared-MPL2 decision. Their upstream package declarations,
-authors, repository identities and actual source-header scans are retained,
-along with canonical Mozilla-steward MPL2 bytes and exact source retrieval
-instructions. This does not invent an upstream copyright notice or choose
-Apache/MIT. Other packages/versions cannot obtain this exception automatically.
-The complete patched `hpke-rs-libcrux` 0.7 Source Code Form is included as a
-bounded tar; its member set and each file hash are checked against the reviewed
-policy, beyond the outer archive hash.
-
-SeaHash's actual original MIT notice was recovered from the precise source tree
-copied from TFS. Its initial independent repository tree is identical, with an
-immutable Software Heritage revision/ancestry record connecting it to published
-4.1.0. Current author/license declarations are retained without claiming the
-historical notice names every later author.
-
-Native evidence uses actual pinned toolchain/source files. Rust's library
-copyright document and accompanying complete term set are retained; GCC provides
-GPL3 and the runtime exception. MinGW's own binary-runtime notice and the
-explicitly linked winpthreads notice are selected, excluding unrelated utility
-and profiling-library licenses. The unmodified math font is hash-matched to its
-pinned Typst asset, with its embedded copyright, GUST grant and referenced LPPL
-terms. Syntect's syntax data has a custom permissive grant with exceptions,
-not a blanket MIT grant; the pinned submodule grants, relevant inline source
-notices and all seven theme attribution sources are preserved.
-
-## Proof and remaining release gates
-
-At the Speex graph checkpoint, actual Nix builds and the production notice reader
-accepted zero unresolved entries in Linux (841 packages), Windows (732), both-Mac
-(739), web (130) and the complete six-target audit (931). This is metadata/notice
-proof, not execution of those platform applications. The Linux notice derivation's
-input graph was checked to exclude web App/SDK/WASM output builds.
-
-Actual Vite fixture compilations cover worker inclusion, dead dependency
-exclusion, missing real terms, lock drift and a reused build config dropping
-removed worker evidence. The real app build identified Svelte 5.57.3, Temml
-0.14.0 in the math worker, and Vite 8.3.8's emitted preload helper. Existing
-Temml/KaTeX/React ancestry notices are retained. Emitted SDK/audio WASM bytes
-match their Cargo-built artifacts. The content codec is built/exported but
-unreferenced in current app chunks; the async SDK content broker and real
-inbound/outgoing image UI remain queued, with original authenticated message
-source preserved as authority.
-
-After source/dependency updates, rerun the exact integrated package/archive gates
-and inspect the final artifacts. Native Windows/macOS hybrid updater runtime
-proof, hardware audio/accessibility tests, the first actual all-system CI run,
-production public-pair/secret enrollment, and trusted metadata refresh before the
-30-day maximum expiry remain separate gates. No production key, tag, push,
-dispatch, deployment or publication was performed by this work. The source and
-notice evidence is inspectable; it is not a legal-compliance assurance or proof
-that future embedded assets can bypass review.
-
-```sh
-python3 tests/release_notices.py
-python3 tests/update_release.py --signer /nix/store/…/bin/nuschl-update-sign
-NUSCHL_VITE_PACKAGE=/path/to/pinned/node_modules/vite node --test tests/web_notice_inventory.mjs
-python3 release/check-notices.py --scope windows-x86_64 /path/to/install/windows/licenses
-```
-
-Curated-source tests read the already cached exact published crates; set
-`NUSCHL_LICENSE_CRATE_SOURCES` if they are in a different vendor/registry root.
-Use a disk-backed TMPDIR for fixtures. None of these tests needs a host
-microphone, camera, audio output, clipboard or public Mumble server.
-
-Production trust update (2026-11-12): the dedicated public pair is now enrolled
-in `crates/update/update-trust.json`. Statements above about absent enrollment
-describe the recorded historical work, not the current source trust store.
-This does not establish local private-key availability, a remote release or new
-platform proof. Signing remains local; GitHub CI has no long-lived signing key.
+After a dependency update, build the notice bundles. A new crate without license
+text fails with its name; add its clarification to `about.toml`, with the
+upstream text in `release/licenses/crates/` when the package has none.

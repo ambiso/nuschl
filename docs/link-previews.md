@@ -1,10 +1,12 @@
 # Sender-generated link previews
 
-Initial legacy delivery, 2026-11-14. Native Linux has the sender-side Open Graph
-pipeline, composer card and removal, global policy settings, and one-message Mumble
-HTML projection. Parsing and image conversion run in confined content workers.
-The default is Direct. New preview fetching fails closed on other native platforms
-until their process-lifetime adapters are implemented and tested.
+Initial legacy delivery, 2026-11-14. The native desktop on Linux, Windows and macOS
+has the sender-side Open Graph pipeline, composer card and removal, global policy
+settings, and one-message Mumble HTML projection. Parsing and image conversion run
+in confined content workers (the `preview` role), whose slot is released only after
+the whole worker has exited (SECURITY.md). The default is Direct. Windows and macOS
+sender previews have passed cross-builds and unit tests; they still need a run on
+Windows 11 and on macOS.
 
 The negotiated typed-message contract and encrypted structured body below remain
 unfinished. Compatible Nuschl servers currently receive the same single legacy HTML
@@ -47,7 +49,7 @@ in one compatible message, within its server limits, or text alone.
 
 ## Global fetch policy
 
-Choose **Off** or **Direct** in **Settings → Link previews** on Linux. The default
+Choose **Off** or **Direct** in **Settings → Link previews**. The default
 is **Direct**, and the setting applies to every server in the current profile. The
 web adapter displays metadata and embedded images carried in messages, with
 sender-side preview generation disabled.

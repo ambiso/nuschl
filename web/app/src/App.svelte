@@ -18,6 +18,7 @@
   import { welcomeDocuments } from "./welcome.js";
   import { SdkRpc, SdkUnavailableError } from "./sdk-rpc.js";
   import { BrowserAudio } from "./audio.js";
+  import { CallSession } from "./call-session.js";
   import { ErrorLifetime } from "./error-lifetime.js";
   const link = inviteFragment(location.hash);
   let relay = $state(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/relay`);
@@ -65,11 +66,16 @@
   const voiceChannel = $derived(voiceServer?.channels.find(channel => channel.id === voice?.channel_id));
   const microphoneMuted = $derived(voiceServer?.muted !== false || voiceServer?.deafened === true);
   const playbackDeafened = $derived(voiceServer?.deafened !== false);
+  // The notification's Mute and Hang up; neither ever unmutes. When the browser
+  // freezes the page, closing the SDK worker closes its connections at once.
+  const callSession = new CallSession({onMute:() => { if (!microphoneMuted) toggleMicrophone(); }, onHangUp:() => stopAudio(),
+    onEnd:() => { audio?.playDisconnected(); rpc?.close("Voice ended in the background. Reload to reconnect."); }});
+  $effect(() => callSession.update(voice ? {channel:voiceChannel?.name || "Voice channel", server:voiceServer?.name || "", muted:microphoneMuted} : null));
   const voiceStatus = $derived(!voice?.joined ? "Joining…" : voice.deafened ? "Sound off"
-    : microphoneMuted ? "Microphone muted" : audioState?.phase === "permission-pending" ? "Waiting for microphone permission"
+    : microphoneMuted ? (audioState?.phase === "stopped" ? "Microphone stopped" : "Microphone muted") : audioState?.phase === "permission-pending" ? "Waiting for microphone permission"
     : audioState?.phase === "denied" ? "Microphone permission denied" : audioState?.phase === "unavailable" ? "Audio unavailable"
     : audioState?.microphone && voice.can_transmit ? "Microphone on" : voice.muted ? "Microphone blocked" : "Microphone off");
-  const rows = $derived(selected ? channelRows(selected.channels, expanded, selected.id) : []);
+  const rows = $derived(selected ? channelRows(selected.channels, expanded, selected.id, selected.users) : []);
   const currentChannel = $derived(selected?.channels.find((channel) => channel.id === timeline?.channel));
   const ownUser = $derived(selected?.users.find((user) => user.session === selected.own_session));
   // Current save availability, then this connection's rows that were not saved.
@@ -97,7 +103,7 @@
     menu:"M4 6h16M4 12h16M4 18h16", close:"m6 6 12 12M6 18 18 6", plus:"M12 5v14M5 12h14", hash:"M10 3 8 21M17 3l-2 18M4 9h17M3 15h17",
     voice:"M11 5 6 9H3v6h3l5 4V5Zm4 3a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14", mic:"M12 15a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v7a3 3 0 0 0 3 3Zm-6-4v1a6 6 0 0 0 12 0v-1M12 18v4M8 22h8",
     smile:"M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM8.5 14.5a4.5 4.5 0 0 0 7 0M9 9.5h.01M15 9.5h.01",
-    headphones:"M4 14v-3a8 8 0 0 1 16 0v3M4 13h4v8H4v-8Zm12 0h4v8h-4v-8", search:"m21 21-5-5M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16", people:"M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M16 3a4 4 0 0 1 0 8m6 10v-2a4 4 0 0 0-3-3.87M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0",
+    headphones:"M4 14v-3a8 8 0 0 1 16 0v3M4 13h4v8H4v-8Zm12 0h4v8h-4v-8", search:"m21 21-5-5M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16", user:"M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z", people:"M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M16 3a4 4 0 0 1 0 8m6 10v-2a4 4 0 0 0-3-3.87M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0",
     settings:"m9 3-.7 3-2.8 1-2.5-1.5-2 3.5 2.3 2V14L1 16l2 3.5L5.5 18l2.8 1L9 22h4l.7-3 2.8-1 2.5 1.5 2-3.5-2.3-2v-3L21 9l-2-3.5L16.5 7l-2.8-1L13 3H9ZM15 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0", send:"m22 2-7 20-4-9-9-4 20-7ZM11 13 22 2", leave:"M10 17l5-5-5-5M15 12H3M15 3h5v18h-5", lock:"M5 10h14v11H5V10Zm3 0V6a4 4 0 0 1 8 0", unlock:"M5 10h14v11H5V10Zm3 0V6a4 4 0 0 1 7-3", chevron:"m9 5 7 7-7 7",
   };
   function commandFrom(reference,method, ...args) {
@@ -171,7 +177,8 @@
     const viewport = window.visualViewport;
     const resizeViewport = () => { if (orderDrag) cancelOrder(); document.documentElement.style.setProperty("--app-height", `${viewport?.height || window.innerHeight}px`); };
     resizeViewport(); viewport?.addEventListener("resize", resizeViewport);
-    const cleanup = () => { stopTimeLocale(); contentBridge?.dispose(); cancelOrder(); window.removeEventListener("keydown", escapeOrder, true); window.removeEventListener("resize", cancelOrder); motion.removeEventListener("change", updateMotion); media.removeEventListener("change", updateMobile); viewport?.removeEventListener("resize", resizeViewport); rpc?.close("Client closed.",{notify:false}); worker = null; disposeAudio(); };
+    callSession.attach();
+    const cleanup = () => { callSession.detach(); stopTimeLocale(); contentBridge?.dispose(); cancelOrder(); window.removeEventListener("keydown", escapeOrder, true); window.removeEventListener("resize", cancelOrder); motion.removeEventListener("change", updateMotion); media.removeEventListener("change", updateMobile); viewport?.removeEventListener("resize", resizeViewport); rpc?.close("Client closed.",{notify:false}); worker = null; disposeAudio(); };
     const unavailable = reason => {
       contentBridge?.dispose();
       worker = null; clientUnavailable = true; loaded = false; cancelOrder(); arrangeServers = false;
@@ -189,6 +196,7 @@
       onPacket: packet => command("voice_packet",packet),
       onReady: ready => command("audio_ready",ready),
       onState: state => { audioState = state; },
+      onStopped: () => { if (!microphoneMuted) toggleMicrophone(); },
     });
     const ownedWorker = worker;
     rpc = new SdkRpc(ownedWorker,{onClose:reason => {
@@ -265,7 +273,8 @@
     ownedWorker.onmessageerror = () => {
       if (worker === ownedWorker) rpc.close("The browser worker sent an unreadable response. Reload to reconnect.");
     };
-    rpc.initialize(relay);
+    // Saved servers connect on load; a server link connects only its server.
+    rpc.initialize(relay, !link.host);
     return cleanup;
 
   });
@@ -297,11 +306,54 @@
     } catch (reason) { setError(String(reason?.message || reason), conversation); }
   }
   async function openChannel(id) { rememberDraft(); await act("open", selectedIndex, id); if (mobile) drawer = false; }
-  function joinVoice(channel = timeline?.channel) {
-    if (!selected || selected.status !== "connected" || channel == null) return;
+  function joinVoice(channel = timeline?.channel, server = selected) {
+    if (!server || server.status !== "connected" || channel == null) return;
     // Revoke the old destination before touching an asynchronous command.
     audio?.syncVoice(null); voice = null;
-    void activateAudio({microphone:false}); void act("join", selectedIndex, channel);
+    void activateAudio({microphone:false}); callSession.prime(); void act("join", server.runtime_index, channel);
+  }
+  // Ctrl+K (Cmd+K on macOS): the quick switcher; the SDK lists and ranks its
+  // results as on the desktop. Ctrl+F: search this conversation's messages.
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform), primary = mac ? "Cmd" : "Ctrl";
+  let finder = $state(null), finding = Promise.resolve(), findRequest = 0;
+  function shortcut(event) {
+    if (!(mac ? event.metaKey : event.ctrlKey) || event.altKey || event.shiftKey) return;
+    const key = event.key.toLowerCase(), dialog = document.querySelector("dialog[open]:not(.finder)");
+    if (key === "k" && !dialog) { event.preventDefault(); if (finder) finder = null; else { finder = {query:"",items:[],selected:0}; find(""); } }
+    // A second Ctrl+F in the search field is the browser's own find.
+    else if (key === "f" && timeline && !dialog && !finder && document.activeElement !== searchElement) { event.preventDefault(); if (showSearch) searchElement?.focus(); else void searchMessages(); }
+  }
+  function find(query) {
+    const request = ++findRequest; finder.query = query;
+    finding = command("find", query).then(raw => { if (finder && request === findRequest) { finder.items = JSON.parse(raw); finder.selected = 0; } }, reason => setError(String(reason?.message || reason)));
+  }
+  async function findKey(event) {
+    const step = {ArrowDown:1, ArrowUp:-1, PageDown:8, PageUp:-8}[event.key];
+    if (step) { event.preventDefault(); finder.selected = Math.max(0, Math.min(finder.items.length - 1, finder.selected + step)); document.getElementById(`finder-${finder.selected}`)?.scrollIntoView({block:"nearest"}); }
+    else if (event.key === "Enter") { event.preventDefault(); const shift = event.shiftKey; await finding; const item = finder?.items[finder.selected]; if (item) await go(item, shift); }
+  }
+  // Enter opens; Shift+Enter joins a channel's voice, or shows the channel a person is in.
+  async function go(item, secondary) {
+    finder = null;
+    const server = servers.find(server => server.id === item.server);
+    if (!server) return;
+    rememberDraft();
+    const user = item.kind === "person" ? server.users.find(user => user.session === item.id) : null;
+    if (item.kind !== "person") await act("open", server.runtime_index, item.id);
+    else if (secondary && user) await act("open", server.runtime_index, user.channel);
+    else await act("open_direct", server.runtime_index, item.id);
+    if (secondary && item.kind === "channel") joinVoice(item.id, server);
+    await tick(); composerElement?.focus();
+  }
+  function findLabel(item) {
+    const place = item.kind === "channel" && item.path ? ` in ${item.path}` : item.kind === "person" ? ` ${item.path}` : "";
+    const unread = item.unread === 1 ? ", 1 unread message" : item.unread ? `, ${item.unread} unread messages` : "";
+    return `${item.name}, ${item.kind}${place}, ${servers.find(server => server.id === item.server)?.name || ""}${unread}`;
+  }
+  function findParts(item) {
+    const parts = []; let at = 0;
+    for (const [start, end] of item.highlights) { parts.push([item.name.slice(at, start), false], [item.name.slice(start, end), true]); at = end; }
+    return [...parts, [item.name.slice(at), false]].filter(([text]) => text);
   }
   function toggleMicrophone() {
     if (voiceIndex < 0 || !voice?.joined || audioActionPending) return;
@@ -490,7 +542,8 @@
         {#each rows as row (row.id)}
           <div class="channel-row" style:--depth={Math.min(row.depth,8)}>
             {#if row.hasChildren}<button class="expand" aria-label={`${row.open ? "Collapse" : "Expand"} ${row.name}`} aria-expanded={row.open} onclick={() => toggle(row)}>{row.open ? "▾" : "▸"}</button>{:else}<span class="spacer"></span>{/if}
-            <button class:current={timeline?.channel === row.id} class:voice-current={ownUser?.channel === row.id && selected.status === "connected"} class="channel" onpointerdown={(event) => lastChannelPointer = event.pointerType} data-unread={unreadCount(row) > 0} title={`${row.name || "Root"} — click for chat, double-click to join voice`} aria-label={row.name || "Root"} aria-current={timeline?.channel === row.id ? "page" : undefined} onclick={() => openChannel(row.id)} ondblclick={() => lastChannelPointer === "mouse" && !row.direct && joinVoice(row.id)}><span class="channel-symbol" aria-hidden="true">{row.direct ? "@" : "#"}</span><span class="channel-name">{row.name || "Root"}</span>{#if ownUser?.channel === row.id && !row.direct && selected.status === "connected"}<span class="voice-marker" title="Your voice channel">{@render icon("voice")}</span>{/if}{#if unreadCount(row)}<span class="badge">{Math.min(99,unreadCount(row))}</span>{/if}</button>
+            <button class:current={timeline?.channel === row.id} class:voice-current={ownUser?.channel === row.id && selected.status === "connected"} class="channel" onpointerdown={(event) => lastChannelPointer = event.pointerType} data-unread={unreadCount(row) > 0} title={`${row.name || "Root"} — click for chat, double-click to join voice`} aria-label={row.name || "Root"} aria-current={timeline?.channel === row.id ? "page" : undefined} onclick={() => openChannel(row.id)} ondblclick={() => lastChannelPointer !== "touch" && !row.direct && joinVoice(row.id)}><span class="channel-symbol" aria-hidden="true">{row.direct ? "@" : "#"}</span><span class="channel-name">{row.name || "Root"}</span>{#if ownUser?.channel === row.id && !row.direct && selected.status === "connected"}<span class="voice-marker" title="Your voice channel">{@render icon("voice")}</span>{/if}{#if unreadCount(row)}<span class="badge">{Math.min(99,unreadCount(row))}</span>{/if}</button>
+            {#if row.hiddenUsers}{@const people = `${row.hiddenUsers} ${row.hiddenUsers === 1 ? "person" : "people"}`}<span class="member-count" class:talking={row.hiddenTalking} role="img" aria-label={`${people} inside`} title={`${people} in collapsed channels`}>{@render icon("user")}{row.hiddenUsers}</span>{/if}
           </div>
           {#each usersByChannel.get(row.id) || [] as user (user.session)}<button class:talking={user.talking} class:own-user={user.session === selected.own_session} class="user" title={user.name} aria-label={user.session === selected.own_session ? `${user.name} (you)` : `Private message ${user.name}`} style:--depth={Math.min(row.depth,8)} disabled={user.session === selected.own_session} onclick={async () => { rememberDraft(); await act("open_direct",selectedIndex,user.session); if (mobile) drawer = false; }}><span class={`mini-avatar ${avatarColor(user.name)}`}>{initials(user.name)}</span><span class="user-name">{user.name}</span>{#if user.self_deaf || user.deafened}<span title="Deafened">{@render icon("headphones", true)}</span>{:else if user.self_mute || user.muted}<span title="Muted">{@render icon("mic", true)}</span>{/if}</button>{/each}
         {/each}
@@ -518,7 +571,7 @@
       <span class="header-hash" aria-hidden="true">{currentChannel?.direct ? "@" : "#"}</span><div class="channel-title"><h2>{timeline?.name || "Welcome to Nuschl"}</h2><span>{currentChannel?.direct ? "Private conversation" : selected?.name || "Your voice. Your space."}</span></div>
       <div class="header-actions">
         {#if timeline && !currentChannel?.direct}<button class="join-button" disabled={selected?.status !== "connected"} onclick={() => joinVoice()} title="Join this voice channel" aria-label="Join voice">{@render icon("voice")}<span>Join voice</span></button>{/if}
-        <button class:pressed={showSearch} class="icon-button" aria-label="Search messages" aria-expanded={showSearch} title="Search loaded messages" disabled={!timeline} onclick={searchMessages}>{@render icon("search")}</button>
+        <button class:pressed={showSearch} class="icon-button" aria-label="Search messages" aria-expanded={showSearch} title={`Search loaded messages (${primary}+F)`} disabled={!timeline} onclick={searchMessages}>{@render icon("search")}</button>
         <button class:pressed={membersOpen} class="icon-button members-toggle" aria-label="Show members" aria-expanded={membersOpen} disabled={!timeline} onclick={() => membersOpen = !membersOpen}>{@render icon("people")}</button>
         {#if !mobile}<button class="icon-button" aria-label="Add server" title="Add server" onclick={addServer}>{@render icon("plus")}</button>{/if}
       </div>
@@ -562,4 +615,14 @@
 
 {#if mobile && drawer}<dialog class="navigation-drawer" use:drawerModal transition:drawerSlide onclose={(event) => { if (event.currentTarget.isConnected) closeDrawer(); }} oncancel={(event) => { event.preventDefault(); closeDrawer(); }} aria-label="Server navigation" onpointerdown={event => { if (event.target === event.currentTarget) closeDrawer(); else beginSwipe(event, -1); }} onpointermove={followSwipe} onpointerup={event => { if (finishSwipe(event)) closeDrawer(); }} onpointercancel={() => swipe = null}><div class="navigation" class:server-order-layout={capabilities.includes("server_order")}>{@render navigation()}</div></dialog>{/if}
 {#if showAdd}<dialog class="modal server-modal" use:modal onclose={() => showAdd = false} oncancel={() => showAdd = false} aria-labelledby="server-form-title"><header class="modal-header"><div><p class="eyebrow">MAKE YOURSELF AT HOME</p><h2 id="server-form-title">{editingIndex === null ? "Add a server" : "Edit server"}</h2></div><button class="icon-button" aria-label="Close server form" onclick={() => showAdd = false}>{@render icon("close")}</button></header><form class="connection" onsubmit={connect}><p class="muted">Connect to your Mumble server. Your bookmarks and observed chat history are saved in this browser.</p><label>Display name <input bind:value={serverName} maxlength="128" autocomplete="off" placeholder="Friday night"></label><div class="form-row"><label>Server <input bind:value={host} required autocomplete="off" placeholder="voice.example.org"></label><label class="port-field">Port <input bind:value={port} type="number" min="1" max="65535" required></label></div><label>Your name <input bind:value={username} required maxlength="128" autocomplete="nickname" placeholder="How your friends know you"></label><label for="server-password">Server password (optional)</label><input id="server-password" type="password" bind:value={password} maxlength="1024" autocomplete="current-password"><details><summary>Certificate and connection</summary><label>Certificate SHA-256 (optional)<input bind:value={pin} autocomplete="off" spellcheck="false" placeholder="64 hexadecimal characters"></label><small class="relay">Relay: {relay}. TLS runs in this browser.</small></details><div class="modal-actions"><button type="button" onclick={() => showAdd = false}>Cancel</button><button class="primary" type="submit" disabled={!loaded || !!link.error}>Connect</button></div></form></dialog>{/if}
+<svelte:window onkeydown={shortcut} />
+{#if finder}{@const item = finder.items[finder.selected]}{@const count = finder.items.length}<dialog class="modal finder" use:modal aria-label="Quick switcher" oncancel={() => finder = null} onclose={event => { if (event.currentTarget.isConnected) finder = null; }} onclick={event => { if (event.target === event.currentTarget) finder = null; }}>
+  <!-- svelte-ignore a11y_autofocus (The switcher opens on a keystroke to take typing at once, as on the desktop.) -->
+  <input class="finder-input" autofocus role="combobox" aria-expanded="true" aria-controls="finder-results" aria-activedescendant={item ? `finder-${finder.selected}` : undefined} aria-label={item ? `Find a channel or person: ${count} ${count === 1 ? "result" : "results"}, ${item.name} (${item.kind}) highlighted` : finder.query.trim() ? "Find a channel or person: no results" : "Find a channel or person"} placeholder="Where to? A channel, person or conversation" value={finder.query} oninput={event => find(event.currentTarget.value)} onkeydown={findKey}>
+  <div id="finder-results" class="finder-results" role="listbox" aria-label={count === 1 ? "1 result" : `${count} results`}>
+    {#each finder.items as found, index (`${found.server} ${found.kind} ${found.id}`)}<!-- svelte-ignore a11y_click_events_have_key_events (The field above takes the keys: arrows, Enter and Shift+Enter.) --><div id={`finder-${index}`} class="finder-row" class:selected={index === finder.selected} role="option" tabindex="-1" aria-selected={index === finder.selected} aria-label={findLabel(found)} onclick={event => go(found, event.shiftKey)}><span class="finder-name">{#each findParts(found) as [text, matched]}{#if matched}<mark>{text}</mark>{:else}{text}{/if}{/each}</span><span class="finder-path">{found.path}</span>{#if found.unread}<span class="badge">{Math.min(999, found.unread)}</span>{/if}<span class="finder-server">{servers.find(server => server.id === found.server)?.name}</span></div>{/each}
+    {#if !count}<p class="finder-empty">{finder.query.trim() ? `Nothing matches. Messages are found with ${primary}+F.` : "Type to find a channel, person or conversation on any server."}</p>{/if}
+  </div>
+  <p class="finder-hints" aria-hidden="true"><span>↑↓ choose</span><span>Enter open</span><span>Shift+Enter join voice</span><span>Esc close</span></p>
+</dialog>{/if}
 {#if showSettings}<dialog class="modal settings-modal" use:modal onclose={() => showSettings = false} oncancel={() => showSettings = false} aria-labelledby="settings-title"><header class="modal-header"><div><p class="eyebrow">MAKE IT YOURS</p><h2 id="settings-title">Settings</h2></div><button class="icon-button" aria-label="Close settings" onclick={() => showSettings = false}>{@render icon("close")}</button></header><section class="settings-section"><h3>Appearance</h3><label for="theme-choice">Theme</label><select id="theme-choice" bind:value={settings.theme} onchange={persistSettings}><option value="system">Match device</option><option value="dark">Dark</option><option value="light">Light</option></select><label for="density-choice">Message spacing</label><select id="density-choice" bind:value={settings.density} onchange={persistSettings}><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select><label for="size-choice">Text size</label><select id="size-choice" bind:value={settings.fontSize} onchange={persistSettings}><option value={14}>Small · 14px</option><option value={16}>Default · 16px</option><option value={18}>Large · 18px</option><option value={20}>Larger · 20px</option></select></section><section class="settings-section voice-quality"><h3>Voice quality</h3><label for="voice-bitrate-choice">Voice bitrate</label><select id="voice-bitrate-choice" bind:value={voiceBitrate} onchange={chooseVoiceBitrate}>{#each VOICE_BITRATES as choice (choice)}<option value={choice}>{kbps(choice)}{choice === 128000 ? " · default" : ""}</option>{/each}</select><p>Mono Opus, 64 to 256 kb/s. A server's bandwidth limit can lower it, never raise it.</p>{#if voice}<p class="voice-bitrate" role="status">{voiceServer?.name}: {voice.bitrate_why}</p>{/if}</section><section class="settings-section"><h3>Privacy & storage</h3><p>Bookmarks, trusted certificates and observed chat history are stored locally in this browser. Legacy servers can read chat; the relay only forwards encrypted traffic.</p><p>Links and received images never cause automatic requests to another site.</p></section>{@render voiceProcessingSettings()}{#if selected}<section class="settings-section"><h3>{selected.name}</h3><p class="muted">{selected.host}:{selected.port} · {selected.username}</p><button onclick={() => { showSettings = false; editServer(); }}>Edit server bookmark</button>{#if capabilities.includes("server_order")}<div class="server-order-actions"><button disabled={orderPending || servers[0]?.id === selected.id} onclick={()=>moveOrderKey(selected.id,-1)}>Move server earlier</button><button disabled={orderPending || servers.at(-1)?.id === selected.id} onclick={()=>moveOrderKey(selected.id,1)}>Move server later</button></div>{/if}{#if capabilities.includes("remove_server")}<button class="danger" onclick={async () => { await act("remove_server",selectedIndex); showSettings = false; }}>Remove server</button>{/if}</section>{/if}<footer class="settings-footer"><span class="brand-word">nuschl<span>web</span></span><small>Built for conversations.</small></footer></dialog>{/if}

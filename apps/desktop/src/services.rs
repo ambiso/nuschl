@@ -34,6 +34,10 @@ pub enum ServiceEvent {
         id: u64,
         result: Result<nuschl_ipc::EncodedImage, String>,
     },
+    /// Our call's lease `id` is over (`call`).
+    CallLeaseEnded {
+        id: u64,
+    },
 }
 
 pub struct Services {
@@ -113,6 +117,18 @@ impl Services {
         if let Some((commands, _)) = &self.preview {
             let _ = commands.try_send(command);
         }
+    }
+    /// Keep our call's lease (`call::run`).
+    pub fn lease(
+        &self,
+        id: u64,
+        url: String,
+        body: String,
+        stop: tokio::sync::oneshot::Receiver<()>,
+    ) {
+        let events = self.sender.clone();
+        self.handle
+            .spawn(crate::call::run(id, url, body, stop, events));
     }
     /// Closing the sender lets the task shut its worker down cleanly.
     pub fn stop_preview(&mut self) {

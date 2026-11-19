@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 // Private test page only. The production module/SDK/codec/worklet are unchanged.
 import {BrowserAudio} from "/audio.js";
+import {actionProof} from "/action-context.js";
+import {serverIndices} from "/server-order.js";
 const RealAudioContext=globalThis.AudioContext;
 globalThis.AudioContext=class extends RealAudioContext {
   constructor(options){super({...options,sinkId:{type:"none"}});}
@@ -8,15 +10,16 @@ globalThis.AudioContext=class extends RealAudioContext {
 const config=await fetch("/fixture-config.json").then(response=>response.json());
 const username=new URL(location).searchParams.get("username")||"browser-audio";
 const worker=new Worker("/sdk.worker.js",{type:"module"});
-let next=0,voice=null,servers=[],audioState={},analyser,receivedCount=0;
+let next=0,voice=null,timeline=null,servers=[],audioState={},analyser,receivedCount=0;
 const pending=new Map(),received=[],sent=[],errors=[],events=[];
-function request(method,args=[]) {
+function request(method,args=[],reference) {
+  const proof=actionProof(method,args,servers,timeline,voice,reference);
   const id=++next;
   if(method!=="voice_packet"&&method!=="audio_ready")events.push({kind:"command",id,method,localMuted:servers[0]?.muted,localDeafened:servers[0]?.deafened});
   return new Promise((resolve,reject)=>{
     const timer=setTimeout(()=>{pending.delete(id);reject(new Error("SDK command timeout: "+method));},10000);
     pending.set(id,{resolve:value=>{clearTimeout(timer);resolve(value);},reject:error=>{clearTimeout(timer);reject(error);}});
-    worker.postMessage({id,method,args});
+    worker.postMessage({id,method,args,context:proof===undefined?undefined:JSON.stringify(proof)});
   });
 }
 const audio=new BrowserAudio({
@@ -39,19 +42,20 @@ worker.onmessage=({data})=>{
     audio.receive(data.packet);return;
   }
   if(data.kind==="state"){
-    servers=data.servers;voice=data.voice;audio.syncVoice(voice);
+    servers=serverIndices(data.servers);timeline=data.timeline;voice=data.voice;audio.syncVoice(voice);
+    worker.postMessage({method:"state_applied",args:[data.publication]});
     events.push({kind:"state",muted:servers[0]?.muted,deafened:servers[0]?.deafened,voice:voice?{...voice}:null});
     if(events.length>500)events.shift();
     const first=servers[0];
     if(first?.certificate&&!trusting){trusting=true;request("accept_certificate",[0,first.certificate]).catch(error=>errors.push(error.message));}
     return;
   }
-  if(data.kind==="error")errors.push(data.message);
+  if(data.kind==="error"||data.kind==="fatal")errors.push(data.message);
 };
 worker.postMessage({method:"init",relay:config.relay});
 await initialized;
-const id=await request("add_server",["",config.host,config.port,username]);
-await request("connect",[id]);
+const {index:id,reference}=await request("add_server",["",config.host,config.port,username,undefined]);
+await request("connect",[id],reference);
 const button=(name,handler)=>document.getElementById(name).addEventListener("click",()=>Promise.resolve(handler()).catch(error=>errors.push(error.message)));
 button("join",()=>{audio.syncVoice(null);audio.activateGesture();return request("join",[id,0]);});
 button("microphone",()=>{

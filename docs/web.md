@@ -107,8 +107,11 @@ One nginx virtual host with `enableACME` and `forceSSL` (both on by default) ser
   `/run/nuschl-web-relay` that only nginx's group reaches.
 
 Every response carries a strict Content-Security-Policy (only this origin; the relay
-as the one connection; `wasm-unsafe-eval` for WebAssembly), `Referrer-Policy:
-no-referrer`, `nosniff` and a Permissions-Policy allowing only the microphone. The
+as the one connection; `wasm-unsafe-eval` for WebAssembly; media only from `blob:`
+for a call's silent keep-alive), `Referrer-Policy:
+no-referrer`, `nosniff`, a Permissions-Policy allowing only the microphone, and
+`Cross-Origin-Opener-Policy: same-origin` with `Cross-Origin-Embedder-Policy:
+require-corp`, which make the page cross-origin isolated for voice. The
 relay runs as its own system user (static, so nginx can share the socket's group)
 under the server module's systemd hardening. `installUrl` sets where "Get Nuschl"
 leads.
@@ -197,7 +200,15 @@ or unsupported-kernel eBPF guarantee is claimed.
 `nix build .#checks.x86_64-linux.vm-web` boots the module (plain HTTP, no ACME in a
 VM), checks the site, the landing page, its headers, the app-link files and that
 tokens are not logged, logs in to a stock Murmur through the relay with the probe
-(TLS on the client, a ping datagram answered over UDP), and checks that other origins,
+(TLS on the client, a ping datagram answered over UDP), drives the packaged app in
+headless Chromium (`tests/web_channel_dblclick.browser.mjs`: a mouse or pen
+double-click on a channel joins its voice with the microphone closed, and a touch
+double-tap opens the channel's chat), reloads it with two saved servers
+(`tests/web_autoconnect.browser.mjs`: Murmur connects without a click and rejoins
+the channel last joined, the refusing service is tried once, no microphone is
+requested), checks its shortcuts (`tests/web_shortcuts.browser.mjs`: Ctrl+K, typing
+and Enter switch to a channel, Escape closes the switcher, Ctrl+F finds a sent
+message), and checks that other origins,
 other ports, loopback and private addresses and a service that is not Mumble are
 refused.
 
@@ -277,6 +288,11 @@ against the pin or the web's certificate authorities (anything else is the user'
 decision, as in the apps), the Mumble login, the channel tree and users. It uses no
 DOM, so a Web Worker can host it.
 
+The web client's WebAssembly needs Chrome 96, Firefox 89 or Safari 16.4 or later:
+every module uses reference types (Chrome 96, Firefox 79, Safari 15), and the Opus
+codec Worker's module uses SIMD (`simd128`: Chrome 91, Firefox 89, Safari 16.4).
+`tests/web_audio_simd.mjs` checks that it encodes and decodes to the scalar build's bits.
+
 - `nix build .#web-wasm`, `.#web-audio-wasm`, `.#web-client` and `.#web-site`
   build the session SDK, separate Opus codec, Svelte app and complete site.
   `just wasm-client` and `just web` remain development entry points. The exact
@@ -285,10 +301,22 @@ DOM, so a Web Worker can host it.
   relay's address (the same origin by default), "Connected" or "Not connected" as a
   live status, a certificate prompt and the channels with their users. A share link's
   "Join in the browser" fills in the server; with a name (`u=`) it connects at once.
+  Without a share link, the page connects every saved server when it loads, as the
+  desktop does on startup: self-muted and deafened, without opening voice or the
+  microphone. A server that fails shows its notice and waits for Connect. Every
+  connection moves you back to the channel you last joined, if the server still has
+  it.
   Certificate pins are preserved. Invites requiring `policy=nuschl` are refused
   with an app-opening explanation until the browser implements that negotiation;
   they must never silently fall back to legacy Mumble. Malformed or ambiguous
   security options also fail closed. `npm test` covers these fragment rules.
+- Ctrl+K (Cmd+K on macOS) opens the quick switcher. It lists and ranks channels,
+  people and direct conversations of every server with the SDK's
+  `nuschl_client::finder`, as the desktop does: arrows and Page Up/Down move,
+  Enter opens, Shift+Enter joins a channel's voice or shows the channel a person
+  is in, and Escape closes it. Ctrl+F opens the search of the conversation's loaded
+  messages. Pressing Ctrl+F again in the search field opens the browser's own find,
+  and both shortcuts go to the browser while another dialog is open.
 - Emoji in messages are Twemoji images served from the same origin, and the smiley
   button beside the composer (or Ctrl+.) opens the picker; the composer stays a
   plain textarea ([emoji.md](emoji.md)).
@@ -297,6 +325,53 @@ DOM, so a Web Worker can host it.
   <binaries> --murmur <mumble-server>` runs the WebAssembly build in Node.js (the
   browser's WebSocket and Web Crypto) through the relay to a loopback Murmur, trusting
   the certificate it is shown.
+
+## The call page (`web/call`)
+
+The stream host (`services.nuschl-stream`, `nix/stream-module.nix`) serves the
+call page at `/call` next to the SFU's `/sfu` (`nix build .#call-site`: the page,
+the stream worker's wasm and their notices under `/licenses/nuschl/`). Everyone
+with a call link opens it ([desktop](desktop.md#calls)); the creator's link adds P.
+
+- **Joining:** the page hands the link to the stream worker (`stream.worker.js`
+  over `nuschl-stream-wasm`), which alone holds S, P and every key. The worker
+  derives the room, V and the admission proofs; the page joins at `/sfu` with
+  them and the codecs it decodes.
+- **Support:** the page needs encoded transforms (`RTCRtpScriptTransform`) and
+  AV1 or VP9 decoding in WebRTC; otherwise it shows "Browser not supported".
+  The call codec is the SFU's choice (`apps/stream-sfu/src/protocol.rs`).
+- **Watching:** the page subscribes to every source; each receiver's frames
+  decrypt in the stream worker, which asks for a key frame once a publisher's
+  keys arrive. Camera tiles fill a grid; a shared screen or a pinned camera
+  takes the large view. The roster lists everyone in the call, and a host
+  (P) gets End call and Remove.
+- **Relay only:** `/call?relay#…` connects with `iceTransportPolicy: 'relay'`
+  through the TURN server the SFU names, and fails closed without one.
+- **Bounds:** SFU messages are checked against the page's limits before use
+  (`signal.js`: 256 KiB, 256 peers, three tracks per peer, 16 KiB key
+  messages); the stream worker bounds its own requests.
+- **Publishing:** Start camera opens the camera (`getUserMedia`, video only)
+  and Share screen asks the browser's picker each time (`getDisplayMedia`,
+  window sharing preselected, no audio); a whole-monitor share shows "Sharing
+  your whole screen". This page never opens the microphone. Each source is
+  encrypted in the stream worker (its own SFrame encoding) and encoded in the
+  call codec only; on the SFU's `codec` message every source restarts its
+  encoder on a new media section, since the SFU keeps a section's first codec.
+  Stop, the browser's own stop and the end of the call end the capture and the
+  source. `/call` alone may ask for camera and display capture
+  (Permissions-Policy). A browser that cannot encode the call codec shows
+  "Can't send AV1" (or VP9).
+- **Quality:** Auto lets the SFU select video quality. The call page applies
+  the SFU's publisher limits to the matching encoder's resolution, frame rate
+  and bitrate. Open **Video stats** on a remote tile to see its received
+  resolution, decoded and presented frame rates, receive bitrate, and mean
+  time in the receiver's jitter buffer. Embedding the call view in the web
+  client is a follow-up.
+- **Tests:** `checks.call-page` runs `web/call/call.test.js` against the
+  stream worker's wasm; `checks.vm-call-page` (`nix/call-page-vm.nix`,
+  `tests/call_page.py`) runs headless Chromium and Firefox against the SFU and
+  coturn with synthetic publishers and a page user who publishes Chromium's
+  fake camera and screen, and leaves screenshots in `result/screenshots`.
 
 ## SDK and browser capability status
 

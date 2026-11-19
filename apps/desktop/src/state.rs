@@ -197,6 +197,9 @@ pub struct Desktop {
     pub driver: Arc<Driver>,
     /// The desktop's own background work (services.rs).
     pub services: Services,
+    /// Our call's creator link and lease, and the last lease's id.
+    pub call: Option<crate::call::Creator>,
+    pub call_leases: u64,
     pub link_preview: crate::link_preview::ComposerPreview,
     pub profile: Profile,
     pub form: Option<ServerForm>,
@@ -460,14 +463,7 @@ impl Desktop {
             bookmarks,
             nuschl_client::native::preferences(&settings),
         );
-        client.set_link_preview_settings(
-            if cfg!(target_os = "linux") {
-                settings.link_previews.clone()
-            } else {
-                crate::link_preview::off()
-            },
-            monotonic_ms(),
-        );
+        client.set_link_preview_settings(settings.link_previews.clone(), monotonic_ms());
         let (services, mut service_events) = Services::new(handle.clone(), driver.settings());
         // The desktop's own services report apart from the driver.
         let serve = cx.spawn(async move |this, cx| {
@@ -528,6 +524,8 @@ impl Desktop {
             notes: crate::notify::start(&handle),
             driver,
             services,
+            call: None,
+            call_leases: 0,
             link_preview: crate::link_preview::ComposerPreview::default(),
             profile,
             form: None,
@@ -2455,6 +2453,7 @@ impl Desktop {
         self.sync_link_preview(cx);
         self.expire_typing(cx);
         self.flush_outgoing(cx);
+        self.sync_call();
     }
     /// Follow what the client says changed.
     pub fn apply_updates(&mut self, cx: &mut Context<Self>) {
@@ -2703,6 +2702,7 @@ impl Desktop {
                 self.link_preview_pixels(ticket, pixels, cx)
             }
             ServiceEvent::Prepared { id, result } => self.prepared(id, result, cx),
+            ServiceEvent::CallLeaseEnded { id } => self.call_lease_ended(id),
             ServiceEvent::ServerIcon { server, icon } => {
                 if let Some(server) = self
                     .client

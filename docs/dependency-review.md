@@ -38,7 +38,7 @@ algorithms globally, or relax the crypto-bigint advisory policy below. See the
 | Content | pulldown-cmark and Syntect with fancy-regex | No native Oniguruma; fixed bundled syntax/theme set; content worker and timeout |
 | Echo cancellation | Sonora | Rust port of WebRTC processing; assess quality/timing before routing real calls |
 | Noise suppression | nnnoiseless | Rust RNNoise-derived implementation; enable only when route policy calls for suppression |
-| Opus | opus-rs, a git dependency on the owner's fork pinned by commit | Rust port of libopus with `#![forbid(unsafe_code)]`. Its SIMD kernels run through `fearless_simd` 1.2: on x86 the FFT, pitch correlation, PVQ search and SILK quantizer for decoder and encoder at the runtime-detected level; on aarch64 the NEON SILK quantizer; wasm32 builds without `simd128`, as Nuschl's, run scalar code. Media worker, browser audio worker and music bot codec worker; the media worker enables `deep-plc`, which embeds libopus's PitchDNN, PLC and FARGAN weights from `dnn-weights/` (1.4 MB; the release media worker grows from 5.9 to 7.6 MB). Conformance and stock-client audio tests required |
+| Opus | opus-rs, a git dependency on the owner's fork (its main branch, the commit pinned in `Cargo.lock`) | Rust port of libopus with `#![forbid(unsafe_code)]`. Its SIMD kernels run through `fearless_simd` 1.2: on x86 the FFT, pitch correlation, PVQ search and SILK quantizer for decoder and encoder at the runtime-detected level; on aarch64 the NEON SILK quantizer; on wasm32 with `simd128`, as the browser audio worker builds it, the SILK quantizer, where fearless_simd's wasm backend adds only the `SimdPod` marker for `v128` as `unsafe` code. Media worker, browser audio worker and music bot codec worker; the media worker enables `deep-plc` to embed libopus’s PitchDNN, PLC and FARGAN weights (1.43 MB of model data); conformance and stock-client audio tests required |
 | History | SQLx/Tokio, bundled SQLite locally and PostgreSQL for servers | SQLite FFI and database access remain in the storage worker; extension loading/deserialization are disabled |
 | Desktop | GPUI Kit without default component/assets features | Native rendering exception, not a message HTML or embedded-browser runtime |
 | TLS | rustls with ring | Explicit crypto exception; no OpenSSL dependency |
@@ -120,8 +120,8 @@ advisories against the same packages are still checked.
 
 Revisit the corresponding entries whenever GPUI Kit or Syntect is upgraded. Do not
 add a workspace-direct dependency on these packages to exploit a transitive allowance.
-The release process also needs a third-party notice inventory; cargo-deny alone does
-not establish fulfillment of attribution or copyleft conditions.
+cargo-deny checks the license policy; the release notices, built with cargo-about
+from the same accepted licenses, carry the attribution ([release notices](release-notices.md)).
 
 ## Audit scope
 

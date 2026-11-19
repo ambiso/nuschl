@@ -112,6 +112,7 @@ onmessage = async ({ data }) => {
       client.on_audio(wakeAudio);
       try { history = await openHistory(); client.restore_bookmarks(await history.bookmarks()); saved = client.bookmarks(); }
       catch { fail("Local history is unavailable. Messages will be shown but cannot be saved."); }
+      if (data.connect_saved === true) client.connect_saved();
       setInterval(() => { if (client.tick(performance.now())) wake(); }, 250);
       postMessage({ kind: "ready", capabilities:["remove_server","dismiss_notice", "dismiss_welcome","connect_with_password","voice","stop_audio", "edit_server", "server_order"] });
     } else {
@@ -152,7 +153,8 @@ onmessage = async ({ data }) => {
       } else value = client[data.method](...data.args);
       if (data.id !== undefined) postMessage({ kind: "result", id: data.id, value });
       // Encoding is frequent; its route has already been admitted in Rust.
-      if (data.method === "voice_packet") return;
+      // Finding changes nothing to publish.
+      if (data.method === "voice_packet" || data.method === "find") return;
       if(data.method === "content_complete" || data.method === "content_request") {
         // The real ACK above releases its exact credit immediately. Refill the
         // bounded codec lane before coalescing only the model publication.

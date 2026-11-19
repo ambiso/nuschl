@@ -1,0 +1,784 @@
+# SPDX-License-Identifier: EUPL-1.2
+# cargo-about configuration for the release notices (nix/release-notices.nix,
+# docs/release-notices.md). The accepted licenses follow deny.toml; the first
+# accepted alternative of an OR expression is the one whose text is shipped.
+accepted = [
+  "EUPL-1.2",
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Zlib",
+]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+# Workspace members are first-party (EUPL-1.2, the LICENSE file).
+private = { ignore = true }
+# License files sit at the package root or one directory below it.
+max-depth = 2
+
+# deny.toml's Unlicense exceptions that ship (the transfer worker's Noise crates).
+noise-protocol.accepted = ["Unlicense"]
+noise-rust-crypto.accepted = ["Unlicense"]
+
+# Published packages without license texts: the upstream texts of the published
+# revision (.cargo_vcs_info.json), kept in release/licenses/crates.
+[accesskit.clarify]
+license = "MIT OR Apache-2.0"
+files = [
+  { path = "@licenses@/crates/accesskit/LICENSE-MIT", checksum = "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3" },
+  { path = "@licenses@/crates/accesskit/LICENSE.chromium", checksum = "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308" },
+]
+[accesskit_atspi_common.clarify]
+license = "MIT OR Apache-2.0"
+files = [
+  { path = "@licenses@/crates/accesskit/LICENSE-MIT", checksum = "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3" },
+  { path = "@licenses@/crates/accesskit/LICENSE.chromium", checksum = "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308" },
+]
+[accesskit_consumer.clarify]
+license = "MIT OR Apache-2.0"
+files = [
+  { path = "@licenses@/crates/accesskit/LICENSE-MIT", checksum = "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3" },
+  { path = "@licenses@/crates/accesskit/LICENSE.chromium", checksum = "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308" },
+]
+[accesskit_macos.clarify]
+license = "MIT OR Apache-2.0"
+files = [
+  { path = "@licenses@/crates/accesskit/LICENSE-MIT", checksum = "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3" },
+  { path = "@licenses@/crates/accesskit/LICENSE.chromium", checksum = "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308" },
+]
+[accesskit_unix.clarify]
+license = "MIT OR Apache-2.0"
+files = [
+  { path = "@licenses@/crates/accesskit/LICENSE-MIT", checksum = "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3" },
+  { path = "@licenses@/crates/accesskit/LICENSE.chromium", checksum = "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308" },
+]
+[accesskit_windows.clarify]
+license = "MIT OR Apache-2.0"
+files = [
+  { path = "@licenses@/crates/accesskit/LICENSE-MIT", checksum = "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3" },
+  { path = "@licenses@/crates/accesskit/LICENSE.chromium", checksum = "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308" },
+]
+[akd.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "@licenses@/crates/akd/LICENSE-MIT", checksum = "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93" }]
+[akd_core.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "@licenses@/crates/akd/LICENSE-MIT", checksum = "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93" }]
+[cookie-factory.clarify]
+license = "MIT"
+files = [{ path = "@licenses@/crates/cookie-factory/MIT.txt", checksum = "d09216dc1ea5f273997667935a8d6514d80f00b89fb6954ecc3a43e0a6e360de" }]
+[dasp_sample.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "@licenses@/crates/sample/LICENSE-MIT", checksum = "b1d6df41ed3aa96806e74c729444d7c121d90e6660a6aed01d298e03fde475a0" }]
+[glidesort.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/glidesort/README.md", checksum = "08961b3f37120e88e205e2def4af6da46f9eba8700fa80553fd0b8d8bb3d208a" },
+  { path = "@licenses@/crates/apache/Apache-2.0.txt", checksum = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30" },
+]
+[gpui-kit.clarify]
+license = "Apache-2.0"
+files = [{ path = "@licenses@/crates/gpui-kit/LICENSE-APACHE", checksum = "d1b0449e5478c574ba4f686c2656df7fe77d66821a61f8b6ed3378a58ed9a811" }]
+[harfrust.clarify]
+license = "MIT"
+files = [{ path = "@licenses@/crates/harfrust/LICENSE", checksum = "3a7c3f0b887abb7c638faf022d29257418458614c6724b120ceeffb279f9c7d2" }]
+[hax-lib.clarify]
+license = "Apache-2.0"
+files = [{ path = "@licenses@/crates/hax/LICENSE", checksum = "9a50bad5a51e0ad726ea3a7f4b7b758e1b4d1784e6abefe1367f5bf01e972725" }]
+[hpke-rs.clarify]
+license = "MPL-2.0"
+files = [
+  { path = "@licenses@/crates/hpke-rs/MPL-2.0.txt", checksum = "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04" },
+  { path = "@licenses@/crates/hpke-rs/SOURCE.txt", checksum = "dca98ef6ca0b4e16dba2ff55109358d9d532625e27795adc1cae832cf2d407e6" },
+]
+[hpke-rs-crypto.clarify]
+license = "MPL-2.0"
+files = [
+  { path = "@licenses@/crates/hpke-rs/MPL-2.0.txt", checksum = "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04" },
+  { path = "@licenses@/crates/hpke-rs/SOURCE.txt", checksum = "dca98ef6ca0b4e16dba2ff55109358d9d532625e27795adc1cae832cf2d407e6" },
+]
+[hpke-rs-libcrux.clarify]
+license = "MPL-2.0"
+files = [
+  { path = "@licenses@/crates/hpke-rs/MPL-2.0.txt", checksum = "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04" },
+  { path = "@licenses@/crates/hpke-rs/SOURCE.txt", checksum = "dca98ef6ca0b4e16dba2ff55109358d9d532625e27795adc1cae832cf2d407e6" },
+]
+[libcrux-aead.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/libcrux/LICENSE", checksum = "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564" },
+  { path = "@licenses@/crates/libcrux/LICENSE-MIT", checksum = "e40d41f94826514279cc7648088180e19621f7acd281dd394a0534d535da51fd" },
+]
+[libcrux-aes.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/libcrux/LICENSE", checksum = "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564" },
+  { path = "@licenses@/crates/libcrux/LICENSE-MIT", checksum = "e40d41f94826514279cc7648088180e19621f7acd281dd394a0534d535da51fd" },
+]
+[libcrux-chacha20poly1305.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/libcrux/LICENSE", checksum = "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564" },
+  { path = "@licenses@/crates/libcrux/LICENSE-MIT", checksum = "e40d41f94826514279cc7648088180e19621f7acd281dd394a0534d535da51fd" },
+]
+[libcrux-curve25519.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/libcrux/LICENSE", checksum = "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564" },
+  { path = "@licenses@/crates/libcrux/LICENSE-MIT", checksum = "e40d41f94826514279cc7648088180e19621f7acd281dd394a0534d535da51fd" },
+]
+[libcrux-ecdh.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/libcrux/LICENSE", checksum = "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564" },
+  { path = "@licenses@/crates/libcrux/LICENSE-MIT", checksum = "e40d41f94826514279cc7648088180e19621f7acd281dd394a0534d535da51fd" },
+]
+[libcrux-ed25519.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/libcrux/LICENSE", checksum = "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564" },
+  { path = "@licenses@/crates/libcrux/LICENSE-MIT", checksum = "e40d41f94826514279cc7648088180e19621f7acd281dd394a0534d535da51fd" },
+]
+[libcrux-hacl-rs.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/libcrux/LICENSE", checksum = "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564" },
+  { path = "@licenses@/crates/libcrux/LICENSE-MIT", checksum = "e40d41f94826514279cc7648088180e19621f7acd281dd394a0534d535da51fd" },
+]
+[libcrux-hkdf.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/libcrux/LICENSE", checksum = "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564" },
+  { path = "@licenses@/crates/libcrux/LICENSE-MIT", checksum = "e40d41f94826514279cc7648088180e19621f7acd281dd394a0534d535da51fd" },
+]
+[libcrux-hmac.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/libcrux/LICENSE", checksum = "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564" },
+  { path = "@licenses@/crates/libcrux/LICENSE-MIT", checksum = "e40d41f94826514279cc7648088180e19621f7acd281dd394a0534d535da51fd" },
+]
+[libcrux-hmac-drbg.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/libcrux/LICENSE", checksum = "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564" },
+  { path = "@licenses@/crates/libcrux/LICENSE-MIT", checksum = "e40d41f94826514279cc7648088180e19621f7acd281dd394a0534d535da51fd" },
+]
+[libcrux-intrinsics.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/libcrux/LICENSE", checksum = "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564" },
+  { path = "@licenses@/crates/libcrux/LICENSE-MIT", checksum = "e40d41f94826514279cc7648088180e19621f7acd281dd394a0534d535da51fd" },
+]
+[libcrux-kem.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/libcrux/LICENSE", checksum = "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564" },
+  { path = "@licenses@/crates/libcrux/LICENSE-MIT", checksum = "e40d41f94826514279cc7648088180e19621f7acd281dd394a0534d535da51fd" },
+]
+[libcrux-ml-dsa.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/libcrux/LICENSE", checksum = "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564" },
+  { path = "@licenses@/crates/libcrux/LICENSE-MIT", checksum = "e40d41f94826514279cc7648088180e19621f7acd281dd394a0534d535da51fd" },
+]
+[libcrux-ml-kem.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/libcrux/LICENSE", checksum = "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564" },
+  { path = "@licenses@/crates/libcrux/LICENSE-MIT", checksum = "e40d41f94826514279cc7648088180e19621f7acd281dd394a0534d535da51fd" },
+]
+[libcrux-p256.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/libcrux/LICENSE", checksum = "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564" },
+  { path = "@licenses@/crates/libcrux/LICENSE-MIT", checksum = "e40d41f94826514279cc7648088180e19621f7acd281dd394a0534d535da51fd" },
+]
+[libcrux-platform.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/libcrux/LICENSE", checksum = "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564" },
+  { path = "@licenses@/crates/libcrux/LICENSE-MIT", checksum = "e40d41f94826514279cc7648088180e19621f7acd281dd394a0534d535da51fd" },
+]
+[libcrux-poly1305.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/libcrux/LICENSE", checksum = "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564" },
+  { path = "@licenses@/crates/libcrux/LICENSE-MIT", checksum = "e40d41f94826514279cc7648088180e19621f7acd281dd394a0534d535da51fd" },
+]
+[libcrux-secrets.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/libcrux/LICENSE", checksum = "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564" },
+  { path = "@licenses@/crates/libcrux/LICENSE-MIT", checksum = "e40d41f94826514279cc7648088180e19621f7acd281dd394a0534d535da51fd" },
+]
+[libcrux-sha2.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/libcrux/LICENSE", checksum = "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564" },
+  { path = "@licenses@/crates/libcrux/LICENSE-MIT", checksum = "e40d41f94826514279cc7648088180e19621f7acd281dd394a0534d535da51fd" },
+]
+[libcrux-sha3.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/libcrux/LICENSE", checksum = "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564" },
+  { path = "@licenses@/crates/libcrux/LICENSE-MIT", checksum = "e40d41f94826514279cc7648088180e19621f7acd281dd394a0534d535da51fd" },
+]
+[libcrux-traits.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/libcrux/LICENSE", checksum = "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564" },
+  { path = "@licenses@/crates/libcrux/LICENSE-MIT", checksum = "e40d41f94826514279cc7648088180e19621f7acd281dd394a0534d535da51fd" },
+]
+[libcrux-p384.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/libcrux/LICENSE", checksum = "c517c468fc7f8d83319dd8b3743923f6891e0dfbaf7c57a874758c8f39b98564" },
+  { path = "LICENSE-aucurves", checksum = "5a2a86baa5fa5b69be64b293ac245848bb96c50191e10efd47e4ba72dcb4ed80" },
+  { path = "LICENSE-fiat-crypto", checksum = "0034712d5e97a4f5b900a160a5c19d582b740d8e0638b4e44fd07e7b492dcd13" },
+]
+[lyon.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "@licenses@/crates/lyon/LICENSE-MIT", checksum = "80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e" }]
+[lyon_algorithms.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "@licenses@/crates/lyon/LICENSE-MIT", checksum = "80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e" }]
+[lyon_geom.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "@licenses@/crates/lyon/LICENSE-MIT", checksum = "80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e" }]
+[lyon_path.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "@licenses@/crates/lyon/LICENSE-MIT", checksum = "80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e" }]
+[lyon_tessellation.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "@licenses@/crates/lyon/LICENSE-MIT", checksum = "80f275e90d799911ed3830a7f242a2ef5a4ade2092fe0aa07bfb2d2cf2f2b95e" }]
+[mac.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/mac/README.md", checksum = "8edb7a912d295acf1e1cfeafdd19a6813a63b301c7bbfda3c67f65509bd8d8cc" },
+  { path = "@licenses@/crates/apache/Apache-2.0.txt", checksum = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30" },
+]
+[noise-protocol.clarify]
+license = "Unlicense"
+files = [{ path = "@licenses@/crates/noise-rust/LICENSE", checksum = "7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c" }]
+[noise-rust-crypto.clarify]
+license = "Unlicense"
+files = [{ path = "@licenses@/crates/noise-rust/LICENSE", checksum = "7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c" }]
+[block2.clarify]
+license = "MIT"
+files = [
+  { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+]
+[dispatch2.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+files = [
+  { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+]
+[objc-sys.clarify]
+license = "MIT"
+files = [{ path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" }]
+[objc2.clarify]
+license = "MIT"
+files = [
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+  { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
+]
+[objc2-encode.clarify]
+license = "MIT"
+files = [
+  { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+]
+[objc2-app-kit.clarify]
+license = "MIT"
+files = [
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+  { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+]
+[objc2-foundation.clarify]
+license = "MIT"
+files = [
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+  { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+]
+[objc2-audio-toolbox.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+files = [
+  { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+]
+[objc2-cloud-kit.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+files = [
+  { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+]
+[objc2-core-audio.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+files = [
+  { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+]
+[objc2-core-audio-types.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+files = [
+  { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+]
+[objc2-core-data.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+files = [
+  { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+]
+[objc2-core-foundation.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+files = [
+  { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+]
+[objc2-core-graphics.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+files = [
+  { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+]
+[objc2-core-image.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+files = [
+  { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+]
+[objc2-core-text.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+files = [
+  { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+]
+[objc2-core-video.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+files = [
+  { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+]
+[objc2-metal.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+files = [
+  { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+]
+[objc2-quartz-core.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+files = [
+  { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+]
+[objc2-security.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+files = [
+  { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+]
+[objc2-uniform-type-identifiers.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+files = [
+  { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+]
+[objc2-user-notifications.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+files = [
+  { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+]
+[openmls.clarify]
+license = "MIT"
+files = [{ path = "@licenses@/crates/openmls/LICENSE", checksum = "43e5e3c4b5cca67f9ea912f7e1929702a848aa765d3b3e14f25d3838a5a5565d" }]
+[openmls_libcrux_crypto.clarify]
+license = "MIT"
+files = [{ path = "@licenses@/crates/openmls/LICENSE", checksum = "43e5e3c4b5cca67f9ea912f7e1929702a848aa765d3b3e14f25d3838a5a5565d" }]
+[openmls_memory_storage.clarify]
+license = "MIT"
+files = [{ path = "@licenses@/crates/openmls/LICENSE", checksum = "43e5e3c4b5cca67f9ea912f7e1929702a848aa765d3b3e14f25d3838a5a5565d" }]
+[openmls_traits.clarify]
+license = "MIT"
+files = [{ path = "@licenses@/crates/openmls/LICENSE", checksum = "43e5e3c4b5cca67f9ea912f7e1929702a848aa765d3b3e14f25d3838a5a5565d" }]
+[p12-keystore.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/p12-keystore/README.md", checksum = "f4bb3bcb69849fa1283bffe5a6f39c8c15f72ab985a6e44e2c6279fb7332ac56" },
+  { path = "@licenses@/crates/apache/Apache-2.0.txt", checksum = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30" },
+]
+[pathfinder_geometry.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/pathfinder/published-src-lib.rs", checksum = "cedfb2d85e682e9b9e327a169347bf0cebecd52668e1ed91a3af05ec91b42090" },
+  { path = "@licenses@/crates/apache/Apache-2.0.txt", checksum = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30" },
+]
+[pathfinder_simd.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "@licenses@/crates/pathfinder/LICENSE-MIT", checksum = "0621878e61f0d0fda054bcbe02df75192c28bde1ecc8289cbd86aeba2dd72720" }]
+[profiling.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "@licenses@/crates/profiling/LICENSE-MIT", checksum = "c8167fdeeed46d3f244d3f85c5bf998ce889343691c32be2c61a8bc4b5c08333" }]
+[pulp-wasm-simd-flag.clarify]
+license = "MIT"
+files = [{ path = "@licenses@/crates/pulp/LICENSE", checksum = "d64f878c89bd5f1e5ada7e4aad57690b122727cf5229b7b87ea1980c188da1d9" }]
+[roman-numerals-rs.clarify]
+license = "CC0-1.0"
+files = [{ path = "@licenses@/crates/roman-numerals/LICENCE.rst", checksum = "c744ffc7e120b22e6620b613298dc003a2613c0ae489ee414fb1d473f24f916f" }]
+[seahash.clarify]
+license = "MIT"
+files = [{ path = "@licenses@/crates/seahash/LICENSE-TFS-MIT.txt", checksum = "6252f0c8d4a0df9b2dc0c6464cb2489dbe8859b0eb727e19c14e6af1ee432394" }]
+[sonora-aec3.clarify]
+license = "BSD-3-Clause"
+files = [{ path = "@licenses@/crates/sonora/LICENSE", checksum = "d130affc26760004865ad4fb009f8daf7f6d4b1b738f01fb7623e99c1a275a4a" }]
+[spirv.clarify]
+license = "Apache-2.0"
+files = [{ path = "@licenses@/crates/apache/Apache-2.0.txt", checksum = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30" }]
+[is.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "@licenses@/crates/str0m/LICENSE-MIT.txt", checksum = "5b460f37be48ac4cf2181596181cc6cae432fc2caae05944873f380730829a4b" }]
+[str0m-proto.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "@licenses@/crates/str0m/LICENSE-MIT.txt", checksum = "5b460f37be48ac4cf2181596181cc6cae432fc2caae05944873f380730829a4b" }]
+[str0m-rust-crypto.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "@licenses@/crates/str0m/LICENSE-MIT.txt", checksum = "5b460f37be48ac4cf2181596181cc6cae432fc2caae05944873f380730829a4b" }]
+[svg_fmt.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "@licenses@/crates/rust_debug/LICENSE", checksum = "7e98bed7f100747aaae7d82ab94fbe6b76fd6b84b09a3aaa413bff8196d0fbb1" }]
+[taffy.clarify]
+license = "MIT"
+files = [{ path = "@licenses@/crates/taffy/LICENSE", checksum = "f97daf1a0124413dccf399a4e6626b4b74acd05282f80b6d64ac82225650b77a" }]
+[typst.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/typst/LICENSE", checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a" },
+  { path = "@licenses@/crates/typst/NOTICE", checksum = "1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26" },
+]
+[typst-eval.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/typst/LICENSE", checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a" },
+  { path = "@licenses@/crates/typst/NOTICE", checksum = "1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26" },
+]
+[typst-html.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/typst/LICENSE", checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a" },
+  { path = "@licenses@/crates/typst/NOTICE", checksum = "1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26" },
+]
+[typst-layout.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/typst/LICENSE", checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a" },
+  { path = "@licenses@/crates/typst/NOTICE", checksum = "1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26" },
+]
+[typst-library.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/typst/LICENSE", checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a" },
+  { path = "@licenses@/crates/typst/NOTICE", checksum = "1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26" },
+]
+[typst-realize.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/typst/LICENSE", checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a" },
+  { path = "@licenses@/crates/typst/NOTICE", checksum = "1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26" },
+]
+[typst-render.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/typst/LICENSE", checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a" },
+  { path = "@licenses@/crates/typst/NOTICE", checksum = "1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26" },
+]
+[typst-svg.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/typst/LICENSE", checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a" },
+  { path = "@licenses@/crates/typst/NOTICE", checksum = "1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26" },
+]
+[typst-syntax.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/typst/LICENSE", checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a" },
+  { path = "@licenses@/crates/typst/NOTICE", checksum = "1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26" },
+]
+[typst-timing.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/typst/LICENSE", checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a" },
+  { path = "@licenses@/crates/typst/NOTICE", checksum = "1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26" },
+]
+[typst-utils.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "@licenses@/crates/typst/LICENSE", checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a" },
+  { path = "@licenses@/crates/typst/NOTICE", checksum = "1778244777547c281b6f5fa9fc0c18ab21f8d4491c803f64e09046800f5fcb26" },
+]
+[wasmi.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "@licenses@/crates/wasmi/LICENSE-MIT", checksum = "172bc1497507c1c363496bc23b0f16de8fa8e94befa85db6c8d9fa790e0a8657" }]
+[wasmi_collections.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "@licenses@/crates/wasmi/LICENSE-MIT", checksum = "172bc1497507c1c363496bc23b0f16de8fa8e94befa85db6c8d9fa790e0a8657" }]
+[wasmi_core.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "@licenses@/crates/wasmi/LICENSE-MIT", checksum = "172bc1497507c1c363496bc23b0f16de8fa8e94befa85db6c8d9fa790e0a8657" }]
+[wasmi_ir.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "@licenses@/crates/wasmi/LICENSE-MIT", checksum = "172bc1497507c1c363496bc23b0f16de8fa8e94befa85db6c8d9fa790e0a8657" }]
+[wasmparser.clarify]
+license = "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+files = [{ path = "@licenses@/crates/accesskit/LICENSE-MIT", checksum = "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3" }]
+[xim-ctext.clarify]
+license = "MIT"
+files = [{ path = "@licenses@/crates/xim-rs/LICENSE", checksum = "efa1224931b98468f5005f77285457f8d2eab0a77a15941aa10abbab1ae9a74e" }]
+[xim-parser.clarify]
+license = "MIT"
+files = [{ path = "@licenses@/crates/xim-rs/LICENSE", checksum = "efa1224931b98468f5005f77285457f8d2eab0a77a15941aa10abbab1ae9a74e" }]
+[zune-inflate.clarify]
+license = "Zlib"
+files = [
+  { path = "@licenses@/crates/zune-image/LICENSE-ZLIB", checksum = "7fa429541e55b1509909e058f2d21a37467e4958ec713b357f6e0cf9dc4ee352" },
+  { path = "@licenses@/crates/zune-image/LICENSE.md", checksum = "e870d7fd7819a9f0453c62798cb52ae95d148a8c91dc2de1d983f997143c72de" },
+]
+[sqlx-core.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "@licenses@/crates/sqlx/LICENSE-MIT", checksum = "5abbdd842310c8f1650fcde3a5a51a3e09412b9e5a6eea87519e0db9e32b339d" }]
+[sqlx-macros-core.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "@licenses@/crates/sqlx/LICENSE-MIT", checksum = "5abbdd842310c8f1650fcde3a5a51a3e09412b9e5a6eea87519e0db9e32b339d" }]
+[sqlx-postgres.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "@licenses@/crates/sqlx/LICENSE-MIT", checksum = "5abbdd842310c8f1650fcde3a5a51a3e09412b9e5a6eea87519e0db9e32b339d" }]
+[sqlx-sqlite.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "@licenses@/crates/sqlx/LICENSE-MIT", checksum = "5abbdd842310c8f1650fcde3a5a51a3e09412b9e5a6eea87519e0db9e32b339d" }]
+
+# License files cargo-about does not recognize by name, or reads as another
+# license (Apache-2.0 without its appendix reads as Pixar).
+[anymap3.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "COPYING", checksum = "cce3eaac7d45535f0c5421e1a7330933e816265e766f4a94f20442de9da548df" },
+  { path = "@licenses@/crates/apache/Apache-2.0.txt", checksum = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30" },
+]
+[audio-codec-algorithms.clarify]
+license = "Apache-2.0"
+files = [{ path = "LICENSE-APACHE", checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a" }]
+[blake3.clarify]
+license = "Apache-2.0"
+files = [{ path = "LICENSE_A2", checksum = "00fcc7a934ddbc9ece2a7cc063ac788e284b703b1d705ccbba72d462aa97921e" }]
+[chrono.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "LICENSE.txt", checksum = "946c9835d8034d24404f8cfec5f4654cee5dad17e944afc3d06d742cf2882831" }]
+[codex.clarify]
+license = "Apache-2.0"
+files = [{ path = "LICENSE", checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a" }]
+[constant_time_eq.clarify]
+license = "Apache-2.0"
+files = [{ path = "LICENSE-APACHE", checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a" }]
+
+# 4.1.3's LICENSE, which 5.x shortens to its first part, for both versions.
+[curve25519-dalek.clarify]
+license = "BSD-3-Clause"
+files = [{ path = "@licenses@/crates/curve25519-dalek/LICENSE", checksum = "cca0bd3c4fcdba74145ef9d49c62337e2c9fbf9368288f11d0547f1b0273219f" }]
+[dunce.clarify]
+license = "CC0-1.0"
+files = [{ path = "LICENSE", checksum = "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499" }]
+[exr.clarify]
+license = "BSD-3-Clause"
+files = [{ path = "LICENSE.md", checksum = "97e4d3aa7a9e8ac31979c16ca8bb2b628a9cb72c3362185ad2bf4ad77f43551f" }]
+[libm.clarify]
+license = "MIT"
+files = [{ path = "LICENSE.txt", checksum = "3823dda7cf046602f4b4e77ec8e227863dc4736037cc85bb33d9f19febe16bb7" }]
+[md5.clarify]
+license = "Apache-2.0 OR MIT"
+files = [{ path = "LICENSE.md", checksum = "c9759868ce3cef7bf419e389a0bc4408d48d0880fee20cdf640bcb027aca4bb6" }]
+[palette_math.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "LICENSE_MIT", checksum = "be1313a4b07ab509c80083966cdd209a7d81d75cd57fcea24441fc9041ccf184" }]
+[rcgen.clarify]
+license = "Apache-2.0"
+files = [{ path = "LICENSE", checksum = "debe6fed7ac143217c7f533759c54b14f18cd01d5fe195c51d83c2ae2d136cb4" }]
+[ryu.clarify]
+license = "Apache-2.0"
+files = [{ path = "LICENSE-APACHE", checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a" }]
+[sha1_smol.clarify]
+license = "BSD-3-Clause"
+files = [{ path = "LICENSE", checksum = "282a21b0710441c364025461a447362daf18f5798a7b72ae2f801a2aa536da51" }]
+[sync_wrapper.clarify]
+license = "Apache-2.0"
+files = [{ path = "LICENSE", checksum = "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594" }]
+[whoami.clarify]
+license = "Apache-2.0 OR BSL-1.0 OR MIT"
+files = [{ path = "LICENSE_MIT", checksum = "508a77d2e7b51d98adeed32648ad124b7b30241a8e70b2e72c99f92d8e5874d1" }]
+[windows.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+[windows-collections.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+[windows-core.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+[windows-future.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+[windows-link.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+[windows-numerics.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+[windows-registry.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+[windows-result.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+[windows-strings.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+[windows-sys.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+[windows-targets.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+[windows-threading.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+[windows_x86_64_gnu.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+# Notices of bundled third-party code and data next to the crate license.
+[pixglyph.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "LICENSE", checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a" },
+  { path = "NOTICE", checksum = "8d242e12c30d4f4a9e8f6ce01c3ba7ca76531db806208f899b10615efc89779d" },
+]
+[typst-assets.clarify]
+license = "Apache-2.0"
+files = [
+  { path = "LICENSE", checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a" },
+  { path = "NOTICE", checksum = "80ac46fb7d70f1c30bf0c14d3408e6a6f0f9cc9997a00b592aa0d2c8a5243a9d" },
+]
+[atomic-waker.clarify]
+license = "Apache-2.0 OR MIT"
+files = [
+  { path = "LICENSE-MIT", checksum = "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3" },
+  { path = "LICENSE-THIRD-PARTY", checksum = "6226d0632e2e1a80c23597e964da9812ae193c535fe058154afb034e94167aa5" },
+]
+[crossbeam-channel.clarify]
+license = "MIT OR Apache-2.0"
+files = [
+  { path = "LICENSE-MIT", checksum = "5734ed989dfca1f625b40281ee9f4530f91b2411ec01cb748223e7eb87e201ab" },
+  { path = "LICENSE-THIRD-PARTY", checksum = "b16db96b93b1d7cf7bea533f572091ec6bca3234fbe0a83038be772ff391a44c" },
+]
+[futures-lite.clarify]
+license = "Apache-2.0 OR MIT"
+files = [
+  { path = "LICENSE-MIT", checksum = "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3" },
+  { path = "LICENSE-THIRD-PARTY", checksum = "6226d0632e2e1a80c23597e964da9812ae193c535fe058154afb034e94167aa5" },
+]
+[parking.clarify]
+license = "Apache-2.0 OR MIT"
+files = [
+  { path = "LICENSE-MIT", checksum = "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3" },
+  { path = "LICENSE-THIRD-PARTY", checksum = "9a6d7a3c1b8edcc706c4b6c37f8dae9a77f02c7f9051df603f975db136b55419" },
+]
+[regex-syntax.clarify]
+license = "MIT OR Apache-2.0"
+files = [
+  { path = "LICENSE-MIT", checksum = "6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb" },
+  { path = "src/unicode_tables/LICENSE-UNICODE", checksum = "74db5baf44a41b1000312c673544b3374e4198af5605c7f9080a402cec42cfa3" },
+]
+[tracing-core.clarify]
+license = "MIT"
+files = [
+  { path = "LICENSE", checksum = "898b1ae9821e98daf8964c8d6c7f61641f5f5aa78ad500020771c0939ee0dea1" },
+  { path = "src/spin/LICENSE", checksum = "58545fed1565e42d687aecec6897d35c6d37ccb71479a137c0deb2203e125c79" },
+]
+[rustybuzz.clarify]
+license = "MIT"
+files = [
+  { path = "LICENSE", checksum = "3a7c3f0b887abb7c638faf022d29257418458614c6724b120ceeffb279f9c7d2" },
+  { path = "scripts/ms-use/COPYING", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" },
+]
+[minimal-lexical.clarify]
+license = "MIT OR Apache-2.0"
+files = [
+  { path = "LICENSE-MIT", checksum = "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3" },
+  { path = "LICENSE.md", checksum = "dbe1fff0fb1314b6af94f161511406275cf01c5a32441fbf24528a57a051d599" },
+]
+[wayland-protocols.clarify]
+license = "MIT"
+files = [
+  { path = "LICENSE.txt", checksum = "1cb6f4dee8c649f175736380495f0af0c753c87f22d50931692968bb24bf2161" },
+  { path = "protocols/COPYING", checksum = "f1a2b233e8a9a71c40f4aa885be08a0842ac85bb8588703c1dd7e6e6502e3124" },
+]
+[wayland-protocols-plasma.clarify]
+license = "MIT"
+files = [
+  { path = "LICENSE.txt", checksum = "1cb6f4dee8c649f175736380495f0af0c753c87f22d50931692968bb24bf2161" },
+  { path = "plasma-wayland-protocols/LICENSES/BSD-3-Clause.txt", checksum = "e11af671c491efac2f94c1d752bea92f4308ca2450c7d11e582e4b48c40e4de1" },
+  { path = "plasma-wayland-protocols/LICENSES/LGPL-2.1-or-later.txt", checksum = "1ccf09bf2f598308df4bed9cd8e9657dc5cd0973d2800318f2e241486e2edf3f" },
+  { path = "plasma-wayland-protocols/LICENSES/MIT-CMU.txt", checksum = "577bcdce29392adc2d1eb2233d999589e2950bd0ea5aa5e6525568794571fead" },
+  { path = "plasma-wayland-protocols/LICENSES/MIT.txt", checksum = "8f25018489d6fe0dec34a352314c38dc146247b7de65735790f4398a92afa84b" },
+]
+[hayro-interpret.clarify]
+license = "Apache-2.0 OR MIT"
+files = [
+  { path = "LICENSE-MIT", checksum = "51b50e6120c344dcc146bbd6375ca1c78e079d97c8bea76e67a53d6ff0efebac" },
+  { path = "assets/LICENSE_FOXIT", checksum = "b578cdd2345840ada550bd12519533812320d5f1d21cf4c1c7e1b1b0a31c98b7" },
+  { path = "assets/CGATS_LICENSE.txt", checksum = "469d87b5fa48f8aaf69e25f4fcac3a309c97dbb7d561b917638abdb640e004d9" },
+]
+[hayro-cmap.clarify]
+license = "Apache-2.0 OR MIT"
+files = [
+  { path = "LICENSE-MIT", checksum = "51b50e6120c344dcc146bbd6375ca1c78e079d97c8bea76e67a53d6ff0efebac" },
+  { path = "assets/LICENSE.txt", checksum = "742665db9c8e1bc72603c6d319ca3e90b83bd6d95202f0cd4ef11068a07a9c29" },
+]
+[hayro-jpeg2000.clarify]
+license = "Apache-2.0 OR MIT"
+files = [
+  { path = "LICENSE-MIT", checksum = "51b50e6120c344dcc146bbd6375ca1c78e079d97c8bea76e67a53d6ff0efebac" },
+  { path = "assets/LICENSE.txt", checksum = "469d87b5fa48f8aaf69e25f4fcac3a309c97dbb7d561b917638abdb640e004d9" },
+]
+[freetype-sys.clarify]
+license = "MIT"
+files = [
+  { path = "LICENSE", checksum = "8911cb953a89daca54f0ab96616f5e447e2b1399fba7ec098872cfdacde5354b" },
+  { path = "freetype2/LICENSE.TXT", checksum = "2e3bbb7d7c5c396368dd0853a790ec29ce5b8647163dde42a0493fb0d6556b2b" },
+]
+[ratatui-image.clarify]
+license = "MIT"
+files = [
+  { path = "LICENSE", checksum = "574aea66c44d72b259f7c5f30a3408ccc9c839867361424815cffe17dc870d54" },
+  { path = "LICENSE-icy_sixel-MIT", checksum = "7110f70a51841ce71ec9a2a156db30561aba84d3ad2323ef88ede17c9aa34ba0" },
+  { path = "NOTICE", checksum = "70ee17bb4f36c9b041b2a5faf97bf267dce1923538b08b3eff40374ad3c477e5" },
+]
+[ring.clarify]
+license = "Apache-2.0 AND ISC"
+files = [
+  { path = "LICENSE", checksum = "b3d734001a94efff3579978d953391aa7115f877657d25eb54037a43875d078a", license = "ISC" },
+  { path = "LICENSE-other-bits", checksum = "f025ccfb7dfb6bdfedc75ca0f67acc69e6fb4998143d834f7c2f38a29989680f", license = "ISC" },
+  { path = "LICENSE-BoringSSL", checksum = "005fc765ddc5115da796cca915baa9557abae13ff35e0a47c47affc56f6c414d", license = "Apache-2.0" },
+  { path = "third_party/fiat/LICENSE", checksum = "9eacbcb81be660840c714a560a9d65ba07913db98dd4baf969f78dd499fdd60f", license = "Apache-2.0" },
+  { path = "src/polyfill/once_cell/LICENSE-APACHE", checksum = "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2", license = "Apache-2.0" },
+]

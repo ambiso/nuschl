@@ -31,6 +31,15 @@ def heard(listener, speaker, since):
     return any(e["kind"] == "audio" and e["sender"] == speaker.session for e in list(listener.events)[since:])
 
 
+def set_target(client, **target):
+    """Sets a whisper or shout target. The server answers the statistics request
+    after it has processed the VoiceTarget sent before it on the same
+    connection, so voice sent afterwards uses the new target."""
+    client.send(kind="whisper", **target)
+    client.send(kind="stats", session=client.session)
+    client.wait(lambda e: e["kind"] == "stats" and e["stats"]["session"] == client.session)
+
+
 def speak(client, packets, target, base):
     for index, packet in enumerate(packets):
         client.send(kind="voice", target=target, sequence=base + index * 2, opus=packet, end=index == len(packets) - 1)
@@ -98,16 +107,14 @@ def main():
                 client.unmute()
 
             # Whisper to Bob only: Carol (same channel) and Dave must not hear it.
-            alice.send(kind="whisper", id=1, sessions=[bob.session])
-            time.sleep(0.3)
+            set_target(alice, id=1, sessions=[bob.session])
             marks = {client.session: len(client.events) for client in clients}
             speak(alice, packets, 1, 0)
             assert heard(bob, alice, marks[bob.session]), "whisper did not reach Bob"
             assert not heard(carol, alice, marks[carol.session]), "whisper leaked into the channel"
             assert not heard(dave, alice, marks[dave.session]), "whisper leaked to another channel"
             # Shout to Development: only Dave is there.
-            alice.send(kind="whisper", id=2, channel=2)
-            time.sleep(0.3)
+            set_target(alice, id=2, channel=2)
             marks = {client.session: len(client.events) for client in clients}
             speak(alice, packets, 2, 40)
             assert heard(dave, alice, marks[dave.session]), "shout did not reach the target channel"

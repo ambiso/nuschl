@@ -237,11 +237,10 @@ without it the signed release metadata explicitly records
 `native_macos_verified=false`, not Apple/Gatekeeper acceptance. Linux
 references and a deployable static web bundle are included without claiming a
 portable Linux binary. See [local commands and native-Mac gates](../../docs/local-release.md).
-Missing/incomplete bundled notices block signing. The scoped attribution pipeline now recovers actual upstream/native/asset terms,
-losslessly compacts them, preserves patched corresponding source and verifies
-scope/roots/features/body hashes before upload or signing. The actual Nix
-metadata bundles pass with zero unresolved entries; see
-[release notice evidence](../../docs/release-notices.md). Exact final platform
+Missing or mismatched bundled notices block signing: cargo-about builds them per
+scope and fails on a crate without license text, and the release tools check each
+bundle's scope and text hash before upload or signing; see
+[release notices](../../docs/release-notices.md). Exact final platform
 archives must still be reviewed after subsequent source/graph changes.
 No release is ready merely
 because hybrid signatures work. No tag/push/dispatch/deploy was performed.

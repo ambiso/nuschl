@@ -5,9 +5,9 @@
 //! Mumble numbers voice frames in 10 ms units, so a 20 ms Opus packet advances
 //! the sequence by two. Packets are held until a short, adaptive target delay is
 //! buffered, then played in order. Gaps are filled by Opus in-band FEC when the
-//! following packet carries it, otherwise by packet-loss concealment. Late
-//! packets are dropped, and excess buffering is discarded instead of letting
-//! latency grow during a long call.
+//! following packet carries it, otherwise by packet-loss concealment. The
+//! native policy drops excess buffering. Browser playout adjusts PCM duration
+//! against its percentile target.
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
@@ -50,8 +50,7 @@ pub struct JitterBuffer<P = Vec<u8>> {
     playing: bool,
     concealed: u32,
     frames_per_packet: u64,
-    jitter_ms: f32,
-    last_arrival: Option<(Duration, u64)>,
+    delay: Delay,
 }
 
 impl<P> Default for JitterBuffer<P> {
@@ -63,15 +62,125 @@ impl<P> Default for JitterBuffer<P> {
             playing: false,
             concealed: 0,
             frames_per_packet: 2,
-            jitter_ms: 0.,
-            last_arrival: None,
+            delay: Delay::Native {
+                jitter_ms: 0.,
+                last_arrival: None,
+            },
         }
     }
 }
 
+enum Delay {
+    Native {
+        jitter_ms: f32,
+        last_arrival: Option<(Duration, u64)>,
+    },
+    Adaptive(ArrivalDelay),
+}
+
+impl Delay {
+    fn observe(&mut self, now: Duration, sequence: u64) {
+        match self {
+            Self::Native {
+                jitter_ms,
+                last_arrival,
+            } => {
+                if let Some((arrived, previous)) = *last_arrival
+                    && sequence > previous
+                {
+                    // RFC 3550 interarrival jitter, in milliseconds.
+                    let expected = (sequence - previous) as f32 * FRAME_MS;
+                    let actual = now.saturating_sub(arrived).as_secs_f32() * 1000.;
+                    let deviation = (actual - expected).abs().min(1000.);
+                    *jitter_ms += (deviation - *jitter_ms) / 16.;
+                }
+                if last_arrival.is_none_or(|(_, previous)| sequence > previous) {
+                    *last_arrival = Some((now, sequence));
+                }
+            }
+            Self::Adaptive(delay) => delay.observe(now, sequence),
+        }
+    }
+
+    fn reserve_ms(&self) -> f32 {
+        match self {
+            Self::Native { jitter_ms, .. } => 2.5 * jitter_ms,
+            Self::Adaptive(delay) => delay.percentile_ms(),
+        }
+    }
+}
+
+const ARRIVAL_BUCKETS: usize = 17; // 0..160 ms above the arrival baseline.
+
+#[derive(Default)]
+struct ArrivalDelay {
+    // Minimum clock offset in the current and previous one-second windows.
+    baseline: Option<ArrivalBaseline>,
+    buckets: [f32; ARRIVAL_BUCKETS],
+    samples: u16,
+}
+
+struct ArrivalBaseline {
+    second: u64,
+    current_min: i128,
+    previous_min: i128,
+}
+
+impl ArrivalDelay {
+    fn observe(&mut self, now: Duration, sequence: u64) {
+        let offset = now.as_micros() as i128 - i128::from(sequence) * 10_000;
+        let second = now.as_secs();
+        let baseline = self.baseline.get_or_insert(ArrivalBaseline {
+            second,
+            current_min: offset,
+            previous_min: offset,
+        });
+        if second > baseline.second {
+            baseline.previous_min = if second - baseline.second == 1 {
+                baseline.current_min
+            } else {
+                offset
+            };
+            baseline.second = second;
+            baseline.current_min = offset;
+        }
+        baseline.current_min = baseline.current_min.min(offset);
+        let extra_us = offset - baseline.current_min.min(baseline.previous_min);
+        // Round up so the estimate covers the upper edge of its bucket.
+        let bucket = ((extra_us + 9_999) / 10_000).min((ARRIVAL_BUCKETS - 1) as i128) as usize;
+        // The first samples have equal weight. Once established, the histogram
+        // forgets 1/1000 per packet, with a 7–14 s half-life at 50–100 pps.
+        self.samples = (self.samples + 1).min(1000);
+        let weight = 1. / f32::from(self.samples);
+        for count in &mut self.buckets {
+            *count *= 1. - weight;
+        }
+        self.buckets[bucket] += weight;
+    }
+
+    fn percentile_ms(&self) -> f32 {
+        let mut tail = 0.;
+        for (bucket, count) in self.buckets.iter().enumerate().rev() {
+            tail += count;
+            if tail > 0.05 {
+                return bucket as f32 * FRAME_MS;
+            }
+        }
+        0.
+    }
+}
+
 impl<P: Clone> JitterBuffer<P> {
+    /// Percentile-based playout leaves catch-up to the caller's time stretcher.
+    pub fn adaptive() -> Self {
+        Self {
+            delay: Delay::Adaptive(ArrivalDelay::default()),
+            ..Self::default()
+        }
+    }
+
     pub fn target_ms(&self) -> f32 {
-        (self.frames_per_packet as f32 * FRAME_MS + 2.5 * self.jitter_ms + 10.)
+        (self.frames_per_packet as f32 * FRAME_MS + self.delay.reserve_ms() + 10.)
             .clamp(MIN_TARGET_MS, MAX_TARGET_MS)
     }
 
@@ -102,6 +211,22 @@ impl<P: Clone> JitterBuffer<P> {
         self.playing
     }
 
+    /// Whether a continuous packet is queued after the current one.
+    pub fn has_next_packet(&self) -> bool {
+        self.next
+            .is_some_and(|next| self.packets.contains_key(&next))
+    }
+
+    fn stop(&mut self) {
+        self.playing = false;
+        self.next = None;
+        self.pulled = None;
+        if let Delay::Adaptive(delay) = &mut self.delay {
+            // A talkspurt can restart the sender clock after silence.
+            delay.baseline = None;
+        }
+    }
+
     pub fn push(&mut self, sequence: u64, opus: P, end: bool, now: Duration) {
         if sequence > MAX_SEQUENCE
             || self.next.is_some_and(|next| sequence < next)
@@ -127,20 +252,9 @@ impl<P: Clone> JitterBuffer<P> {
         {
             self.frames_per_packet = spacing;
         }
-        if let Some((arrived, previous)) = self.last_arrival
-            && sequence > previous
-        {
-            // RFC 3550 interarrival jitter, in milliseconds.
-            let expected = (sequence - previous) as f32 * FRAME_MS;
-            let actual = now.saturating_sub(arrived).as_secs_f32() * 1000.;
-            let deviation = (actual - expected).abs().min(1000.);
-            self.jitter_ms += (deviation - self.jitter_ms) / 16.;
-        }
-        if self
-            .last_arrival
-            .is_none_or(|(_, previous)| sequence > previous)
-        {
-            self.last_arrival = Some((now, sequence));
+        // A terminator may be sent immediately after the last voice packet.
+        if !end || matches!(self.delay, Delay::Native { .. }) {
+            self.delay.observe(now, sequence);
         }
         self.packets.insert(sequence, Packet { opus, end });
         while self.packets.len() > MAX_PACKETS {
@@ -164,14 +278,17 @@ impl<P: Clone> JitterBuffer<P> {
                 .first_key_value()
                 .map(|(sequence, _)| *sequence);
         }
-        // Drop excess so latency cannot accumulate.
-        while self.buffered_ms() > self.target_ms() + CATCH_UP_MS && self.packets.len() > 1 {
+        // Native playout catches up by dropping excess queued packets.
+        while matches!(self.delay, Delay::Native { .. })
+            && self.buffered_ms() > self.target_ms() + CATCH_UP_MS
+            && self.packets.len() > 1
+        {
             if let Some((sequence, _)) = self.packets.pop_first() {
                 self.next = Some(sequence + self.frames_per_packet);
             }
         }
         let Some(next) = self.next else {
-            self.playing = false;
+            self.stop();
             return Pull::Idle;
         };
         if let Some(packet) = self.packets.remove(&next) {
@@ -179,9 +296,7 @@ impl<P: Clone> JitterBuffer<P> {
             self.next = Some(next + self.frames_per_packet);
             self.pulled = Some(next);
             if packet.end {
-                self.playing = false;
-                self.next = None;
-                self.pulled = None;
+                self.stop();
             }
             return Pull::Packet {
                 opus: packet.opus,
@@ -192,8 +307,7 @@ impl<P: Clone> JitterBuffer<P> {
         self.concealed += 1;
         if self.concealed > MAX_CONCEALED_FRAMES || (self.packets.is_empty() && self.concealed > 2)
         {
-            self.playing = false;
-            self.next = None;
+            self.stop();
             return Pull::Idle;
         }
         // Packet duration can change. Never conceal past the next known
@@ -442,6 +556,50 @@ mod tests {
             lost += 1;
         }
         assert!(lost <= 2 && !buffer.is_playing());
+    }
+
+    #[test]
+    fn adaptive_target_learns_relative_delay_and_forgets_old_spikes() {
+        let mut delay = ArrivalDelay::default();
+        // Exercise the exact offset even near the maximum sequence, and a
+        // baseline which follows the sender's steady clock.
+        let base = MAX_SEQUENCE - 20_000;
+        for tick in 0..1000 {
+            delay.observe(Duration::from_millis(tick * 20), base + tick * 2);
+        }
+        assert_eq!(delay.percentile_ms(), 0.);
+        for tick in 1000..1500 {
+            let tardy = 15 * (tick % 2);
+            delay.observe(Duration::from_millis(tick * 20 + tardy), base + tick * 2);
+        }
+        assert_eq!(delay.percentile_ms(), 20.);
+        for tick in 1500..1600 {
+            delay.observe(Duration::from_millis(tick * 20), base + tick * 2);
+        }
+        assert_eq!(delay.percentile_ms(), 20.);
+        for tick in 1600..3500 {
+            delay.observe(Duration::from_millis(tick * 20), base + tick * 2);
+        }
+        assert_eq!(delay.percentile_ms(), 0.);
+    }
+
+    #[test]
+    fn adaptive_pull_keeps_every_packet_within_the_admission_bound() {
+        let mut buffer = JitterBuffer::adaptive();
+        for index in 0..50 {
+            buffer.push(index * 2, index, index == 49, Duration::ZERO);
+        }
+        assert!(buffer.buffered_ms() > buffer.target_ms() + CATCH_UP_MS);
+        for expected in 0..50 {
+            assert_eq!(
+                buffer.pull(),
+                Pull::Packet {
+                    opus: expected,
+                    end: expected == 49,
+                }
+            );
+        }
+        assert_eq!(buffer.pull(), Pull::Idle);
     }
 
     #[test]

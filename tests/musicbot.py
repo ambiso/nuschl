@@ -44,6 +44,9 @@ MUSIC, LOBBY = 6, 1  # local_murmur.py's channels
 
 HTTP_TIMEOUT = 20
 EVENT_TIMEOUT = 15
+# Shutdown saves the queues with two fsyncs and gives the playback reporter up
+# to 30 s (subsonic::API_TIMEOUT) to finish; a loaded host's disk adds to both.
+STOP_TIMEOUT = 60
 
 
 def api(link, endpoint="state", **query):
@@ -563,11 +566,11 @@ class BotProcess:
         if self.process.poll() is None:
             self.process.terminate()
         try:
-            code = self.process.wait(timeout=10)
+            code = self.process.wait(timeout=STOP_TIMEOUT)
         except subprocess.TimeoutExpired:
             self.process.kill()
             self.process.wait(timeout=10)
-            raise AssertionError("musicbot failed to exit after SIGTERM (SSE clients may be open)")
+            raise AssertionError(f"musicbot still running {STOP_TIMEOUT} s after SIGTERM")
         finally:
             self.reader.join(timeout=5)
             self.process.stdout.close()

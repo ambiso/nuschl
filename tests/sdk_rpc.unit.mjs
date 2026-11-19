@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {SdkRpc,SdkUnavailableError,SDK_RPC_LIMIT,SDK_RPC_ACK_RESERVE,SDK_RPC_TIMEOUT,SDK_STARTUP_TIMEOUT} from "../web/app/src/sdk-rpc.js";
 const ORDINARY=SDK_RPC_LIMIT-SDK_RPC_ACK_RESERVE;
 import {BrowserAudio} from "../web/app/src/audio.js";
+import {MAX_CAPTURE} from "../web/app/src/audio-protocol.js";
 const turn=()=>new Promise(resolve=>setImmediate(resolve));
 class Clock {
   constructor(){this.jobs=new Map();this.next=0;}
@@ -62,19 +63,19 @@ test("failed termination never pretends to acknowledge pending inbox work",async
  await assert.rejects(rpc.request("voice_packet"),SdkUnavailableError);
 });
 function voice(generation="1") {return {server_id:"private",connection_generation:generation,voice_generation:"1",channel_id:0,joined:true,muted:false,deafened:false,can_transmit:true,bitrate:48000};}
-test("two SDK audio RPC credits survive20 epochs and250ms capture timeout until actual ACK/death",async()=>{
+test("six SDK audio RPC credits survive20 epochs and250ms capture timeout until actual ACK/death",async()=>{
  let audio;const {worker,clock,rpc}=fixture(()=>audio.syncVoice(null));
  audio=new BrowserAudio({onPacket:packet=>rpc.request("voice_packet",[packet])});audio.syncVoice(voice());
- audio.sendPacket(0n,new Uint8Array([0xf8,0xff,0xfe]),false);audio.sendPacket(2n,new Uint8Array([0xf8,0xff,0xfe]),false);
+ for(let index=0;index<MAX_CAPTURE;index++)audio.sendPacket(BigInt(2*index),new Uint8Array([0xf8,0xff,0xfe]),false);
  for(let index=0;index<20;index++){audio.syncVoice(voice(String(index+2)));audio.sendPacket(0n,new Uint8Array([0xf8,0xff,0xfe]),false);}
- assert.equal(worker.messages.length,2);assert.equal(audio.txJobs.size,2);assert.equal(rpc.size,2);
+ assert.equal(worker.messages.length,MAX_CAPTURE);assert.equal(audio.txJobs.size,MAX_CAPTURE);assert.equal(rpc.size,MAX_CAPTURE);
  // An ACK from an old route releases exactly its own global slot, never another.
- rpc.accept({kind:"result",id:1,value:true});await turn();assert.equal(audio.txJobs.size,1);
- audio.sendPacket(0n,new Uint8Array([0xf8,0xff,0xfe]),false);assert.equal(audio.txJobs.size,2);assert.equal(worker.messages.length,3);
- rpc.accept({kind:"result",id:1,value:true});await turn();assert.equal(audio.txJobs.size,2);
+ rpc.accept({kind:"result",id:1,value:true});await turn();assert.equal(audio.txJobs.size,MAX_CAPTURE-1);
+ audio.sendPacket(0n,new Uint8Array([0xf8,0xff,0xfe]),false);assert.equal(audio.txJobs.size,MAX_CAPTURE);assert.equal(worker.messages.length,MAX_CAPTURE+1);
+ rpc.accept({kind:"result",id:1,value:true});await turn();assert.equal(audio.txJobs.size,MAX_CAPTURE);
  await new Promise(resolve=>setTimeout(resolve,300));
- assert.equal(audio.transportStalled,true);assert.equal(audio.txJobs.size,2,"250ms is not an SDK ACK");
- audio.syncVoice(voice("50"));audio.sendPacket(0n,new Uint8Array([0xf8,0xff,0xfe]),false);assert.equal(worker.messages.length,3);
+ assert.equal(audio.transportStalled,true);assert.equal(audio.txJobs.size,MAX_CAPTURE,"250ms is not an SDK ACK");
+ audio.syncVoice(voice("50"));audio.sendPacket(0n,new Uint8Array([0xf8,0xff,0xfe]),false);assert.equal(worker.messages.length,MAX_CAPTURE+1);
  clock.expire();assert.equal(worker.terminated,1);assert.equal(audio.voice,null);await turn();
  assert.equal(audio.txJobs.size,0);assert.equal(rpc.size,0);await audio.dispose();
 });

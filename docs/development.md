@@ -97,7 +97,8 @@ Changes reach `main` only through pull requests from this repository's branches
 whose required checks pass. The `ci` check fails pull requests from forks
 before checking them out; a maintainer pushes a reviewed fork branch here instead.
 Every workflow has a read-only token; CodeQL's `security-events: write`, to
-upload results, is the only exception.
+upload results, is the only exception. Unit tests with test keys or passwords
+live in a `tests.rs` file, which CodeQL's SARIF filter treats as test code.
 
 Reviews check that a change is:
 
@@ -108,13 +109,45 @@ Reviews check that a change is:
 - checked by CI with a single command that also runs locally;
 - described plainly, without flattery or overstated results.
 
+## Benchmarks
+
+`nix build -f benchmarks.nix` measures performance locally;
+`ci` does not run it. Its parts are attributes:
+
+- `instructions`: `nuschl-media-worker --bench STAGE` runs a fixed synthetic minute
+  (far end, double talk, near end, through a simulated room) through the capture
+  chain (echo cancellation, noise suppression, speech detection, gain) and the Opus
+  encoder. `perf stat -e instructions:u` counts user-space instructions per second
+  of audio for each stage; the result also has the offline echo reduction. Repeated
+  runs of one build differ by less than 0.0001%, so the build fails when a stage
+  costs more than 5% over `bench/baseline.json`. Counts depend on the CPU, so the
+  build runs locally and refuses a baseline from another CPU model. To refresh the
+  baseline, copy `cpu` and `per_audio_second` from the printed result.
+- `one-core`, `one-core-musicbot`: existing VM tests (media_live's jitter, echo,
+  double-talk and sounds checks, rtc_probe, desktop_recovery, the music bot's
+  playback) on a guest with one core, each `--arg runs N` times (default 5). A busy
+  loop runs in the tested processes' slice. For each test: the pass rate, the
+  failed quarantined steps (`tests/quarantine.txt`) and the workers' CPU seconds
+  per second alive. Where the test starts the media worker
+  itself (media_live), `NUSCHL_AUDIO_TIMING=1` makes it print `audio-stats` lines:
+  capture gaps (late or missing capture callback intervals) and playback underruns
+  per minute, packets sent a period or more after their deadline, and
+  capture-to-send latency percentiles (the sounds check transmits continuously).
+  media_live's jitter check adds silent 20 ms playback windows per minute.
+  Sandboxed workers do not receive that variable. The suite prints its results
+  and writes them to `one-core.json` beside each run's log. It reports them
+  without a recorded baseline: they depend on host contention. desktop_recovery's
+  reconnect after the server restart fails often on one core (#263).
+
 ## Packages and cross builds
 
 The Linux package (`nix build .#default`, also used by the VM tests) is built per
 crate with crate2nix, so a change rebuilds only the crates that depend on it; after
-changing dependencies run `just crate2nix` (a flake check fails while
-`nix/crate2nix/Cargo.nix` is out of date). Clippy, tests and the Windows/macOS cross
-builds use crane (`.#default-crane` builds the package the same way).
+changing Cargo.lock or a manifest run `just crate2nix`. Builds import the committed
+`nix/crate2nix/Cargo.nix`. The `crate2nix-current` check runs the same crate2nix
+command offline on crane's vendored crates and fails with a diff when its output
+differs from `nix/crate2nix`. Clippy, tests and the Windows/macOS cross builds use
+crane (`.#default-crane` builds the package the same way).
 
 Windows and macOS packages are cross-built from Linux: `.#windows`, `.#macos-app`,
 `.#macos-universal` and `.#macos-aarch64` ([install.md](install.md#how-releases-are-made)).

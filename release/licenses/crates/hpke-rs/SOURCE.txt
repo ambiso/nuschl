@@ -1,0 +1,13 @@
+hpke-rs, hpke-rs-crypto and hpke-rs-libcrux 0.7.0 and 0.8.0 declare MPL-2.0 in
+their published manifests; the upstream repository carries no MPL text, so the
+Mozilla Public License 2.0 text above is the steward's copy
+(https://www.mozilla.org/MPL/2.0/index.txt).
+
+Source Code Form:
+- 0.7.0: https://github.com/celabshq/libcrux/tree/c5fb80f37530ee9b2df9501ae5ff8cb4a973a4bd/crates/protocols/hpke
+- 0.8.0: https://github.com/celabshq/libcrux/tree/42d68bd49b244b09bd02626c6ffa95e54dc64f91/crates/protocols/hpke
+- the published packages: https://static.crates.io/crates/<name>/<name>-<version>.crate
+
+Nuschl ships hpke-rs-libcrux 0.7.0 with modified dependency constraints. Its
+complete source is vendor/hpke-rs-libcrux in the Nuschl source of the release,
+https://github.com/nuschl-eu/nuschl.

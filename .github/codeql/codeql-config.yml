@@ -2,7 +2,8 @@
 # Configuration for .github/workflows/codeql.yml. It keeps the default query
 # suite of the former default setup and disables no rule: each rule can find
 # real defects somewhere in this tree. Rules that are noise only in test
-# fixtures are dropped there by the workflow's SARIF filter, by rule and path.
+# fixtures are dropped there by the workflow's SARIF filter, by rule and path:
+# the test trees and Rust unit-test files named tests.rs.
 name: Nuschl CodeQL
 
 paths-ignore:

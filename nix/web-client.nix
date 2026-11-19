@@ -37,7 +37,16 @@ let
   # crate2nix 0.15 resolves transitive build-dependency cfgs against the final
   # target. Keep prost-build's filesystem dependencies on the native graph.
   buildWasm =
-    packageId:
+    packageId: targetFeatures:
+    let
+      featureOpts = lib.optionals (targetFeatures != [ ]) [
+        "-C"
+        "target-feature=${lib.concatMapStringsSep "," (f: "+${f}") targetFeatures}"
+      ];
+      targetCfg = "--target wasm32-unknown-unknown ${
+        lib.concatMapStrings (o: o + " ") featureOpts
+      }--print cfg";
+    in
     project.internal.builtRustCratesWithFeatures {
       inherit packageId;
       features = [ "default" ];
@@ -55,6 +64,9 @@ let
             })
               (
                 args
+                // lib.optionalAttrs isWasm {
+                  extraRustcOpts = (args.extraRustcOpts or [ ]) ++ featureOpts;
+                }
                 // lib.optionalAttrs (args.crateName == "nuschl-protocol") {
                   buildDependencies = native.project.workspaceMembers.nuschl-protocol.build.buildDependencies;
                 }
@@ -79,7 +91,7 @@ let
                 [ ''export CARGO_CFG_TARGET_FAMILY="wasm"'' "unset CARGO_CFG_UNIX" ]
                 old.configurePhase;
             preConfigure = (old.preConfigure or "") + ''
-              export CARGO_CFG_TARGET_FEATURE="$(${toolchain}/bin/rustc --target wasm32-unknown-unknown --print cfg | sed -n 's/^target_feature="\(.*\)"$/\1/p' | paste -sd, -)"
+              export CARGO_CFG_TARGET_FEATURE="$(${toolchain}/bin/rustc ${targetCfg} | sed -n 's/^target_feature="\(.*\)"$/\1/p' | paste -sd, -)"
             '';
           }
         );
@@ -90,6 +102,7 @@ let
       packageId,
       moduleName,
       name,
+      targetFeatures ? [ ],
     }:
     pkgs.runCommand name
       {
@@ -98,7 +111,7 @@ let
       ''
         mkdir -p "$out"
         wasm-bindgen --target web --out-name ${moduleName} --out-dir "$out" ${
-          lib.getLib (buildWasm packageId).crates.${packageId}
+          lib.getLib (buildWasm packageId targetFeatures).crates.${packageId}
         }/lib/${moduleName}-*.wasm
       '';
   wasm = bindings {
@@ -106,15 +119,28 @@ let
     moduleName = "nuschl_client_wasm";
     name = "nuschl-web-sdk";
   };
+  # Every browser the web app supports runs SIMD wasm (docs/web.md).
   audioWasm = bindings {
     packageId = "nuschl-audio-wasm";
     moduleName = "nuschl_audio_wasm";
     name = "nuschl-web-audio-codec";
+    targetFeatures = [ "simd128" ];
+  };
+  # The reference for tests/web_audio_simd.mjs.
+  audioWasmScalar = bindings {
+    packageId = "nuschl-audio-wasm";
+    moduleName = "nuschl_audio_wasm";
+    name = "nuschl-web-audio-codec-scalar";
   };
   contentWasm = bindings {
     packageId = "nuschl-content-wasm";
     moduleName = "nuschl_content_wasm";
     name = "nuschl-web-content-codec";
+  };
+  streamWasm = bindings {
+    packageId = "nuschl-stream-wasm";
+    moduleName = "nuschl_stream_wasm";
+    name = "nuschl-web-stream-worker";
   };
   rawApp = pkgs.buildNpmPackage {
     pname = "nuschl-web-app";
@@ -152,14 +178,6 @@ let
       cp -R dist/. "$out/"
     '';
   };
-  runtimeNotices =
-    pkgs.runCommand "nuschl-web-runtime-notices" { nativeBuildInputs = [ pkgs.python3 ]; }
-      ''
-        python3 ${../release/web-notices.py} --app ${rawApp} \
-          --lock ${../web/app/package-lock.json} --cargo-lock ${../Cargo.lock} \
-          --temml-source ${../web/app/public/licenses} \
-          --sdk ${wasm} --audio ${audioWasm} --content ${contentWasm} --output "$out"
-      '';
   app =
     if releaseNotices == null then
       rawApp
@@ -177,8 +195,9 @@ in
     app
     wasm
     audioWasm
+    audioWasmScalar
     contentWasm
-    runtimeNotices
+    streamWasm
     rawApp
     ;
 }

@@ -29,10 +29,18 @@ def free_port():
         return probe.getsockname()[1]
 
 
-def eventually(predicate, message, timeout=30):
+class Stale(Exception):
+    """A reading of state that changed while it was read; eventually() reads again."""
+
+
+def eventually(predicate, message, timeout=120):
+    """Wait for `predicate`. The default bound is sized for a CI host at 80 % stolen CPU time."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        result = predicate()
+        try:
+            result = predicate()
+        except Stale:
+            result = None
         if result:
             return result
         time.sleep(0.2)

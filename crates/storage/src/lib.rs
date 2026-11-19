@@ -31,6 +31,11 @@ pub const MAX_STORE_RECORDS: usize = 128;
 /// searched, as private memory of the worker; pages beyond this come from the
 /// OS's file cache instead (see `History::sqlite`).
 const SQLITE_CACHE_KIB: i64 = 512;
+/// How long the pool may take to hand out a connection, opening it included:
+/// a new SQLite file takes several fsyncs before its first query, and a
+/// PostgreSQL login takes a handshake. A hang guard for a slow disk or a
+/// loaded host; the worker uses one connection at a time.
+pub(crate) const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A message row: id, server, channel, author, time, body, and a Nuschl
 /// server's seq, edit and deletion times.
@@ -448,7 +453,7 @@ impl History {
         } else if url.starts_with("postgres://") || url.starts_with("postgresql://") {
             let pool = PgPoolOptions::new()
                 .max_connections(4)
-                .acquire_timeout(Duration::from_secs(5))
+                .acquire_timeout(ACQUIRE_TIMEOUT)
                 .connect(url)
                 .await?;
             sqlx::migrate!("./migrations/postgres").run(&pool).await?;
@@ -467,7 +472,7 @@ impl History {
     async fn sqlite(options: SqliteConnectOptions) -> Result<Self, Error> {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
-            .acquire_timeout(Duration::from_secs(5))
+            .acquire_timeout(ACQUIRE_TIMEOUT)
             .connect_with(
                 options
                     .foreign_keys(true)

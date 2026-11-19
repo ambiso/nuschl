@@ -110,10 +110,10 @@ The design and its measurements: [architecture.md](architecture.md#audio-configu
 - Links in welcome cards, channel descriptions and user comments support clicking,
   Tab/Shift+Tab and Enter, and screen-reader activation. They use the same URL
   policy as message links; rendering a document does not fetch its links.
-- **Settings → Link previews** controls sender-side previews on Linux, initially
-  Direct. A ready preview shows the actual domain and available title, description
-  and image. **Remove link preview** keeps it out of this message. Legacy Mumble
-  servers carry the card and text in one compatible message. Receivers fetch nothing.
+- **Settings → Link previews** controls sender-side previews, initially Direct. A
+  ready preview shows the actual domain and available title, description and image.
+  **Remove link preview** keeps it out of this message. Legacy Mumble servers carry
+  the card and text in one compatible message. Receivers fetch nothing.
 - Long messages collapse by measured height behind **Show more**.
 - Emoji are drawn with Twemoji's images, in messages, the composer and everywhere
   else; `™` stays text and `™️` is the emoji ([emoji.md](emoji.md)). The smiley
@@ -193,6 +193,36 @@ including messages from before you joined, fetched in bounded pages as you scrol
 Pages you fetched are kept on your device by their sequence number for offline
 reading and search: edits overwrite them, deleted messages stay as tombstones
 without text.
+
+## Calls
+
+In the channel you are in, **Start call** and **Share screen** start a call
+(one per channel) on a stock Mumble server or a compatible `nuschld`. Nuschl opens the call page in your browser,
+where you start your camera and share your screen, and posts the call to the
+channel:
+
+- Nuschl users in the channel see a card with **Join**, which opens the page
+  for them. People who enter the channel later get the card
+  too. The card goes when its creator ends the call or leaves the channel.
+- Everyone gets a message with the link, so stock Mumble users can open the
+  page and share their camera and screen as well.
+
+In a direct conversation with someone online, the same buttons start a call
+with that person alone: the link goes to them as a private message, and the
+card shows in their direct conversation with you. The call ends when either of
+you leaves the server.
+
+The creator's card also has **Rotate link**, which ends the call for everyone
+on the old link, opens the page again on a new one and posts it, and **End
+call**. The call also ends when you leave the channel or the server, after 4
+hours, and when the call page is gone.
+
+The link (`https://stream.nuschl.eu/call#v=1&k=…&h=…`) lets anyone who has it
+join, and the Mumble server sees it. Calls use the project's call host,
+`stream.nuschl.eu`; `call_host` in `settings.json` or `managed.json` names
+another (`host` or `host:port`). The link is `nuschl-stream`'s
+(`crates/stream/src/link.rs`), the card is in `crates/core/src/call.rs`, and
+the creator's lease on the call host is in `apps/desktop/src/call.rs`.
 
 ## On a Nuschl server
 

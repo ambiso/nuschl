@@ -14,7 +14,7 @@ use sqlx::{
     postgres::PgPoolOptions,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
-use std::{collections::HashMap, path::Path, str::FromStr, time::Duration};
+use std::{collections::HashMap, path::Path, str::FromStr};
 
 mod history;
 mod kt;
@@ -103,7 +103,7 @@ impl ServerStore {
         } else if url.starts_with("postgres://") || url.starts_with("postgresql://") {
             let pool = PgPoolOptions::new()
                 .max_connections(4)
-                .acquire_timeout(Duration::from_secs(5))
+                .acquire_timeout(crate::ACQUIRE_TIMEOUT)
                 .connect(url)
                 .await?;
             let mut migrator: Migrator = sqlx::migrate!("./server-migrations/postgres");
@@ -120,7 +120,7 @@ impl ServerStore {
     async fn sqlite(options: SqliteConnectOptions) -> Result<Self, Error> {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
-            .acquire_timeout(Duration::from_secs(5))
+            .acquire_timeout(crate::ACQUIRE_TIMEOUT)
             // Edited and deleted message text is overwritten, not left in free pages.
             .connect_with(
                 options

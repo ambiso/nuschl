@@ -108,13 +108,16 @@ class Client:
 def certificate_pin(binaries, host, port, profile):
     command = [str(Path(binaries) / "nuschl-cli"), "--host", host, "--port", str(port),
                "--username", "CertificateProbe", "--profile-dir", str(profile)]
-    probe = subprocess.run(command, input="", capture_output=True, text=True, timeout=20)
+    # Hang guard for each probe: the first creates the profile's client certificate, and
+    # one took over 20 s at 43-48 % stolen CPU time.
+    seconds = 120
+    probe = subprocess.run(command, input="", capture_output=True, text=True, timeout=seconds)
     events = [json.loads(line) for line in probe.stdout.splitlines()]
     certificate = next(event for event in events if event["kind"] == "certificate_required")
     assert probe.returncode != 0 and not certificate["changed"]
     assert not any(event["kind"] == "connected" for event in events)
     wrong = subprocess.run(command + ["--certificate-sha256", "0" * 64], input="",
-                           capture_output=True, text=True, timeout=20)
+                           capture_output=True, text=True, timeout=seconds)
     changed = [json.loads(line) for line in wrong.stdout.splitlines()]
     assert wrong.returncode != 0
     assert any(event["kind"] == "certificate_required" and event["changed"] for event in changed)

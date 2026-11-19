@@ -28,7 +28,7 @@ change alone is no reason to change a cryptographic protocol.
 | GPUI and its graphics, font and window backends | Desktop rendering and accessibility | Desktop shell only; message content arrives from workers as typed documents and validated pixels. Its SVG renderer draws only compiled-in icons and pinned Twemoji ([emoji](docs/emoji.md)). |
 | Terminal graphics and clipboard adapters | Terminal output, OS clipboard | TUI only; draws bounded, validated worker bitmaps. Clipboard helpers get fixed argv, byte and time bounds, and run only on explicit local paste; SSH sessions skip the host clipboard. |
 | CPAL and OS audio bindings | PipeWire, PulseAudio, CoreAudio, WASAPI | Media worker; device handles and audio only. |
-| Codec and DSP crates with SIMD internals | Voice processing | Media worker, with its audio grants only. |
+| Codec and DSP crates with SIMD internals | Voice processing | Native media worker or browser codec Worker. The browser Worker shares fixed PCM rings with AudioWorklets. Capture and playback authorization stay in separate page-to-worklet buffers. |
 | SQLx SQLite | Local history, server state | Storage worker; one database directory, fixed parameterized statements, extension loading and deserialization disabled. `nuschld --import-murmur` reads the untrusted Murmur file read-only, immutable and query-only ([server](docs/server.md)). |
 | SQLx PostgreSQL | Server persistence | `nuschld`'s storage worker; it holds the database credential and one scoped connection. |
 | TLS provider (rustls with ring) | TLS and CPU acceleration | Session and server authority; bounded protocol framing. |
@@ -36,7 +36,8 @@ change alone is no reason to change a cryptographic protocol.
 | `rsa` | The Mumble client key (stock Mumble imports only RSA certificates) | Key generation in `nuschl-session` only (cargo-deny); TLS signing uses ring. |
 | `image` codecs | Images and avatars from untrusted peers, music-bot covers | Content worker only (native process, or the web client's content-worker WASM), with dimension and allocation limits. Nuschl's own UIs receive validated RGBA; pages served to other browsers receive PNGs the content worker re-encoded. |
 | `akd` | Key transparency with VRF and audit proofs | Through `nuschl-kt` only, in the crypto worker, `nuschld` and `nuschl-witness`. akd_core enables ed25519-dalek's `legacy_compatibility` binary-wide, so `nuschl-kt` checks `s < ℓ` itself and `nuschl-identity` verifies with libcrux. Verifiers run under `catch_unwind` behind a strict decoder ([e2ee §5.2](docs/e2ee.md)). |
-| libcrux and OpenMLS (with `rayon`) | Post-quantum MLS and identity signatures (X-Wing HPKE, ML-KEM, ML-DSA); no memory-safe Rust alternative | In the crypto worker, `nuschld` and `nuschl-witness`. OpenMLS only through `nuschl-e2ee` (crypto worker, `nuschld`): every key package, tree and message is checked structurally first, and calls run under `catch_unwind`. Patched versions: `vendor/*/NUSCHEL-PATCH.md`. |
+| libcrux and OpenMLS (with `rayon`) | Post-quantum MLS and identity signatures (X-Wing HPKE, ML-KEM, ML-DSA); no memory-safe Rust alternative | In the crypto worker, `nuschld` and `nuschl-witness`; in the desktop, `nuschl-stream` only parses call links and derives `stream_id` and `host_key` (HKDF and SHA-256) from secrets the desktop made itself. OpenMLS only through `nuschl-e2ee` (crypto worker, `nuschld`): every key package, tree and message is checked structurally first, and calls run under `catch_unwind`. Patched versions: `vendor/*/NUSCHEL-PATCH.md`. |
+| libcrux's portable wasm32 build with hpke-rs (X-Wing, HKDF, HMAC, SHA-256, ChaCha20-Poly1305), and `aes-gcm` through `nuschl-sframe` | Call keys and SFrame in the browser (docs/video-plan.md §4) | `nuschl-stream-wasm` only, in the call page's dedicated stream worker, which is also its encoded-transform worker. It holds S, P and every key and draws randomness from `crypto.getRandomValues`; the page receives the SFU's join fields and proofs, key messages and frames, the last two encrypted. Requests are bounded before parsing (key messages 16 KiB, 256 peers); `nuschl-stream` and `nuschl-sframe` bound pending requests and replay windows. |
 | Global shortcuts (`ashpd`; `global-hotkey` on Windows and macOS) | System-wide push-to-talk | Desktop shell; press and release of one bound key. |
 | Typst (`typst`, `typst-render`) | LaTeX formulas; Typst scripts can reach files, packages, plugins and data | Math worker only. It receives code-free math markup from Nuschl's converter, in a one-file world without packages, clock or system fonts, with a library stripped of file, plugin, image, data, `eval` and `std` access, under per-formula limits ([math](docs/math.md)). |
 | `psm` (assembly, through `stacker`) | Stack growth in Typst's evaluator | Through `stacker` and `typst-eval` only, in the math worker. |
@@ -65,7 +66,7 @@ add only:
 
 | Role | Grants | Limits |
 | --- | --- | --- |
-| content, one-shot (also link-preview parsing, Linux only) | none | 512 MiB address space; 5 s CPU and wall time per request (15 s for image re-encoding) |
+| content, one-shot (also link-preview parsing) | none | 512 MiB address space; 5 s CPU and wall time per request (15 s for image re-encoding) |
 | math, long-lived, stops after a minute idle | none | 512 MiB; 3 s wall per formula, then killed; 120 s CPU over its life |
 | update verifiers (Ed25519, ML-DSA-44), one-shot | none | 256 MiB; 5 s CPU |
 | storage | its history directory, writable | 1 GiB |
@@ -85,6 +86,10 @@ Rules for every platform:
   Native Windows, macOS and mobile each need their own capability review.
 - An audio service socket grants that service's whole API. Nuschl code creates
   and changes only its own streams.
+- A link-preview worker's slot is released only after the whole worker has
+  exited: on Linux the namespace init named by bwrap's receipt, on Windows when
+  the supervisor's job lists no process, on macOS when the worker is reaped
+  (`sandbox-exec` execs it and its profile denies `process-fork`).
 
 Three processes run outside `nuschl-sandbox`:
 
@@ -101,9 +106,9 @@ Three processes run outside `nuschl-sandbox`:
 
 Workers start under `sandbox-exec` with Seatbelt profiles
 (`crates/sandbox/src/macos.rs`), without memory or CPU limits; supervisor deadlines
-bound them. Content, math and update use a deny-by-default profile on top of
-`system.sb`; storage and crypto add reads and writes below their directory;
-transfer adds network and the offered file. Media uses a deny list, since CoreAudio
+bound them. Content, link-preview parsing, math and update use a deny-by-default
+profile on top of `system.sb`; storage and crypto add reads and writes below their
+directory; transfer adds network and the offered file. Media uses a deny list, since CoreAudio
 needs undocumented Mach services: no network or process execution, writes only to
 `/dev` and temporary directories, home reads only for audio preferences. Narrow it
 to deny-by-default once it is traced on hardware.
@@ -112,9 +117,9 @@ to deny-by-default once it is traced on hardware.
 
 Each worker runs in an AppContainer inside a job object of its own, started by its
 own launch stage, which reads no untrusted input and exits 125 when it cannot
-apply the policy ([Windows sandbox](docs/windows-sandbox.md)). Content, math,
-update, storage and crypto are less privileged AppContainers without capabilities. Media
-gets `microphone`; transfer gets `internetClient` and `privateNetworkClientServer`.
+apply the policy ([Windows sandbox](docs/windows-sandbox.md)). Content, link-preview
+parsing, math, update, storage and crypto are less privileged AppContainers without
+capabilities. Media gets `microphone`; transfer gets `internetClient` and `privateNetworkClientServer`.
 Storage and crypto may modify only their own directory's contents, each in a
 container per directory; junctions are refused. The offered file reaches transfer
 as an inherited read-only handle; only it and the standard handles are inherited.
@@ -220,6 +225,14 @@ workers. Configured servers and relays still see the client's address, and legac
 Mumble servers can show it to other clients. RTC adapters apply
 `nuschl_core::network::PeerPolicy` before gathering or dialing and advertise only
 relay candidates in relay-only mode, on every application call path.
+
+**Companion SFU** (`nuschl-stream-sfu`, [protocol](apps/stream-sfu/src/protocol.rs)).
+A network service under its hardened systemd unit; its state lives in memory,
+except its traffic count per billing period, kept in its state directory. A
+room holds the `admit_key` and `host_key` its creator hands over. Media keys stay
+with the participants, and RTP payloads and key messages pass through unread. Its
+configuration bounds every network input; key messages are at most 16 KiB and UDP
+datagrams 2 KiB. The TURN REST secret arrives through `LoadCredential`.
 
 ## Where secrets live
 

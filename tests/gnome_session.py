@@ -19,6 +19,7 @@ from pathlib import Path
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -91,7 +92,9 @@ class GnomeSession:
         self.process = subprocess.Popen(["dbus-run-session", "--", "bash", "-c", command], env=self.environment(),
                                         stdout=self.log or subprocess.DEVNULL, stderr=subprocess.STDOUT,
                                         start_new_session=True)
-        deadline = time.monotonic() + 30
+        # A hang guard sized for a loaded host.
+        started = time.monotonic()
+        deadline = started + 120
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
                 raise RuntimeError("gnome-shell exited during startup")
@@ -100,11 +103,12 @@ class GnomeSession:
                 try:
                     if self.eval("Main.layoutManager._startingUp") == "false":
                         break
-                except subprocess.CalledProcessError:
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
                     pass
             time.sleep(0.3)
         else:
-            raise RuntimeError("gnome-shell did not become ready")
+            raise RuntimeError("gnome-shell did not become ready in 120 s")
+        print(f"gnome-shell ready after {time.monotonic() - started:.1f} s", file=sys.stderr, flush=True)
         self.eval("new imports.gi.Gio.Settings({schema_id: 'org.gnome.desktop.interface'})"
                   ".set_boolean('enable-hot-corners', false); Main.overview.hide();"
                   " Main.messageTray._bannerBin.hide(); 'ok'")

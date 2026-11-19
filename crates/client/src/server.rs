@@ -176,6 +176,8 @@ pub struct ServerState {
     pub peer_sha256: Option<String>,
     pub own_session: Option<u32>,
     pub users: BTreeMap<u32, User>,
+    /// Calls others announced with a card (`Client::calls_in`).
+    pub calls: Vec<crate::client::Call>,
     /// Channels this connection has seen (cached ones not among them go).
     pub seen_channels: BTreeSet<u32>,
     /// Our latest local microphone/privacy choice, initialized on connect.
@@ -314,6 +316,7 @@ impl ServerState {
             peer_sha256: None,
             own_session: None,
             users: BTreeMap::new(),
+            calls: Vec::new(),
             seen_channels: BTreeSet::new(),
             muted: true,
             deafened: false,

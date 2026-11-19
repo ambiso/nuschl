@@ -87,6 +87,8 @@ mod tests {
         for (role, expected) in [
             (Role::Content { cpu_seconds: 7, arguments: &[] }, "nuschl.content --memory 536870912 --cpu 7 --less-privileged --".into()),
             (Role::Math, "nuschl.math --memory 536870912 --cpu 120 --less-privileged --".into()),
+            (Role::Preview { operation: crate::PreviewOperation::Prepare }, "nuschl.preview --memory 536870912 --cpu 5 --less-privileged --".into()),
+            (Role::Preview { operation: crate::PreviewOperation::Fetch }, "nuschl.preview --memory 536870912 --cpu 5 --less-privileged --".into()),
             (Role::Update { post_quantum: true }, "nuschl.update.mldsa44 --memory 268435456 --cpu 5 --less-privileged --".into()),
             (Role::Update { post_quantum: false }, "nuschl.update.ed25519 --memory 268435456 --cpu 5 --less-privileged --".into()),
             (Role::Storage { directory }, format!(r"{storage} --writable C:\data {pure}")),
@@ -165,13 +167,17 @@ mod tests {
             })
             .is_none()
         );
-        for operation in [
-            crate::PreviewOperation::Prepare,
-            crate::PreviewOperation::Fetch,
+        let preview = policy(Role::Preview {
+            operation: crate::PreviewOperation::Fetch,
+        })
+        .unwrap();
+        assert_eq!(preview.profile, "nuschl.preview");
+        assert_eq!(preview.cpu_seconds, Some(5));
+        assert_eq!(preview.memory, 512 << 20);
+        assert!(preview.file.is_none());
+        for policy in [
+            &content, &math, &preview, &storage, &keys, &media, &send, &receive,
         ] {
-            assert!(policy(Role::Preview { operation }).is_none());
-        }
-        for policy in [&content, &math, &storage, &keys, &media, &send, &receive] {
             // Only transfers reach the network; only storage and crypto get
             // a directory; every worker has a memory limit.
             let network = policy.capabilities.iter().any(|c| c.contains("Client"));
@@ -190,7 +196,7 @@ mod tests {
             );
         }
         assert!(media.cpu_seconds.is_none() && storage.cpu_seconds.is_none());
-        for policy in [&content, &math, &storage, &keys] {
+        for policy in [&content, &math, &preview, &storage, &keys] {
             assert!(policy.less_privileged, "{policy:?}");
         }
         assert!(!media.less_privileged && !send.less_privileged);

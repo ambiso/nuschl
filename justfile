@@ -15,9 +15,12 @@ check:
     cargo deny check
 
 # The SDK's core builds for browsers (docs/clients.md, "The SDK"): no native
-# session, runtime or clock in it.
+# session, runtime or clock in it. The call page's stream worker and the quality
+# crate too.
 wasm:
     cargo clippy -p nuschl-core -p nuschl-client --target wasm32-unknown-unknown --no-default-features -- -D warnings
+    cargo clippy -p nuschl-stream-wasm --target wasm32-unknown-unknown -- -D warnings
+    cargo clippy -p nuschl-stream-quality --target wasm32-unknown-unknown -- -D warnings
 
 # The SDK for browsers (crates/client-wasm, docs/web.md), for the Svelte client
 # in web/app (src/sdk). ring's C needs an unwrapped clang for wasm32, and the
@@ -178,9 +181,9 @@ readme-screenshot:
         --command python3 tests/readme_screenshot.py "${CARGO_TARGET_DIR:-target}/debug" --output docs/images/nuschl.png
 
 # Regenerate after changing dependencies/manifests, including new local vendors.
+# The crate2nix-current check runs the same command and compares.
 crate2nix:
     nix run --inputs-from . nixpkgs#crate2nix -- generate -f Cargo.toml -o nix/crate2nix/Cargo.nix -h nix/crate2nix/crate-hashes.json
-    python3 nix/crate2nix-inputs.py > nix/crate2nix/inputs.sha256
 
 fmt:
     cargo fmt --all

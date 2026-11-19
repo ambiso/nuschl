@@ -27,10 +27,10 @@ export class SdkRpc {
     this.startupTimer=this.clock.setTimeout(()=>this.close("The browser client did not finish starting. Reload to try again."),SDK_STARTUP_TIMEOUT);
   }
   get size(){return this.pending.size;}
-  initialize(relay) {
+  initialize(relay,connectSaved=false) {
     if(this.closed||this.initialized)return false;
     this.initialized=true;
-    try {this.worker.postMessage({method:"init",relay});return true;}
+    try {this.worker.postMessage({method:"init",relay,connect_saved:connectSaved});return true;}
     catch {this.close("The browser client could not start. Reload to try again.");return false;}
   }
   acceptReady() {

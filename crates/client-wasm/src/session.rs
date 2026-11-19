@@ -273,6 +273,8 @@ pub struct Session {
     channels: BTreeMap<u32, Channel>,
     users: BTreeMap<u32, User>,
     own: Option<u32>,
+    /// The channel to move to once logged in, if the server has it.
+    rejoin: Option<u32>,
     welcome_source: Option<String>,
     oversized_text_reported: bool,
     last_ping: f64,
@@ -353,6 +355,7 @@ impl Session {
             channels: BTreeMap::new(),
             users: BTreeMap::new(),
             own: None,
+            rejoin: None,
             welcome_source: None,
             oversized_text_reported: false,
             last_ping: 0.0,
@@ -447,6 +450,12 @@ impl Session {
             self.last_ping = now_ms;
             self.send(kind::PING, &proto::Ping::default());
         }
+    }
+
+    /// Move to `channel` after the login, as a fresh desktop connection
+    /// rejoins the channel you were last in.
+    pub fn rejoin(&mut self, channel: Option<u32>) {
+        self.rejoin = channel;
     }
 
     /// Move to a channel.
@@ -1020,6 +1029,11 @@ impl Session {
                 }
                 self.events
                     .push_back(Event::Server(ServerEvent::Limits(self.limits.clone())));
+                if let Some(channel) = self.rejoin.take()
+                    && self.channels.contains_key(&channel)
+                {
+                    self.join(channel);
+                }
             }
             kind::REJECT => {
                 let reject = proto::Reject::decode(payload).unwrap_or_default();

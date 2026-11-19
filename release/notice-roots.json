@@ -1,154 +1,98 @@
-[
-  {
-    "target": "x86_64-unknown-linux-gnu",
-    "packages": [
-      "nuschl",
-      "nuschl-cli",
-      "nuschl-tui",
-      "nuschld",
-      "nuschl-witness",
-      "nuschl-web-relay",
-      "nuschl-content-worker",
-      "nuschl-crypto-worker",
-      "nuschl-math-worker",
-      "nuschl-media-worker",
-      "nuschl-storage-worker",
-      "nuschl-transfer-worker",
-      "nuschl-update-worker"
-    ],
-    "features": [
-      "nuschl-update-worker/ed25519",
-      "nuschl-update-worker/mldsa44"
-    ],
-    "standalone": {
-      "musicbot": {
-        "packages": ["nuschl-musicbot", "nuschl-musicbot-codec-worker", "nuschl-content-worker"],
-        "features": []
-      },
-      "rtc-probe": {
-        "packages": [
-          "nuschl-rtc-probe"
-        ],
-        "features": []
-      }
-    }
+{
+  "linux-nix": {
+    "targets": ["x86_64-unknown-linux-gnu"],
+    "packages": ["nuschl", "nuschl-cli", "nuschl-tui", "nuschld", "nuschl-witness", "nuschl-web-relay", "nuschl-content-worker", "nuschl-crypto-worker", "nuschl-math-worker", "nuschl-media-worker", "nuschl-storage-worker", "nuschl-transfer-worker", "nuschl-update-worker"],
+    "features": ["nuschl-update-worker/ed25519", "nuschl-update-worker/mldsa44"],
+    "components": ["rust-standard-library", "mumble-protocol", "newcm-math-font", "syntect-default-assets", "emoji-assets"]
   },
-  {
-    "target": "aarch64-unknown-linux-gnu",
-    "packages": [
-      "nuschl",
-      "nuschl-cli",
-      "nuschl-tui",
-      "nuschld",
-      "nuschl-witness",
-      "nuschl-web-relay",
-      "nuschl-content-worker",
-      "nuschl-crypto-worker",
-      "nuschl-math-worker",
-      "nuschl-media-worker",
-      "nuschl-storage-worker",
-      "nuschl-transfer-worker",
-      "nuschl-update-worker"
-    ],
-    "features": [
-      "nuschl-update-worker/ed25519",
-      "nuschl-update-worker/mldsa44"
-    ],
-    "standalone": {
-      "musicbot": {
-        "packages": ["nuschl-musicbot", "nuschl-musicbot-codec-worker", "nuschl-content-worker"],
-        "features": []
-      },
-      "rtc-probe": {
-        "packages": [
-          "nuschl-rtc-probe"
-        ],
-        "features": []
-      }
-    }
+  "linux-portable": {
+    "targets": ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"],
+    "packages": ["nuschl", "nuschl-cli", "nuschl-tui", "nuschl-content-worker", "nuschl-crypto-worker", "nuschl-math-worker", "nuschl-media-worker", "nuschl-storage-worker", "nuschl-transfer-worker", "nuschl-update-worker"],
+    "features": ["nuschl-update-worker/ed25519", "nuschl-update-worker/mldsa44"],
+    "components": ["rust-standard-library", "mumble-protocol", "newcm-math-font", "syntect-default-assets", "emoji-assets", "musl", "zig-runtime", "glibc-startup"]
   },
-  {
-    "target": "x86_64-pc-windows-gnu",
-    "packages": [
-      "nuschl",
-      "nuschl-content-worker",
-      "nuschl-crypto-worker",
-      "nuschl-math-worker",
-      "nuschl-media-worker",
-      "nuschl-storage-worker",
-      "nuschl-transfer-worker",
-      "nuschl-update-worker"
-    ],
-    "features": [
-      "nuschl-update-worker/ed25519",
-      "nuschl-update-worker/mldsa44"
-    ]
+  "server-static": {
+    "targets": ["x86_64-unknown-linux-musl"],
+    "packages": ["nuschld", "nuschl-storage-worker", "nuschl-musicbot", "nuschl-musicbot-codec-worker", "nuschl-content-worker"],
+    "features": [],
+    "components": ["rust-standard-library", "mumble-protocol", "syntect-default-assets", "musicbot-web-runtime-assets", "musl", "zig-runtime"]
   },
-  {
-    "target": "x86_64-apple-darwin",
-    "packages": [
-      "nuschl",
-      "nuschl-content-worker",
-      "nuschl-crypto-worker",
-      "nuschl-math-worker",
-      "nuschl-media-worker",
-      "nuschl-storage-worker",
-      "nuschl-transfer-worker",
-      "nuschl-update-worker"
-    ],
-    "features": [
-      "nuschl-update-worker/ed25519",
-      "nuschl-update-worker/mldsa44"
-    ],
-    "standalone": {
-      "musicbot": {
-        "packages": ["nuschl-musicbot", "nuschl-musicbot-codec-worker", "nuschl-content-worker"],
-        "features": []
-      },
-      "rtc-probe": {
-        "packages": [
-          "nuschl-rtc-probe"
-        ],
-        "features": []
-      }
-    }
+  "linux-aarch64-nix": {
+    "targets": ["aarch64-unknown-linux-gnu"],
+    "packages": ["nuschl", "nuschl-cli", "nuschl-tui", "nuschld", "nuschl-witness", "nuschl-web-relay", "nuschl-content-worker", "nuschl-crypto-worker", "nuschl-math-worker", "nuschl-media-worker", "nuschl-storage-worker", "nuschl-transfer-worker", "nuschl-update-worker"],
+    "features": ["nuschl-update-worker/ed25519", "nuschl-update-worker/mldsa44"],
+    "components": ["rust-standard-library", "mumble-protocol", "newcm-math-font", "syntect-default-assets", "emoji-assets"]
   },
-  {
-    "target": "aarch64-apple-darwin",
-    "packages": [
-      "nuschl",
-      "nuschl-content-worker",
-      "nuschl-crypto-worker",
-      "nuschl-math-worker",
-      "nuschl-media-worker",
-      "nuschl-storage-worker",
-      "nuschl-transfer-worker",
-      "nuschl-update-worker"
-    ],
-    "features": [
-      "nuschl-update-worker/ed25519",
-      "nuschl-update-worker/mldsa44"
-    ],
-    "standalone": {
-      "musicbot": {
-        "packages": ["nuschl-musicbot", "nuschl-musicbot-codec-worker", "nuschl-content-worker"],
-        "features": []
-      },
-      "rtc-probe": {
-        "packages": [
-          "nuschl-rtc-probe"
-        ],
-        "features": []
-      }
-    }
+  "windows-x86_64": {
+    "targets": ["x86_64-pc-windows-gnu"],
+    "packages": ["nuschl", "nuschl-content-worker", "nuschl-crypto-worker", "nuschl-math-worker", "nuschl-media-worker", "nuschl-storage-worker", "nuschl-transfer-worker", "nuschl-update-worker"],
+    "features": ["nuschl-update-worker/ed25519", "nuschl-update-worker/mldsa44"],
+    "components": ["rust-standard-library", "mumble-protocol", "newcm-math-font", "syntect-default-assets", "emoji-assets", "gcc-runtime", "mingw-w64-runtime"]
   },
-  {
-    "target": "wasm32-unknown-unknown",
-    "packages": [
-      "nuschl-client-wasm",
-      "nuschl-audio-wasm",
-      "nuschl-content-wasm"
-    ],
-    "features": []
+  "macos-universal": {
+    "targets": ["x86_64-apple-darwin", "aarch64-apple-darwin"],
+    "packages": ["nuschl", "nuschl-content-worker", "nuschl-crypto-worker", "nuschl-math-worker", "nuschl-media-worker", "nuschl-storage-worker", "nuschl-transfer-worker", "nuschl-update-worker"],
+    "features": ["nuschl-update-worker/ed25519", "nuschl-update-worker/mldsa44"],
+    "components": ["rust-standard-library", "mumble-protocol", "newcm-math-font", "syntect-default-assets", "emoji-assets"]
+  },
+  "web": {
+    "targets": ["wasm32-unknown-unknown"],
+    "packages": ["nuschl-client-wasm", "nuschl-audio-wasm", "nuschl-content-wasm"],
+    "features": [],
+    "components": ["rust-standard-library", "mumble-protocol", "syntect-default-assets", "emoji-assets", "web-runtime-assets"]
+  },
+  "call-page": {
+    "targets": ["wasm32-unknown-unknown"],
+    "packages": ["nuschl-stream-wasm"],
+    "features": [],
+    "components": ["rust-standard-library"]
+  },
+  "musicbot-x86_64-unknown-linux-gnu": {
+    "targets": ["x86_64-unknown-linux-gnu"],
+    "packages": ["nuschl-musicbot", "nuschl-musicbot-codec-worker", "nuschl-content-worker"],
+    "features": [],
+    "components": ["rust-standard-library", "mumble-protocol", "syntect-default-assets", "musicbot-web-runtime-assets"]
+  },
+  "musicbot-aarch64-unknown-linux-gnu": {
+    "targets": ["aarch64-unknown-linux-gnu"],
+    "packages": ["nuschl-musicbot", "nuschl-musicbot-codec-worker", "nuschl-content-worker"],
+    "features": [],
+    "components": ["rust-standard-library", "mumble-protocol", "syntect-default-assets", "musicbot-web-runtime-assets"]
+  },
+  "musicbot-x86_64-apple-darwin": {
+    "targets": ["x86_64-apple-darwin"],
+    "packages": ["nuschl-musicbot", "nuschl-musicbot-codec-worker", "nuschl-content-worker"],
+    "features": [],
+    "components": ["rust-standard-library", "mumble-protocol", "syntect-default-assets", "musicbot-web-runtime-assets"]
+  },
+  "musicbot-aarch64-apple-darwin": {
+    "targets": ["aarch64-apple-darwin"],
+    "packages": ["nuschl-musicbot", "nuschl-musicbot-codec-worker", "nuschl-content-worker"],
+    "features": [],
+    "components": ["rust-standard-library", "mumble-protocol", "syntect-default-assets", "musicbot-web-runtime-assets"]
+  },
+  "rtc-probe-x86_64-unknown-linux-gnu": {
+    "targets": ["x86_64-unknown-linux-gnu"],
+    "packages": ["nuschl-rtc-probe"],
+    "features": [],
+    "components": ["rust-standard-library", "mumble-protocol"]
+  },
+  "rtc-probe-aarch64-unknown-linux-gnu": {
+    "targets": ["aarch64-unknown-linux-gnu"],
+    "packages": ["nuschl-rtc-probe"],
+    "features": [],
+    "components": ["rust-standard-library", "mumble-protocol"]
+  },
+  "rtc-probe-x86_64-apple-darwin": {
+    "targets": ["x86_64-apple-darwin"],
+    "packages": ["nuschl-rtc-probe"],
+    "features": [],
+    "components": ["rust-standard-library", "mumble-protocol"]
+  },
+  "rtc-probe-aarch64-apple-darwin": {
+    "targets": ["aarch64-apple-darwin"],
+    "packages": ["nuschl-rtc-probe"],
+    "features": [],
+    "components": ["rust-standard-library", "mumble-protocol"]
   }
-]
+}

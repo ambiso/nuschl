@@ -3,13 +3,14 @@
 use super::{
     MAX_DECODED_SAMPLES, MAX_PACKET_SAMPLES, OUTPUT_CHANNELS, VoiceDecoder, packet_samples,
 };
-use nuschl_audio_jitter::{JitterBuffer, MAX_SEQUENCE, Pull, UnderrunFade};
+use nuschl_audio_jitter::{FRAME_MS, JitterBuffer, MAX_SEQUENCE, Pull, UnderrunFade};
 use opus_rs::OpusDecoder;
 use std::time::Duration;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use wasm_bindgen::prelude::*;
 
 pub const PLAYOUT_FRAMES: usize = 480;
+const BLOCK_SAMPLES: usize = PLAYOUT_FRAMES * OUTPUT_CHANNELS;
 
 #[derive(Clone)]
 struct Queued {
@@ -24,7 +25,9 @@ pub struct VoicePlayout {
     pcm: Vec<f32>,
     cursor: usize,
     ready: usize,
+    packet_gain: f32,
     gain: f32,
+    stretch: Stretch,
     last_input: Option<Duration>,
     last_kind: u8,
     fade: UnderrunFade,
@@ -39,11 +42,13 @@ impl VoicePlayout {
     pub fn new() -> Result<Self, String> {
         Ok(Self {
             decoder: VoiceDecoder::new()?.decoder,
-            jitter: JitterBuffer::default(),
-            pcm: vec![0.; MAX_DECODED_SAMPLES],
+            jitter: JitterBuffer::adaptive(),
+            pcm: vec![0.; MAX_DECODED_SAMPLES + MAX_LAG * OUTPUT_CHANNELS],
             cursor: 0,
             ready: 0,
+            packet_gain: 1.,
             gain: 1.,
+            stretch: Stretch::default(),
             last_input: None,
             last_kind: 0,
             fade: UnderrunFade::default(),
@@ -107,81 +112,49 @@ impl VoicePlayout {
         Ok(())
     }
 
-    /// Exactly 10 ms of raw stereo, or empty while buffering/idle. At most one
-    /// packet/FEC/PLC decode is performed per pull; long packets use cached PCM.
+    /// Exactly 10 ms of stereo, or empty while buffering/idle.
     pub fn render(&mut self) -> Result<Vec<f32>, String> {
         self.last_kind = 0;
         if self.cursor == self.ready {
-            let was_playing = self.jitter.is_playing();
-            let count = match self.jitter.pull() {
-                Pull::Packet { opus: queued, end } => {
-                    let plays = !end || self.fade.end();
-                    let count = self
-                        .decoder
-                        .decode(&queued.opus, MAX_PACKET_SAMPLES, &mut self.pcm)
-                        .map_err(|error| error.to_string())?;
-                    self.jitter.observe_frames((count / PLAYOUT_FRAMES) as u64);
-                    self.gain = queued.gain;
-                    self.last_kind = 1;
-                    if end {
-                        self.decoder.reset();
-                        if !plays {
-                            self.last_kind = 0;
-                            return Ok(Vec::new());
-                        }
-                    }
-                    self.fade.play(&mut self.pcm[..count * OUTPUT_CHANNELS]);
-                    count
-                }
-                Pull::Lost { fec, frames } => {
-                    let wanted = frames as usize * PLAYOUT_FRAMES;
-                    let count = if let Some(next) = fec {
-                        self.last_kind = 2;
-                        self.decoder.decode_fec(&next.opus, wanted, &mut self.pcm)
-                    } else {
-                        self.last_kind = 3;
-                        self.decoder.decode(&[], wanted, &mut self.pcm)
-                    }
-                    .map_err(|error| error.to_string())?;
-                    if count != wanted {
-                        return Err("concealed duration mismatch".into());
-                    }
-                    self.fade.play(&mut self.pcm[..count * OUTPUT_CHANNELS]);
-                    count
-                }
-                Pull::Idle if self.fade.ran_dry(was_playing) => {
-                    self.last_kind = 3;
-                    let count = self
-                        .decoder
-                        .decode(&[], PLAYOUT_FRAMES, &mut self.pcm)
-                        .map_err(|error| error.to_string())?;
-                    if count != PLAYOUT_FRAMES {
-                        return Err("concealed duration mismatch".into());
-                    }
-                    self.fade.fade_out(&mut self.pcm[..count * OUTPUT_CHANNELS]);
-                    count
-                }
-                Pull::Idle => return Ok(Vec::new()),
-            };
-            if count == 0
-                || count > MAX_PACKET_SAMPLES
-                || count % PLAYOUT_FRAMES != 0
-                || self.pcm[..count * OUTPUT_CHANNELS]
-                    .iter()
-                    .any(|value| !value.is_finite())
-            {
-                return Err("invalid decoded playout frame".into());
-            }
-            self.cursor = 0;
-            self.ready = count * OUTPUT_CHANNELS;
+            self.decode_next()?;
         }
-        let end = self.cursor + PLAYOUT_FRAMES * OUTPUT_CHANNELS;
-        let samples = self.pcm[self.cursor..end].to_vec();
+        self.gain = self.packet_gain;
+        if self.cursor == self.ready {
+            return Ok(Vec::new());
+        }
+        let end = (self.cursor + BLOCK_SAMPLES).min(self.ready);
+        let mut samples = Vec::with_capacity(BLOCK_SAMPLES);
+        samples.extend_from_slice(&self.pcm[self.cursor..end]);
         self.cursor = end;
+
+        // Time-stretching can leave a partial block at a packet boundary.
+        // Apply each packet's own gain when the block spans a gain change.
+        let mut mixed_gain = false;
+        while samples.len() < BLOCK_SAMPLES {
+            self.decode_next()?;
+            if self.ready == 0 {
+                samples.resize(BLOCK_SAMPLES, 0.);
+                break;
+            }
+            if !mixed_gain && self.packet_gain != self.gain {
+                for sample in &mut samples {
+                    *sample *= self.gain;
+                }
+                self.gain = 1.;
+                mixed_gain = true;
+            }
+            self.cursor = (BLOCK_SAMPLES - samples.len()).min(self.ready);
+            let tail = &self.pcm[..self.cursor];
+            if mixed_gain {
+                samples.extend(tail.iter().map(|sample| sample * self.packet_gain));
+            } else {
+                samples.extend_from_slice(tail);
+            }
+        }
         Ok(samples)
     }
 
-    /// Gain for the just-rendered block; concealment keeps the preceding gain.
+    /// Gain for the rendered block. A block spanning a gain change is pre-scaled.
     pub fn gain(&self) -> f32 {
         self.gain
     }
@@ -202,15 +175,187 @@ impl VoicePlayout {
     /// Playback-only rebuffer after a clock stall. No capture/permission state.
     pub fn reset(&mut self) -> Result<(), String> {
         self.decoder.reset();
-        self.jitter = JitterBuffer::default();
+        self.jitter = JitterBuffer::adaptive();
+        self.stretch = Stretch::default();
         self.pcm.fill(0.);
         self.cursor = 0;
         self.ready = 0;
+        self.packet_gain = 1.;
         self.gain = 1.;
         self.last_input = None;
         self.last_kind = 0;
         self.fade = UnderrunFade::default();
         Ok(())
+    }
+}
+
+impl VoicePlayout {
+    // Called after all cached PCM has been consumed. A normal pull decodes at
+    // most one packet. An elastic block may decode a second: the cooldown
+    // ensures every shortened packet is followed by a full block or idle.
+    fn decode_next(&mut self) -> Result<(), String> {
+        self.cursor = 0;
+        self.ready = 0;
+        let was_playing = self.jitter.is_playing();
+        let mut stretchable = false;
+        let count = match self.jitter.pull() {
+            Pull::Packet { opus: queued, end } => {
+                let plays = !end || self.fade.end();
+                let count = self
+                    .decoder
+                    .decode(&queued.opus, MAX_PACKET_SAMPLES, &mut self.pcm)
+                    .map_err(|error| error.to_string())?;
+                self.jitter.observe_frames((count / PLAYOUT_FRAMES) as u64);
+                self.packet_gain = queued.gain;
+                self.last_kind = 1;
+                if end {
+                    self.decoder.reset();
+                    if !plays {
+                        self.last_kind = 0;
+                        return Ok(());
+                    }
+                }
+                self.fade.play(&mut self.pcm[..count * OUTPUT_CHANNELS]);
+                stretchable = !end;
+                count
+            }
+            Pull::Lost { fec, frames } => {
+                let wanted = frames as usize * PLAYOUT_FRAMES;
+                let count = if let Some(next) = fec {
+                    self.last_kind = 2;
+                    self.decoder.decode_fec(&next.opus, wanted, &mut self.pcm)
+                } else {
+                    self.last_kind = 3;
+                    self.decoder.decode(&[], wanted, &mut self.pcm)
+                }
+                .map_err(|error| error.to_string())?;
+                if count != wanted {
+                    return Err("concealed duration mismatch".into());
+                }
+                self.fade.play(&mut self.pcm[..count * OUTPUT_CHANNELS]);
+                count
+            }
+            Pull::Idle if self.fade.ran_dry(was_playing) => {
+                self.last_kind = 3;
+                let count = self
+                    .decoder
+                    .decode(&[], PLAYOUT_FRAMES, &mut self.pcm)
+                    .map_err(|error| error.to_string())?;
+                if count != PLAYOUT_FRAMES {
+                    return Err("concealed duration mismatch".into());
+                }
+                self.fade.fade_out(&mut self.pcm[..count * OUTPUT_CHANNELS]);
+                count
+            }
+            Pull::Idle => return Ok(()),
+        };
+        if count == 0
+            || count > MAX_PACKET_SAMPLES
+            || count % PLAYOUT_FRAMES != 0
+            || self.pcm[..count * OUTPUT_CHANNELS]
+                .iter()
+                .any(|value| !value.is_finite())
+        {
+            return Err("invalid decoded playout frame".into());
+        }
+        let count = if stretchable {
+            let depth = self.jitter.buffered_ms() + count as f32 * FRAME_MS / PLAYOUT_FRAMES as f32;
+            let delta = depth - self.jitter.target_ms();
+            let adjustment = if delta < -FRAME_MS {
+                Some(Adjustment::Expand)
+            } else if delta > 2. * FRAME_MS && self.jitter.has_next_packet() {
+                // Keep extra reserve for a render that crosses a packet boundary.
+                Some(Adjustment::Accelerate)
+            } else {
+                None
+            };
+            self.stretch.correct(&mut self.pcm, count, adjustment)
+        } else {
+            count
+        };
+        self.ready = count * OUTPUT_CHANNELS;
+        Ok(())
+    }
+}
+
+// The stereo channels share one splice. The similarity search fits inside
+// even a 10 ms packet and compares both channels.
+const OVERLAP: usize = 96;
+const MAX_LAG: usize = 240;
+
+#[derive(Clone, Copy)]
+enum Adjustment {
+    Expand,
+    Accelerate,
+}
+
+#[derive(Default)]
+struct Stretch {
+    until_next_edit: usize,
+}
+
+impl Stretch {
+    fn correct(&mut self, pcm: &mut [f32], frames: usize, adjustment: Option<Adjustment>) -> usize {
+        if self.until_next_edit != 0 {
+            self.until_next_edit = self.until_next_edit.saturating_sub(frames);
+            return frames;
+        }
+        let Some(adjustment) = adjustment else {
+            return frames;
+        };
+
+        let (pcm, _) = pcm.as_chunks_mut::<OUTPUT_CHANNELS>();
+        let left = frames / 2 - (MAX_LAG + OVERLAP) / 2;
+        let reference = &pcm[left..left + OVERLAP];
+        let lag = (OVERLAP..=MAX_LAG)
+            .step_by(4)
+            .map(|lag| {
+                let right = left + lag;
+                let mut energy = f64::EPSILON;
+                let mut product = 0.;
+                for (a, b) in reference
+                    .iter()
+                    .zip(&pcm[right..right + OVERLAP])
+                    .step_by(4)
+                {
+                    for (&a, &b) in a.iter().zip(b) {
+                        let (a, b) = (f64::from(a), f64::from(b));
+                        energy += a * a + b * b;
+                        product += a * b;
+                    }
+                }
+                (lag, product / energy)
+            })
+            .max_by(|(_, a), (_, b)| a.total_cmp(b))
+            .map_or(OVERLAP, |(lag, _)| lag);
+        // Limit added/removed time to 5% between edits.
+        self.until_next_edit = (lag * 20).saturating_sub(frames);
+        let expanding = matches!(adjustment, Adjustment::Expand);
+        let right = left + lag;
+        if expanding {
+            pcm.copy_within(left + OVERLAP..frames, right + OVERLAP);
+        }
+        let (earlier, later) = pcm.split_at_mut(right);
+        for (i, (a, b)) in earlier[left..left + OVERLAP]
+            .iter_mut()
+            .zip(&mut later[..OVERLAP])
+            .enumerate()
+        {
+            let weight = 0.5 - 0.5 * (std::f32::consts::PI * (i + 1) as f32 / OVERLAP as f32).cos();
+            for (a, b) in a.iter_mut().zip(b) {
+                if expanding {
+                    *b = *b * (1. - weight) + *a * weight;
+                } else {
+                    *a = *a * (1. - weight) + *b * weight;
+                }
+            }
+        }
+        if expanding {
+            frames + lag
+        } else {
+            pcm.copy_within(right + OVERLAP..frames, left + OVERLAP);
+            frames - lag
+        }
     }
 }
 
@@ -341,6 +486,102 @@ mod tests {
             assert_eq!(clean.gain(), injected.gain());
             assert_eq!(clean.last_render_kind(), injected.last_render_kind());
         }
+    }
+
+    #[test]
+    fn period_matched_edits_keep_both_channels_continuous() {
+        let frames = PLAYOUT_FRAMES;
+        let original: Vec<_> = (0..frames)
+            .flat_map(|frame| {
+                let angle = std::f32::consts::TAU * frame as f32 / 120.;
+                [angle.sin() * 0.6, angle.cos() * 0.4]
+            })
+            .collect();
+        for adjustment in [Adjustment::Expand, Adjustment::Accelerate] {
+            let mut pcm = original.clone();
+            pcm.resize((frames + MAX_LAG) * OUTPUT_CHANNELS, 0.);
+            let mut stretch = Stretch::default();
+            let output = stretch.correct(&mut pcm, frames, Some(adjustment));
+            let edit = output.abs_diff(frames);
+            assert!([120, 240].contains(&edit), "stereo period: {edit}");
+            assert_eq!(output > frames, matches!(adjustment, Adjustment::Expand));
+            for (actual, expected) in pcm
+                .iter()
+                .take(output * OUTPUT_CHANNELS)
+                .zip(original.iter().cycle())
+            {
+                assert!((actual - expected).abs() < 0.00001);
+            }
+            for _ in 0..edit * 20 / frames - 1 {
+                assert_eq!(stretch.correct(&mut pcm, frames, Some(adjustment)), frames);
+            }
+        }
+    }
+
+    #[test]
+    fn a_growing_transport_lead_preserves_continuous_packets() {
+        let packets = packets();
+        let mut receiver = VoicePlayout::new().unwrap();
+        for tick in 0..400 {
+            if tick % 2 == 0 {
+                let packet = &packets[(tick / 2) as usize % packets.len()];
+                receiver
+                    .push(tick, packet, false, 1., tick * 10_000)
+                    .unwrap();
+            }
+            if tick < 2 {
+                assert!(receiver.render().unwrap().is_empty());
+                continue;
+            }
+            // Grow the scheduling reservoir by 10 ms every 400 ms, starting
+            // on a tick without a new packet, until it holds 90 ms more.
+            let renders = if tick <= 361 && tick % 40 == 1 { 2 } else { 1 };
+            for _ in 0..renders {
+                assert_eq!(receiver.render().unwrap().len(), BLOCK_SAMPLES, "{tick}");
+                assert!(
+                    receiver.last_render_kind() <= 1,
+                    "unexpected loss at tick {tick}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn elastic_boundary_keeps_each_packets_gain() {
+        let packets = packets();
+        let mut receiver = VoicePlayout::new().unwrap();
+        for index in 0..24 {
+            receiver
+                .push(
+                    index * 2,
+                    &packets[index as usize % packets.len()],
+                    index == 23,
+                    if index == 0 { 0. } else { 0.5 },
+                    0,
+                )
+                .unwrap();
+        }
+        // A full backlog accelerates the first packet. The next render must
+        // finish its silent tail, then play the second packet at its own gain.
+        assert_eq!(receiver.render().unwrap().len(), BLOCK_SAMPLES);
+        assert_eq!(receiver.gain(), 0.);
+        let remaining = receiver.ready - receiver.cursor;
+        assert!((0..BLOCK_SAMPLES).contains(&remaining));
+        assert_ne!(remaining, 0);
+        let block = receiver.render().unwrap();
+        assert_eq!(block.len(), BLOCK_SAMPLES);
+        assert_eq!(receiver.gain(), 1.);
+        assert!(block[..remaining].iter().all(|&sample| sample == 0.));
+        assert!(block[remaining..].iter().any(|&sample| sample != 0.));
+        assert_eq!(receiver.last_render_kind(), 1);
+        let mut played = 2;
+        while receiver.active() && played < 48 {
+            assert_eq!(receiver.render().unwrap().len(), BLOCK_SAMPLES);
+            assert!(receiver.last_render_kind() <= 1);
+            played += 1;
+        }
+        assert!(!receiver.active());
+        assert!(played > 42);
     }
 
     #[test]

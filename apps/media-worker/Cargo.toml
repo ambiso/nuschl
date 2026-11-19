@@ -13,7 +13,7 @@ cpal = { version = "0.18.2", default-features = false }
 nnnoiseless = { version = "0.5.2", default-features = false }
 nuschl-core.workspace = true
 nuschl-ipc.workspace = true
-# Deep PLC embeds its PLC and FARGAN weights, about 4.3 MB.
+# Deep PLC embeds libopus’s PitchDNN, PLC and FARGAN weights.
 opus-rs = { workspace = true, features = ["deep-plc"] }
 rtrb = "0.4"
 serde_json = "1.0.154"

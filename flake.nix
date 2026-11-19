@@ -47,7 +47,7 @@
       nixosModules.musicbot = import ./nix/musicbot-module.nix { inherit self; };
       # Screen sharing: the TURN relay and the stream host (#143).
       nixosModules.turn = ./nix/turn-module.nix;
-      nixosModules.stream = ./nix/stream-module.nix;
+      nixosModules.stream = import ./nix/stream-module.nix { inherit self; };
       homeModules.default = import ./nix/home-manager.nix { inherit self; };
       homeManagerModules.default = self.homeModules.default;
     }
@@ -221,8 +221,8 @@
         releaseNotices = import ./nix/release-notices.nix {
           inherit pkgs toolchain craneLib;
           projectRoot = ./.;
-          webRuntimeNotices = webClient.runtimeNotices;
-          musicbotRuntimeNotices = "${musicbotWeb}/licenses/runtime";
+          webRuntimeNotices = "${webClient.rawApp}/licenses";
+          musicbotRuntimeNotices = "${musicbotWeb}/licenses/npm";
         };
         nativeNoticeScope =
           if pkgs.stdenv.hostPlatform.isDarwin then
@@ -239,14 +239,15 @@
           inherit pkgs;
           binaries = linuxPortable;
           projectRoot = ./.;
-          nativeNotices = releaseNotices.linux.bundle;
+          nativeNotices = releaseNotices.portable.bundle;
           desktopFiles = (import ./nix/desktop-files.nix { inherit pkgs; }).linux;
           appstreamXML = ./packaging/flatpak/org.nuschl.Nuschl.metainfo.xml;
         };
-        installNativeNotices = ''
+        installNotices = bundle: ''
           mkdir -p "$out/share/licenses/nuschl"
-          cp -R ${nativeNoticeBundle}/share/licenses/nuschl/. "$out/share/licenses/nuschl/"
+          cp -R ${bundle}/share/licenses/nuschl/. "$out/share/licenses/nuschl/"
         '';
+        installNativeNotices = installNotices nativeNoticeBundle;
         witnessPackage =
           pkgs.runCommand "nuschl-witness-${version}" { meta.mainProgram = "nuschl-witness"; }
             ''
@@ -304,7 +305,7 @@
               install -Dm644 ${./crates/protocol/proto/LICENSE.mumble} "$out/share/licenses/nuschl/Mumble-BSD"
               ${installNativeNotices}
             '';
-        licenseLayout = ''
+        licenseLayoutWith = notices: ''
           install -Dm644 ${./LICENSE} "$out/share/licenses/nuschl/EUPL-1.2"
           install -Dm644 ${./crates/protocol/proto/LICENSE.mumble} "$out/share/licenses/nuschl/Mumble-BSD"
           install -Dm644 ${./vendor/pulseaudio/LICENSE.md} "$out/share/licenses/nuschl/pulseaudio-MIT"
@@ -313,8 +314,9 @@
           install -Dm644 ${./vendor/ratatui-image/LICENSE-icy_sixel-MIT} "$out/share/licenses/nuschl/sixel-encoder-MIT"
           install -Dm644 ${./vendor/ratatui-image/NOTICE} "$out/share/licenses/nuschl/ratatui-image-NOTICE"
           install -Dm644 ${./crates/math/fonts/GUST-FONT-LICENSE.txt} "$out/share/licenses/nuschl/NewCMMath-GUST-Font-License"
-          ${installNativeNotices}
+          ${installNotices notices}
         '';
+        licenseLayout = licenseLayoutWith nativeNoticeBundle;
         # Licences, and on Linux the desktop binary under libexec (screen readers
         # announce the executable's name, not ".nuschl-wrapped") with wrappers.
         packageLayout =
@@ -454,31 +456,6 @@
         updateMlVerifier = updateVerifier "mldsa44";
         # Explicit fixture executable, not part of the distributed payload.
         updateRuntimeFixture = updateVerifier "runtime-fixture";
-        # What nix/crate2nix/Cargo.nix was generated from: Cargo.lock and every
-        # manifest. `just crate2nix` records it; a check compares.
-        crate2nixInputs =
-          let
-            manifests =
-              dir:
-              map (name: ./. + "/${dir}/${name}/Cargo.toml") (
-                builtins.attrNames (
-                  lib.filterAttrs (
-                    name: type: type == "directory" && builtins.pathExists (./. + "/${dir}/${name}/Cargo.toml")
-                  ) (builtins.readDir (./. + "/${dir}"))
-                )
-              );
-          in
-          builtins.hashString "sha256" (
-            lib.concatMapStrings builtins.readFile (
-              [
-                ./Cargo.lock
-                ./Cargo.toml
-              ]
-              ++ manifests "apps"
-              ++ manifests "crates"
-              ++ manifests "vendor"
-            )
-          );
         package =
           pkgs.runCommand "nuschl-${version}"
             {
@@ -800,7 +777,7 @@
             ln -s ../lib/nuschl/$program "$out/bin/$program"
           done
           cp -R --no-preserve=mode ${(import ./nix/desktop-files.nix { inherit pkgs; }).linux}/share "$out/"
-          ${licenseLayout}
+          ${licenseLayoutWith releaseNotices.portable.bundle}
         '';
         serverStatic = pkgs.runCommand "nuschld-static-${version}" { } ''
           install -Dm755 -t "$out/bin" ${portableHeadless}/bin/nuschld ${portableHeadless}/bin/nuschl-storage-worker
@@ -808,7 +785,8 @@
           install -Dm755 -t "$out/libexec/nuschl-musicbot" ${portableHeadless}/bin/nuschl-musicbot-codec-worker ${portableHeadless}/bin/nuschl-content-worker
           install -Dm644 ${./LICENSE} "$out/share/licenses/nuschl/EUPL-1.2"
           install -Dm644 ${./crates/protocol/proto/LICENSE.mumble} "$out/share/licenses/nuschl/Mumble-BSD"
-          ${installNativeNotices}
+          mkdir -p "$out/share/licenses/nuschl"
+          cp -R ${releaseNotices.serverStatic.bundle}/share/licenses/nuschl/. "$out/share/licenses/nuschl/"
         '';
       in
       {
@@ -819,7 +797,6 @@
         packages.${distroOutput "server-static"} = serverStatic;
         packages.${if linuxDistro ? aur then distroOutput "aur" else null} = linuxDistro.aur;
         packages.${distroOutput "apt-repository"} = linuxDistro.aptRepository.command;
-        legacyPackages.crate2nixInputs = crate2nixInputs;
         # The clean-system package tests, including the Ubuntu AppArmor test.
         legacyPackages.${distroOutput "distroTests"} = linuxDistro.tests;
         packages.default-crane = cranePackage;
@@ -854,18 +831,18 @@
         packages.rtc-probe = rtcPackage;
         # The web client's tunnel relay and its probe (docs/web.md), from cached crates.
         packages.web-relay = crates.project.workspaceMembers."nuschl-web-relay".build;
+        packages.stream-sfu = crates.project.workspaceMembers."nuschl-stream-sfu".build;
         packages.web-client = webClient.app;
         packages.web-wasm = webClient.wasm;
         packages.web-audio-wasm = webClient.audioWasm;
         packages.web-content-wasm = webClient.contentWasm;
-        packages.web-runtime-notices = webClient.runtimeNotices;
-        packages.release-license-inventory = releaseNotices.all.inventory;
-        packages.release-license-compact-inventory = releaseNotices.all.compactInventory;
+        packages.web-stream-wasm = webClient.streamWasm;
         packages.release-notices-linux = releaseNotices.linux.bundle;
+        packages.release-notices-linux-portable = releaseNotices.portable.bundle;
+        packages.release-notices-server-static = releaseNotices.serverStatic.bundle;
         packages.release-notices-windows = releaseNotices.windows.bundle;
         packages.release-notices-macos = releaseNotices.macos.bundle;
         packages.release-notices-web = releaseNotices.web.bundle;
-        packages.release-rtc-license-inventory = rtcNotices.inventory;
         packages.release-notices-rtc = rtcNotices.bundle;
         # Keep share-link routes at the root; the Svelte client lives at /app/.
         packages.web-site = pkgs.runCommand "nuschl-web-site" { } ''
@@ -875,6 +852,17 @@
           cp -R ${webClient.app}/. "$out/app/"
           mkdir -p "$out/licenses/nuschl"
           cp -R ${releaseNotices.web.bundle}/share/licenses/nuschl/. "$out/licenses/nuschl/"
+        '';
+        # The call page and its stream worker, served by the stream host at /call
+        # (nix/stream-module.nix).
+        packages.call-site = pkgs.runCommand "nuschl-call-site" { } ''
+          mkdir -p "$out/licenses/nuschl"
+          cp ${./web/call}/*.{html,css,js} "$out/"
+          cp ${./web/site/nuschl.svg} "$out/nuschl.svg"
+          rm "$out"/*.test.js
+          cp ${webClient.streamWasm}/nuschl_stream_wasm{.js,_bg.wasm} "$out/"
+          cp ${./LICENSE} "$out/licenses/nuschl/EUPL-1.2"
+          cp -R ${releaseNotices.callPage.bundle}/share/licenses/nuschl/. "$out/licenses/nuschl/"
         '';
         apps.rtc-probe =
           (flake-utils.lib.mkApp {
@@ -942,6 +930,27 @@
             node --test tests/content_window.unit.mjs tests/sdk_rpc.unit.mjs tests/sdk_rpc_startup.unit.mjs \
               tests/web_audio.unit.mjs tests/web_content.unit.mjs tests/share_links.mjs \
               tests/web_output_quality.mjs tests/web_playout_clock.mjs
+            node tests/web_playout_worker.mjs ${webClient.audioWasm}
+            touch $out
+          '';
+          # The call page's stream worker on wasm32 replays the native transcript.
+          stream-wasm = pkgs.runCommand "nuschl-stream-wasm" { nativeBuildInputs = [ pkgs.nodejs ]; } ''
+            node ${./tests/stream_wasm.mjs} ${webClient.streamWasm} \
+              ${./crates/stream-wasm/test-vectors/transcript.txt}
+            touch $out
+          '';
+          # The audio worker's simd128 build encodes and decodes to the scalar build's bits.
+          audio-wasm-simd =
+            pkgs.runCommand "nuschl-audio-wasm-simd" { nativeBuildInputs = [ pkgs.nodejs ]; }
+              ''
+                node ${./tests/web_audio_simd.mjs} ${webClient.audioWasmScalar} ${webClient.audioWasm} \
+                  ${./tests/fixtures/music-290k.opus}
+                touch $out
+              '';
+          # The call page's link handling, admission, worker messages and bounds.
+          call-page = pkgs.runCommand "nuschl-call-page" { nativeBuildInputs = [ pkgs.nodejs ]; } ''
+            cp -R ${./web/call} call
+            STREAM_WASM=${webClient.streamWasm} node --test call/*.test.js
             touch $out
           '';
           # Unit tests of the repository's Python tools; cases that need private
@@ -978,20 +987,26 @@
             done
             [ "$missing" = 0 ] && touch $out
           '';
-          # nix/crate2nix/Cargo.nix must follow Cargo.lock and the manifests.
+          # nix/crate2nix must equal what `just crate2nix` generates: the same
+          # crate2nix and command on the source, offline from crane's vendored crates.
           crate2nix-current =
-            let
-              recorded = lib.removeSuffix "\n" (builtins.readFile ./nix/crate2nix/inputs.sha256);
-            in
-            pkgs.runCommand "crate2nix-current" { } (
-              if recorded == crate2nixInputs then
-                "touch $out"
-              else
-                ''
-                  echo "nix/crate2nix/Cargo.nix is out of date: run 'just crate2nix'" >&2
+            pkgs.runCommand "crate2nix-current"
+              {
+                nativeBuildInputs = [ pkgs.crate2nix ];
+                CARGO_NET_OFFLINE = "true";
+              }
+              ''
+                export CARGO_HOME="$TMPDIR/cargo-home"
+                install -Dm644 ${craneLib.vendorCargoDeps { inherit src; }}/config.toml "$CARGO_HOME/config.toml"
+                cp -R --no-preserve=mode ${src} tree
+                cd tree
+                if ! crate2nix generate -f Cargo.toml -o nix/crate2nix/Cargo.nix -h nix/crate2nix/crate-hashes.json \
+                  || ! diff -ru ${./nix/crate2nix} nix/crate2nix | head -n 40 >&2; then
+                  echo "nix/crate2nix is out of date: run 'just crate2nix'" >&2
                   exit 1
-                ''
-            );
+                fi
+                touch $out
+              '';
           audit = craneLib.cargoAudit {
             inherit src advisory-db;
             # Share the individually reviewed exceptions with cargo-deny. Audit
@@ -1068,6 +1083,14 @@
               inherit pkgs;
               turnModule = self.nixosModules.turn;
               streamModule = self.nixosModules.stream;
+            };
+            # The call page in headless Chromium and Firefox, subscribing through the
+            # SFU and TURN to synthetic publishers (`nix build .#checks.x86_64-linux.vm-call-page`).
+            vm-call-page = import ./nix/call-page-vm.nix {
+              inherit pkgs;
+              turnModule = self.nixosModules.turn;
+              streamModule = self.nixosModules.stream;
+              callSite = self.packages.${system}.call-site;
             };
             # The music bot under its module, against Murmur and a fake library
             # (`nix build .#checks.x86_64-linux.vm-musicbot`).

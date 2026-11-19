@@ -7042,6 +7042,7 @@ dependencies = [
  "clap",
  "embed-resource",
  "futures-util",
+ "getrandom 0.4.3",
  "global-hotkey",
  "gpui-kit",
  "gpui-pre",
@@ -7054,6 +7055,7 @@ dependencies = [
  "nuschl-protocol",
  "nuschl-sandbox",
  "nuschl-session",
+ "nuschl-stream",
  "nuschl-update",
  "serde_json",
  "tokio",
@@ -7486,6 +7488,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nuschl-sframe"
+version = "0.2.0"
+dependencies = [
+ "aes-gcm 0.11.1",
+ "libcrux-hkdf 0.0.9",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "nuschl-storage"
 version = "0.2.0"
 dependencies = [
@@ -7510,6 +7521,66 @@ dependencies = [
  "nuschl-storage",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "nuschl-stream"
+version = "0.2.0"
+dependencies = [
+ "base64ct",
+ "hpke-rs 0.8.0",
+ "hpke-rs-libcrux 0.8.0",
+ "libcrux-chacha20poly1305 0.0.10",
+ "libcrux-hkdf 0.0.9",
+ "libcrux-kem",
+ "libcrux-sha2 0.0.9",
+ "rand_core 0.10.1",
+ "subtle",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "nuschl-stream-quality"
+version = "0.2.0"
+
+[[package]]
+name = "nuschl-stream-sfu"
+version = "0.2.0"
+dependencies = [
+ "base64 0.22.1",
+ "clap",
+ "futures-util",
+ "getrandom 0.4.3",
+ "hex",
+ "hmac 0.13.0",
+ "httparse",
+ "jiff",
+ "nuschl-stream-quality",
+ "nuschl-testkit",
+ "serde",
+ "serde_json",
+ "sha1 0.11.0",
+ "sha2 0.11.1",
+ "str0m",
+ "tokio",
+ "tokio-tungstenite",
+ "toml 1.2.1+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "nuschl-stream-wasm"
+version = "0.2.0"
+dependencies = [
+ "hex",
+ "libcrux-hmac 0.0.9",
+ "nuschl-sframe",
+ "nuschl-stream",
+ "rand_core 0.10.1",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -8322,7 +8393,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 [[package]]
 name = "opus-rs"
 version = "0.1.42"
-source = "git+https://github.com/ambiso/opus-rs?rev=1666bbc5730bd3f6ac624a2d056e0ec7b18093c6#1666bbc5730bd3f6ac624a2d056e0ec7b18093c6"
+source = "git+https://github.com/ambiso/opus-rs#6e2284cedd4df9a5c958cc4f2975619eee5dec33"
 dependencies = [
  "fearless_simd 1.2.0",
 ]

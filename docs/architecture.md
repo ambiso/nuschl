@@ -27,6 +27,7 @@ platform decisions reversible without duplicating the session model.
 | `nuschl-storage-worker` | Own the explicitly selected history database | Server credentials, microphone, network |
 | `nuschl-musicbot` | Credential/network parent for Subsonic playback, queues/history and authenticated web controls (docs/musicbot.md) | Codec/DSP dependencies and execution, GPUI, user private identity keys |
 | `nuschl-musicbot-codec-worker` | The music bot's isolated decode/encode/duck roles: Symphonia, rubato, Opus, RNNoise | Credentials, network, audio devices, state files, session code |
+| `nuschl-stream-sfu` | The companion SFU for calls and screen sharing: rooms, admission by proofs of the call link's keys, RTP forwarding in the publisher's codec, the key-message relay, TURN credentials | Media decryption, depacketizing or transcoding, key-exchange state, Mumble sessions |
 
 Worker dependencies are restricted with cargo-deny's wrapper rules. The shell and
 server exchange typed commands and results with workers rather than linking the

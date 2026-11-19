@@ -9,6 +9,10 @@ Nuschel's workspace and first-party lint/format ownership.
   anonymous local test policy. A zero-length blob caused a protocol disconnect.
 - Respect an explicit PULSE_COOKIE without first requiring a home directory. A
   confined audio process intentionally has no host home directory.
+- Retry the reactor's wait for socket events when a signal interrupts it (EINTR).
+  A stop and continue of the process (SIGSTOP and SIGCONT, a cgroup freeze and
+  thaw) interrupts `epoll_wait` without a signal handler. The reactor thread
+  exited on that error, and every stream of its client reported a disconnect.
 
 Remove the override after these fixes are available upstream. The real PulseAudio
 integration test exercises the no-home/no-cookie sandbox case. No native C audio

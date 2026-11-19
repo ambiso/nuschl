@@ -16,6 +16,12 @@ check (`quarantine.py`). A feature that relies on a quarantined step needs its o
 Every file here runs in a check or is listed in `local-only.txt` with the reason;
 the `tests-wired` check fails for any other file nothing references (#313).
 
+`vm-web` verifies cross-origin isolation and sends synthetic microphone audio
+between two packaged browser clients through an owned stock Murmur. The
+playback worklet's PCM is measured in Chromium. `web_playout_clock.mjs`
+determines the worklet's behavior under stalls and route changes with a
+deterministic clock.
+
 Flake checks run their VMs inside the Nix daemon. Built drivers run by hand go
 through `tests/vm_driver.py` ([development.md](../docs/development.md#recipes)),
 which places all VM state in a fresh owned disk root and runs
