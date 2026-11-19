@@ -7740,6 +7740,7 @@ dependencies = [
  "nuschl-link-preview",
  "nuschl-protocol",
  "nuschl-sandbox",
+ "nuschl-stream-quality",
  "nuschl-testkit",
  "p12-keystore",
  "prost",

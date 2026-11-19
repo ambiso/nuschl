@@ -2,13 +2,13 @@
 //! Hardware AV1 from the authorized PipeWire stream. GStreamer imports
 //! DMA-BUFs supported by the VA driver and uses VA surfaces through encode.
 
-use super::{Control, Failure};
+use super::{Cadence, Control, Failure};
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app::AppSink;
-use nuschl_ipc::video::{Kind, Settings, Source};
+use nuschl_ipc::video::{CaptureLimits, Kind, Settings, Source};
 use std::{
     io,
-    sync::atomic::Ordering,
+    sync::{Arc, Mutex, atomic::Ordering},
     time::{Duration, Instant},
 };
 
@@ -30,7 +30,8 @@ pub fn prepare(source: Source, node: Option<u32>, bitrate: u32) -> Result<gst::P
         concat!(
             "pipewiresrc fd=0 {target} ! ",
             "queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! ",
-            "vapostproc ! video/x-raw(memory:VAMemory),format=NV12,width=[16,{width}],height=[16,{height}] ! ",
+            "vapostproc name=scale ! capsfilter name=limit ",
+            "caps=\"video/x-raw(memory:VAMemory),format=NV12,width=[16,{width}],height=[16,{height}]\" ! ",
             "vaav1enc name=encoder bitrate={bitrate} rate-control=cbr hierarchical-level=1 ",
             "ref-frames=1 key-int-max=60 ! ",
             "av1parse ! video/x-av1,stream-format=obu-stream,alignment=tu ! ",
@@ -47,28 +48,112 @@ pub fn prepare(source: Source, node: Option<u32>, bitrate: u32) -> Result<gst::P
         .map_err(|_| "invalid video pipeline".into())
 }
 
-pub fn run(pipeline: gst::Pipeline, source: Source, control: &Control) -> Result<(), Failure> {
+pub fn run(pipeline: gst::Pipeline, source: Source, control: Arc<Control>) -> Result<(), Failure> {
     let sink = pipeline
         .by_name("encoded")
         .ok_or("missing video sink")?
         .downcast::<AppSink>()
         .map_err(|_| "invalid video sink")?;
     let encoder = pipeline.by_name("encoder").ok_or("missing video encoder")?;
-    let bus = pipeline.bus().ok_or("missing pipeline bus")?;
+    let mut scale = Scale::new(&pipeline, &encoder)?;
+    let clock = Instant::now();
+    let cadence = Mutex::new(Cadence::default());
+    let cadence_control = control.clone();
+    // Drop raw frames before VA scaling and encoding. Rates can change
+    // independently of the PipeWire source's negotiated framerate.
+    let probe = scale
+        .input
+        .add_probe(gst::PadProbeType::BUFFER, move |_, _| {
+            let limits = cadence_control.limits();
+            if cadence
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .accept(clock.elapsed(), limits.fps)
+            {
+                gst::PadProbeReturn::Ok
+            } else {
+                gst::PadProbeReturn::Drop
+            }
+        })
+        .ok_or("could not install the capture cadence limit")?;
     pipeline.set_state(gst::State::Playing)?;
-    let result = write_frames(&pipeline, &bus, &sink, &encoder, source, control);
+    let result = write_frames(&pipeline, &sink, &encoder, &mut scale, source, &control);
+    scale.input.remove_probe(probe);
     let _ = pipeline.set_state(gst::State::Null);
     result
 }
 
+struct Scale {
+    input: gst::Pad,
+    filter: gst::Element,
+    encoder_caps: gst::Caps,
+    size: Option<(u16, u16)>,
+}
+
+impl Scale {
+    fn new(pipeline: &gst::Pipeline, encoder: &gst::Element) -> Result<Self, Failure> {
+        let input = pipeline
+            .by_name("scale")
+            .and_then(|element| element.static_pad("sink"))
+            .ok_or("missing video scaler input")?;
+        let filter = pipeline
+            .by_name("limit")
+            .ok_or("missing video caps filter")?;
+        let encoder_caps = encoder
+            .pad_template("sink")
+            .ok_or("missing video encoder input template")?
+            .caps()
+            .to_owned();
+        Ok(Self {
+            input,
+            filter,
+            encoder_caps,
+            size: None,
+        })
+    }
+
+    fn update(&mut self, source: Source, limits: CaptureLimits) -> Result<bool, Failure> {
+        // Measure the unscaled PipeWire format upstream of the capsfilter.
+        let Some(input) = self.input.current_caps() else {
+            return Ok(false);
+        };
+        let size = dimensions(input.structure(0).ok_or("missing PipeWire video format")?)?;
+        let Some((width, height)) = limits.dimensions(source, size.0, size.1) else {
+            // Some PipeWire nodes produce dimensions below the VA encoder's
+            // minimum. Retain the legal format chosen by the existing filter.
+            return Ok(self.size.take().is_some());
+        };
+        if self.size == Some((width, height)) {
+            return Ok(false);
+        }
+        let caps =
+            format!("video/x-raw(memory:VAMemory),format=NV12,width={width},height={height}")
+                .parse::<gst::Caps>()?;
+        if !caps.can_intersect(&self.encoder_caps) {
+            return Ok(self.size.take().is_some());
+        }
+        self.filter.set_property("caps", caps);
+        self.size = Some((width, height));
+        Ok(true)
+    }
+}
+
+fn dimensions(format: &gst::StructureRef) -> Result<(u16, u16), Failure> {
+    Ok((
+        u16::try_from(format.get::<i32>("width")?)?,
+        u16::try_from(format.get::<i32>("height")?)?,
+    ))
+}
+
 fn write_frames(
     pipeline: &gst::Pipeline,
-    bus: &gst::Bus,
     sink: &AppSink,
     encoder: &gst::Element,
+    scale: &mut Scale,
     source: Source,
     control: &Control,
 ) -> Result<(), Failure> {
+    let bus = pipeline.bus().ok_or("missing pipeline bus")?;
     let clock = Instant::now();
     let mut stdout = io::stdout().lock();
     let mut bitrate = encoder.property::<u32>("bitrate");
@@ -76,7 +161,12 @@ fn write_frames(
     let mut waiting_for_key = true;
     let mut requested_at: Option<Instant> = None;
     loop {
-        let wanted = control.bitrate.load(Ordering::Relaxed) / 1000;
+        let limits = control.limits();
+        if scale.update(source, limits)? {
+            waiting_for_key = true;
+            requested_at = None;
+        }
+        let wanted = limits.bitrate / 1000;
         if wanted != bitrate {
             encoder.set_property("bitrate", wanted);
             bitrate = encoder.property::<u32>("bitrate");
@@ -108,11 +198,17 @@ fn write_frames(
             .map_or(30, |rate| {
                 (rate.numer() / rate.denom().max(1)).clamp(1, 120)
             });
+        let (width, height) = dimensions(format)?;
+        if scale.size.is_some_and(|wanted| wanted != (width, height))
+            || width.min(height) > limits.height
+        {
+            continue;
+        }
         let settings = Settings {
             source,
-            width: u16::try_from(format.get::<i32>("width")?)?,
-            height: u16::try_from(format.get::<i32>("height")?)?,
-            fps: u16::try_from(fps)?,
+            width,
+            height,
+            fps: u16::try_from(fps)?.min(limits.fps),
             bitrate: bitrate * 1000,
         };
         settings.frame_bytes()?;

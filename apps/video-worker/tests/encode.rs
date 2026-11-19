@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 #![cfg(target_os = "linux")]
 
-use nuschl_ipc::video::{Encoder, Output, Settings, Source};
+use nuschl_ipc::video::{CaptureLimits, Encoder, Output, Settings, Source};
 use std::{
     io::Write as _,
     path::Path,
@@ -266,6 +266,55 @@ context.objects = [
     .expect("the new target is applied within the running capture");
     assert!(updated_at > frame.capture_time_us);
     assert_eq!(capture.next().await.unwrap().bitrate_bps, 900_000);
+    let shorter_side = frame.width.min(frame.height);
+    let limits = CaptureLimits {
+        // The hardware fixture negotiates the encoder's minimum size.
+        height: if hardware {
+            shorter_side
+        } else {
+            (shorter_side / 2).max(16)
+        },
+        fps: 10,
+        bitrate: 800_000,
+    };
+    let expected = limits
+        .dimensions(Source::Screen, frame.width, frame.height)
+        .unwrap();
+    if !hardware {
+        assert_ne!((frame.width, frame.height), expected);
+    }
+    capture.set_limits(limits).unwrap();
+    capture.request_keyframe();
+    let updated = tokio::time::timeout(Duration::from_secs(6), async {
+        loop {
+            let changed = capture.next().await.expect("the encoder keeps running");
+            if changed.keyframe
+                && changed.bitrate_bps == limits.bitrate
+                && (changed.width, changed.height) == expected
+            {
+                break changed;
+            }
+        }
+    })
+    .await
+    .expect("the new dimensions arrive in the current PipeWire grant");
+    assert_eq!(updated.bitrate_bps, limits.bitrate);
+    if hardware {
+        let last = tokio::time::timeout(Duration::from_secs(3), async {
+            let mut last = updated.capture_time_us;
+            for _ in 0..5 {
+                last = capture.next().await.unwrap().capture_time_us;
+            }
+            last
+        })
+        .await
+        .expect("the hardware capture keeps sending at the new rate");
+        assert!(last - updated.capture_time_us >= 400_000);
+    }
+    assert_eq!(
+        decode_av1(&updated.av1).len(),
+        usize::from(expected.0) * usize::from(expected.1) * 3 / 2,
+    );
     capture.stop().await.unwrap();
     nuschl_testkit::none_running(Path::new(WORKER), Duration::from_secs(3)).await;
     daemon.kill().await.unwrap();

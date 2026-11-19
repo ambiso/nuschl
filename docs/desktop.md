@@ -196,34 +196,38 @@ without text.
 
 ## Calls
 
-On Linux with the video and RTC workers installed, **Start call** opens an
-in-app video call. **Start camera** and **Share screen** request capture
-through the desktop portal. The call card offers **Join video call** for
-native playback, and everyone in the channel gets a browser link in chat.
-People who enter the channel later also receive the card. The card disappears
-when its creator ends the call or leaves the channel.
+On Linux with the video and RTC workers installed, **Start camera** and
+**Share screen** start an in-app video call and request capture through the
+desktop portal. Your camera or screen preview appears above the chat. The
+call card offers **Join video call** for native playback. The channel also
+receives a link people can open in a browser, including people using Mumble.
+People who enter the channel later receive the card while the call is active.
 
-**Minimize call** lets you browse while the call continues. **Return to
-call** takes you back to its conversation. A monitor share initially covers
-Nuschl conversations. Choose **Show app while sharing** to reveal the app in
-the share, and **Return to call** to cover it again.
+Choose **Full screen** to focus on video and **Exit full screen** or Escape
+to return to chat. **Minimize call** hides the video while the call continues.
+**Return to call** restores the panel. Sharing a whole monitor asks for
+confirmation before video starts. Viewers can see the Nuschl window whenever
+it is visible on that monitor.
+
+**Quality** selects a resolution and frame-rate ceiling. A 1440p tier can
+carry 3440 × 1440 when the capture, encoder and connection support it. Open
+**Video stats** for delivered dimensions, frame rate, encoded payload rate
+and the current route. Viewer Auto fits the video tile.
 
 The native path supports one publisher and one viewer. Two native clients can
-switch to a direct connection when it can carry their video, and return to the
-call server when the connection drops or runs out of bandwidth.
-**Relay-only connections** sends native video through the call host's UDP TURN relay. **Open in
-browser** opens the same room for group calls and other call modes. Voice stays
-in Mumble.
+switch to a direct connection when it can carry their video and return to the
+call server if needed. **Relay-only connections** sends native video through
+the call host's UDP TURN relay. The link in chat opens the call page for
+browser and group calls. Voice stays in Mumble.
 
 In a direct conversation with someone online, the same buttons start a call
-with that person alone: the link goes to them as a private message, and the
-card shows in their direct conversation with you. The call ends when either of
-you leaves the server.
+with that person alone. The link goes to them as a private message and the
+card appears in their conversation with you. The call ends when either
+participant leaves the server.
 
-The creator's browser call card also has **Rotate link**, which ends the call for everyone
-on the old link, opens the page again on a new one and posts it, and **End
-call**. The call also ends when you leave the channel or the server, after 4
-hours, and when the call page is gone.
+**End call** closes the room for everyone, including people watching in the
+desktop app. **Leave video** closes your own view. The creator leaving the
+channel or server also ends the call.
 
 The link (`https://stream.nuschl.eu/call#v=1&k=…&h=…`) lets anyone who has it
 join, and the Mumble server sees it. Calls use the project's call host,

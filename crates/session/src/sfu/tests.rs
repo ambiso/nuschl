@@ -177,7 +177,21 @@ async fn two_native_peers_admit_and_signal_through_the_sfu_over_wss() {
         .await
         .unwrap();
     assert_eq!(bob.welcome().role, Role::Participant);
-    bob.close().await.unwrap();
+    {
+        let _media = MEDIA_TEST.lock().await;
+        let mut bob = bob
+            .into_media(MediaOptions {
+                executable: fixture("nuschl-rtc-worker"),
+                sfu_port: sfu.media.port(),
+                publish: None,
+            })
+            .await
+            .unwrap();
+        write(&mut alice.socket, &ClientMessage::End).await.unwrap();
+        let event = timeout(HANDSHAKE, bob.next()).await.unwrap();
+        assert!(matches!(event, Some(Err(Error::Refused(reason))) if reason == "ended"));
+        bob.stop().await.unwrap();
+    }
     alice.close().await.unwrap();
 
     let listener = TcpListener::bind((CA, 0)).await.unwrap();
@@ -545,6 +559,40 @@ async fn native_video_for_policy(relay_only: bool) {
     })
     .await
     .expect("a native frame crosses the owned SFU");
+    if !relay_only {
+        async fn encoder_limits(publisher: &mut Media, tier: usize) {
+            let expected = &VideoKind::Screen.ladder()[tier];
+            timeout(HANDSHAKE, async {
+                loop {
+                    if let MediaEvent::EncoderLimits {
+                        height,
+                        fps,
+                        bitrate,
+                    } = publisher.next().await.unwrap().unwrap()
+                        && height == expected.height
+                    {
+                        assert_eq!(fps, expected.fps);
+                        assert_eq!(bitrate, expected.ceiling);
+                        return;
+                    }
+                }
+            })
+            .await
+            .expect("the native viewer's quality reaches the publisher");
+        }
+
+        // An explicit selection can request 1440p from a much shorter tile.
+        bob.set_quality(publisher, Purpose::ScreenVideo, Quality::Tier(2), 180)
+            .unwrap();
+        encoder_limits(&mut alice, 2).await;
+
+        // A burst during the signaling cooldown keeps the latest selection.
+        bob.set_quality(publisher, Purpose::ScreenVideo, Quality::Tier(0), 180)
+            .unwrap();
+        bob.set_quality(publisher, Purpose::ScreenVideo, Quality::Auto, 1000)
+            .unwrap();
+        encoder_limits(&mut alice, 1).await;
+    }
     decoder.stop().await.unwrap();
     bob.stop().await.unwrap();
     alice.stop().await.unwrap();

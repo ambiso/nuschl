@@ -2,39 +2,47 @@
 //! Calls (docs/desktop.md, "Calls"). The creator posts a link and renews the
 //! room's lease. The creator and invitees join through the desktop or browser.
 //!
-//! The lease keeps the creator's room alive: every [`RENEW`] the desktop
+//! The lease keeps the creator's room alive: every `RENEW` the desktop
 //! sends `POST <origin>/sfu/lease` with `{"stream_id", "host_key"}` in lowercase
 //! hex (`nuschl-stream` derives them from S and P; P stays on this device). 204
 //! means the lease is renewed, 404 that the call host has no such room (E1,
 //! `apps/stream-sfu/src/protocol.rs`). Ending the call sends `DELETE` with the
 //! same body. The call ends when the room is gone after it existed, when the
-//! room fails to appear within [`GRACE`], when renewals
-//! fail for [`TIMEOUT`], and after [`MAX`]. Hosts `localhost` and `127.0.0.1` take
+//! room fails to appear within `GRACE`, when renewals
+//! fail for `TIMEOUT`, and after `MAX`. Hosts `localhost` and `127.0.0.1` take
 //! the lease over `http://`, for development and tests. With relay-only on, the page
 //! opens as `/call?relay#…` and connects through the call host's TURN server only
 //! (docs/web.md, "The call page").
-use crate::{services::ServiceEvent, state::Desktop};
-use gpui_kit::Context;
-use nuschl_core::{
-    call::{DEFAULT_HOST, page_url},
-    model::TextTarget,
-};
+#[cfg(target_os = "linux")]
+use crate::services::ServiceEvent;
+use crate::state::Desktop;
+#[cfg(target_os = "linux")]
+use nuschl_core::{call::DEFAULT_HOST, model::TextTarget};
 use nuschl_stream::Link;
+#[cfg(any(target_os = "linux", test))]
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+#[cfg(target_os = "linux")]
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
+#[cfg(target_os = "linux")]
 pub const RENEW: Duration = Duration::from_secs(10);
+#[cfg(any(target_os = "linux", test))]
 pub const TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(any(target_os = "linux", test))]
 pub const GRACE: Duration = Duration::from_secs(120);
+#[cfg(any(target_os = "linux", test))]
 pub const MAX: Duration = Duration::from_secs(4 * 60 * 60);
 
 /// Our call's creator link and its running lease; dropping it ends the lease.
 pub struct Creator {
     pub link: Link,
+    #[cfg(target_os = "linux")]
     lease: u64,
     _stop: oneshot::Sender<()>,
 }
 
+#[cfg(any(target_os = "linux", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reply {
     Renewed,
@@ -43,11 +51,13 @@ pub enum Reply {
 }
 
 /// When the lease ends, given the call host's replies.
+#[cfg(any(target_os = "linux", test))]
 #[derive(Debug, Default)]
 pub struct Clock {
     renewed: Option<Duration>,
 }
 
+#[cfg(any(target_os = "linux", test))]
 impl Clock {
     /// Whether the lease is over after `reply`, `elapsed` since it started.
     pub fn over(&mut self, elapsed: Duration, reply: Reply) -> bool {
@@ -65,6 +75,7 @@ impl Clock {
 }
 
 /// The lease address and body of the creator's `link`.
+#[cfg(any(target_os = "linux", test))]
 pub fn lease_request(link: &Link) -> (String, String) {
     let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
     let host = link.host();
@@ -82,6 +93,7 @@ pub fn lease_request(link: &Link) -> (String, String) {
 
 /// Keep the lease at `url` until it is over or `stop` fires or is dropped,
 /// then report `CallLeaseEnded` (over) or release it (stopped).
+#[cfg(target_os = "linux")]
 pub async fn run(
     id: u64,
     url: String,
@@ -128,24 +140,7 @@ pub async fn run(
 }
 
 impl Desktop {
-    /// Start a call in the open conversation.
-    pub fn start_call(
-        &mut self,
-        index: usize,
-        target: nuschl_core::model::TextTarget,
-        cx: &mut Context<Self>,
-    ) {
-        #[cfg(target_os = "linux")]
-        if self.native_available(self.call_host()) {
-            self.start_native_call(index, target, None, cx);
-            return;
-        }
-        match self.create_call(index, target) {
-            Ok(link) => self.open_call(link, "Call", cx),
-            Err(error) => self.client.servers[index].set_notice(error),
-        }
-    }
-
+    #[cfg(target_os = "linux")]
     pub fn call_host(&self) -> &str {
         match self.settings.call_host.as_str() {
             "" => DEFAULT_HOST,
@@ -153,6 +148,7 @@ impl Desktop {
         }
     }
 
+    #[cfg(target_os = "linux")]
     pub fn create_call(&mut self, index: usize, target: TextTarget) -> Result<Link, String> {
         let link = Link::generate(self.call_host(), &mut getrandom::SysRng)
             .map_err(|error| format!("No call: {error}"))?;
@@ -160,29 +156,9 @@ impl Desktop {
         Ok(link)
     }
 
-    /// Our call gets a new link; the page opens again on it.
-    pub fn rotate_call(&mut self, cx: &mut Context<Self>) {
-        let Some(link) = self
-            .call
-            .as_ref()
-            .and_then(|call| Link::generate(call.link.host(), &mut getrandom::SysRng).ok())
-        else {
-            return;
-        };
-        self.client.rotate_call(link.url());
-        self.open_call(link, "New call link", cx);
-    }
-
-    /// Open the creator's page, post the Join link as text for stock Mumble
-    /// clients and keep the lease; a previous lease ends.
-    fn open_call(&mut self, link: Link, label: &str, cx: &mut Context<Self>) {
-        let url = link.creator_url().expect("the creator's link");
-        cx.open_url(&page_url(&url, self.settings.relay_only));
-        self.announce_call(link, label);
-    }
-
-    pub fn announce_call(&mut self, link: Link, label: &str) {
-        let _ = self.client.send_text(format!("{label}: {}", link.url()));
+    #[cfg(target_os = "linux")]
+    pub fn announce_call(&mut self, link: Link) {
+        self.client.announce_own_call();
         let (url, body) = lease_request(&link);
         self.call_leases += 1;
         let (stop, stopped) = oneshot::channel();
@@ -197,9 +173,15 @@ impl Desktop {
     pub fn end_call(&mut self) {
         #[cfg(target_os = "linux")]
         self.stop_native_owner();
-        if self.client.own_call().is_some() {
+        if let Some(call) = self.client.own_call() {
+            let announcing = self.selected_indices().is_some_and(|(server, channel)| {
+                let server = &self.client.servers[server];
+                server.id == call.server && server.channels[channel].target == call.target
+            });
             self.client.end_call();
-            let _ = self.client.send_text("Call ended".into());
+            if announcing {
+                let _ = self.client.send_text("Call ended".into());
+            }
         }
         self.call = None;
     }
@@ -217,6 +199,7 @@ impl Desktop {
     }
 
     /// Lease `id` is over: its call ends, if it is still ours.
+    #[cfg(target_os = "linux")]
     pub fn call_lease_ended(&mut self, id: u64) {
         if self.call.as_ref().is_some_and(|call| call.lease == id) {
             self.call = None;

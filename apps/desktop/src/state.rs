@@ -199,11 +199,14 @@ pub struct Desktop {
     pub services: Services,
     /// Our call's creator link and lease, and the last lease's id.
     pub call: Option<crate::call::Creator>,
+    #[cfg(target_os = "linux")]
     pub call_leases: u64,
     #[cfg(target_os = "linux")]
     pub native_call: Option<crate::native_call::Active>,
     #[cfg(target_os = "linux")]
     pub native_call_generation: u64,
+    #[cfg(target_os = "linux")]
+    pub native_call_fullscreen: Option<std::time::Instant>,
     pub link_preview: crate::link_preview::ComposerPreview,
     pub profile: Profile,
     pub form: Option<ServerForm>,
@@ -529,11 +532,14 @@ impl Desktop {
             driver,
             services,
             call: None,
+            #[cfg(target_os = "linux")]
             call_leases: 0,
             #[cfg(target_os = "linux")]
             native_call: None,
             #[cfg(target_os = "linux")]
             native_call_generation: 0,
+            #[cfg(target_os = "linux")]
+            native_call_fullscreen: None,
             link_preview: crate::link_preview::ComposerPreview::default(),
             profile,
             form: None,
@@ -2714,13 +2720,16 @@ impl Desktop {
                 self.link_preview_pixels(ticket, pixels, cx)
             }
             ServiceEvent::Prepared { id, result } => self.prepared(id, result, cx),
+            #[cfg(target_os = "linux")]
             ServiceEvent::CallLeaseEnded { id } => self.call_lease_ended(id),
             #[cfg(target_os = "linux")]
-            ServiceEvent::NativeCurtain { generation, ready } => {
-                self.native_curtain(generation, ready);
+            ServiceEvent::ConfirmMonitorShare { generation, ready } => {
+                self.confirm_monitor_share(generation, ready);
             }
             #[cfg(target_os = "linux")]
-            ServiceEvent::NativeFinished { generation } => self.native_finished(generation, cx),
+            ServiceEvent::NativeFinished { generation, result } => {
+                self.native_finished(generation, result)
+            }
             ServiceEvent::ServerIcon { server, icon } => {
                 if let Some(server) = self
                     .client

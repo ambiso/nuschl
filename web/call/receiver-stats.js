@@ -35,16 +35,18 @@ function videoSample(report, video) {
   }
 }
 
-const number = (value, unit) => Number.isFinite(value) ? `${value.toFixed(1)} ${unit}` : "—";
+function outgoingSample(report) {
+  for (const entry of report.values()) {
+    if (entry.type === "outbound-rtp" && (entry.kind ?? entry.mediaType) === "video" && entry.active !== false) return entry;
+  }
+}
 
-function display(target, rates = {}, status = "") {
-  const { video, values, message } = target;
-  const resolution = video.videoWidth && video.videoHeight ? `${video.videoWidth} × ${video.videoHeight}` : "—";
-  const bitrate = rates.bitrate >= 1_000_000
-    ? number(rates.bitrate / 1_000_000, "Mb/s")
-    : number(rates.bitrate / 1000, "kb/s");
-  const texts = [resolution, number(rates.decoded, "fps"), number(rates.presented, "fps"),
-    bitrate, number(rates.jitterBufferMs, "ms")];
+const number = (value, unit) => Number.isFinite(value) ? `${value.toFixed(1)} ${unit}` : "—";
+const dimension = (value) => Number.isInteger(value) && value > 0;
+const dimensions = (width, height) => dimension(width) && dimension(height) ? `${width} × ${height}` : "—";
+
+function display(target, texts, status = "") {
+  const { values, message } = target;
   for (const [index, text] of texts.entries()) {
     if (values[index].textContent !== text) values[index].textContent = text;
   }
@@ -52,8 +54,46 @@ function display(target, rates = {}, status = "") {
   message.hidden = !status;
 }
 
+const tier = (limits) => limits ? `${limits[0]}p${limits[1]}` : "—";
+
+function bitrateText(value) {
+  return value >= 1_000_000 ? number(value / 1_000_000, "Mb/s") : number(value / 1000, "kb/s");
+}
+
+function displayReceiver(target, rates = {}, status = "") {
+  const { video, requested } = target;
+  const { videoWidth: width, videoHeight: height } = video;
+  const request = requested();
+  const belowTarget = request && dimension(width) && dimension(height) && Math.min(width, height) < request[0];
+  display(target, [dimensions(width, height), number(rates.decoded, "fps"), number(rates.presented, "fps"),
+    bitrateText(rates.bitrate), number(rates.jitterBufferMs, "ms"), tier(request)], status ||
+      (belowTarget ? "Received below target. The limiting setting is unavailable here." : ""));
+}
+
+const limitations = new Map([
+  ["none", "No adaptation reported"],
+  ["cpu", "CPU"],
+  ["bandwidth", "Bandwidth"],
+  ["other", "Other"],
+]);
+
+export function publisherMeasurements({ width, height }, requested, cap, scale, sample) {
+  const planned = Number.isFinite(scale) && scale >= 1
+    ? dimensions(Math.floor(width / scale), Math.floor(height / scale)) : "—";
+  const limit = cap ? `${tier(cap)} · ${bitrateText(cap[2])}` : "—";
+  return [dimensions(width, height), tier(requested), limit, planned,
+    dimensions(sample?.frameWidth, sample?.frameHeight),
+    limitations.get(sample?.qualityLimitationReason) ?? "Unavailable"];
+}
+
+function displayPublisher(target, sender, sample, status = "") {
+  const { source, requested } = target;
+  const scale = sender?.getParameters().encodings?.[0]?.scaleResolutionDownBy;
+  display(target, publisherMeasurements(source.track.getSettings(), requested(), source.remoteCap, scale, sample), status);
+}
+
 /** One stats disclosure and one browser read at a time, even across track changes. */
-export class ReceiverStats {
+export class VideoStats {
   constructor(document) {
     this.document = document;
     this.window = document.defaultView;
@@ -64,7 +104,8 @@ export class ReceiverStats {
     this.close();
     this.target = target;
     target.previous = undefined;
-    display(target, {}, "Measuring…");
+    if (target.sender) displayPublisher(target, target.sender(), undefined, "Measuring…");
+    else displayReceiver(target, {}, "Measuring…");
     this.timer = this.window.setInterval(() => void this.sample(), INTERVAL_MS);
     void this.sample();
   }
@@ -79,7 +120,8 @@ export class ReceiverStats {
   paused(target) {
     if (!(this.document.hidden || target.video.paused || target.video.ended)) return false;
     target.previous = undefined;
-    display(target, {}, "Video paused");
+    if (target.sender) displayPublisher(target, target.sender(), undefined, "Video paused");
+    else displayReceiver(target, {}, "Video paused");
     return true;
   }
 
@@ -89,19 +131,28 @@ export class ReceiverStats {
     const { details, receiver, video } = target;
     if (!details.open || !details.isConnected) return this.close(details);
     if (this.paused(target) || this.pending) return;
+    const sender = target.sender?.();
     this.pending = true;
     let current;
     try {
-      current = videoSample(await receiver.getStats(), video);
+      const report = await (sender ?? receiver).getStats();
+      current = sender ? outgoingSample(report) : videoSample(report, video);
     } catch {
-      // A stopped receiver may reject an outstanding read.
+      // A stopped sender or receiver may reject an outstanding read.
     } finally {
       this.pending = false;
     }
     if (this.target !== target || !details.open || !details.isConnected || this.paused(target)) return;
+    if (sender) {
+      if (target.sender() === sender) {
+        const status = dimension(current?.frameWidth) ? "" : "Waiting for encoded video stats";
+        displayPublisher(target, sender, current, status);
+      }
+      return;
+    }
     const rates = current ? receiverRates(target.previous, current) : {};
     target.previous = current;
     const status = current ? ("decoded" in rates ? "" : "Measuring…") : "Waiting for video stats";
-    display(target, rates, status);
+    displayReceiver(target, rates, status);
   }
 }

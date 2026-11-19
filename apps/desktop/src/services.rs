@@ -35,17 +35,19 @@ pub enum ServiceEvent {
         result: Result<nuschl_ipc::EncodedImage, String>,
     },
     /// Our call's lease `id` is over (`call`).
+    #[cfg(target_os = "linux")]
     CallLeaseEnded {
         id: u64,
     },
     #[cfg(target_os = "linux")]
-    NativeCurtain {
+    ConfirmMonitorShare {
         generation: u64,
         ready: tokio::sync::oneshot::Sender<()>,
     },
     #[cfg(target_os = "linux")]
     NativeFinished {
         generation: u64,
+        result: Result<crate::native_call::Finish, String>,
     },
 }
 
@@ -128,6 +130,7 @@ impl Services {
         }
     }
     /// Keep our call's lease (`call::run`).
+    #[cfg(target_os = "linux")]
     pub fn lease(
         &self,
         id: u64,

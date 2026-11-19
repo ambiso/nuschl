@@ -10,7 +10,7 @@
 //! call ends when we leave its channel, its other person leaves, or we leave
 //! the connection, on [`Client::end_call`] and when the caller's lease on the
 //! call host ends.
-use super::Client;
+use super::{Client, TextDestination};
 use crate::server::{ServerState, Status};
 use nuschl_core::{
     call::{CARD_DATA_ID, Card},
@@ -56,9 +56,17 @@ pub struct OwnCall {
     pub target: TextTarget,
     peer_instance: u64,
     pub link: String,
+    invite: Invite,
     /// Who was sent the card, and the sends awaiting admission.
     told: BTreeSet<(u32, u64)>,
     pending: BTreeMap<u64, Vec<(u32, u64)>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Invite {
+    Idle,
+    Pending,
+    Submitted,
 }
 
 impl Client {
@@ -110,6 +118,7 @@ impl Client {
             target,
             peer_instance,
             link,
+            invite: Invite::Idle,
             told: BTreeSet::new(),
             pending: BTreeMap::new(),
         });
@@ -117,10 +126,24 @@ impl Client {
         Ok(())
     }
 
+    /// Share the current call link as chat text for Mumble participants.
+    /// Keep it with the call until the text send slot is available.
+    pub fn announce_own_call(&mut self) {
+        if let Some(call) = &mut self.own_call
+            && call.invite == Invite::Idle
+        {
+            call.invite = Invite::Pending;
+            self.sync_call();
+        }
+    }
+
     /// Give our call a new link; everyone it reaches gets the new card.
     pub fn rotate_call(&mut self, link: String) {
         if let Some(call) = &mut self.own_call {
             call.link = link;
+            if call.invite == Invite::Submitted {
+                call.invite = Invite::Idle;
+            }
             call.told.clear();
             call.pending.clear();
         }
@@ -186,7 +209,7 @@ impl Client {
                 return;
             }
         };
-        if server.status != Status::Connected {
+        if server.status != Status::Connected || server.mls || !server.has_mumble_voice() {
             self.own_call = None;
             return;
         }
@@ -198,11 +221,23 @@ impl Client {
                 sent.push((request, receivers.to_vec()));
             }
         }
+        let send_invite = !self.sending();
         let call = self.own_call.as_mut().expect("checked above");
         call.told.retain(|member| members.contains(member));
         for (request, receivers) in sent {
             call.told.extend(&receivers);
             call.pending.insert(request, receivers);
+        }
+        if send_invite && call.invite == Invite::Pending {
+            call.invite = Invite::Submitted;
+            let expected_peer =
+                matches!(call.target, TextTarget::Direct(_)).then_some(call.peer_instance);
+            let destination = TextDestination::Invite {
+                target: call.target.clone(),
+                expected_peer,
+            };
+            let body = format!("Call: {}", call.link);
+            let _ = self.send_text_to(index, destination, body);
         }
     }
 

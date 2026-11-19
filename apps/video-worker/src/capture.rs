@@ -4,7 +4,7 @@
 #[cfg(feature = "vaapi")]
 mod vaapi;
 
-use nuschl_ipc::video::{HEADER_BYTES, Header, Kind, Settings, Source};
+use nuschl_ipc::video::{CaptureLimits, HEADER_BYTES, Header, Kind, Settings, Source};
 use pipewire::{self as pw, properties::properties, spa};
 use spa::{
     buffer::{ChunkFlags, DataType},
@@ -20,8 +20,8 @@ use std::{
     io::{self, Cursor, Read as _},
     os::{fd::AsFd as _, unix::net::UnixStream},
     sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
         mpsc::sync_channel,
     },
     time::{Duration, Instant},
@@ -36,8 +36,41 @@ struct Picture {
 }
 
 struct Control {
-    bitrate: AtomicU32,
+    limits: Mutex<CaptureLimits>,
     keyframe: AtomicBool,
+}
+
+impl Control {
+    fn limits(&self) -> CaptureLimits {
+        *self
+            .limits
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+}
+
+#[derive(Default)]
+struct Cadence {
+    fps: u16,
+    next: Duration,
+}
+
+impl Cadence {
+    fn accept(&mut self, elapsed: Duration, fps: u16) -> bool {
+        let interval = Duration::from_secs(1) / u32::from(fps);
+        if fps != self.fps {
+            self.fps = fps;
+            self.next = elapsed;
+        }
+        if elapsed < self.next {
+            return false;
+        }
+        self.next += interval;
+        if self.next <= elapsed {
+            self.next = elapsed + interval;
+        }
+        true
+    }
 }
 
 pub fn run() -> Result<(), Failure> {
@@ -49,13 +82,12 @@ pub fn run() -> Result<(), Failure> {
         Some(_) => (Source::Screen, "Screen"),
         None => (Source::Camera, "Camera"),
     };
-    let control = start_control()?;
+    let control = start_control(source)?;
     #[cfg(feature = "vaapi")]
     if std::env::var_os("NUSCHL_VIDEO_VAAPI").is_some()
-        && let Ok(pipeline) =
-            vaapi::prepare(source, target, control.bitrate.load(Ordering::Relaxed))
+        && let Ok(pipeline) = vaapi::prepare(source, target, control.limits().bitrate)
     {
-        return vaapi::run(pipeline, source, &control);
+        return vaapi::run(pipeline, source, control);
     }
     let remote = io::stdin().as_fd().try_clone_to_owned()?;
     pw::init();
@@ -92,6 +124,7 @@ pub fn run() -> Result<(), Failure> {
     let stop_loop = loop_.downgrade();
     let clock = Instant::now();
     std::thread::scope(|scope| {
+        let encode_control = control.clone();
         let encoder = scope.spawn(move || {
             let mut stdout = io::stdout().lock();
             for picture in next_picture {
@@ -106,7 +139,12 @@ pub fn run() -> Result<(), Failure> {
                 let capture_time_us = u64::try_from(captured_at.as_micros())
                     .unwrap_or(u64::MAX)
                     .max(1);
-                settings.bitrate = control.bitrate.load(Ordering::Relaxed);
+                let limits = encode_control.limits();
+                if settings.width.min(settings.height) > limits.height || settings.fps > limits.fps
+                {
+                    continue;
+                }
+                settings.bitrate = limits.bitrate;
                 let packet =
                     match super::linux::encode(&super::linux::config(settings), settings, &i420) {
                         Ok(packet) => packet,
@@ -129,7 +167,7 @@ pub fn run() -> Result<(), Failure> {
             }
             Ok(())
         });
-        let mut encoded_at = None;
+        let mut cadence = Cadence::default();
         let listener = stream
             .add_local_listener_with_user_data(None)
             .state_changed(move |_, _, _, state| {
@@ -155,12 +193,10 @@ pub fn run() -> Result<(), Failure> {
                     return;
                 };
                 let elapsed = clock.elapsed();
-                // The software preview caps its rate to leave room for the UI and RTC.
-                const FPS: u16 = 15;
-                if encoded_at.is_some_and(|previous| {
-                    elapsed.saturating_sub(previous)
-                        < std::time::Duration::from_secs(1) / u32::from(FPS)
-                }) {
+                // Leave processing time for the UI and RTC on the software path.
+                let limits = control.limits();
+                let fps = limits.fps.min(15);
+                if !cadence.accept(elapsed, fps) {
                     return;
                 }
                 let Some(data) = buffer.datas_mut().first_mut() else {
@@ -191,17 +227,20 @@ pub fn run() -> Result<(), Failure> {
                 ) else {
                     return;
                 };
-                let settings = Settings {
-                    source,
-                    width: width & !1,
-                    height: height & !1,
-                    fps: FPS,
-                    bitrate: 2_000_000,
-                };
-                let Some(i420) = convert(format.format(), settings, stride, pixels) else {
+                let raw = (width & !1, height & !1);
+                let Some((width, height)) = limits.dimensions(source, raw.0, raw.1) else {
                     return;
                 };
-                encoded_at = Some(elapsed);
+                let settings = Settings {
+                    source,
+                    width,
+                    height,
+                    fps,
+                    bitrate: limits.bitrate,
+                };
+                let Some(i420) = convert(format.format(), raw, settings, stride, pixels) else {
+                    return;
+                };
                 let _ = pictures.try_send(Picture {
                     settings,
                     captured_at: elapsed,
@@ -250,42 +289,31 @@ fn write_frame(
     output.flush()
 }
 
-fn start_control() -> io::Result<Arc<Control>> {
+fn start_control(source: Source) -> io::Result<Arc<Control>> {
     // Standard output is a private full-duplex socket. Writes return video;
     // reads carry settings from the supervisor.
     let mut input = UnixStream::from(io::stdout().as_fd().try_clone_to_owned()?);
     let mut header = [0; HEADER_BYTES];
     input.read_exact(&mut header)?;
-    let start = Header {
-        bytes: 4,
-        ..Header::empty(Kind::CaptureStart, 0)
+    let header_for = |kind| Header {
+        bytes: CaptureLimits::BYTES as u32,
+        ..Header::empty(kind, 0)
     };
-    if Header::from_bytes(header)? != start {
+    if Header::from_bytes(header)? != header_for(Kind::CaptureStart) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "expected capture start",
         ));
     }
 
-    let mut target = [0; 4];
+    let mut target = [0; CaptureLimits::BYTES];
     input.read_exact(&mut target)?;
-    let bitrate = u32::from_be_bytes(target);
-    if !Settings::valid_bitrate(bitrate) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid capture bitrate",
-        ));
-    }
     let control = Arc::new(Control {
-        bitrate: AtomicU32::new(bitrate),
+        limits: Mutex::new(CaptureLimits::from_bytes(source, target)?),
         keyframe: AtomicBool::new(false),
     });
     let values = Arc::clone(&control);
     std::thread::Builder::new().spawn(move || {
-        let update = Header {
-            bytes: 4,
-            ..Header::empty(Kind::SetBitrate, 0)
-        };
         let mut header = [0; HEADER_BYTES];
         loop {
             if let Err(error) = input.read_exact(&mut header) {
@@ -296,14 +324,18 @@ fn start_control() -> io::Result<Arc<Control>> {
                 values.keyframe.store(true, Ordering::Relaxed);
                 continue;
             }
-            if header != Some(update) || input.read_exact(&mut target).is_err() {
+            if header != Some(header_for(Kind::SetCaptureLimits))
+                || input.read_exact(&mut target).is_err()
+            {
                 std::process::exit(1);
             }
-            let target = u32::from_be_bytes(target);
-            if !Settings::valid_bitrate(target) {
+            let Ok(next) = CaptureLimits::from_bytes(source, target) else {
                 std::process::exit(1);
-            }
-            values.bitrate.store(target, Ordering::Relaxed);
+            };
+            *values
+                .limits
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = next;
         }
     })?;
     Ok(control)
@@ -365,66 +397,76 @@ fn video_format(source: Source) -> io::Result<Vec<u8>> {
 
 fn convert(
     format: VideoFormat,
+    raw: (u16, u16),
     settings: Settings,
     stride: usize,
     pixels: &[u8],
 ) -> Option<Vec<u8>> {
-    let width = usize::from(settings.width);
-    let height = usize::from(settings.height);
+    let (width, height) = (usize::from(settings.width), usize::from(settings.height));
+    let (raw_width, raw_height) = (usize::from(raw.0), usize::from(raw.1));
+    if raw_width < width || raw_height < height || !raw_width.is_multiple_of(2) {
+        return None;
+    }
     let bytes_per_pixel = match format {
         VideoFormat::BGRx | VideoFormat::RGBx | VideoFormat::BGRA | VideoFormat::RGBA => 4,
         VideoFormat::RGB | VideoFormat::BGR => 3,
         VideoFormat::YUY2 => 2,
         _ => return None,
     };
-    let row_bytes = width * bytes_per_pixel;
+    let row_bytes = raw_width * bytes_per_pixel;
     if stride < row_bytes {
         return None;
     }
     let len = settings.frame_bytes().ok()?;
-    let needed = stride
-        .checked_mul(height.checked_sub(1)?)?
-        .checked_add(row_bytes)?;
+    let needed = stride.checked_mul(raw_height - 1)?.checked_add(row_bytes)?;
     let pixels = pixels.get(..needed)?;
     let mut planar = vec![0; len];
     let (y, uv) = planar.split_at_mut(width * height);
     let (u, v) = uv.split_at_mut(uv.len() / 2);
+    let is_yuy2 = format == VideoFormat::YUY2;
+    let red = usize::from(matches!(
+        format,
+        VideoFormat::BGRx | VideoFormat::BGRA | VideoFormat::BGR
+    )) * 2;
+    let sample = |row: &[u8], x: usize| {
+        let offset = x * bytes_per_pixel;
+        if is_yuy2 {
+            let pair = offset & !3;
+            (row[offset], row[pair + 1], row[pair + 3])
+        } else {
+            yuv(row[offset + red], row[offset + 1], row[offset + 2 - red])
+        }
+    };
+    let columns: Vec<_> = (0..width).map(|x| x * raw_width / width).collect();
     for row in (0..height).step_by(2) {
-        let row_start = row * stride;
-        let top = &pixels[row_start..row_start + row_bytes];
-        let next_start = row_start + stride;
-        let bottom = &pixels[next_start..next_start + row_bytes];
-        for column in (0..width).step_by(2) {
-            let chroma = (row / 2) * (width / 2) + column / 2;
-            let luma = row * width + column;
-            let offset = column * bytes_per_pixel;
-            if format == VideoFormat::YUY2 {
-                let top = &top[offset..offset + 4];
-                let bottom = &bottom[offset..offset + 4];
-                y[luma..luma + 2].copy_from_slice(&[top[0], top[2]]);
-                y[luma + width..luma + width + 2].copy_from_slice(&[bottom[0], bottom[2]]);
-                u[chroma] = top[1].midpoint(bottom[1]);
-                v[chroma] = top[3].midpoint(bottom[3]);
-            } else {
-                let red = usize::from(matches!(
-                    format,
-                    VideoFormat::BGRx | VideoFormat::BGRA | VideoFormat::BGR
-                )) * 2;
-                let quad = [
-                    &top[offset..],
-                    &top[offset + bytes_per_pixel..],
-                    &bottom[offset..],
-                    &bottom[offset + bytes_per_pixel..],
-                ];
-                let [first, second, third, fourth] = quad.map(|p| yuv(p[red], p[1], p[2 - red]));
-                [y[luma], y[luma + 1], y[luma + width], y[luma + width + 1]] =
-                    [first.0, second.0, third.0, fourth.0];
-                let average = |a: u8, b: u8, c: u8, d: u8| {
-                    ((u16::from(a) + u16::from(b) + u16::from(c) + u16::from(d) + 2) / 4) as u8
-                };
-                u[chroma] = average(first.1, second.1, third.1, fourth.1);
-                v[chroma] = average(first.2, second.2, third.2, fourth.2);
-            }
+        let row_bytes_at = |output_row: usize| {
+            let start = (output_row * raw_height / height) * stride;
+            &pixels[start..start + row_bytes]
+        };
+        let top = row_bytes_at(row);
+        let bottom = row_bytes_at(row + 1);
+        for (pair, &[left, right]) in columns.as_chunks::<2>().0.iter().enumerate() {
+            let chroma = (row / 2) * (width / 2) + pair;
+            let luma = row * width + pair * 2;
+            let quad = [
+                sample(top, left),
+                sample(top, right),
+                sample(bottom, left),
+                sample(bottom, right),
+            ];
+            let [first, second, third, fourth] = quad;
+            [y[luma], y[luma + 1], y[luma + width], y[luma + width + 1]] =
+                [first.0, second.0, third.0, fourth.0];
+            let average = |a: u8, b: u8, c: u8, d: u8| {
+                ((u16::from(a)
+                    + u16::from(b)
+                    + u16::from(c)
+                    + u16::from(d)
+                    + if is_yuy2 { 0 } else { 2 })
+                    / 4) as u8
+            };
+            u[chroma] = average(first.1, second.1, third.1, fourth.1);
+            v[chroma] = average(first.2, second.2, third.2, fourth.2);
         }
     }
     Some(planar)
@@ -443,6 +485,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn keeps_3440_by_1440_at_the_1440p_tier() {
+        let source = Source::Screen;
+        let raw = (3440, 1440);
+        let limits = CaptureLimits {
+            height: 1440,
+            fps: 60,
+            bitrate: 8_000_000,
+        };
+        let (width, height) = limits.dimensions(source, raw.0, raw.1).unwrap();
+        assert_eq!((width, height), raw);
+        let settings = Settings {
+            source,
+            width,
+            height,
+            fps: 15,
+            bitrate: limits.bitrate,
+        };
+        let stride = usize::from(raw.0) * 4;
+        let mut pixels = vec![0; stride * usize::from(raw.1)];
+        let last = pixels.len() - 2;
+        pixels[last] = 255;
+        let frame = convert(VideoFormat::BGRx, raw, settings, stride, &pixels).unwrap();
+        assert_eq!(frame.len(), settings.frame_bytes().unwrap());
+        assert_eq!(frame[0], 16);
+        assert_eq!(frame[usize::from(width) * usize::from(height) - 1], 63);
+    }
+
+    #[test]
+    fn cadence_reduces_100_fps_to_60_fps() {
+        let mut cadence = Cadence::default();
+        let sent = (0..100)
+            .filter(|index| cadence.accept(Duration::from_millis(index * 10), 60))
+            .count();
+        assert_eq!(sent, 60);
+    }
+
+    #[test]
     fn validates_stride_and_converts_bgrx_as_bt709() {
         let settings = Settings {
             source: Source::Screen,
@@ -454,11 +533,11 @@ mod tests {
         let stride = usize::from(settings.width) * 4 + 4;
         let mut pixels = vec![0; stride * 16];
         pixels[2] = 255;
-        let converted = convert(VideoFormat::BGRx, settings, stride, &pixels).unwrap();
+        let converted = convert(VideoFormat::BGRx, (16, 16), settings, stride, &pixels).unwrap();
         assert_eq!(converted[0], 63);
         assert_eq!(converted[16 * 16 + 16 * 16 / 4], 156);
-        assert!(convert(VideoFormat::BGRx, settings, 12, &pixels).is_none());
-        assert!(convert(VideoFormat::BGRx, settings, usize::MAX, &pixels).is_none());
-        assert!(convert(VideoFormat::BGRx, settings, stride, &pixels[..1]).is_none());
+        assert!(convert(VideoFormat::BGRx, (16, 16), settings, 12, &pixels).is_none());
+        assert!(convert(VideoFormat::BGRx, (16, 16), settings, usize::MAX, &pixels).is_none());
+        assert!(convert(VideoFormat::BGRx, (16, 16), settings, stride, &pixels[..1]).is_none());
     }
 }

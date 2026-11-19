@@ -1,42 +1,27 @@
 #!/usr/bin/env python3
-"""Calls on a stock Mumble server: Start call, the call card, Join, Rotate link,
-End call and the creator's lease (docs/desktop.md, "Calls").
+"""Native desktop call controls and invitations on a loopback Mumble server.
 
-Two real desktops (Andi and Bea) in a private headless GNOME Shell, operated
-over AT-SPI, a stock Mumble client ("Witness") in the same channel of a
-loopback Murmur, and an owned loopback call host that answers the lease. Each
-desktop's `xdg-open` is a script that records the URL in place of a browser.
-It exercises the browser fallback against a local call host. Checks:
+Andi and Bea run in a private headless GNOME Shell with synthetic PulseAudio.
+A Mumble-protocol witness checks the public and private chat links. The call
+host listens on loopback and holds TLS admission open, so the test exercises the
+call UI and invitation lifecycle without granting camera or screen capture.
+Set TMPDIR and NUSCHL_WL_TMP to a short disk-backed scratch path.
 
-- Start call in browser opens the creator's page (S, V and P, V matching P) and posts
-  the Join link (S and V) as text, which the stock client receives;
-- the lease reaches the call host with stream_id and host_key; P stays with Andi;
-- Bea's card names Andi and the host, and Join opens the page with S and V;
-- Rotate link opens a new creator page and Bea's Join follows the new S;
-- the call ends when the call host reports the room gone; Share screen in browser starts
-  a new one, and End call ends it and releases the lease; Bea's card goes away
-  both times;
-- a direct call from Andi to Bea shows Bea's card in her conversation with
-  Andi, Join opens its link, and the Witness sees neither; a direct call to
-  the Witness reaches it as a private message.
-
-    python3 tests/calls_desktop.py <binaries> --murmur <mumble-server> \\
-        --at-spi <at-spi2-core> --pulse-bin <pulseaudio>/bin --opus-library <libopus.so> \\
+    python3 tests/calls_desktop.py <binaries> --murmur <mumble-server> \
+        --at-spi <at-spi2-core> --pulse-bin <pulseaudio>/bin --opus-library <libopus.so> \
         --gnome-shell <gnome-shell> --output <directory>
 """
 import argparse
-import base64
 import hashlib
-import hmac
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import html
 import json
 from pathlib import Path
 import re
+import shlex
+import socket
 import ssl
 import sys
 import tempfile
-import threading
-import time
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -44,37 +29,7 @@ from accessibility import items, start_registry  # noqa: E402
 from gnome_session import GnomeSession  # noqa: E402
 from local_murmur import Murmur, eventually, free_port  # noqa: E402
 from mumble_client import Client  # noqa: E402
-from voice_servers import VoiceTest, WIDTH, HEIGHT  # noqa: E402
-
-SECRET = r"[A-Za-z0-9_-]{43}"
-LABEL = b"nuschl/stream/v2"
-
-
-def hkdf(secret, name, length):
-    """HKDF-SHA256 as nuschl-stream derives from S and P."""
-    prk = hmac.new(LABEL, secret, hashlib.sha256).digest()
-    return hmac.new(prk, LABEL + b" " + name + b"\x01", hashlib.sha256).digest()[:length]
-
-
-def decode(value):
-    return base64.urlsafe_b64decode(value + "=")
-
-
-class CallHost(BaseHTTPRequestHandler):
-    """The lease endpoint over loopback HTTP: 204 while `room` is set, else 404."""
-    room = True
-    requests = []
-
-    def answer(self):
-        body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
-        CallHost.requests.append((self.command, self.path, json.loads(body)))
-        self.send_response(204 if CallHost.room else 404)
-        self.end_headers()
-
-    do_POST = do_DELETE = answer
-
-    def log_message(self, *_):
-        pass
+from voice_servers import VoiceTest  # noqa: E402
 
 
 class CallTest(VoiceTest):
@@ -86,17 +41,19 @@ class CallTest(VoiceTest):
             "username": name, "certificate_sha256": self.pin,
         }]))
         (profile / "config/settings.json").write_text(json.dumps({
-            "server_icons": False, "call_host": f"127.0.0.1:{self.host.server_port}",
+            "server_icons": False, "call_host": self.call_host,
         }))
         opened = self.root / f"{name}-opened.txt"
         bin_dir = self.root / f"{name}-bin"
         bin_dir.mkdir()
-        (bin_dir / "xdg-open").write_text(f"#!/bin/sh\nprintf '%s\\n' \"$1\" >> {opened}\n")
-        (bin_dir / "xdg-open").chmod(0o755)
+        launcher = bin_dir / "xdg-open"
+        launcher.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$1\" >> {shlex.quote(str(opened))}\n")
+        launcher.chmod(0o755)
         env = self.shell.app_environment()
         env.pop("NO_AT_BRIDGE", None)
         env.pop("BROWSER", None)
         env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        env.update(NO_PROXY="*", no_proxy="*")
         self.spawn([str(self.args.binaries / "nuschl"), "--profile-dir", str(profile),
                     f"mumble://{name}@127.0.0.1:{self.murmur.port}/Lobby"],
                    env | {"NUSCHL_AUDIO_BACKEND": "pulse"}, f"desktop-{name}.log")
@@ -113,30 +70,51 @@ class CallTest(VoiceTest):
                      and (node_name.startswith(name) if prefix else node_name == name)), None)
 
     def direct(self, app, name):
-        """Open the direct conversation with `name` from the channel tree."""
         eventually(lambda: self.find(app, "tree item", name, prefix=True), f"no user {name!r}").press()
         eventually(lambda: any(role == "list" and label.startswith("Messages with") and label.endswith(name)
                                for _, role, label, _ in items(app)), f"no conversation with {name}")
 
-    def press(self, app, name):
-        eventually(lambda: self.find(app, "push button", name), f"no button {name!r}").press()
+    def control(self, app, name, shown=True):
+        def matches():
+            node = self.find(app, "push button", name)
+            return node if shown else node is None
 
-    @staticmethod
-    def opened(path, count):
-        return eventually(lambda: path.exists() and len(lines := path.read_text().split()) >= count
-                          and lines[count - 1], f"{path.name}: URL {count} not opened")
+        return eventually(matches, f"expected {name!r} to be {'shown' if shown else 'hidden'}", timeout=15)
+
+    def press(self, app, name):
+        self.control(app, name).press()
+
+    def invitation(self, app):
+        eventually(lambda: self.find(app, None, f"Video call · Andi · {self.call_host}"),
+                   "Bea has no call card", timeout=15)
+
+    def witness_link(self):
+        marker = f"https://{self.call_host}/call#"
+        event = self.witness.wait(lambda event: event["kind"] == "text" and marker in event["body"])
+        body = html.unescape(event["body"])
+        secret = r"[A-Za-z0-9_-]{43}"
+        assert re.search(rf"{re.escape(marker)}v=1&k={secret}&h={secret}(?![A-Za-z0-9_-])", body), body
+        assert "&p=" not in body, body
+        return event
+
+    def inline(self, app):
+        self.control(app, "Full screen")
+        eventually(lambda: self.find(app, "list", "Messages in #Lobby"),
+                   "inline call displaced chat", timeout=15)
 
     def run(self):
-        self.shell = GnomeSession(self.args.gnome_shell, 2 * WIDTH + 120, HEIGHT + 100,
+        self.shell = GnomeSession(self.args.gnome_shell, 1440, 950,
                                   log=(self.args.output / "shell.log").open("w"))
         self.shell.start()
         env = self.shell.app_environment()
         env.pop("NO_AT_BRIDGE", None)
         registry = start_registry(self.args.at_spi, env, self.spawn)
         self.start_pulse()
-        self.host = ThreadingHTTPServer(("127.0.0.1", 0), CallHost)
-        threading.Thread(target=self.host.serve_forever, daemon=True).start()
-        try:
+
+        # TCP connects to this owned listener. TLS waits with no application
+        # reading it, so the desktop never reaches the portal request.
+        with socket.create_server(("127.0.0.2", 0)) as listener:
+            self.call_host = f"127.0.0.2:{listener.getsockname()[1]}"
             directory = self.root / "murmur"
             directory.mkdir()
             self.murmur = Murmur(self.args.murmur, directory, free_port())
@@ -150,97 +128,65 @@ class CallTest(VoiceTest):
             self.witness.send(kind="join", channel=1)
             andi, andi_opened = self.desktop("Andi", registry, set())
             bea, bea_opened = self.desktop("Bea", registry, {andi.destination})
-            origin = f"https://127.0.0.1:{self.host.server_port}"
-            creator = rf"{re.escape(origin)}/call#v=1&k=({SECRET})&h=({SECRET})&p=({SECRET})"
+            self.control(andi, "Share screen")
+            self.control(andi, "Start call", shown=False)
+            self.control(andi, "Start call in browser", shown=False)
 
-            # Start call: Andi's page holds S, V and P; the channel gets S and V.
-            self.press(andi, "Start call in browser")
-            page = self.opened(andi_opened, 1)
-            match = re.fullmatch(creator, page)
-            assert match, page
-            secret, check, publisher = match.groups()
-            host_key = hkdf(decode(publisher), b"host", 32)
-            assert decode(check) == hashlib.sha256(host_key).digest()
-            text = self.witness.wait(lambda event: event["kind"] == "text" and secret in event["body"],
-                                     timeout=15)["body"]
-            assert f"/call#v=1&amp;k={secret}&amp;h={check}" in text and publisher not in text, text
-            # The lease carries the room and host_key; P stays with Andi.
-            lease = {"stream_id": hkdf(decode(secret), b"stream id", 16).hex(), "host_key": host_key.hex()}
-            eventually(lambda: ("POST", "/sfu/lease", lease) in CallHost.requests, "no lease renewal", timeout=15)
-            assert all(publisher not in json.dumps(body) and decode(publisher).hex() not in json.dumps(body)
-                       for _, _, body in CallHost.requests)
+            self.press(andi, "Start camera")
+            self.inline(andi)
+            self.control(andi, "Open in browser", shown=False)
+            self.press(andi, "Quality · Auto")
+            self.press(andi, "720p30")
+            self.control(andi, "Quality · 720p30")
+            self.press(andi, "Hide video stats")
+            self.control(andi, "Video stats")
+            assert self.witness_link()["target"] == {"kind": "channel", "id": 1}
+            self.invitation(bea)
+            self.control(bea, "Open in browser", shown=False)
 
-            # Bea's card and Join.
-            eventually(lambda: self.find(bea, None, f"Video call · Andi · 127.0.0.1:{self.host.server_port}"),
-                       "Bea has no call card")
-            self.press(bea, "Open in browser")
-            assert self.opened(bea_opened, 1) == f"{origin}/call#v=1&k={secret}&h={check}"
-            self.shot("card")
+            self.press(bea, "Join video call")
+            self.inline(bea)
+            self.press(bea, "Full screen")
+            self.control(bea, "Exit full screen")
+            eventually(lambda: not self.find(bea, "list", "Messages in #Lobby"),
+                       "full screen kept the inline chat tree", timeout=15)
+            self.press(bea, "Exit full screen")
+            self.inline(bea)
+            self.press(bea, "Minimize call")
+            self.control(bea, "Return to call")
+            self.control(bea, "Full screen", shown=False)
+            self.press(bea, "Return to call")
+            self.inline(bea)
 
-            # Rotate link: a new page for Andi, a new S for Bea.
-            self.press(andi, "Rotate link")
-            rotated = self.opened(andi_opened, 2)
-            new_secret, new_check, _ = re.fullmatch(creator, rotated).groups()
-            assert new_secret != secret and new_check != check
-            self.witness.wait(lambda event: event["kind"] == "text" and new_secret in event["body"], timeout=15)
-
-            def joins(expected):
-                self.press(bea, "Open in browser")
-                time.sleep(0.5)
-                return bea_opened.read_text().split()[-1] == expected
-            eventually(lambda: joins(f"{origin}/call#v=1&k={new_secret}&h={new_check}"),
-                       "Join did not follow the new link")
-
-            # The room goes away: the lease ends the call and the card goes.
-            CallHost.room = False
-            eventually(lambda: self.find(andi, "push button", "Start call in browser"), "the lease did not end the call",
-                       timeout=30)
-            eventually(lambda: not self.find(bea, "push button", "Open in browser"), "Bea kept an ended call")
-
-            # Share screen starts a call too; End call releases the lease.
-            CallHost.room = True
-            self.press(andi, "Share screen in browser")
-            assert re.fullmatch(creator, self.opened(andi_opened, 3))
-            eventually(lambda: self.find(bea, "push button", "Open in browser"), "Bea has no card for the new call")
             self.press(andi, "End call")
-            eventually(lambda: any(method == "DELETE" for method, _, _ in CallHost.requests),
-                       "End call kept the lease")
-            eventually(lambda: not self.find(bea, "push button", "Open in browser"), "Bea kept an ended call")
-            self.witness.wait(lambda event: event["kind"] == "text" and "Call ended" in event["body"], timeout=15)
+            self.control(andi, "Start camera")
+            self.control(bea, "Leave video", shown=False)
+            self.control(bea, "Join video call", shown=False)
+            self.witness.wait(lambda event: event["kind"] == "text" and "Call ended" in event["body"])
 
-            # A direct call: Andi and Bea alone. The Witness gets neither the
-            # link nor a card; Bea's card is in her conversation with Andi.
+            # A direct screen call makes the card available to Bea in the
+            # direct conversation. The Mumble witness sees only channel links.
             self.direct(andi, "Bea")
-            self.press(andi, "Start call in browser")
-            secret, check, _ = re.fullmatch(creator, self.opened(andi_opened, 4)).groups()
             self.direct(bea, "Andi")
-            eventually(lambda: self.find(bea, None, f"Video call · Andi · 127.0.0.1:{self.host.server_port}"),
-                       "Bea has no card for the direct call")
-            self.press(bea, "Open in browser")
-            eventually(lambda: bea_opened.read_text().split()[-1] == f"{origin}/call#v=1&k={secret}&h={check}",
-                       "Join did not open the direct call")
-            self.shot("direct-card")
-            assert not any(secret in event.get("body", "") for event in list(self.witness.events)), \
-                "the Witness saw the direct call"
+            self.press(andi, "Share screen")
+            self.invitation(bea)
+            self.press(bea, "Join video call")
+            self.press(bea, "Leave video")
+            self.control(bea, "Join video call")
             self.press(andi, "End call")
-            eventually(lambda: not self.find(bea, "push button", "Open in browser"), "Bea kept an ended direct call")
+            self.control(bea, "Join video call", shown=False)
 
-            # A direct call with a stock client: the link arrives as a private message.
+            # The same action carries the link as a private Mumble message
+            # when the call recipient uses the Mumble protocol only.
             self.direct(andi, "Witness")
-            self.press(andi, "Share screen in browser")
-            secret = re.fullmatch(creator, self.opened(andi_opened, 5)).group(1)
-            private = self.witness.wait(lambda event: event["kind"] == "text" and secret in event["body"],
-                                        timeout=15)
+            self.press(andi, "Share screen")
             andi_session = next(user["session"] for user in self.witness.users.values() if user["name"] == "Andi")
-            assert private["target"] == {"kind": "direct", "id": andi_session}, private
-            print("Calls: Start call, card, Join, Rotate link, lease end, End call and direct calls passed.",
-                  flush=True)
-        finally:
-            self.host.shutdown()
+            assert self.witness_link()["target"] == {"kind": "direct", "id": andi_session}
+            self.press(andi, "End call")
 
-    def shot(self, name):
-        time.sleep(0.8)
-        print(self.shell.screenshot(self.args.output / f"calls-{name}.png"), flush=True)
+            assert not andi_opened.exists() and not bea_opened.exists(), "a call launched the browser"
+            assert not self.microphone_open()
+            print("Calls passed for native controls, channel and direct invitations, and cleanup.", flush=True)
 
 
 def main():

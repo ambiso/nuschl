@@ -385,15 +385,39 @@ try:
     def advancing(driver, peer, what):
         """The peer's tiles play and their pictures change (the fake devices animate)."""
         showing(driver, everyone[driver], what)
-        pictures = f"""return [...document.querySelectorAll('.tile[data-peer="{peer}"] video')].map(video => {{
-          const canvas = Object.assign(document.createElement('canvas'), {{width: 32, height: 18}});
-          canvas.getContext('2d').drawImage(video, 0, 0, 32, 18);
-          return Array.from(canvas.getContext('2d').getImageData(0, 0, 32, 18).data).join();
-        }})"""
-        before = driver.execute_script(pictures)
-        time.sleep(2)
-        after = driver.execute_script(pictures)
-        assert len(before) == 2 and all(x != y for x, y in zip(before, after)), what
+        pictures = f"""
+        const canvas = Object.assign(document.createElement('canvas'), {{width: 32, height: 18}});
+        const context = canvas.getContext('2d');
+        const pictures = {{}};
+        for (const tile of document.querySelectorAll('.tile[data-peer="{peer}"]')) {{
+          const video = tile.querySelector('video');
+          if (!video.videoWidth || video.readyState < video.HAVE_CURRENT_DATA) continue;
+          context.drawImage(video, 0, 0, 32, 18);
+          const kind = 'screen' in tile.dataset ? 'screen' : 'camera';
+          pictures[kind] = [video.srcObject.id, video.videoWidth, video.videoHeight,
+            Array.from(context.getImageData(0, 0, 32, 18).data).join()];
+        }}
+        return pictures;
+        """
+        before = {}
+        waiting = {"camera", "screen"}
+        deadline = time.monotonic() + 15
+        while waiting:
+            current = driver.execute_script(pictures)
+            for kind in waiting & current.keys():
+                frame = current[kind]
+                # Compare pictures at the same size and on the same stream.
+                if kind not in before or before[kind][:3] != frame[:3]:
+                    before[kind] = frame
+                elif before[kind][3] != frame[3]:
+                    waiting.remove(kind)
+            if not waiting:
+                return
+            if time.monotonic() >= deadline:
+                sizes = {kind: frame[1:3] for kind, frame in current.items()}
+                raise AssertionError(f"{what} ({driver.name}): no picture change for {sorted(waiting)}. "
+                                     f"Latest video sizes {sizes}")
+            time.sleep(0.5)
 
     vp9.get(f"{ORIGIN}/call{LINK}")
     codec_everywhere("VP9")

@@ -3515,6 +3515,7 @@ dependencies = [
  "nuschl-link-preview",
  "nuschl-protocol",
  "nuschl-sandbox",
+ "nuschl-stream-quality",
  "p12-keystore",
  "prost",
  "rcgen",
@@ -3531,6 +3532,10 @@ dependencies = [
  "uuid",
  "webpki-roots",
 ]
+
+[[package]]
+name = "nuschl-stream-quality"
+version = "0.2.0"
 
 [[package]]
 name = "nuschld"

@@ -34,6 +34,75 @@ impl Source {
     }
 }
 
+/// The sender's current caps. Height limits the shorter side of the source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CaptureLimits {
+    pub height: u16,
+    pub fps: u16,
+    pub bitrate: u32,
+}
+
+impl CaptureLimits {
+    pub const BYTES: usize = 8;
+
+    pub fn for_source(source: Source, bitrate: u32) -> Self {
+        Self {
+            height: source.max_dimensions().1,
+            fps: 120,
+            bitrate,
+        }
+    }
+
+    pub fn validate(self, source: Source) -> io::Result<()> {
+        if !(16..=source.max_dimensions().1).contains(&self.height)
+            || !(1..=120).contains(&self.fps)
+            || !Settings::valid_bitrate(self.bitrate)
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+
+    /// Fit the worker's frame budget and the selected quality while keeping
+    /// the source's proportions, rounded down to even I420 dimensions.
+    pub fn dimensions(self, source: Source, width: u16, height: u16) -> Option<(u16, u16)> {
+        let (width, height) = (u32::from(width), u32::from(height));
+        if width.min(height) < 16 {
+            return None;
+        }
+        let (max_width, max_height) = source.max_dimensions();
+        let (numerator, denominator) = [
+            (width, width),
+            (max_width.into(), width),
+            (max_height.into(), height),
+            (self.height.into(), width.min(height)),
+        ]
+        .into_iter()
+        .min_by(|(left, ld), (right, rd)| (left * rd).cmp(&(right * ld)))?;
+        let [width, height] =
+            [width, height].map(|side| ((side * numerator / denominator) & !1) as u16);
+        (width.min(height) >= 16).then_some((width, height))
+    }
+
+    pub fn to_bytes(self) -> [u8; Self::BYTES] {
+        let [h1, h2] = self.height.to_be_bytes();
+        let [f1, f2] = self.fps.to_be_bytes();
+        let [b1, b2, b3, b4] = self.bitrate.to_be_bytes();
+        [h1, h2, f1, f2, b1, b2, b3, b4]
+    }
+
+    pub fn from_bytes(source: Source, bytes: [u8; Self::BYTES]) -> io::Result<Self> {
+        let [h1, h2, f1, f2, b1, b2, b3, b4] = bytes;
+        let limits = Self {
+            height: u16::from_be_bytes([h1, h2]),
+            fps: u16::from_be_bytes([f1, f2]),
+            bitrate: u32::from_be_bytes([b1, b2, b3, b4]),
+        };
+        limits.validate(source)?;
+        Ok(limits)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Settings {
     pub source: Source,
@@ -114,12 +183,12 @@ pub enum Kind {
     Dropped,
     CaptureFrame,
     HardwareFrame,
-    SetBitrate,
-    CaptureStart,
-    Decode,
+    Decode = 10,
     Decoded,
     ResetDecoder,
     CaptureKeyframe = 20,
+    CaptureStart,
+    SetCaptureLimits,
 }
 
 /// Each reply carries the ID from its request.
@@ -172,12 +241,12 @@ impl Header {
             5 => Kind::Dropped,
             6 => Kind::CaptureFrame,
             7 => Kind::HardwareFrame,
-            8 => Kind::SetBitrate,
-            9 => Kind::CaptureStart,
             10 => Kind::Decode,
             11 => Kind::Decoded,
             12 => Kind::ResetDecoder,
             20 => Kind::CaptureKeyframe,
+            21 => Kind::CaptureStart,
+            22 => Kind::SetCaptureLimits,
             _ => return Err(invalid()),
         };
         let key = flags == KEY;
@@ -225,6 +294,36 @@ mod tests {
             bytes[index] = value;
             assert!(Header::from_bytes(bytes).is_err());
         }
+    }
+
+    #[test]
+    fn capture_limits_keep_an_ultrawide_at_its_native_tier() {
+        let limits = CaptureLimits {
+            height: 1440,
+            fps: 60,
+            bitrate: 8_000_000,
+        };
+        assert_eq!(
+            CaptureLimits::from_bytes(Source::Screen, limits.to_bytes()).unwrap(),
+            limits
+        );
+        assert!(CaptureLimits::from_bytes(Source::Camera, limits.to_bytes()).is_err());
+        assert_eq!(
+            limits.dimensions(Source::Screen, 3440, 1440),
+            Some((3440, 1440))
+        );
+        assert_eq!(
+            limits.dimensions(Source::Screen, 2560, 1080),
+            Some((2560, 1080))
+        );
+        assert_eq!(
+            CaptureLimits {
+                height: 720,
+                ..limits
+            }
+            .dimensions(Source::Screen, 3440, 1440),
+            Some((1720, 720))
+        );
     }
 
     #[test]

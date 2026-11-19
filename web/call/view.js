@@ -5,8 +5,8 @@
 // tiles too; `controls.js` starts and stops them.
 
 import { qualityOptions } from "./controls.js";
-import { fitTier, qualityRequest } from "./signal.js";
-import { ReceiverStats } from "./receiver-stats.js";
+import { TIERS, fitTier, qualityRequest } from "./signal.js";
+import { VideoStats } from "./receiver-stats.js";
 
 const endings = {
   transforms: ["Browser not supported", "Use a current Firefox or Chromium."],
@@ -48,7 +48,7 @@ export class View {
   constructor(document, call) {
     this.document = document;
     this.call = call;
-    this.stats = new ReceiverStats(document);
+    this.stats = new VideoStats(document);
     this.observer = new document.defaultView.ResizeObserver((entries) => {
       for (const { target, contentRect, devicePixelContentBoxSize } of entries) {
         const device = devicePixelContentBoxSize?.[0];
@@ -103,7 +103,7 @@ export class View {
     // tile or someone else's screen.
     const own = [...call.sources].map(([kind, source]) => [
       `own:${source.track.id}`,
-      { peer: call.self, screen: kind === "screen", stream: source.stream, own: true },
+      { peer: call.self, screen: kind === "screen", stream: source.stream, own: true, source },
     ]);
     const videos = [...call.tracks].filter(([, track]) => track.kind === "video")
       .map(([mid, track]) => [mid, call.direct.track(track)]).concat(own);
@@ -156,8 +156,12 @@ export class View {
     const tile = element(this.document, "figure", { class: "tile", "data-state": "waiting", "data-peer": String(track.peer) },
       video, element(this.document, "figcaption", {}, label), toggle);
     if (track.screen) tile.dataset.screen = "";
-    if (track.own) tile.dataset.own = "";
-    else if (track.receiver) tile.append(this.videoStats(mid, video, track, label));
+    if (track.own) {
+      tile.dataset.own = "";
+      const kind = track.screen ? "screen" : "camera";
+      video.addEventListener("resize", () => this.call.applyCap(kind, track.source).catch(() => {}));
+    }
+    if (track.own || track.receiver) tile.append(this.videoStats(mid, video, track, label));
     video.addEventListener("loadeddata", () => { tile.dataset.state = "playing"; });
     this.tiles.set(mid, tile);
     return tile;
@@ -168,17 +172,29 @@ export class View {
     const details = element(doc, "details", { class: "video-stats" });
     const list = element(doc, "dl");
     const jitter = { title: "Average time a frame spent in the receiver’s jitter buffer" };
-    const values = ["Resolution", "Decoded frame rate", "Presented frame rate", "Receive bitrate", "Jitter buffer delay"]
-      .map(name => {
-        const value = element(doc, "dd", {}, "—");
-        list.append(element(doc, "dt", name === "Jitter buffer delay" ? jitter : {}, name), value);
-        return value;
-      });
+    const names = track.own
+      ? ["Capture resolution", "Send target", "Call server limit", "Encoder size ceiling", "Encoded resolution", "Browser adaptation"]
+      : ["Resolution", "Decoded frame rate", "Presented frame rate", "Receive bitrate", "Jitter buffer delay", "Receive target"];
+    const values = names.map(name => {
+      const value = element(doc, "dd", {}, "—");
+      list.append(element(doc, "dt", name === "Jitter buffer delay" ? jitter : {}, name), value);
+      return value;
+    });
+    const kind = track.screen ? "screen" : "camera";
+    const quality = track.own ? null : this.viewerQuality(mid, video, track, label);
     const message = element(doc, "p", { hidden: "" });
-    details.append(element(doc, "summary", { "aria-label": `Video stats for ${label}` }, "Video stats"),
-      this.viewerQuality(mid, video, track, label), message, list);
+    details.append(element(doc, "summary", { "aria-label": `Video stats for ${label}` }, "Video stats"));
+    if (quality) details.append(quality.control);
+    details.append(message, list);
+    const target = { details, video, message, values, ...(quality ? {
+      receiver: track.receiver, requested: quality.requested,
+    } : {
+      source: track.source,
+      sender: () => this.call.direct.sender(track.source.transceiver.sender),
+      requested: () => TIERS[kind][track.source.tier] ?? TIERS[kind].at(-1),
+    }) };
     details.addEventListener("toggle", () => {
-      if (details.open && details.isConnected) this.stats.open({ details, receiver: track.receiver, video, message, values });
+      if (details.open && details.isConnected) this.stats.open({ ...target });
       else this.stats.close(details);
     });
     return details;
@@ -196,11 +212,16 @@ export class View {
     const sent = this.sentTiers.get(original) ?? { at: -Infinity };
     this.sentTiers.set(original, sent);
     let size = 0, timer;
+    const chosen = () => {
+      if (select.value === "") return size > 0 ? fitTier(kind, size) : undefined;
+      const tier = Number(select.value);
+      return TIERS[kind][tier] ? tier : undefined;
+    };
     const send = () => {
       clearTimeout(timer);
       if (this.call.tracks.get(mid) !== original || this.call.ended) return;
-      const tier = select.value === "" ? fitTier(kind, size) : Number(select.value);
-      if (tier === sent.tier || !size) return;
+      const tier = chosen();
+      if (tier === undefined || tier === sent.tier) return;
       // The SFU accepts one request per second. Keep the latest choice until then.
       const wait = sent.at + 1100 - performance.now();
       if (wait > 0) {
@@ -217,7 +238,11 @@ export class View {
     });
     this.sizes.set(video, { resize: (pixels) => { size = pixels; send(); }, cancel: () => clearTimeout(timer) });
     this.observer.observe(video, { box: "device-pixel-content-box" });
-    return element(this.document, "label", { class: "viewer-quality" }, "Receive quality", select);
+    send();
+    return {
+      control: element(this.document, "label", { class: "viewer-quality" }, "Receive quality", select),
+      requested: () => TIERS[kind][chosen()],
+    };
   }
 
   person(id, role) {
