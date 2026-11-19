@@ -6,7 +6,9 @@ Three synthetic publishers (tests/call_publisher.js, Chromium) join a call on th
 stream host: the creator and a second participant publish a camera each, a third
 a shared screen. A Chromium subscriber and a relay-only Firefox subscriber show
 every source decrypted, in its colour, the screen in the large view, and the full
-roster. The screen exposes receiver video statistics. A pinned camera takes
+roster. The creator and first Chromium subscriber move from the SFU to direct
+video and back as the publisher's bandwidth estimate changes. The screen exposes
+receiver video statistics. A pinned camera takes
 the large view; a publisher leaving takes its tile
 and roster row along. A page user then publishes Chromium's fake camera and
 screen with Start camera and Share screen: nothing is captured before the
@@ -86,6 +88,18 @@ RTCRtpReceiver.getCapabilities = (kind) => {
   const found = capabilities.call(RTCRtpReceiver, kind);
   if (found) found.codecs = found.codecs.filter((codec) => !/av1/i.test(codec.mimeType));
   return found;
+};
+"""
+
+# Keep the browser's real candidate-pair identities while controlling its
+# upload estimate so both paths can be exercised on any VM host.
+DIRECT_UPLOAD = """
+window.uploadEstimate = 1;
+const getStats = RTCPeerConnection.prototype.getStats;
+RTCPeerConnection.prototype.getStats = async function (...args) {
+  const stats = await getStats.apply(this, args);
+  return new Map([...stats].map(([id, entry]) => [id, entry.type === 'candidate-pair'
+    ? {...entry, availableOutgoingBitrate: window.uploadEstimate} : entry]));
 };
 """
 
@@ -189,6 +203,23 @@ def heading(driver):
                 "refusal")
 
 
+def direct_video(publisher, viewer, peer):
+    publisher.execute_script("publish([{color: 'rgb(220,40,40)', label: 'Camera A'}])")
+    tracks = {(peer, False): (COLOURS["a"], False)}
+    direct = "document.getElementById('status').textContent.includes('Direct video')"
+    showing(viewer, tracks, "initial SFU video decoded")
+    publisher.execute_script("window.uploadEstimate = 20_000_000")
+    wait(viewer, f"return {direct}", "direct video connected", timeout=40)
+    showing(viewer, tracks, "direct video decoded")
+    assert publisher.execute_script("return call.sources.get('camera').transceiver.sender.track === null")
+
+    publisher.execute_script("window.uploadEstimate = 1")
+    wait(viewer, f"return !{direct}", "direct video falls back on reduced upload", timeout=20)
+    wait(publisher, "return Boolean(call.sources.get('camera').transceiver.sender.track)",
+         "the SFU sender regained the capture", timeout=20)
+    showing(viewer, tracks, "SFU video decoded after fallback")
+
+
 drivers = []
 try:
     # Every browser starts first, before the media load: a busy host slows startup most.
@@ -198,7 +229,7 @@ try:
     drivers += [user, vp9, plain]
     publishers, pages = {}, {}
     for name, fragment in [("a", CREATOR), ("b", LINK), ("c", LINK)]:
-        driver = pages[name] = chromium()
+        driver = pages[name] = chromium(script=DIRECT_UPLOAD if name == "a" else None)
         drivers.append(driver)
         driver.get(f"{ORIGIN}/call_publisher.html{fragment}")
         publishers[name] = wait(driver, "return window.peer && window.peer()", f"publisher {name} joined")
@@ -206,6 +237,7 @@ try:
             chrome, fox = chromium(script=RECORD_QUALITY), firefox()
             drivers += [chrome, fox]
             chrome.get(f"{ORIGIN}/call{LINK}")
+            direct_video(driver, chrome, publishers[name])
             fox.get(f"{ORIGIN}/call?relay{LINK}")
     a, b, c = (publishers[name] for name in "abc")
     for driver in [chrome, fox]:
@@ -217,7 +249,6 @@ try:
     codec = chrome.find_element(By.ID, "status").text.split(" · ")[0]
     assert codec in ("AV1", "VP9") and fox.find_element(By.ID, "status").text.startswith(codec), codec
 
-    pages["a"].execute_script("publish([{color: 'rgb(220,40,40)', label: 'Camera A'}])")
     pages["b"].execute_script("publish([{color: 'rgb(40,190,70)', label: 'Camera B'}])")
     cameras = {(a, False): (COLOURS["a"], False), (b, False): (COLOURS["b"], False)}
     for driver in [chrome, fox]:
