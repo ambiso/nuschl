@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 
 use super::{
-    Error, HEADER_BYTES, Header, Kind, Settings, Source, invalid,
+    CaptureLimits, Error, HEADER_BYTES, Header, Kind, Settings, Source, invalid,
     supervisor::{DEADLINE, SOURCES},
 };
 use crate::host::preview_lifecycle::Retirement;
@@ -36,6 +36,7 @@ pub struct Capture {
     frames: mpsc::Receiver<Result<VideoFrame, Error>>,
     task: JoinHandle<()>,
     control: watch::Sender<Control>,
+    source: Source,
     waiting_for_key: bool,
     #[cfg(feature = "video-portal")]
     grant: Option<ashpd::zbus::Connection>,
@@ -43,7 +44,7 @@ pub struct Capture {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Control {
-    bitrate: u32,
+    limits: CaptureLimits,
     key_request: u64,
 }
 
@@ -57,7 +58,14 @@ impl Capture {
         source: Source,
         node_id: Option<u32>,
     ) -> Result<Self, Error> {
-        Self::start_inner(executable, remote, source, node_id, false, 2_000_000)
+        Self::start_inner(
+            executable,
+            remote,
+            source,
+            node_id,
+            false,
+            CaptureLimits::for_source(source, 2_000_000),
+        )
     }
 
     /// Prefer the isolated VA-API path when its fixed render device exists.
@@ -67,7 +75,14 @@ impl Capture {
         source: Source,
         node_id: Option<u32>,
     ) -> Result<Self, Error> {
-        Self::start_inner(executable, remote, source, node_id, true, 20_000_000)
+        Self::start_inner(
+            executable,
+            remote,
+            source,
+            node_id,
+            true,
+            CaptureLimits::for_source(source, 20_000_000),
+        )
     }
 
     pub(super) fn start_inner(
@@ -76,18 +91,17 @@ impl Capture {
         source: Source,
         node_id: Option<u32>,
         vaapi: bool,
-        bitrate: u32,
+        limits: CaptureLimits,
     ) -> Result<Self, Error> {
-        if (source == Source::Screen) != node_id.is_some()
-            || matches!(node_id, Some(0 | u32::MAX))
-            || !Settings::valid_bitrate(bitrate)
+        if (source == Source::Screen) != node_id.is_some() || matches!(node_id, Some(0 | u32::MAX))
         {
             return Err(invalid().into());
         }
+        limits.validate(source)?;
         let permit = SOURCES.try_acquire().map_err(|_| Error::Busy)?;
         let (sender, frames) = mpsc::channel(1);
         let (control, updates) = watch::channel(Control {
-            bitrate,
+            limits,
             key_request: 0,
         });
         let requests = control.clone();
@@ -112,6 +126,7 @@ impl Capture {
             frames,
             task,
             control,
+            source,
             waiting_for_key: true,
             #[cfg(feature = "video-portal")]
             grant: None,
@@ -132,8 +147,20 @@ impl Capture {
             return Err(Error::Stopped);
         }
         self.control.send_if_modified(|control| {
-            std::mem::replace(&mut control.bitrate, bitrate_bps) != bitrate_bps
+            std::mem::replace(&mut control.limits.bitrate, bitrate_bps) != bitrate_bps
         });
+        Ok(())
+    }
+
+    /// Apply current height, cadence and bitrate caps. Updates coalesce to
+    /// the latest target while the capture retains the existing portal grant.
+    pub fn set_limits(&self, limits: CaptureLimits) -> Result<(), Error> {
+        limits.validate(self.source)?;
+        if self.control.is_closed() {
+            return Err(Error::Stopped);
+        }
+        self.control
+            .send_if_modified(|control| std::mem::replace(&mut control.limits, limits) != limits);
         Ok(())
     }
 
@@ -190,12 +217,7 @@ async fn capture(
     let result = async {
         retirement.ready().await.map_err(|_| Error::Confinement)?;
         let initial = *updates.borrow_and_update();
-        send_control(
-            &mut control,
-            Kind::CaptureStart,
-            &initial.bitrate.to_be_bytes(),
-        )
-        .await?;
+        send_control(&mut control, Kind::CaptureStart, &initial.limits.to_bytes()).await?;
         tokio::select! {
             _ = sender.closed() => Ok(()),
             result = receive_frames(&mut output, source, sender, &requests) => result,
@@ -217,8 +239,8 @@ async fn send_updates(
 ) -> Result<(), Error> {
     while updates.changed().await.is_ok() {
         let target = *updates.borrow_and_update();
-        if target.bitrate != previous.bitrate {
-            send_control(socket, Kind::SetBitrate, &target.bitrate.to_be_bytes()).await?;
+        if target.limits != previous.limits {
+            send_control(socket, Kind::SetCaptureLimits, &target.limits.to_bytes()).await?;
         }
         if target.key_request != previous.key_request {
             send_control(socket, Kind::CaptureKeyframe, &[]).await?;

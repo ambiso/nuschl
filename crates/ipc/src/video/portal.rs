@@ -2,7 +2,7 @@
 //! Linux capture authorization. Portal grants live only as long as the
 //! desktop holds this private D-Bus connection.
 
-use super::{Capture, Source};
+use super::{Capture, CaptureLimits, Source};
 use ashpd::{
     Error, WindowIdentifier,
     desktop::{
@@ -34,13 +34,22 @@ impl Grant {
     }
 
     pub fn start(self, executable: PathBuf, bitrate_bps: u32) -> Result<Capture, super::Error> {
+        let limits = CaptureLimits::for_source(self.source, bitrate_bps);
+        self.start_with_limits(executable, limits)
+    }
+
+    pub fn start_with_limits(
+        self,
+        executable: PathBuf,
+        limits: CaptureLimits,
+    ) -> Result<Capture, super::Error> {
         let mut capture = Capture::start_inner(
             executable,
             self.remote,
             self.source,
             self.node_id,
             true,
-            bitrate_bps,
+            limits,
         )?;
         capture.retain_grant(self.connection);
         Ok(capture)
