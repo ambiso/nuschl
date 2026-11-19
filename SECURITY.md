@@ -232,7 +232,8 @@ relay candidates in relay-only mode, on every application call path.
 key-exchange state in memory. It exposes room metadata, SFU challenge proofs, opaque
 key messages and direct signaling authenticated with the pairwise key. Replies bind
 to the current call generation and its selected peer. Relay-only sessions reject
-direct signals. Call keys remain in the worker.
+direct signals. Pairwise and media keys remain in the worker. The creator's reply
+carries the two credentials the configured SFU needs to create its room.
 
 **Companion SFU** (`nuschl-stream-sfu`, [protocol](apps/stream-sfu/src/protocol.rs)).
 A network service under its hardened systemd unit; its state lives in memory,

@@ -90,6 +90,7 @@ pub enum Outcome {
     Admitted {
         proof: [u8; 32],
         host_proof: Option<[u8; 32]>,
+        create: Option<Create>,
     },
     Send {
         peer: u64,
@@ -109,13 +110,21 @@ pub enum Outcome {
     Done,
 }
 
+/// The credentials the creator sends to the configured SFU to create the room.
+/// Keep them out of debug output and frontend events.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Create {
+    pub admit_key: [u8; 32],
+    pub host_key: [u8; 32],
+}
+
 impl Reply {
     /// Check the worker's variable-size fields and request binding.
     pub fn matches(&self, request: &Request) -> bool {
         self.generation == request.generation
             && match (&request.action, &self.outcome) {
                 (Action::Open { .. }, Outcome::Opened { .. })
-                | (Action::Admit { .. }, Outcome::Admitted { .. })
                 | (
                     Action::Pair {
                         publisher: true, ..
@@ -137,6 +146,12 @@ impl Reply {
                     peer == to && !data.is_empty() && data.len() <= MAX_MESSAGE
                 }
                 (Action::Key { peer, .. }, Outcome::Ready { peer: from }) => peer == from,
+                (
+                    Action::Admit { .. },
+                    Outcome::Admitted {
+                        host_proof, create, ..
+                    },
+                ) => host_proof.is_some() == create.is_some(),
                 _ => false,
             }
     }

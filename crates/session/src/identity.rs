@@ -114,9 +114,26 @@ fn create_private_directory(directory: &std::path::Path) -> std::io::Result<()> 
 }
 
 async fn supervise(spawn: Arc<Spawn>, mut jobs: mpsc::Receiver<Job>) {
+    use nuschl_ipc::crypto::call::{Action, Request};
+
     let mut running: Option<Worker> = None;
     let mut next_id = 0_u64;
+    let mut last_call_generation = 0;
     while let Some(job) = jobs.recv().await {
+        if let CryptoRequest::Call(Request {
+            generation,
+            action: Action::Open { .. },
+        }) = &job.request
+        {
+            if *generation <= last_call_generation {
+                let _ = job.reply.send(Err(Error::Worker(
+                    "call generation is already in use".into(),
+                )));
+                continue;
+            }
+            // Reserve before exchanging, since the worker can exit before its reply.
+            last_call_generation = *generation;
+        }
         if running.is_none() {
             match start(&spawn).await {
                 Ok(worker) => running = Some(worker),

@@ -51,11 +51,34 @@ async fn native_call_signaling_keeps_keys_in_two_confined_workers() {
                 if room == *link.keys().stream_id() && verifier == *link.room_check()
         ));
         let nonce = [9; 32];
-        assert!(matches!(
-            request(handle, 1, Action::Admit { nonce }).await,
-            Outcome::Admitted { proof, host_proof }
-                if proof == link.admission_proofs(&nonce).0 && host_proof.is_some() == creator
-        ));
+        let reply = handle
+            .call_signal(Request {
+                generation: 1,
+                action: Action::Admit { nonce },
+            })
+            .await
+            .unwrap();
+        assert!(!format!("{reply:?}").contains("admit_key"));
+        let Outcome::Admitted {
+            proof,
+            host_proof,
+            create,
+        } = reply.outcome
+        else {
+            panic!("expected SFU admission");
+        };
+        assert_eq!(proof, link.admission_proofs(&nonce).0);
+        assert_eq!(host_proof.is_some(), creator);
+        if let Some(create) = create {
+            assert!(creator);
+            assert_eq!(create.admit_key, *link.keys().admit_key());
+            assert_eq!(
+                nuschl_stream::room_check(&create.host_key),
+                *link.room_check()
+            );
+        } else {
+            assert!(!creator);
+        }
     }
 
     request(
@@ -154,4 +177,56 @@ async fn native_call_signaling_keeps_keys_in_two_confined_workers() {
         .await
         .unwrap_err();
     assert!(disabled.to_string().contains("direct signaling disabled"));
+}
+
+#[tokio::test]
+async fn worker_failure_keeps_the_call_generation_reserved() {
+    nuschl_testkit::sandbox();
+    let directory = nuschl_testkit::temp_dir();
+    let executable = directory.path().join("crypto-worker");
+    std::fs::copy(env!("CARGO_BIN_EXE_nuschl-crypto-worker"), &executable).unwrap();
+    let worker = CryptoHandle::start(executable.clone(), directory.path().join("keys"));
+    let host = "127.0.0.1";
+    let link = Link::generate(host, &mut getrandom::SysRng).unwrap();
+    let open = || Action::Open {
+        host: host.into(),
+        link: link.url(),
+        relay_only: true,
+    };
+    request(&worker, 1, open()).await;
+
+    // The test copy's inode belongs to this worker alone.
+    let [pid] = nuschl_testkit::running(&executable)[..] else {
+        panic!("expected one confined worker");
+    };
+    assert!(
+        std::process::Command::new(nuschl_testkit::program("kill"))
+            .args(["-KILL", &pid.to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    nuschl_testkit::none_running(&executable, std::time::Duration::from_secs(2)).await;
+
+    let old = |action| Request {
+        generation: 1,
+        action,
+    };
+    assert!(
+        worker
+            .call_signal(old(Action::Admit { nonce: [1; 32] }))
+            .await
+            .is_err()
+    );
+    assert!(matches!(
+        request(&worker, 1, Action::Close).await,
+        Outcome::Done
+    ));
+    assert!(worker.call_signal(old(open())).await.is_err());
+    request(&worker, 2, open()).await;
+    assert!(worker.call_signal(old(Action::Close)).await.is_err());
+    assert!(matches!(
+        request(&worker, 2, Action::Admit { nonce: [1; 32] }).await,
+        Outcome::Admitted { .. }
+    ));
 }

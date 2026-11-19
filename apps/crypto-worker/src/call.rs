@@ -2,7 +2,7 @@
 //! One ephemeral call and its two-peer signaling exchange. The session moves
 //! opaque messages between workers. This worker keeps the cryptographic state.
 
-use nuschl_ipc::crypto::call::{Action, Outcome, Reply, Request};
+use nuschl_ipc::crypto::call::{Action, Create, Outcome, Reply, Request};
 use nuschl_stream::{Link, Publisher, PublisherEvent, Subscriber, SubscriberEvent, SubscriberId};
 
 #[derive(Default)]
@@ -39,7 +39,7 @@ impl Signaling {
             relay_only,
         } = action
         {
-            if generation <= self.generation || self.call.is_some() {
+            if generation <= self.generation {
                 return Err("call generation is already in use".into());
             }
             let link = Link::parse(&link, &host).map_err(text)?;
@@ -54,12 +54,15 @@ impl Signaling {
                 pair: None,
             });
             outcome
-        } else if generation != self.generation || self.call.is_none() {
-            return Err("stale call generation".into());
-        } else if matches!(action, Action::Close) {
+        } else if matches!(action, Action::Close)
+            && (self.call.is_none() || generation == self.generation)
+        {
             self.call = None;
             Outcome::Done
         } else {
+            if generation != self.generation {
+                return Err("stale call generation".into());
+            }
             self.call
                 .as_mut()
                 .ok_or("no open call")?
@@ -77,7 +80,15 @@ impl Call {
         match action {
             Action::Admit { nonce } => {
                 let (proof, host_proof) = self.link.admission_proofs(&nonce);
-                Ok(Outcome::Admitted { proof, host_proof })
+                let create = self.link.publisher().map(|secret| Create {
+                    admit_key: *self.link.keys().admit_key(),
+                    host_key: nuschl_stream::host_key(secret),
+                });
+                Ok(Outcome::Admitted {
+                    proof,
+                    host_proof,
+                    create,
+                })
             }
             Action::Pair { peer, publisher } => {
                 if self.pair.is_some() {
