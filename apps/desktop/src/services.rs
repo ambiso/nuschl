@@ -47,7 +47,7 @@ pub enum ServiceEvent {
     #[cfg(target_os = "linux")]
     NativeFinished {
         generation: u64,
-        error: Option<String>,
+        result: Result<crate::native_call::Finish, String>,
     },
 }
 

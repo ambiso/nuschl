@@ -55,6 +55,11 @@ pub struct Active {
     confirm_monitor: Option<oneshot::Sender<()>>,
 }
 
+pub enum Finish {
+    Left,
+    RoomEnded,
+}
+
 pub struct Start {
     crypto: CryptoHandle,
     generation: u64,
@@ -529,7 +534,7 @@ impl Desktop {
         }
     }
 
-    pub fn native_finished(&mut self, generation: u64, error: Option<String>) {
+    pub fn native_finished(&mut self, generation: u64, result: Result<Finish, String>) {
         if generation != self.native_call_generation {
             return;
         }
@@ -549,12 +554,12 @@ impl Desktop {
                 server.id == call.server && server.generation == call.voice_generation
             })
         {
-            if let Some(error) = error {
-                server.set_notice(format!("Video unavailable. {error}"));
-            } else if !call.owner {
-                server
+            match result {
+                Err(error) => server.set_notice(format!("Video unavailable. {error}")),
+                Ok(Finish::RoomEnded) if !call.owner => server
                     .calls
-                    .retain(|card| card.link != call.room || card.target != call.conversation);
+                    .retain(|card| card.link != call.room || card.target != call.conversation),
+                Ok(_) => {}
             }
         }
     }
@@ -847,9 +852,9 @@ pub async fn run(
     events: mpsc::Sender<ServiceEvent>,
 ) {
     let generation = start.generation;
-    let error = drive(start, &mut settings, &events).await.err();
+    let result = drive(start, &mut settings, &events).await;
     let _ = events
-        .send(ServiceEvent::NativeFinished { generation, error })
+        .send(ServiceEvent::NativeFinished { generation, result })
         .await;
 }
 
@@ -857,7 +862,7 @@ async fn drive(
     start: Start,
     settings: &mut watch::Receiver<ClientSettings>,
     events: &mpsc::Sender<ServiceEvent>,
-) -> Result<(), String> {
+) -> Result<Finish, String> {
     let Start {
         crypto,
         generation,
@@ -895,7 +900,7 @@ async fn drive(
     };
     let (mut media, grant, video_worker) = tokio::select! {
         biased;
-        () = &mut cancel => return Ok(()),
+        () = &mut cancel => return Ok(Finish::Left),
         result = prepare(crypto, options, source, &updates) => result?,
     };
     let mut display = Display {
@@ -914,11 +919,13 @@ async fn drive(
             cancel,
         )
         .await
+        .map(|()| Finish::Left)
     } else {
         display.updates.status("Waiting for video");
         receive_video(&mut media, video_worker, &mut display, cancel).await
     };
-    result.and(media.stop().await.map_err(text))
+    let closed = media.stop().await.map_err(text);
+    result.and_then(|finish| closed.map(|()| finish))
 }
 
 async fn publish_video(
@@ -1169,7 +1176,7 @@ async fn receive_video(
     executable: PathBuf,
     display: &mut Display,
     cancel: std::pin::Pin<&mut impl Future<Output = ()>>,
-) -> Result<(), String> {
+) -> Result<Finish, String> {
     let mut decoder = None;
     let receive = async {
         let mut selected = None;
@@ -1260,15 +1267,16 @@ async fn receive_video(
                 Err(error) => return Err(text(error)),
             }
         }
-        Ok(())
+        Ok(Finish::RoomEnded)
     };
     let result = tokio::select! {
         biased;
-        () = cancel => Ok(()),
+        () = cancel => Ok(Finish::Left),
         result = receive => result,
     };
     if let Some((_, decoder)) = decoder {
-        result.and(decoder.stop().await.map_err(text))
+        let closed = decoder.stop().await.map_err(text);
+        result.and_then(|finish| closed.map(|()| finish))
     } else {
         result
     }

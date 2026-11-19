@@ -2727,8 +2727,8 @@ impl Desktop {
                 self.confirm_monitor_share(generation, ready);
             }
             #[cfg(target_os = "linux")]
-            ServiceEvent::NativeFinished { generation, error } => {
-                self.native_finished(generation, error)
+            ServiceEvent::NativeFinished { generation, result } => {
+                self.native_finished(generation, result)
             }
             ServiceEvent::ServerIcon { server, icon } => {
                 if let Some(server) = self
