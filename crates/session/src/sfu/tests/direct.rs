@@ -4,6 +4,7 @@ use super::*;
 
 #[tokio::test]
 async fn native_viewer_moves_an_active_sfu_stream_to_direct() {
+    let _media = MEDIA_TEST.lock().await;
     nuschl_testkit::sandbox();
     let crypto = fixture("nuschl-crypto-worker");
     let rtc = fixture("nuschl-rtc-worker");
@@ -24,7 +25,7 @@ async fn native_viewer_moves_an_active_sfu_stream_to_direct() {
         sfu_port: sfu.media.port(),
         publish,
     };
-    let publisher = Connection::connect_with_roots(
+    let mut publisher = Connection::connect_with_roots(
         CryptoHandle::start(crypto.clone(), directory.path().join("publisher")),
         connect(&owner),
         roots.clone(),
@@ -32,6 +33,8 @@ async fn native_viewer_moves_an_active_sfu_stream_to_direct() {
     .await
     .unwrap();
     let from = publisher.welcome().peer;
+    // The host path uses only loopback sockets. The STUN test owns its server.
+    publisher.welcome.turn = None;
     let mut publisher = publisher
         .into_media(make_media(Some(Purpose::Camera)))
         .await
@@ -53,6 +56,7 @@ async fn native_viewer_moves_an_active_sfu_stream_to_direct() {
     )
     .await
     .unwrap();
+    viewer.welcome.turn = None;
     let mut viewer = viewer.into_media(make_media(None)).await.unwrap();
 
     // An independent synthetic AV1 frame plus a 4 KiB AV1 padding OBU.
