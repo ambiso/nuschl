@@ -11,7 +11,6 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  merge_group:
   schedule:
     - cron: "41 3 * * 1"
   workflow_dispatch:
