@@ -4,9 +4,12 @@
 use super::{Display, Latest, Quality, Selection, purpose, stats, text, video_kind};
 use futures_util::{FutureExt as _, future::BoxFuture, stream::FuturesUnordered};
 use nuschl_client::native::sfu::{Media, MediaEvent, Purpose, VideoKind};
-use nuschl_ipc::video::{Capture, CaptureLimits, Error, Source, VideoFrame, portal};
+use nuschl_ipc::video::{
+    Capture, CaptureFailure, CaptureLimits, Error, Source, VideoFrame, portal,
+};
 use std::{
     future::pending,
+    os::unix::process::ExitStatusExt as _,
     path::Path,
     sync::Arc,
     time::{Duration, Instant},
@@ -21,7 +24,46 @@ pub(super) const SOURCES: [Source; 2] = [Source::Camera, Source::Screen];
 const REOPEN_DELAYS: [Duration; 2] = [Duration::from_millis(500), Duration::from_secs(2)];
 const REOPEN_TIMEOUT: Duration = Duration::from_secs(5);
 const HEALTHY_CAPTURE: Duration = Duration::from_secs(30);
-pub(super) type Reopening = BoxFuture<'static, (usize, Option<portal::Grant>)>;
+pub(super) type Reopening = BoxFuture<'static, (CaptureAttempt, Option<portal::Grant>)>;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum CaptureMode {
+    #[default]
+    HardwareWithPreview,
+    Hardware,
+    Software,
+}
+
+impl CaptureMode {
+    fn after_failure(self, error: &Error, hardware: Option<bool>) -> Self {
+        let hardware_failure = matches!(
+            error,
+            Error::Capture(
+                CaptureFailure::Hardware
+                    | CaptureFailure::HardwareFormat
+                    | CaptureFailure::HardwareResource
+            )
+        ) || matches!(
+            error,
+            Error::CaptureExit(status) if status.code() == Some(139) || status.signal() == Some(11)
+        );
+        if !hardware_failure {
+            return self;
+        }
+        match (self, hardware) {
+            (Self::HardwareWithPreview, Some(false)) | (Self::Hardware | Self::Software, _) => {
+                Self::Software
+            }
+            (Self::HardwareWithPreview, _) => Self::Hardware,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct CaptureAttempt {
+    pub number: usize,
+    mode: CaptureMode,
+}
 
 pub(super) fn index(source: Source) -> usize {
     match source {
@@ -77,7 +119,7 @@ impl Publisher {
         worker: &Path,
         selection: Selection,
         updates: Arc<Latest>,
-        attempts: usize,
+        attempt: CaptureAttempt,
     ) -> Result<(), String> {
         let source = grant.source();
         let screen = grant.screen_reopen();
@@ -93,15 +135,30 @@ impl Publisher {
             hardware: None,
         };
         let applied = encoding.ceiling(selection.quality);
-        let (pictures, mut preview) = mpsc::channel(1);
-        let capture = grant
-            .start_with_preview(worker.to_owned(), applied, pictures)
-            .map_err(text)?;
-        let preview = tokio::spawn(async move {
-            while let Some(frame) = preview.recv().await {
-                updates.local_frame(preview_id, frame);
+        let (capture, preview) = if attempt.mode == CaptureMode::Hardware {
+            (
+                grant
+                    .start_with_limits(worker.to_owned(), applied)
+                    .map_err(text)?,
+                None,
+            )
+        } else {
+            let (pictures, mut preview) = mpsc::channel(1);
+            let capture = match attempt.mode {
+                CaptureMode::Software => {
+                    grant.start_software_with_preview(worker.to_owned(), applied, pictures)
+                }
+                _ => grant.start_with_preview(worker.to_owned(), applied, pictures),
             }
-        });
+            .map_err(text)?;
+            let preview = tokio::spawn(async move {
+                while let Some(frame) = preview.recv().await {
+                    updates.local_frame(preview_id, frame);
+                }
+            });
+            (capture, Some(preview))
+        };
+        tracing::info!(target: "nuschl_capture", ?source, mode = ?attempt.mode, attempt = attempt.number, "capture worker started");
         let mut stats = stats::Stats::new(self.relay_only, Instant::now());
         stats.direct(self.direct);
         self.slots[index(source)] = Some(LocalVideo {
@@ -113,7 +170,7 @@ impl Publisher {
             stats,
             ready: false,
             screen,
-            attempts,
+            attempt,
             recovering_since: None,
         });
         Ok(())
@@ -132,12 +189,19 @@ impl Publisher {
         let Some(mut track) = self.slots[index(source)].take() else {
             return false;
         };
+        tracing::warn!(target: "nuschl_capture", ?source, mode = ?track.attempt.mode, hardware = ?track.encoding.hardware, %error, "capture stopped");
         if allowed
             && recoverable(error)
-            && let Some(delay) = REOPEN_DELAYS.get(track.attempts).copied()
+            && let Some(delay) = REOPEN_DELAYS.get(track.attempt.number).copied()
             && let Some(grant) = track.screen.take()
         {
-            let attempt = track.attempts + 1;
+            let attempt = CaptureAttempt {
+                number: track.attempt.number + 1,
+                mode: track
+                    .attempt
+                    .mode
+                    .after_failure(error, track.encoding.hardware),
+            };
             let (retired, wait) = oneshot::channel();
             self.retiring.push(
                 async move {
@@ -152,7 +216,7 @@ impl Publisher {
                         return (attempt, None);
                     }
                     sleep(delay).await;
-                    tracing::info!(target: "nuschl_capture", attempt, "reopening screen capture");
+                    tracing::info!(target: "nuschl_capture", mode = ?attempt.mode, attempt = attempt.number, "reopening screen capture");
                     let grant = timeout(REOPEN_TIMEOUT, grant.reopen())
                         .await
                         .ok()
@@ -191,7 +255,7 @@ impl Publisher {
             updates.local_view(next.and_then(|source| {
                 self.slots[index(source)]
                     .as_ref()
-                    .map(|track| (track.preview_id, video_kind(source), track.ready))
+                    .map(|track| (track.preview_id, video_kind(source), track.label()))
             }));
         }
         next.is_some()
@@ -199,7 +263,9 @@ impl Publisher {
 
     pub fn preview(&self, visible: bool) {
         for source in SOURCES {
-            if let Some(track) = &self.slots[index(source)] {
+            if let Some(track) = &self.slots[index(source)]
+                && track.preview.is_some()
+            {
                 track
                     .capture
                     .set_preview(visible && self.focused == Some(source));
@@ -216,7 +282,7 @@ impl Publisher {
                     track.ready = true;
                     track.capture.request_keyframe();
                     if self.focused == Some(source) {
-                        updates.status(label(track.encoding.kind, true));
+                        updates.status(track.label());
                     }
                 }
             }
@@ -295,17 +361,19 @@ impl Publisher {
         let Some(track) = &mut self.slots[index(source)] else {
             return Ok(());
         };
-        if track.attempts > 0 {
+        if track.attempt.number > 0 {
             let since = track.recovering_since.get_or_insert_with(|| {
                 tracing::info!(
                     target: "nuschl_capture",
-                    attempt = track.attempts,
+                    attempt = track.attempt.number,
+                    mode = ?track.attempt.mode,
+                    hardware = frame.hardware,
                     "screen capture resumed"
                 );
                 Instant::now()
             });
             if since.elapsed() >= HEALTHY_CAPTURE {
-                track.attempts = 0;
+                track.attempt.number = 0;
             }
         }
         track.encoding.hardware = Some(frame.hardware);
@@ -328,18 +396,28 @@ impl Publisher {
 
 pub(super) struct LocalVideo {
     capture: Capture,
-    preview: JoinHandle<()>,
+    preview: Option<JoinHandle<()>>,
     preview_id: u64,
     encoding: Encoding,
     applied: CaptureLimits,
     stats: stats::Stats,
     ready: bool,
     screen: Option<portal::ScreenGrant>,
-    attempts: usize,
+    attempt: CaptureAttempt,
     recovering_since: Option<Instant>,
 }
 
 impl LocalVideo {
+    fn label(&self) -> &'static str {
+        match (self.encoding.kind, self.ready, self.preview.is_some()) {
+            (VideoKind::Screen, _, false) => "Your screen · local preview off",
+            (VideoKind::Camera, true, _) => "Your camera",
+            (VideoKind::Screen, true, _) => "Your screen",
+            (VideoKind::Camera, false, _) => "Your camera · waiting for a viewer",
+            (VideoKind::Screen, false, _) => "Your screen · waiting for a viewer",
+        }
+    }
+
     pub async fn next(track: &mut Option<Self>) -> Result<VideoFrame, Error> {
         match track {
             Some(track) => track.capture.next().await,
@@ -352,7 +430,9 @@ impl LocalVideo {
         if let Err(error) = self.capture.stop().await {
             tracing::debug!(%error, "could not stop capture");
         }
-        if let Err(error) = self.preview.await {
+        if let Some(preview) = self.preview
+            && let Err(error) = preview.await
+        {
             tracing::debug!(%error, "could not stop the local preview");
         }
     }
@@ -360,7 +440,7 @@ impl LocalVideo {
 
 pub(super) async fn next_reopen(
     reopening: &mut Option<Reopening>,
-) -> (usize, Option<portal::Grant>) {
+) -> (CaptureAttempt, Option<portal::Grant>) {
     match reopening {
         Some(reopening) => reopening.await,
         None => pending().await,
@@ -381,15 +461,6 @@ fn recoverable(error: &Error) -> bool {
                 | std::io::ErrorKind::BrokenPipe
         ),
         _ => false,
-    }
-}
-
-pub(super) fn label(kind: VideoKind, ready: bool) -> &'static str {
-    match (kind, ready) {
-        (VideoKind::Camera, true) => "Your camera",
-        (VideoKind::Screen, true) => "Your screen",
-        (VideoKind::Camera, false) => "Your camera · waiting for a viewer",
-        (VideoKind::Screen, false) => "Your screen · waiting for a viewer",
     }
 }
 
@@ -469,10 +540,11 @@ fn video_rate(bitrate: u64) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        CaptureLimits, Encoding, Error, Publisher, Quality, Source, VideoKind, recoverable,
+        CaptureFailure, CaptureLimits, CaptureMode, Encoding, Error, Publisher, Quality, Source,
+        VideoKind, recoverable,
     };
     use futures_util::FutureExt as _;
-    use std::{future::pending, io};
+    use std::{future::pending, io, os::unix::process::ExitStatusExt as _, process::ExitStatus};
     use tokio::sync::oneshot;
 
     #[test]
@@ -486,6 +558,44 @@ mod tests {
         assert!(!recoverable(
             &io::Error::from(io::ErrorKind::InvalidData).into()
         ));
+    }
+
+    #[test]
+    fn hardware_failures_try_encoding_alone_then_software() {
+        let mut mode = CaptureMode::HardwareWithPreview;
+        let segfault = Error::CaptureExit(ExitStatus::from_raw(139 << 8));
+        mode = mode.after_failure(&segfault, Some(true));
+        assert_eq!(mode, CaptureMode::Hardware);
+        mode = mode.after_failure(&Error::Capture(CaptureFailure::HardwareFormat), None);
+        assert_eq!(mode, CaptureMode::Software);
+        assert_eq!(
+            CaptureMode::HardwareWithPreview.after_failure(&segfault, Some(false)),
+            CaptureMode::Software,
+        );
+        assert_eq!(
+            CaptureMode::HardwareWithPreview
+                .after_failure(&Error::CaptureExit(ExitStatus::from_raw(11)), None),
+            CaptureMode::Hardware,
+        );
+        assert_eq!(
+            mode.after_failure(&segfault, Some(false)),
+            CaptureMode::Software,
+        );
+    }
+
+    #[test]
+    fn ordinary_capture_closure_keeps_the_current_mode() {
+        for mode in [
+            CaptureMode::HardwareWithPreview,
+            CaptureMode::Hardware,
+            CaptureMode::Software,
+        ] {
+            assert_eq!(mode.after_failure(&Error::CaptureClosed, None), mode);
+            assert_eq!(
+                mode.after_failure(&Error::CaptureExit(ExitStatus::from_raw(137 << 8)), None),
+                mode,
+            );
+        }
     }
 
     #[test]

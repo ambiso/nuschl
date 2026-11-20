@@ -197,16 +197,14 @@ impl Latest {
         self.ready.notify_one();
     }
 
-    fn local_view(&self, view: Option<(u64, VideoKind, bool)>) {
+    fn local_view(&self, view: Option<(u64, VideoKind, &'static str)>) {
         let mut update = self
             .update
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         update.local_view = view.map(|(id, kind, _)| (id, kind));
         update.status = view
-            .map_or("Waiting for video", |(_, kind, ready)| {
-                publisher::label(kind, ready)
-            })
+            .map_or("Waiting for video", |(_, _, label)| label)
             .into();
         update.frame = None;
         update.stats = None;
@@ -1490,7 +1488,7 @@ async fn next_grant(picker: &mut Option<Picker>) -> (Source, Result<portal::Gran
 
 enum SourceAction {
     Request(Option<SourceRequest>),
-    Reopened(usize, Option<portal::Grant>),
+    Reopened(publisher::CaptureAttempt, Option<portal::Grant>),
 }
 
 async fn next_source_action(
@@ -1512,14 +1510,14 @@ fn activate_source(
     worker: &Path,
     selection: Selection,
     updates: &Arc<Latest>,
-    attempts: usize,
+    attempt: publisher::CaptureAttempt,
 ) -> Result<SourceChange, String> {
     let source = grant.source();
     let monitor = grant.can_include_app();
     if let Err(error) = media.set_source(purpose(source), true) {
         return Ok(SourceChange::Failed(source, text(error)));
     }
-    match publisher.start(grant, worker, selection, updates.clone(), attempts) {
+    match publisher.start(grant, worker, selection, updates.clone(), attempt) {
         Ok(()) => Ok(SourceChange::Active { source, monitor }),
         Err(error) => {
             media.set_source(purpose(source), false).map_err(text)?;
@@ -1580,7 +1578,7 @@ async fn meeting(
                 picker = None;
                 let change = match result {
                     Ok(grant) => activate_source(
-                        media, publisher, grant, worker, selection, &display.updates, 0,
+                        media, publisher, grant, worker, selection, &display.updates, publisher::CaptureAttempt::default(),
                     )?,
                     Err(ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled)) => SourceChange::Cancelled(source),
                     Err(error) => SourceChange::Failed(source, text(error)),
@@ -1618,7 +1616,7 @@ async fn meeting(
                             SourceChange::Failed(Source::Screen, "Choose Share screen to open the source again.".into())
                         };
                         let worker_started = matches!(change, SourceChange::Active { .. });
-                        tracing::info!(target: "nuschl_capture", attempt, worker_started, "screen capture reopen result");
+                        tracing::info!(target: "nuschl_capture", attempt = attempt.number, worker_started, "screen capture reopen result");
                         changes.report(change).await?;
                         publisher.focus(selection, &display.updates);
                         publisher.retune(display, selection, false);
@@ -1650,7 +1648,6 @@ async fn meeting(
         match frame {
             Ok(frame) => publisher.frame(source, frame, media)?,
             Err(error) => {
-                tracing::warn!(target: "nuschl_capture", ?source, %error, "capture stopped");
                 media.set_source(purpose(source), false).map_err(text)?;
                 let change = if publisher.recover(source, media.can_publish(), &error) {
                     SourceChange::ReopeningScreen
@@ -1695,7 +1692,7 @@ fn text(error: impl std::fmt::Display) -> String {
 mod tests {
     use super::{
         Instant, Quality, Source, SourceAction, SourceRequest, VideoKind, VideoStats,
-        next_source_action, quality_readout, stats,
+        next_source_action, publisher::CaptureAttempt, quality_readout, stats,
     };
     use futures_util::FutureExt as _;
     use tokio::sync::mpsc;
@@ -1717,7 +1714,7 @@ mod tests {
                 enable: false,
             })
             .unwrap();
-        let mut reopening = Some(async { (1, None) }.boxed());
+        let mut reopening = Some(async { (CaptureAttempt::default(), None) }.boxed());
         assert!(matches!(
             next_source_action(&mut requests, &mut reopening).await,
             SourceAction::Request(Some(SourceRequest {

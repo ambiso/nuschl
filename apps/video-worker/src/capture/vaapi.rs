@@ -171,21 +171,60 @@ fn preview_sink(
     let clock = Instant::now();
     let cadence = Mutex::new(Cadence::default());
     branch_input(pipeline, "preview_queue")?
-        .add_probe(gst::PadProbeType::BUFFER, move |_, _| {
-            if running.load(Ordering::Relaxed)
-                && control.preview.load(Ordering::Relaxed)
-                && cadence
+        .add_probe(gst::PadProbeType::BUFFER, move |_, info| {
+            if !running.load(Ordering::Relaxed)
+                || !control.preview.load(Ordering::Relaxed)
+                || !cadence
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
                     .accept(clock.elapsed(), PREVIEW_FPS)
             {
-                gst::PadProbeReturn::Ok
-            } else {
-                gst::PadProbeReturn::Drop
+                return gst::PadProbeReturn::Drop;
             }
+            if let Some(buffer) = info.buffer_mut()
+                && buffer
+                    .iter_memories()
+                    .any(|memory| memory.is_type("dmabuf"))
+            {
+                if !buffer
+                    .iter_memories()
+                    .all(|memory| memory.is_type("dmabuf"))
+                {
+                    return gst::PadProbeReturn::Drop;
+                }
+                let Some(preview) = separate_preview_memory(buffer) else {
+                    return gst::PadProbeReturn::Drop;
+                };
+                *buffer = preview;
+            }
+            gst::PadProbeReturn::Ok
         })
         .ok_or("could not install the preview cadence limit")?;
     Ok(sink)
+}
+
+fn separate_preview_memory(source: &gst::Buffer) -> Option<gst::Buffer> {
+    if source
+        .iter_memories()
+        .any(|memory| memory.size() == 0 || memory.flags().contains(gst::MemoryFlags::NO_SHARE))
+    {
+        return None;
+    }
+    // Each VA importer attaches its surface to the memory header. A separate
+    // header lets the preview and encoder keep their own surfaces for each
+    // read-only DMA-BUF. The parent retains the PipeWire buffer pool lease.
+    let mut preview = source.copy_region(gst::BUFFER_COPY_ALL, ..).ok()?;
+    let buffer = preview.get_mut()?;
+    for (index, memory) in source.iter_memories().enumerate() {
+        buffer.replace_memory(index, memory.share(..));
+    }
+    if !buffer
+        .iter_meta::<gst::ParentBufferMeta>()
+        .any(|meta| std::ptr::eq(meta.parent(), source.as_ref()))
+    {
+        gst::ParentBufferMeta::add(buffer, source);
+    }
+    Some(preview)
 }
 
 fn write_previews(mut stream: UnixStream, sink: &AppSink, control: &Control, running: &AtomicBool) {
@@ -499,6 +538,34 @@ fn force_keyframe(encoder: &gst::Element) -> Result<(), Failure> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_keeps_the_capture_buffer_and_uses_separate_memory_headers() -> Result<(), Failure> {
+        gst::init()?;
+        let mut source = gst::Buffer::with_size(32)?;
+        let buffer = source.get_mut().ok_or("shared fixture buffer")?;
+        buffer.set_pts(gst::ClockTime::from_mseconds(42));
+        buffer.append_memory(gst::Memory::with_size(16));
+
+        let preview = separate_preview_memory(&source).ok_or("could not share fixture memory")?;
+        assert_eq!(preview.pts(), source.pts());
+        assert_eq!(preview.n_memory(), 2);
+        assert!(
+            preview
+                .meta::<gst::ParentBufferMeta>()
+                .is_some_and(|meta| { std::ptr::eq(meta.parent(), source.as_ref()) })
+        );
+        for (original, shared) in source.iter_memories().zip(preview.iter_memories()) {
+            assert!(!std::ptr::eq(original, shared));
+            assert!(
+                shared
+                    .parent()
+                    .is_some_and(|parent| std::ptr::eq(parent, original))
+            );
+            assert_eq!(shared.sizes(), original.sizes());
+        }
+        Ok(())
+    }
 
     #[test]
     fn encoder_caps_follow_the_lower_of_capture_cadence_and_native_framerate() -> Result<(), Failure>

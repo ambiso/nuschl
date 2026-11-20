@@ -210,6 +210,8 @@ stop control. The panel shows a preview and indicates when viewers can see the
 Nuschl window on the selected monitor. With both sources active, **View camera**
 and **View screen** select which picture appears on the stage. If screen capture
 stops unexpectedly, Nuschl attempts to reconnect to the same approved screen.
+After a hardware capture failure, the first retry keeps hardware encoding with
+local preview off. A further hardware failure switches to software capture.
 **Stop sharing** cancels recovery. If the portal has closed the sharing session,
 use **Share screen** to grant access again.
 
