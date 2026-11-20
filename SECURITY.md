@@ -9,8 +9,9 @@ The web app uses the browser's own facilities for untrusted formats, such as ima
 decoding and media codecs, and ships Rust compiled to WebAssembly where that is
 simpler, such as logic shared with the client SDK.
 
-All first-party crates inherit `unsafe_code = "forbid"`; `nuschl-sandbox-windows`
-(below) is the one exception. Every dependency change includes a review of the
+First-party crates inherit `unsafe_code = "forbid"`. The Win32 launcher in
+`nuschl-sandbox-windows` and the native macOS module in `nuschl-capture-macos`
+have the narrow exceptions below. Every dependency change includes a review of the
 dependency's implementation, enabled features and transitive crates: safe wrappers
 around C libraries and Rust code with unchecked SIMD or raw pointers need that
 review too.
@@ -38,16 +39,18 @@ change alone is no reason to change a cryptographic protocol.
 | `akd` | Key transparency with VRF and audit proofs | Through `nuschl-kt` only, in the crypto worker, `nuschld` and `nuschl-witness`. akd_core enables ed25519-dalek's `legacy_compatibility` binary-wide, so `nuschl-kt` checks `s < ℓ` itself and `nuschl-identity` verifies with libcrux. Verifiers run under `catch_unwind` behind a strict decoder ([e2ee §5.2](docs/e2ee.md)). |
 | libcrux and OpenMLS (with `rayon`) | Post-quantum MLS and identity signatures (X-Wing HPKE, ML-KEM, ML-DSA); no memory-safe Rust alternative | In the crypto worker, `nuschld` and `nuschl-witness`; in the desktop, `nuschl-stream` only parses call links and derives `stream_id` and `host_key` (HKDF and SHA-256) from secrets the desktop made itself. OpenMLS only through `nuschl-e2ee` (crypto worker, `nuschld`): every key package, tree and message is checked structurally first, and calls run under `catch_unwind`. Patched versions: `vendor/*/NUSCHEL-PATCH.md`. |
 | libcrux's portable wasm32 build with hpke-rs (X-Wing, HKDF, HMAC, SHA-256, ChaCha20-Poly1305), and `aes-gcm` through `nuschl-sframe` | Call keys and SFrame in the browser (docs/video-plan.md §4) | `nuschl-stream-wasm` only, in the call page's dedicated stream worker, which is also its encoded-transform worker. It holds S, P and every key and draws randomness from `crypto.getRandomValues`; the page receives the SFU's join fields and proofs, key messages and frames, the last two encrypted. Requests are bounded before parsing (key messages 16 KiB, 256 peers); `nuschl-stream` and `nuschl-sframe` bound pending requests and replay windows. |
-| str0m and `aes-gcm` through `nuschl-sframe` | Native call transport and media encryption | Linux RTC worker. The worker gets current call media epochs, bounded encoded frames and brokered UDP datagrams. The crypto worker holds key exchange and pairwise signaling keys. |
+| str0m and `aes-gcm` through `nuschl-sframe` | Native call transport and media encryption | RTC worker. The worker gets current call media epochs, bounded encoded frames and brokered UDP datagrams. A crypto worker holds key exchange and pairwise signaling keys. |
 | `turn-client-proto` | UDP STUN discovery and TURN allocation, permission and channel framing | Session broker only. The broker pins the configured TURN address and admits media only for the authenticated SFU endpoint. |
 | PipeWire video bindings | Capture Linux portal video buffers | Capture worker only, through an inherited file descriptor from a fresh screen or camera grant. The desktop and diagnostic probe share the ashpd grant adapter. |
+| `windows-capture` and `cameras` | Windows Graphics Capture picker and Media Foundation webcam capture | Video capture worker only. Screen and camera run as separate AppContainer roles. The picker selects the screen; the camera uses bounded top-down raw frames. Both yield bounded BGRA to the worker's AV1 encoder. |
+| `nuschl-capture-macos` (`objc2` bindings) | ScreenCaptureKit picker and AVFoundation camera capture | Video capture worker only. Unsafe calls stay in its macOS module, which runs the system consent flow, validates pixel buffer metadata, and copies one locked BGRA frame into a bounded slot. The adapter receives one source class. |
 | Global shortcuts (`ashpd`; `global-hotkey` on Windows and macOS) | System-wide push-to-talk | Desktop shell; press and release of one bound key. |
 | Typst (`typst`, `typst-render`) | LaTeX formulas; Typst scripts can reach files, packages, plugins and data | Math worker only. It receives code-free math markup from Nuschl's converter, in a one-file world without packages, clock or system fonts, with a library stripped of file, plugin, image, data, `eval` and `std` access, under per-formula limits ([math](docs/math.md)). |
 | `psm` (assembly, through `stacker`) | Stack growth in Typst's evaluator | Through `stacker` and `typst-eval` only, in the math worker. |
 | Symphonia, rubato, audioadapter-buffers, opus-rs (with `fearless_simd`), nnnoiseless in `nuschl-musicbot-codec-worker` | Music decoding, resampling, Opus encoding, voice ducking | That executable's fixed decode, encode and duck roles, sandboxed on Linux only; elsewhere and without confinement it fails to start. cargo-deny keeps these crates out of `nuschl-musicbot`, which starts the worker from its fixed libexec path, moves opaque bytes, validates bounded replies and makes no codec or DSP call ([music bot](docs/musicbot.md#security-and-codec-roles)). |
 | GStreamer and VA-API | AV1 hardware encoding, decoding and DMA-BUF video import | Confined Linux video worker only. Loads fixed core, app, PipeWire, VA and AV1 parser plugins. VA gets one verified DRM render device, its read-only sysfs directory and read-only system video driver libraries. |
-| rav1e with defaults disabled | Local AV1 encoding of I420 frames, alongside its existing AVIF use through ravif | Linux video encoder worker for video, content worker for image codecs. The video roles use the scalar Rust kernels. |
-| rav1d with defaults and assembly disabled | Decode AV1 in software through the upstream Rust API | Confined Linux video decoder. Its AV1 frame and pixel limits apply before the UI receives packed BGRA. Cargo.lock pins the revision with the Rust API. |
+| rav1e with defaults disabled | Local AV1 encoding of I420 frames, alongside its existing AVIF use through ravif | Video encoder worker for video, content worker for image codecs. The video roles use the scalar Rust kernels. |
+| rav1d with defaults and assembly disabled | Decode AV1 in software through the upstream Rust API | Confined video decoder. Its AV1 frame and pixel limits apply before the UI receives packed BGRA. Cargo.lock pins the revision with the Rust API. |
 | OS sandbox and process APIs (`nuschl-sandbox`) | Starting confined workers | Supervisor adapter; prefer safe wrappers (`win32job` for job objects). |
 | `nuschl-sandbox-windows` (`windows-sys`) | AppContainer launch with an explicit handle list and job limits, which no maintained safe wrapper offers | The worker executables' launch stage, before any input is read; cargo-deny admits only the worker crates. One trait method per Win32 function with Microsoft's documented contract as its `# Safety` (cross-checked with ReactOS); unsafe calls only in `os.rs`, one per block with a `SAFETY:` comment; guards release Windows allocations exactly once; no `as` casts; launch steps tested under Miri against a mock that fails each call in turn ([Windows sandbox](docs/windows-sandbox.md)). |
 
@@ -118,19 +121,27 @@ Three processes run outside `nuschl-sandbox`:
 Workers start under `sandbox-exec` with Seatbelt profiles
 (`crates/sandbox/src/macos.rs`), without memory or CPU limits; supervisor deadlines
 bound them. Content, link-preview parsing, math and update use a deny-by-default
-profile on top of `system.sb`; storage and crypto add reads and writes below their
+profile on top of `system.sb`, as do the software video encoder and decoder;
+storage and crypto add reads and writes below their
 directory; transfer adds network and the offered file. Media uses a deny list, since CoreAudio
 needs undocumented Mach services: no network or process execution, writes only to
 `/dev` and temporary directories, home reads only for audio preferences. Narrow it
 to deny-by-default once it is traced on hardware.
+The camera and screen workers extend the deny-by-default profile with the
+system consent service and the Mach services for their source class. Full
+capture, permission prompt attribution, and the service allowlists still need
+validation on a Mac.
 
 ### Windows (tested in a Windows 11 VM)
 
 Each worker runs in an AppContainer inside a job object of its own, started by its
 own launch stage, which reads no untrusted input and exits 125 when it cannot
 apply the policy ([Windows sandbox](docs/windows-sandbox.md)). Content, link-preview
-parsing, math, update, storage and crypto are less privileged AppContainers without
-capabilities. Media gets `microphone`; transfer gets `internetClient` and `privateNetworkClientServer`.
+parsing, math, update, storage, crypto, software video encoding and software
+video decoding are less privileged AppContainers without capabilities. Media
+gets `microphone`; transfer gets `internetClient` and `privateNetworkClientServer`.
+Video camera capture gets `webcam` and screen capture gets `graphicsCapture`.
+RTC and the ephemeral call key worker use less privileged AppContainers.
 Storage and crypto may modify only their own directory's contents, each in a
 container per directory; junctions are refused. The offered file reaches transfer
 as an inherited read-only handle; only it and the standard handles are inherited.
@@ -251,12 +262,13 @@ the proofs and sending the join. The WebSocket handshake uses the configured hos
 and `/sfu`, and caps frames and messages at 256 KiB. Key messages share the SFU's
 16 KiB binary limit.
 
-**Native call media.** Each Linux RTC worker handles one call. It keeps the
+**Native call media.** Each RTC worker handles one call. It keeps the
 SFrame counter and replay state for the call and receives only the media epochs
 the call needs. The video workers encode and decode media. The capture worker
-scales frames from the same portal grant into a bounded local preview. Preview
-pixels have a dedicated socket to the desktop, which validates the version,
-dimensions and length before allocation.
+scales frames from the authorized source into a bounded local preview. The
+Linux preview uses a dedicated socket. The macOS and Windows capture workers
+use the capture reply pipe. The desktop validates the version, dimensions and
+length before allocating a preview.
 The SDK applies
 `PeerPolicy` before network setup, then validates the destination and length of
 datagrams it routes. Outside relay-only mode, a direct leg can probe the
@@ -264,9 +276,10 @@ configured UDP TURN service for one reflexive address. It sends and receives
 media only on the host and reflexive addresses from sealed pairwise signaling.
 Relay-only mode uses the TURN address advertised by the authenticated WSS
 connection and permits only the SFU's IP and configured media port. It sends
-only the relay candidate. The RTC worker uses a private network namespace and
-communicates through inherited IPC. Ending the call closes its worker and
-releases the process slot after reaping.
+only the relay candidate. The RTC worker uses inherited IPC and a sandbox
+without network access. On Windows and macOS an ephemeral key worker with no
+profile access writes epochs to the RTC worker's inherited one-way pipe.
+Ending the call closes its workers and releases their process slots after reaping.
 
 **Companion SFU** (`nuschl-stream-sfu`, [protocol](crates/protocol/src/sfu.rs)).
 A network service under its hardened systemd unit; its state lives in memory,

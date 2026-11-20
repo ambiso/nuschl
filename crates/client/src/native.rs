@@ -22,7 +22,6 @@ use nuschl_core::bitrate::{VoiceBitrate, voice_frame_fits};
 use nuschl_core::{ChatMessage, ContentBlock, HistoryPage, MessageDocument};
 use nuschl_ipc::{LiveMediaEvent, LiveMediaRequest};
 use nuschl_protocol::nuschl::v1;
-#[cfg(target_os = "linux")]
 pub use nuschl_session::sfu;
 use nuschl_session::{
     Error,
@@ -1261,7 +1260,6 @@ impl Driver {
     }
 
     /// Use the existing isolated crypto worker for call signaling.
-    #[cfg(target_os = "linux")]
     pub fn call_crypto(&self) -> nuschl_session::identity::CryptoHandle {
         self.crypto.clone()
     }

@@ -6,6 +6,7 @@ A Mumble-protocol witness checks the public and private chat links. The call
 host listens on loopback and holds TLS admission open, so the test exercises the
 call UI and invitation lifecycle without granting camera or screen capture.
 Set TMPDIR and NUSCHL_WL_TMP to a short disk-backed scratch path.
+Run with --fullscreen to sample the light-theme video surface and controls with ffmpeg.
 
     python3 tests/calls_desktop.py <binaries> --murmur <mumble-server> \
         --at-spi <at-spi2-core> --pulse-bin <pulseaudio>/bin --opus-library <libopus.so> \
@@ -22,8 +23,10 @@ import re
 import shlex
 import socket
 import ssl
+import subprocess
 import sys
 import tempfile
+import time
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -46,6 +49,7 @@ class CallTest(VoiceTest):
         }]))
         (profile / "config/settings.json").write_text(json.dumps({
             "server_icons": False, "call_host": self.call_host,
+            "appearance": {"theme": "light" if self.args.fullscreen else "system"},
         }))
         opened = self.root / f"{name}-opened.txt"
         bin_dir = self.root / f"{name}-bin"
@@ -109,6 +113,8 @@ class CallTest(VoiceTest):
 
     def select_quality(self, app, current, selected, *, above):
         trigger = self.control(app, f"Quality · {current}")
+        chat = self.timeline(app)
+        chat_bounds = chat.extents()
         _, trigger_y, _, trigger_height = trigger.extents()
         trigger.press()
         menu = eventually(lambda: self.find(app, "menu", "Video quality"),
@@ -119,11 +125,13 @@ class CallTest(VoiceTest):
             assert menu_y + menu_height <= trigger_y, f"quality menu should open above: {geometry}"
         else:
             assert menu_y >= trigger_y + trigger_height, f"quality menu should fit below: {geometry}"
+        assert chat.extents() == chat_bounds, "opening the quality menu moved the chat"
         eventually(lambda: self.find(menu, AT_SPI_RADIO_MENU_ITEM, selected),
                    f"quality radio menu item missing: {selected}").press()
         self.control(app, f"Quality · {selected}")
         eventually(lambda: not self.find(app, "menu", "Video quality"),
                    "video quality dropdown did not close")
+        assert chat.extents() == chat_bounds, "selecting a quality moved the chat"
 
     def toggle_quality(self, app):
         def closed():
@@ -131,10 +139,14 @@ class CallTest(VoiceTest):
             return ("push button", "Quality · Auto") in names and ("menu", "Video quality") not in names
 
         trigger = self.control(app, "Quality · Auto")
+        chat = self.timeline(app)
+        chat_bounds = chat.extents()
         self.click(trigger)
         eventually(lambda: self.find(app, "menu", "Video quality"), "video quality dropdown did not open", timeout=5)
+        assert chat.extents() == chat_bounds, "opening the quality menu moved the chat with stats hidden"
         self.click(trigger)
         eventually(closed, "video quality dropdown did not close on a second click", timeout=5)
+        assert chat.extents() == chat_bounds, "closing the quality menu moved the chat"
 
     def video_stats(self, app, show):
         self.press(app, "Video options")
@@ -257,6 +269,80 @@ class CallTest(VoiceTest):
 
         eventually(regions_are_disjoint, "inline call and chat have overlapping or empty regions", timeout=15)
 
+    def fullscreen(self, app, interaction):
+        screenshots = 0
+
+        def pixels(name, width, height, x, y):
+            nonlocal screenshots
+            screenshots += 1
+            screen = self.shell.screenshot(self.args.output / f"{name}-{screenshots:02d}.png")
+            return subprocess.check_output([
+                "ffmpeg", "-v", "error", "-i", str(screen), "-vf", f"format=rgb24,crop={width}:{height}:{x}:{y}",
+                "-f", "rawvideo", "-frames:v", "1", "pipe:1",
+            ], timeout=10)
+
+        def window_is_fullscreen():
+            return self.shell.eval("global.display.focus_window.is_fullscreen()") == "true"
+
+        black = bytes(3)
+        if interaction == "pointer":
+            def inline_readable():
+                status = self.find(app, None, "Joining video call")
+                if not status:
+                    return False
+                x, y, width, height = status.extents()
+                if width == 0 or height == 0:
+                    return False
+                left, top = json.loads(self.shell.eval(
+                    "const bounds = global.display.focus_window.get_buffer_rect(); JSON.stringify([bounds.x, bounds.y])"))
+                inline = pixels("inline-status", width, height, left + x, top + y)
+                colors = [inline[i:i + 3] for i in range(0, len(inline), 3)]
+                return black in colors and any(min(color) >= 192 for color in colors)
+
+            eventually(inline_readable, "light-theme status did not paint light text on a black backdrop", timeout=3)
+
+        self.press(app, "Full screen")
+        eventually(window_is_fullscreen, "the compositor did not enter fullscreen")
+        exit_button = self.control(app, "Exit full screen")
+        eventually(lambda: exit_button.extents()[1] > 800,
+                   "fullscreen controls did not reach the display's bottom edge")
+        x, y, _, _ = exit_button.extents()
+
+        def toolbar_pixels():
+            sample = pixels(interaction, 1, 21, x + 6, y - 14)
+            assert len(sample) == 63
+            return sample[:3], sample[-3:]
+
+        def toolbar_visible():
+            backdrop, toolbar = toolbar_pixels()
+            return backdrop == black and toolbar != black
+
+        self.shell.move(40, 40)
+        eventually(toolbar_visible, "fullscreen controls did not paint over a black background", timeout=3)
+        if interaction != "menu":
+            eventually(lambda: toolbar_pixels() == (black, black), "fullscreen controls did not fade", timeout=6)
+            assert exit_button.name == "Exit full screen"
+        if interaction == "pointer":
+            self.shell.move(80, 40)
+            eventually(toolbar_visible, "pointer motion did not reveal fullscreen controls", timeout=3)
+        elif interaction == "keyboard":
+            self.shell.key("Tab")
+            eventually(lambda: exit_button.focused, "Tab did not reach the fullscreen controls", timeout=3)
+            time.sleep(3.3)
+            assert toolbar_visible(), "the focused controls faded"
+        else:
+            self.press(app, "Video options")
+            item = eventually(lambda: self.find(app, "menu item", "Video stats"), "fullscreen video menu did not open")
+            self.shell.move(*item.centre())
+            time.sleep(3.3)
+            assert toolbar_visible(), "the controls faded while the menu was open"
+            self.shell.key("Escape")
+            eventually(lambda: not self.find(app, "menu", "Context menu"), "Escape did not close the fullscreen menu")
+            assert window_is_fullscreen()
+        self.shell.key("Escape")
+        eventually(lambda: not window_is_fullscreen(), "Escape did not exit fullscreen")
+        self.inline(app)
+
     def run(self):
         self.shell = GnomeSession(self.args.gnome_shell, 1440, 950,
                                   log=(self.args.output / "shell.log").open("w"))
@@ -282,6 +368,13 @@ class CallTest(VoiceTest):
                                                           self.pin, "Witness", self.root / "witness")
             self.witness.send(kind="join", channel=1)
             andi, andi_opened, andi_pid = self.desktop("Andi", registry, set())
+            if self.args.fullscreen:
+                for interaction in ("pointer", "keyboard", "menu"):
+                    self.press(andi, "Start meeting")
+                    self.fullscreen(andi, interaction)
+                    self.press(andi, "End call")
+                    print(f"Fullscreen {interaction} passed", flush=True)
+                return
             bea, bea_opened, bea_pid = self.desktop("Bea", registry, {andi.destination})
             cara, _, _ = self.desktop("Cara", registry, {andi.destination, bea.destination},
                                       channel=2, path="Lobby/Development")
@@ -325,12 +418,9 @@ class CallTest(VoiceTest):
             self.press(andi, "Start camera")
             self.inline(andi)
             self.control(andi, "Open in browser", shown=False)
-            chat = self.find(andi, "list", "Messages in #Lobby")
-            chat_bounds = chat.extents()
             self.toggle_quality(andi)
             self.video_stats(andi, show=True)
             self.select_quality(andi, "Auto", "720p30", above=True)
-            assert chat.extents() == chat_bounds, "quality choices changed the chat layout"
             self.video_stats(andi, show=False)
             height = self.resize_desktop(andi_pid, 520)
             settings = self.root / "Andi" / "config/settings.json"
@@ -399,6 +489,7 @@ class CallTest(VoiceTest):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("binaries", type=Path)
+    parser.add_argument("--fullscreen", action="store_true")
     for name in ("murmur", "at-spi", "pulse-bin", "opus-library", "gnome-shell", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     args = parser.parse_args()

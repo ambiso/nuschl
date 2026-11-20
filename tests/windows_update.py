@@ -34,7 +34,8 @@ UPDATE_BUTTON = (1200, 52)
 REQUIRED_PROGRAMS = {
     "nuschl.exe", "nuschl-content-worker.exe", "nuschl-crypto-worker.exe",
     "nuschl-math-worker.exe", "nuschl-media-worker.exe", "nuschl-storage-worker.exe",
-    "nuschl-transfer-worker.exe", "nuschl-update-verify-ed25519.exe",
+    "nuschl-transfer-worker.exe", "nuschl-rtc-worker.exe", "nuschl-video-worker.exe",
+    "nuschl-update-verify-ed25519.exe",
     "nuschl-update-verify-mldsa44.exe",
 }
 

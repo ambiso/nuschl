@@ -371,6 +371,24 @@ files = [
   { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
   { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
 ]
+[objc2-screen-capture-kit.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+files = [
+  { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+]
+[objc2-core-media.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+files = [
+  { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+]
+[objc2-av-foundation.clarify]
+license = "Zlib OR Apache-2.0 OR MIT"
+files = [
+  { path = "@licenses@/crates/objc2/LICENSE.md", checksum = "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54" },
+  { path = "@licenses@/crates/objc2/LICENSE.txt", checksum = "e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5" },
+]
 [objc2-metal.clarify]
 license = "Zlib OR Apache-2.0 OR MIT"
 files = [
@@ -575,6 +593,18 @@ files = [{ path = "@licenses@/crates/xim-rs/LICENSE", checksum = "efa1224931b984
 license = "MIT"
 files = [{ path = "@licenses@/crates/xim-rs/LICENSE", checksum = "efa1224931b98468f5005f77285457f8d2eab0a77a15941aa10abbab1ae9a74e" }]
 [zune-inflate.clarify]
+license = "Zlib"
+files = [
+  { path = "@licenses@/crates/zune-image/LICENSE-ZLIB", checksum = "7fa429541e55b1509909e058f2d21a37467e4958ec713b357f6e0cf9dc4ee352" },
+  { path = "@licenses@/crates/zune-image/LICENSE.md", checksum = "e870d7fd7819a9f0453c62798cb52ae95d148a8c91dc2de1d983f997143c72de" },
+]
+[zune-jpeg.clarify]
+license = "Zlib"
+files = [
+  { path = "@licenses@/crates/zune-image/LICENSE-ZLIB", checksum = "7fa429541e55b1509909e058f2d21a37467e4958ec713b357f6e0cf9dc4ee352" },
+  { path = "@licenses@/crates/zune-image/LICENSE.md", checksum = "e870d7fd7819a9f0453c62798cb52ae95d148a8c91dc2de1d983f997143c72de" },
+]
+[zune-core.clarify]
 license = "Zlib"
 files = [
   { path = "@licenses@/crates/zune-image/LICENSE-ZLIB", checksum = "7fa429541e55b1509909e058f2d21a37467e4958ec713b357f6e0cf9dc4ee352" },

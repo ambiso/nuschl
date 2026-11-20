@@ -217,7 +217,7 @@ persists no Git credential. The pinned artifact action downloads only
 `needs.macos.outputs.artifact` in this run; it has no cross-run/repository/token
 overrides. The [pinned action contract](https://github.com/actions/download-artifact/blob/d3f86a106a0bac45b974a628896c90dbdf5c8093/action.yml)
 defines this same-run default. Repository, commit, run, prior successful attempt
-(up to the current attempt), tar checksums, safe extraction, all nine programs and
+(up to the current attempt), tar checksums, safe extraction, the full program set and
 source-selected Mac notice coverage are rechecked before native tools run.
 This supports rerunning failed jobs without accepting a different run/source.
 

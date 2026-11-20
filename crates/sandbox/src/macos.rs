@@ -28,6 +28,31 @@ const CONTENT: &str = r#"(version 1)
 (allow file-read* (literal (param "WORKER")))
 "#;
 
+// Capture requests go through the system consent service and one OS source
+// class. A signed app bundle supplies the corresponding usage descriptions.
+const CAPTURE_CONSENT: &str = r#"
+(allow mach-lookup (global-name "com.apple.tccd") (global-name "com.apple.tccd.system"))
+"#;
+
+const CAMERA: &str = r#"
+(allow device-camera)
+(allow mach-lookup
+  (global-name "com.apple.cmio.AppleCameraAssistant")
+  (global-name "com.apple.cmio.registerassistantservice")
+  (global-name "com.apple.cmio.registerassistantservice.system-extensions")
+  (global-name "com.apple.cmio.VDCAssistant")
+  (global-name "com.apple.cmio.AVCAssistant")
+  (global-name "com.apple.applecamerad")
+  (global-name "com.apple.appleh13camerad"))
+"#;
+
+const SCREEN: &str = r#"
+(allow mach-lookup
+  (global-name "com.apple.windowserver.active")
+  (global-name "com.apple.CARenderServer")
+  (global-name "com.apple.replayd"))
+"#;
+
 const STORAGE: &str = r#"(version 1)
 (deny default)
 (import "system.sb")
@@ -73,7 +98,16 @@ pub(crate) fn command(executable: &Path, role: Role) -> Result<Command, Error> {
     let data = can.writable.map(Path::canonicalize).transpose()?;
     let input = can.readable.map(Path::canonicalize).transpose()?;
     let mut parameters = vec![("WORKER", executable.clone())];
-    let profile = if can.audio {
+    let capture;
+    let profile: &str = if let Role::DesktopVideoCapture { camera } = role {
+        capture = [
+            CONTENT,
+            CAPTURE_CONSENT,
+            if camera { CAMERA } else { SCREEN },
+        ]
+        .concat();
+        &capture
+    } else if can.audio {
         let home = std::env::var_os("HOME").ok_or_else(|| std::io::Error::other("no HOME"))?;
         let home = PathBuf::from(home);
         parameters.push(("PREFERENCES", home.join("Library/Preferences")));

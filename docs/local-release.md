@@ -95,7 +95,7 @@ build if `/tmp` free space or `MemAvailable` drops below 8 GiB. Client `TMPDIR`
 does not relocate daemon scratch; monitor/coordinate substantial builds.
 
 Preparation records each actual `.drv`, output store path and NAR hash, with
-`local-nix` provenance. It does not invent a CI run ID. The helper copies all nine
+`local-nix` provenance. The helper copies all
 Windows and macOS programs, complete scoped notices, static web files and exact
 Linux Nix references; Linux is not a portable native tarball. Windows/Mac archives
 are canonical checked copies, and the Windows installer is the selected product's
@@ -152,7 +152,7 @@ operator account, Nix daemon or OS.
 Linux cross compilation is not native Apple verification. The experimental
 release can be prepared, signed and published entirely on Linux. Mandatory local
 checks reuse the bounded `tests/cross_macho.py` ad-hoc integrity inspector for both
-slices of all nine programs, their code pages, bundle Info.plist/CodeResources
+slices of every program, their code pages, bundle Info.plist/CodeResources
 special slots and every resource hash. Unknown formats fail closed. These are
 local structural checks, not Apple acceptance.
 

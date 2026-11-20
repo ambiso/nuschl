@@ -34,7 +34,6 @@ const CHANNELS_SHEET_LIST: &str = "channels-sheet-list";
 struct PaneLayout {
     sidebar: Option<f32>,
     dense: bool,
-    #[cfg(target_os = "linux")]
     room_for_capture_buttons: bool,
     chrome: Pixels,
     auxiliary: Pixels,
@@ -71,7 +70,6 @@ impl PaneLayout {
         Self {
             sidebar,
             dense,
-            #[cfg(target_os = "linux")]
             room_for_capture_buttons: width
                 - RAIL_WIDTH
                 - sidebar.map_or(0., |w| w + SPLITTER_WIDTH)
@@ -103,7 +101,6 @@ impl Render for Desktop {
         let started = std::time::Instant::now();
         self.window_corners = crate::chrome::corner_radii(window);
         crate::images::collect(window);
-        #[cfg(target_os = "linux")]
         {
             self.sync_native_call();
             if let Some(call) = crate::native_call::expanded(self, window, cx) {
@@ -269,11 +266,9 @@ impl Render for Desktop {
             .child(chrome::title_bar(title.into(), window, cx))
             .when_some(update_bar(self, cx), |view, bar| view.child(bar))
             .map(|view| {
-                #[cfg(target_os = "linux")]
-                let view = view.when_some(crate::native_call::minimized(self, cx), |view, bar| {
+                view.when_some(crate::native_call::minimized(self, cx), |view, bar| {
                     view.child(bar)
-                });
-                view
+                })
             })
             .child(body)
             .when(self.channels_open, |view| {
@@ -2038,8 +2033,7 @@ fn conversation_header(
             },
         )
         .map(|controls| {
-            #[cfg(target_os = "linux")]
-            let controls = controls.when(
+            controls.when(
                 connected
                     && match channel.target {
                         TextTarget::Channel(_) => in_this_voice,
@@ -2091,8 +2085,7 @@ fn conversation_header(
                                 ))
                         })
                 },
-            );
-            controls
+            )
         })
         .when(!connected, |controls| {
             controls.child(styled_button(
@@ -2397,14 +2390,12 @@ fn conversation(
         .min_h_0()
         .overflow_hidden()
         .map(|view| {
-            #[cfg(target_os = "linux")]
-            let view = view.when(this.native_call_in(&server.id, &channel.target), |view| {
+            view.when(this.native_call_in(&server.id, &channel.target), |view| {
                 view.when_some(
                     crate::native_call::panel(this, window, cx),
                     |view, panel| view.child(panel),
                 )
-            });
-            view
+            })
         })
         .map(|view| match crate::search::panel(this, cx) {
             Some(panel) => view.child(panel),
@@ -3508,12 +3499,10 @@ fn call_card_actions(
         CallCardSource::Announcement(inviter) => inviter.is_none(),
     };
     let own = ours && owns_invitation(this, &server.id, generation, target, url);
-    #[cfg(target_os = "linux")]
     let inviter = match source {
         CallCardSource::Message(_, message) => invitation_sender(this, index, target, url, message),
         CallCardSource::Announcement(inviter) => inviter,
     };
-    #[cfg(target_os = "linux")]
     if this.native_call.is_some() {
         return if own || inviter.is_some() {
             crate::native_call::card_actions(this, server, target, url, inviter, cx)
@@ -3538,7 +3527,6 @@ fn call_card_actions(
             cx,
         )));
     }
-    #[cfg(target_os = "linux")]
     if let Some(inviter) = inviter
         && this.native_available(nuschl_core::call::link_host(url)?)
     {
@@ -3587,7 +3575,6 @@ fn owns_invitation(
         })
 }
 
-#[cfg(target_os = "linux")]
 fn invitation_sender(
     this: &Desktop,
     index: usize,

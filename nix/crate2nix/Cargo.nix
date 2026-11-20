@@ -73,6 +73,16 @@ rec {
       # File a bug if you depend on any for non-debug work!
       debug = internal.debugCrate { inherit packageId; };
     };
+    "nuschl-capture-macos" = rec {
+      packageId = "nuschl-capture-macos";
+      build = internal.buildRustCrateWithFeatures {
+        packageId = "nuschl-capture-macos";
+      };
+
+      # Debug support which might change between releases.
+      # File a bug if you depend on any for non-debug work!
+      debug = internal.debugCrate { inherit packageId; };
+    };
     "nuschl-cli" = rec {
       packageId = "nuschl-cli";
       build = internal.buildRustCrateWithFeatures {
@@ -3629,7 +3639,103 @@ rec {
         features = {
         };
       };
-      "bindgen" = rec {
+      "bindgen 0.65.1" = rec {
+        crateName = "bindgen";
+        version = "0.65.1";
+        edition = "2018";
+        sha256 = "1i9wci1h3xnk8hi7cf06capgifnmpk9dd59zqznh6jcsdx37ppyg";
+        libPath = "lib.rs";
+        authors = [
+          "Jyun-Yan You <jyyou.tw@gmail.com>"
+          "Emilio Cobos Álvarez <emilio@crisal.io>"
+          "Nick Fitzgerald <fitzgen@gmail.com>"
+          "The Servo project developers"
+        ];
+        dependencies = [
+          {
+            name = "bitflags";
+            packageId = "bitflags 1.3.2";
+          }
+          {
+            name = "cexpr";
+            packageId = "cexpr";
+          }
+          {
+            name = "clang-sys";
+            packageId = "clang-sys";
+            features = [ "clang_6_0" ];
+          }
+          {
+            name = "lazy_static";
+            packageId = "lazy_static";
+          }
+          {
+            name = "lazycell";
+            packageId = "lazycell";
+          }
+          {
+            name = "log";
+            packageId = "log";
+            optional = true;
+          }
+          {
+            name = "peeking_take_while";
+            packageId = "peeking_take_while";
+          }
+          {
+            name = "prettyplease";
+            packageId = "prettyplease";
+          }
+          {
+            name = "proc-macro2";
+            packageId = "proc-macro2";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "quote";
+            packageId = "quote";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "regex";
+            packageId = "regex";
+            usesDefaultFeatures = false;
+            features = [ "std" "unicode" ];
+          }
+          {
+            name = "rustc-hash";
+            packageId = "rustc-hash 1.1.0";
+          }
+          {
+            name = "shlex";
+            packageId = "shlex 1.3.0";
+          }
+          {
+            name = "syn";
+            packageId = "syn 2.0.119";
+            features = [ "full" "extra-traits" "visit-mut" ];
+          }
+          {
+            name = "which";
+            packageId = "which 4.4.2";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+        ];
+        features = {
+          "annotate-snippets" = [ "dep:annotate-snippets" ];
+          "default" = [ "logging" "runtime" "which-rustfmt" ];
+          "experimental" = [ "annotate-snippets" ];
+          "log" = [ "dep:log" ];
+          "logging" = [ "log" ];
+          "runtime" = [ "clang-sys/runtime" ];
+          "static" = [ "clang-sys/static" ];
+          "which" = [ "dep:which" ];
+          "which-rustfmt" = [ "which" ];
+        };
+        resolvedDefaultFeatures = [ "default" "log" "logging" "runtime" "which" "which-rustfmt" ];
+      };
+      "bindgen 0.72.1" = rec {
         crateName = "bindgen";
         version = "0.72.1";
         edition = "2021";
@@ -4447,6 +4553,97 @@ rec {
         ];
         features = {
           "log" = [ "dep:log" ];
+        };
+      };
+      "cameras" = rec {
+        crateName = "cameras";
+        version = "0.3.2";
+        edition = "2024";
+        sha256 = "1rfhm75xwah7idxldp1xhwbz9nwvnyb7hayc5vll551ncraq67pq";
+        authors = [
+          "Matthew Berger <matthewjordanberger@gmail.com>"
+        ];
+        dependencies = [
+          {
+            name = "block2";
+            packageId = "block2 0.6.2";
+            target = { target, features }: ("macos" == target."os" or null);
+          }
+          {
+            name = "bytes";
+            packageId = "bytes";
+          }
+          {
+            name = "crossbeam-channel";
+            packageId = "crossbeam-channel";
+          }
+          {
+            name = "dispatch2";
+            packageId = "dispatch2";
+            target = { target, features }: ("macos" == target."os" or null);
+          }
+          {
+            name = "objc2";
+            packageId = "objc2 0.6.5";
+            target = { target, features }: ("macos" == target."os" or null);
+            features = [ "exception" ];
+          }
+          {
+            name = "objc2-av-foundation";
+            packageId = "objc2-av-foundation";
+            target = { target, features }: ("macos" == target."os" or null);
+            features = [ "objc2-core-media" ];
+          }
+          {
+            name = "objc2-core-foundation";
+            packageId = "objc2-core-foundation";
+            target = { target, features }: ("macos" == target."os" or null);
+          }
+          {
+            name = "objc2-core-media";
+            packageId = "objc2-core-media";
+            target = { target, features }: ("macos" == target."os" or null);
+          }
+          {
+            name = "objc2-core-video";
+            packageId = "objc2-core-video";
+            target = { target, features }: ("macos" == target."os" or null);
+          }
+          {
+            name = "objc2-foundation";
+            packageId = "objc2-foundation 0.3.2";
+            target = { target, features }: ("macos" == target."os" or null);
+          }
+          {
+            name = "objc2-video-toolbox";
+            packageId = "objc2-video-toolbox";
+            target = { target, features }: ("macos" == target."os" or null);
+            features = [ "objc2-core-media" "objc2-core-video" ];
+          }
+          {
+            name = "thiserror";
+            packageId = "thiserror 2.0.21";
+          }
+          {
+            name = "v4l";
+            packageId = "v4l";
+            target = { target, features }: ("linux" == target."os" or null);
+          }
+          {
+            name = "windows";
+            packageId = "windows 0.58.0";
+            target = { target, features }: ("windows" == target."os" or null);
+            features = [ "Win32_Foundation" "Win32_Media_MediaFoundation" "Win32_System_Com" "Win32_System_Com_StructuredStorage" "Win32_Devices_Properties" ];
+          }
+          {
+            name = "zune-jpeg";
+            packageId = "zune-jpeg 0.4.21";
+          }
+        ];
+        features = {
+          "controls" = [ "windows/Win32_Media_DirectShow" ];
+          "discover" = [ "rtsp" "dep:ipnet" "tokio/io-util" ];
+          "rtsp" = [ "dep:retina" "dep:tokio" "dep:url" "dep:futures-util" ];
         };
       };
       "cap-primitives" = rec {
@@ -6990,7 +7187,7 @@ rec {
         buildDependencies = [
           {
             name = "bindgen";
-            packageId = "bindgen";
+            packageId = "bindgen 0.72.1";
           }
           {
             name = "cc";
@@ -7013,7 +7210,7 @@ rec {
         buildDependencies = [
           {
             name = "bindgen";
-            packageId = "bindgen";
+            packageId = "bindgen 0.72.1";
             optional = true;
           }
           {
@@ -8968,6 +9165,12 @@ rec {
             features = [ "alloc" ];
           }
           {
+            name = "libc";
+            packageId = "libc";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+          {
             name = "objc2";
             packageId = "objc2 0.6.5";
             optional = true;
@@ -8982,7 +9185,7 @@ rec {
           "objc2" = [ "dep:objc2" ];
           "std" = [ "alloc" ];
         };
-        resolvedDefaultFeatures = [ "alloc" "block2" "objc2" "std" ];
+        resolvedDefaultFeatures = [ "alloc" "block2" "default" "libc" "objc2" "std" ];
       };
       "displaydoc" = rec {
         crateName = "displaydoc";
@@ -16075,7 +16278,7 @@ rec {
           }
           {
             name = "zune-jpeg";
-            packageId = "zune-jpeg";
+            packageId = "zune-jpeg 0.5.15";
             optional = true;
             usesDefaultFeatures = false;
           }
@@ -18153,13 +18356,13 @@ rec {
           }
           {
             name = "zune-core";
-            packageId = "zune-core";
+            packageId = "zune-core 0.5.3";
             optional = true;
             usesDefaultFeatures = false;
           }
           {
             name = "zune-jpeg";
-            packageId = "zune-jpeg";
+            packageId = "zune-jpeg 0.5.15";
             optional = true;
           }
         ];
@@ -19515,6 +19718,21 @@ rec {
           "spin_no_std" = [ "spin" ];
         };
         resolvedDefaultFeatures = [ "spin" "spin_no_std" ];
+      };
+      "lazycell" = rec {
+        crateName = "lazycell";
+        version = "1.3.0";
+        edition = "2015";
+        sha256 = "0m8gw7dn30i0zjjpjdyf6pc16c34nl71lpv461mix50x3p70h3c3";
+        authors = [
+          "Alex Crichton <alex@alexcrichton.com>"
+          "Nikita Pekin <contact@nikitapek.in>"
+        ];
+        features = {
+          "clippy" = [ "dep:clippy" ];
+          "nightly-testing" = [ "clippy" "nightly" ];
+          "serde" = [ "dep:serde" ];
+        };
       };
       "lebe" = rec {
         crateName = "lebe";
@@ -21080,7 +21298,7 @@ rec {
         buildDependencies = [
           {
             name = "bindgen";
-            packageId = "bindgen";
+            packageId = "bindgen 0.72.1";
             usesDefaultFeatures = false;
             features = [ "experimental" "runtime" ];
           }
@@ -24138,6 +24356,73 @@ rec {
         ];
 
       };
+      "nuschl-capture-macos" = rec {
+        crateName = "nuschl-capture-macos";
+        version = "0.2.0";
+        edition = "2024";
+        src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../crates/capture-macos; };
+        libName = "nuschl_capture_macos";
+        dependencies = [
+          {
+            name = "block2";
+            packageId = "block2 0.6.2";
+            target = { target, features }: ("macos" == target."os" or null);
+          }
+          {
+            name = "dispatch2";
+            packageId = "dispatch2";
+            target = { target, features }: ("macos" == target."os" or null);
+          }
+          {
+            name = "objc2";
+            packageId = "objc2 0.6.5";
+            target = { target, features }: ("macos" == target."os" or null);
+          }
+          {
+            name = "objc2-app-kit";
+            packageId = "objc2-app-kit 0.3.2";
+            usesDefaultFeatures = false;
+            target = { target, features }: ("macos" == target."os" or null);
+            features = [ "std" "NSApplication" "NSEvent" "NSResponder" "NSRunningApplication" ];
+          }
+          {
+            name = "objc2-av-foundation";
+            packageId = "objc2-av-foundation";
+            usesDefaultFeatures = false;
+            target = { target, features }: ("macos" == target."os" or null);
+            features = [ "std" "AVCaptureDevice" "AVCaptureInput" "AVCaptureOutputBase" "AVCaptureSession" "AVCaptureSessionPreset" "AVCaptureVideoDataOutput" "AVMediaFormat" "block2" "dispatch2" "objc2-core-media" ];
+          }
+          {
+            name = "objc2-core-media";
+            packageId = "objc2-core-media";
+            usesDefaultFeatures = false;
+            target = { target, features }: ("macos" == target."os" or null);
+            features = [ "std" "CMSampleBuffer" "CMTime" "objc2-core-video" ];
+          }
+          {
+            name = "objc2-core-video";
+            packageId = "objc2-core-video";
+            usesDefaultFeatures = false;
+            target = { target, features }: ("macos" == target."os" or null);
+            features = [ "std" "CVBase" "CVBuffer" "CVImageBuffer" "CVPixelBuffer" "CVReturn" ];
+          }
+          {
+            name = "objc2-foundation";
+            packageId = "objc2-foundation 0.3.2";
+            usesDefaultFeatures = false;
+            target = { target, features }: ("macos" == target."os" or null);
+            features = [ "std" "NSDate" "NSDictionary" "NSError" "NSObjCRuntime" "NSRunLoop" "NSString" "NSValue" ];
+          }
+          {
+            name = "objc2-screen-capture-kit";
+            packageId = "objc2-screen-capture-kit";
+            usesDefaultFeatures = false;
+            target = { target, features }: ("macos" == target."os" or null);
+            features = [ "std" "SCContentSharingPicker" "SCShareableContent" "SCStream" "block2" "dispatch2" "objc2-core-foundation" "objc2-core-media" ];
+          }
+        ];
+
+      };
       "nuschl-cli" = rec {
         crateName = "nuschl-cli";
         version = "0.2.0";
@@ -25562,17 +25847,19 @@ rec {
           {
             name = "nuschl-ipc";
             packageId = "nuschl-ipc";
-            target = { target, features }: ("linux" == target."os" or null);
           }
           {
             name = "nuschl-rtc";
             packageId = "nuschl-rtc";
-            target = { target, features }: ("linux" == target."os" or null);
+          }
+          {
+            name = "nuschl-sandbox-windows";
+            packageId = "nuschl-sandbox-windows";
+            target = { target, features }: (target."windows" or false);
           }
           {
             name = "nuschl-sframe";
             packageId = "nuschl-sframe";
-            target = { target, features }: ("linux" == target."os" or null);
           }
         ];
         devDependencies = [
@@ -25717,7 +26004,6 @@ rec {
           {
             name = "nuschl-stream-quality";
             packageId = "nuschl-stream-quality";
-            target = { target, features }: ("linux" == target."os" or null);
           }
           {
             name = "p12-keystore";
@@ -25780,7 +26066,6 @@ rec {
           {
             name = "turn-client-proto";
             packageId = "turn-client-proto";
-            target = { target, features }: ("linux" == target."os" or null);
           }
           {
             name = "uuid";
@@ -26509,6 +26794,12 @@ rec {
         src = lib.cleanSourceWith { filter = sourceFilter;  src = ../../apps/video-worker; };
         dependencies = [
           {
+            name = "cameras";
+            packageId = "cameras";
+            usesDefaultFeatures = false;
+            target = { target, features }: (target."windows" or false);
+          }
+          {
             name = "gstreamer";
             packageId = "gstreamer";
             optional = true;
@@ -26525,6 +26816,15 @@ rec {
             features = [ "v1_28" ];
           }
           {
+            name = "nuschl-capture-macos";
+            packageId = "nuschl-capture-macos";
+            target = { target, features }: ("macos" == target."os" or null);
+          }
+          {
+            name = "nuschl-ipc";
+            packageId = "nuschl-ipc";
+          }
+          {
             name = "nuschl-ipc";
             packageId = "nuschl-ipc";
             target = { target, features }: ("linux" == target."os" or null);
@@ -26533,7 +26833,11 @@ rec {
           {
             name = "nuschl-sandbox";
             packageId = "nuschl-sandbox";
-            target = { target, features }: ("linux" == target."os" or null);
+          }
+          {
+            name = "nuschl-sandbox-windows";
+            packageId = "nuschl-sandbox-windows";
+            target = { target, features }: (target."windows" or false);
           }
           {
             name = "pipewire";
@@ -26545,20 +26849,23 @@ rec {
             name = "rav1d";
             packageId = "rav1d";
             usesDefaultFeatures = false;
-            target = { target, features }: ("linux" == target."os" or null);
             features = [ "bitdepth_8" "bitdepth_16" ];
           }
           {
             name = "rav1e";
             packageId = "rav1e";
             usesDefaultFeatures = false;
-            target = { target, features }: ("linux" == target."os" or null);
           }
           {
             name = "tokio";
             packageId = "tokio";
             target = { target, features }: ("linux" == target."os" or null);
             features = [ "macros" "rt" ];
+          }
+          {
+            name = "windows-capture";
+            packageId = "windows-capture 2.0.1";
+            target = { target, features }: (target."windows" or false);
           }
         ];
         devDependencies = [
@@ -27082,6 +27389,12 @@ rec {
             packageId = "objc2-encode";
             usesDefaultFeatures = false;
           }
+          {
+            name = "objc2-exception-helper";
+            packageId = "objc2-exception-helper";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
         ];
         features = {
           "alloc" = [ "objc2-encode/alloc" ];
@@ -27102,7 +27415,7 @@ rec {
           "unstable-static-sel-inlined" = [ "unstable-static-sel" ];
           "unstable-winobjc" = [ "gnustep-1-8" ];
         };
-        resolvedDefaultFeatures = [ "alloc" "default" "std" ];
+        resolvedDefaultFeatures = [ "alloc" "default" "exception" "std" ];
       };
       "objc2-app-kit 0.2.2" = rec {
         crateName = "objc2-app-kit";
@@ -27938,6 +28251,241 @@ rec {
         };
         resolvedDefaultFeatures = [ "AUComponent" "AudioCodec" "AudioComponent" "AudioFormat" "AudioOutputUnit" "AudioServices" "AudioSession" "AudioUnitProperties" "alloc" "bitflags" "libc" "objc2-core-audio" "objc2-core-audio-types" "objc2-core-foundation" "std" ];
       };
+      "objc2-av-foundation" = rec {
+        crateName = "objc2-av-foundation";
+        version = "0.3.2";
+        edition = "2021";
+        sha256 = "1h5nhjipihjgr88baqid7s5g13kbcry3h0l3vcc0mpy9r8zy72j7";
+        libName = "objc2_av_foundation";
+        dependencies = [
+          {
+            name = "bitflags";
+            packageId = "bitflags 2.13.2";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "std" ];
+          }
+          {
+            name = "block2";
+            packageId = "block2 0.6.2";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "alloc" ];
+          }
+          {
+            name = "dispatch2";
+            packageId = "dispatch2";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "alloc" "block2" "objc2" ];
+          }
+          {
+            name = "objc2";
+            packageId = "objc2 0.6.5";
+            usesDefaultFeatures = false;
+            features = [ "std" ];
+          }
+          {
+            name = "objc2-avf-audio";
+            packageId = "objc2-avf-audio";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "AVAudioSessionRoute" ];
+          }
+          {
+            name = "objc2-core-audio-types";
+            packageId = "objc2-core-audio-types";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "CoreAudioBaseTypes" "objc2" ];
+          }
+          {
+            name = "objc2-core-foundation";
+            packageId = "objc2-core-foundation";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "CFCGTypes" "CFDate" "objc2" ];
+          }
+          {
+            name = "objc2-core-graphics";
+            packageId = "objc2-core-graphics";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "CGColor" "CGContext" "CGDirectDisplay" "CGImage" "objc2" ];
+          }
+          {
+            name = "objc2-core-image";
+            packageId = "objc2-core-image 0.3.2";
+            optional = true;
+            usesDefaultFeatures = false;
+            target = { target, features }: (!("watchos" == target."os" or null));
+            features = [ "CIBarcodeDescriptor" "CIContext" "CIImage" ];
+          }
+          {
+            name = "objc2-core-media";
+            packageId = "objc2-core-media";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "CMBase" "CMFormatDescription" "CMSampleBuffer" "CMSync" "CMTag" "CMTagCollection" "CMTaggedBufferGroup" "CMTime" "CMTimeRange" "objc2" ];
+          }
+          {
+            name = "objc2-core-video";
+            packageId = "objc2-core-video";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "CVBase" "CVBuffer" "CVImageBuffer" "CVPixelBuffer" "CVPixelBufferPool" "objc2" ];
+          }
+          {
+            name = "objc2-foundation";
+            packageId = "objc2-foundation 0.3.2";
+            usesDefaultFeatures = false;
+            features = [ "alloc" ];
+          }
+          {
+            name = "objc2-image-io";
+            packageId = "objc2-image-io";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "CGImageProperties" "objc2" ];
+          }
+          {
+            name = "objc2-media-toolbox";
+            packageId = "objc2-media-toolbox";
+            optional = true;
+            usesDefaultFeatures = false;
+            target = { target, features }: (!("watchos" == target."os" or null));
+            features = [ "MTAudioProcessingTap" "objc2" ];
+          }
+          {
+            name = "objc2-quartz-core";
+            packageId = "objc2-quartz-core 0.3.2";
+            optional = true;
+            usesDefaultFeatures = false;
+            target = { target, features }: (!("watchos" == target."os" or null));
+            features = [ "CALayer" "CAMediaTiming" ];
+          }
+        ];
+        features = {
+          "AVAnimation" = [ "objc2-foundation/NSString" ];
+          "AVAsset" = [ "bitflags" "objc2-foundation/NSArray" "objc2-foundation/NSDate" "objc2-foundation/NSDictionary" "objc2-foundation/NSError" "objc2-foundation/NSItemProvider" "objc2-foundation/NSLocale" "objc2-foundation/NSObject" "objc2-foundation/NSString" "objc2-foundation/NSURL" "objc2-foundation/NSUUID" ];
+          "AVAssetCache" = [ "objc2-foundation/NSArray" "objc2-foundation/NSDictionary" "objc2-foundation/NSString" ];
+          "AVAssetDownloadStorageManager" = [ "objc2-foundation/NSDate" "objc2-foundation/NSObject" "objc2-foundation/NSString" "objc2-foundation/NSURL" ];
+          "AVAssetDownloadTask" = [ "objc2-foundation/NSArray" "objc2-foundation/NSData" "objc2-foundation/NSDictionary" "objc2-foundation/NSError" "objc2-foundation/NSObject" "objc2-foundation/NSOperation" "objc2-foundation/NSProgress" "objc2-foundation/NSString" "objc2-foundation/NSURL" "objc2-foundation/NSURLRequest" "objc2-foundation/NSURLResponse" "objc2-foundation/NSURLSession" "objc2-foundation/NSValue" ];
+          "AVAssetExportSession" = [ "bitflags" "objc2-foundation/NSArray" "objc2-foundation/NSError" "objc2-foundation/NSString" "objc2-foundation/NSURL" ];
+          "AVAssetImageGenerator" = [ "objc2-foundation/NSArray" "objc2-foundation/NSError" "objc2-foundation/NSString" "objc2-foundation/NSValue" ];
+          "AVAssetPlaybackAssistant" = [ "objc2-foundation/NSArray" "objc2-foundation/NSString" ];
+          "AVAssetReader" = [ "objc2-foundation/NSArray" "objc2-foundation/NSError" ];
+          "AVAssetReaderOutput" = [ "objc2-foundation/NSArray" "objc2-foundation/NSDictionary" "objc2-foundation/NSString" "objc2-foundation/NSValue" ];
+          "AVAssetResourceLoader" = [ "objc2-foundation/NSArray" "objc2-foundation/NSData" "objc2-foundation/NSDate" "objc2-foundation/NSDictionary" "objc2-foundation/NSError" "objc2-foundation/NSString" "objc2-foundation/NSURLAuthenticationChallenge" "objc2-foundation/NSURLRequest" "objc2-foundation/NSURLResponse" ];
+          "AVAssetSegmentReport" = [ "objc2-foundation/NSArray" "objc2-foundation/NSString" ];
+          "AVAssetTrack" = [ "objc2-foundation/NSArray" "objc2-foundation/NSError" "objc2-foundation/NSObject" "objc2-foundation/NSString" ];
+          "AVAssetTrackGroup" = [ "objc2-foundation/NSArray" "objc2-foundation/NSObject" "objc2-foundation/NSValue" ];
+          "AVAssetVariant" = [ "objc2-foundation/NSArray" "objc2-foundation/NSComparisonPredicate" "objc2-foundation/NSObject" "objc2-foundation/NSPredicate" "objc2-foundation/NSString" "objc2-foundation/NSURL" "objc2-foundation/NSValue" ];
+          "AVAssetWriter" = [ "objc2-foundation/NSArray" "objc2-foundation/NSData" "objc2-foundation/NSDictionary" "objc2-foundation/NSError" "objc2-foundation/NSObject" "objc2-foundation/NSString" "objc2-foundation/NSURL" ];
+          "AVAssetWriterInput" = [ "objc2-foundation/NSArray" "objc2-foundation/NSDictionary" "objc2-foundation/NSString" "objc2-foundation/NSURL" "objc2-foundation/NSValue" ];
+          "AVAsynchronousKeyValueLoading" = [ "objc2-foundation/NSArray" "objc2-foundation/NSString" ];
+          "AVAudioMix" = [ "objc2-foundation/NSArray" "objc2-foundation/NSObject" "objc2-foundation/NSString" ];
+          "AVAudioProcessingSettings" = [ "bitflags" "objc2-foundation/NSString" ];
+          "AVCameraCalibrationData" = [ "objc2-foundation/NSData" ];
+          "AVCaption" = [ "bitflags" "objc2-foundation/NSCoder" "objc2-foundation/NSObject" "objc2-foundation/NSRange" "objc2-foundation/NSString" "objc2-foundation/NSZone" ];
+          "AVCaptionConversionValidator" = [ "objc2-foundation/NSArray" "objc2-foundation/NSDictionary" "objc2-foundation/NSRange" "objc2-foundation/NSString" ];
+          "AVCaptionFormatConformer" = [ "objc2-foundation/NSDictionary" "objc2-foundation/NSError" "objc2-foundation/NSString" ];
+          "AVCaptionGroup" = [ "objc2-foundation/NSArray" ];
+          "AVCaptionGrouper" = [ "objc2-foundation/NSArray" ];
+          "AVCaptionRenderer" = [ "objc2-foundation/NSArray" "objc2-foundation/NSObject" ];
+          "AVCaptionSettings" = [ "objc2-foundation/NSString" ];
+          "AVCaptureAudioDataOutput" = [ "objc2-foundation/NSDictionary" "objc2-foundation/NSString" ];
+          "AVCaptureAudioPreviewOutput" = [ "objc2-foundation/NSString" ];
+          "AVCaptureDataOutputSynchronizer" = [ "objc2-foundation/NSArray" "objc2-foundation/NSEnumerator" ];
+          "AVCaptureDeskViewApplication" = [ "objc2-foundation/NSError" ];
+          "AVCaptureDevice" = [ "bitflags" "objc2-foundation/NSArray" "objc2-foundation/NSData" "objc2-foundation/NSError" "objc2-foundation/NSNotification" "objc2-foundation/NSSet" "objc2-foundation/NSString" "objc2-foundation/NSValue" ];
+          "AVCaptureFileOutput" = [ "objc2-foundation/NSArray" "objc2-foundation/NSDictionary" "objc2-foundation/NSError" "objc2-foundation/NSString" "objc2-foundation/NSURL" ];
+          "AVCaptureIndexPicker" = [ "objc2-foundation/NSArray" "objc2-foundation/NSString" ];
+          "AVCaptureInput" = [ "objc2-foundation/NSArray" "objc2-foundation/NSError" "objc2-foundation/NSNotification" "objc2-foundation/NSString" ];
+          "AVCaptureMetadataOutput" = [ "objc2-foundation/NSArray" "objc2-foundation/NSString" ];
+          "AVCaptureOutputBase" = [ "objc2-foundation/NSArray" "objc2-foundation/NSString" ];
+          "AVCapturePhotoOutput" = [ "objc2-foundation/NSArray" "objc2-foundation/NSData" "objc2-foundation/NSDictionary" "objc2-foundation/NSError" "objc2-foundation/NSObject" "objc2-foundation/NSString" "objc2-foundation/NSURL" "objc2-foundation/NSValue" ];
+          "AVCaptureReactions" = [ "objc2-foundation/NSString" ];
+          "AVCaptureSession" = [ "objc2-foundation/NSArray" "objc2-foundation/NSNotification" "objc2-foundation/NSString" ];
+          "AVCaptureSessionPreset" = [ "objc2-foundation/NSString" ];
+          "AVCaptureSlider" = [ "objc2-foundation/NSArray" "objc2-foundation/NSString" "objc2-foundation/NSValue" ];
+          "AVCaptureStillImageOutput" = [ "objc2-foundation/NSArray" "objc2-foundation/NSData" "objc2-foundation/NSDictionary" "objc2-foundation/NSError" "objc2-foundation/NSString" "objc2-foundation/NSValue" ];
+          "AVCaptureSystemPressure" = [ "bitflags" "objc2-foundation/NSString" ];
+          "AVCaptureTimecodeGenerator" = [ "objc2-foundation/NSArray" "objc2-foundation/NSDate" "objc2-foundation/NSObject" "objc2-foundation/NSString" "objc2-foundation/NSUUID" ];
+          "AVCaptureVideoDataOutput" = [ "objc2-foundation/NSArray" "objc2-foundation/NSDictionary" "objc2-foundation/NSString" "objc2-foundation/NSURL" "objc2-foundation/NSValue" ];
+          "AVCaptureVideoPreviewLayer" = [ "objc2-foundation/NSObject" "objc2-foundation/NSString" ];
+          "AVComposition" = [ "objc2-foundation/NSArray" "objc2-foundation/NSDictionary" "objc2-foundation/NSError" "objc2-foundation/NSLocale" "objc2-foundation/NSObject" "objc2-foundation/NSString" "objc2-foundation/NSURL" ];
+          "AVCompositionTrack" = [ "objc2-foundation/NSArray" "objc2-foundation/NSError" "objc2-foundation/NSObject" "objc2-foundation/NSString" "objc2-foundation/NSValue" ];
+          "AVCompositionTrackSegment" = [ "objc2-foundation/NSURL" ];
+          "AVContentKeySession" = [ "objc2-foundation/NSArray" "objc2-foundation/NSData" "objc2-foundation/NSDictionary" "objc2-foundation/NSError" "objc2-foundation/NSString" "objc2-foundation/NSURL" ];
+          "AVContinuityDevice" = [ "objc2-foundation/NSArray" "objc2-foundation/NSUUID" ];
+          "AVDepthData" = [ "objc2-foundation/NSArray" "objc2-foundation/NSDictionary" "objc2-foundation/NSError" "objc2-foundation/NSString" "objc2-foundation/NSValue" ];
+          "AVError" = [ "objc2-foundation/NSError" "objc2-foundation/NSString" ];
+          "AVExternalStorageDevice" = [ "objc2-foundation/NSArray" "objc2-foundation/NSError" "objc2-foundation/NSString" "objc2-foundation/NSURL" "objc2-foundation/NSUUID" ];
+          "AVExternalSyncDevice" = [ "objc2-foundation/NSArray" "objc2-foundation/NSError" "objc2-foundation/NSUUID" ];
+          "AVGeometry" = [ "objc2-foundation/NSValue" ];
+          "AVMediaFormat" = [ "objc2-foundation/NSString" ];
+          "AVMediaSelection" = [ "objc2-foundation/NSObject" ];
+          "AVMediaSelectionGroup" = [ "objc2-foundation/NSArray" "objc2-foundation/NSLocale" "objc2-foundation/NSObject" "objc2-foundation/NSString" "objc2-foundation/NSValue" ];
+          "AVMetadataFormat" = [ "objc2-foundation/NSString" ];
+          "AVMetadataIdentifiers" = [ "objc2-foundation/NSString" ];
+          "AVMetadataItem" = [ "objc2-foundation/NSArray" "objc2-foundation/NSData" "objc2-foundation/NSDate" "objc2-foundation/NSDictionary" "objc2-foundation/NSError" "objc2-foundation/NSLocale" "objc2-foundation/NSObject" "objc2-foundation/NSString" "objc2-foundation/NSValue" ];
+          "AVMetadataObject" = [ "objc2-foundation/NSArray" "objc2-foundation/NSDictionary" "objc2-foundation/NSObject" "objc2-foundation/NSString" ];
+          "AVMetrics" = [ "objc2-foundation/NSArray" "objc2-foundation/NSDate" "objc2-foundation/NSError" "objc2-foundation/NSObject" "objc2-foundation/NSRange" "objc2-foundation/NSString" "objc2-foundation/NSURL" "objc2-foundation/NSURLSession" "objc2-foundation/NSValue" ];
+          "AVMovie" = [ "bitflags" "objc2-foundation/NSArray" "objc2-foundation/NSData" "objc2-foundation/NSDate" "objc2-foundation/NSDictionary" "objc2-foundation/NSError" "objc2-foundation/NSLocale" "objc2-foundation/NSObject" "objc2-foundation/NSString" "objc2-foundation/NSURL" ];
+          "AVMovieTrack" = [ "objc2-foundation/NSArray" "objc2-foundation/NSError" "objc2-foundation/NSObject" "objc2-foundation/NSString" "objc2-foundation/NSURL" ];
+          "AVOutputSettingsAssistant" = [ "objc2-foundation/NSArray" "objc2-foundation/NSDictionary" "objc2-foundation/NSString" ];
+          "AVPlaybackCoordinationMedium" = [ "objc2-foundation/NSArray" ];
+          "AVPlaybackCoordinator" = [ "bitflags" "objc2-foundation/NSArray" "objc2-foundation/NSDate" "objc2-foundation/NSError" "objc2-foundation/NSNotification" "objc2-foundation/NSString" "objc2-foundation/NSUUID" "objc2-foundation/NSValue" ];
+          "AVPlayer" = [ "bitflags" "objc2-foundation/NSArray" "objc2-foundation/NSDate" "objc2-foundation/NSError" "objc2-foundation/NSNotification" "objc2-foundation/NSString" "objc2-foundation/NSURL" "objc2-foundation/NSValue" ];
+          "AVPlayerInterstitialEventController" = [ "bitflags" "objc2-foundation/NSArray" "objc2-foundation/NSBundle" "objc2-foundation/NSDate" "objc2-foundation/NSDictionary" "objc2-foundation/NSNotification" "objc2-foundation/NSObject" "objc2-foundation/NSString" ];
+          "AVPlayerItem" = [ "bitflags" "objc2-foundation/NSArray" "objc2-foundation/NSData" "objc2-foundation/NSDate" "objc2-foundation/NSDictionary" "objc2-foundation/NSError" "objc2-foundation/NSNotification" "objc2-foundation/NSObject" "objc2-foundation/NSString" "objc2-foundation/NSURL" "objc2-foundation/NSValue" "objc2-foundation/NSZone" ];
+          "AVPlayerItemIntegratedTimeline" = [ "objc2-foundation/NSArray" "objc2-foundation/NSDate" "objc2-foundation/NSNotification" "objc2-foundation/NSString" "objc2-foundation/NSValue" ];
+          "AVPlayerItemMediaDataCollector" = [ "objc2-foundation/NSArray" "objc2-foundation/NSIndexSet" "objc2-foundation/NSString" ];
+          "AVPlayerItemOutput" = [ "objc2-foundation/NSArray" "objc2-foundation/NSAttributedString" "objc2-foundation/NSDate" "objc2-foundation/NSDictionary" "objc2-foundation/NSString" "objc2-foundation/NSValue" ];
+          "AVPlayerItemProtectedContentAdditions" = [ "objc2-foundation/NSDate" ];
+          "AVPlayerItemTrack" = [ "objc2-foundation/NSString" ];
+          "AVPlayerLayer" = [ "objc2-foundation/NSDictionary" "objc2-foundation/NSObject" "objc2-foundation/NSString" ];
+          "AVPlayerLooper" = [ "objc2-foundation/NSArray" "objc2-foundation/NSError" ];
+          "AVPlayerMediaSelectionCriteria" = [ "objc2-foundation/NSArray" "objc2-foundation/NSString" ];
+          "AVPlayerOutput" = [ "objc2-foundation/NSArray" "objc2-foundation/NSDictionary" "objc2-foundation/NSObject" "objc2-foundation/NSString" ];
+          "AVPortraitEffectsMatte" = [ "objc2-foundation/NSDictionary" "objc2-foundation/NSError" "objc2-foundation/NSString" ];
+          "AVRouteDetector" = [ "objc2-foundation/NSNotification" "objc2-foundation/NSString" ];
+          "AVSampleBufferAudioRenderer" = [ "objc2-foundation/NSError" "objc2-foundation/NSNotification" "objc2-foundation/NSString" ];
+          "AVSampleBufferDisplayLayer" = [ "objc2-foundation/NSError" "objc2-foundation/NSNotification" "objc2-foundation/NSObject" "objc2-foundation/NSString" ];
+          "AVSampleBufferGenerator" = [ "objc2-foundation/NSError" ];
+          "AVSampleBufferRenderSynchronizer" = [ "objc2-foundation/NSArray" "objc2-foundation/NSNotification" "objc2-foundation/NSString" "objc2-foundation/NSValue" ];
+          "AVSampleBufferVideoRenderer" = [ "objc2-foundation/NSDictionary" "objc2-foundation/NSError" "objc2-foundation/NSNotification" "objc2-foundation/NSString" ];
+          "AVSampleCursor" = [ "objc2-foundation/NSDictionary" "objc2-foundation/NSObjCRuntime" "objc2-foundation/NSObject" "objc2-foundation/NSURL" ];
+          "AVSemanticSegmentationMatte" = [ "objc2-foundation/NSDictionary" "objc2-foundation/NSError" "objc2-foundation/NSString" ];
+          "AVSpatialVideoConfiguration" = [ "objc2-foundation/NSArray" "objc2-foundation/NSDictionary" "objc2-foundation/NSString" "objc2-foundation/NSValue" ];
+          "AVSynchronizedLayer" = [ "objc2-foundation/NSObject" ];
+          "AVTextStyleRule" = [ "objc2-foundation/NSArray" "objc2-foundation/NSDictionary" "objc2-foundation/NSObject" "objc2-foundation/NSString" ];
+          "AVTime" = [ "objc2-foundation/NSCoder" "objc2-foundation/NSString" "objc2-foundation/NSValue" ];
+          "AVTimedMetadataGroup" = [ "objc2-foundation/NSArray" "objc2-foundation/NSDate" "objc2-foundation/NSObject" "objc2-foundation/NSString" ];
+          "AVVideoCompositing" = [ "objc2-foundation/NSArray" "objc2-foundation/NSDictionary" "objc2-foundation/NSError" "objc2-foundation/NSObject" "objc2-foundation/NSString" "objc2-foundation/NSValue" ];
+          "AVVideoComposition" = [ "objc2-foundation/NSArray" "objc2-foundation/NSError" "objc2-foundation/NSObject" "objc2-foundation/NSString" "objc2-foundation/NSValue" ];
+          "AVVideoPerformanceMetrics" = [ "objc2-foundation/NSDate" ];
+          "AVVideoSettings" = [ "objc2-foundation/NSString" ];
+          "bitflags" = [ "dep:bitflags" ];
+          "block2" = [ "dep:block2" ];
+          "default" = [ "std" "AVAnimation" "AVAsset" "AVAssetCache" "AVAssetDownloadStorageManager" "AVAssetDownloadTask" "AVAssetExportSession" "AVAssetImageGenerator" "AVAssetPlaybackAssistant" "AVAssetReader" "AVAssetReaderOutput" "AVAssetResourceLoader" "AVAssetSegmentReport" "AVAssetTrack" "AVAssetTrackGroup" "AVAssetTrackSegment" "AVAssetVariant" "AVAssetWriter" "AVAssetWriterInput" "AVAsynchronousKeyValueLoading" "AVAudioBuffer" "AVAudioChannelLayout" "AVAudioConnectionPoint" "AVAudioConverter" "AVAudioEngine" "AVAudioEnvironmentNode" "AVAudioFile" "AVAudioFormat" "AVAudioIONode" "AVAudioMix" "AVAudioMixerNode" "AVAudioMixing" "AVAudioNode" "AVAudioPlayer" "AVAudioPlayerNode" "AVAudioProcessingSettings" "AVAudioRecorder" "AVAudioRoutingArbiter" "AVAudioSequencer" "AVAudioSession" "AVAudioSessionDeprecated" "AVAudioSessionRoute" "AVAudioSessionTypes" "AVAudioSettings" "AVAudioTime" "AVAudioTypes" "AVAudioUnit" "AVAudioUnitComponent" "AVAudioUnitDelay" "AVAudioUnitDistortion" "AVAudioUnitEQ" "AVAudioUnitEffect" "AVAudioUnitGenerator" "AVAudioUnitMIDIInstrument" "AVAudioUnitReverb" "AVAudioUnitSampler" "AVAudioUnitTimeEffect" "AVAudioUnitTimePitch" "AVAudioUnitVarispeed" "AVBase" "AVCameraCalibrationData" "AVCaption" "AVCaptionConversionValidator" "AVCaptionFormatConformer" "AVCaptionGroup" "AVCaptionGrouper" "AVCaptionRenderer" "AVCaptionSettings" "AVCaptureAudioDataOutput" "AVCaptureAudioPreviewOutput" "AVCaptureControl" "AVCaptureDataOutputSynchronizer" "AVCaptureDepthDataOutput" "AVCaptureDeskViewApplication" "AVCaptureDevice" "AVCaptureExternalDisplayConfigurator" "AVCaptureFileOutput" "AVCaptureIndexPicker" "AVCaptureInput" "AVCaptureMetadataOutput" "AVCaptureOutput" "AVCaptureOutputBase" "AVCapturePhotoOutput" "AVCaptureReactions" "AVCaptureSession" "AVCaptureSessionPreset" "AVCaptureSlider" "AVCaptureSpatialAudioMetadataSampleGenerator" "AVCaptureStillImageOutput" "AVCaptureSystemExposureBiasSlider" "AVCaptureSystemPressure" "AVCaptureSystemZoomSlider" "AVCaptureTimecodeGenerator" "AVCaptureVideoDataOutput" "AVCaptureVideoPreviewLayer" "AVComposition" "AVCompositionTrack" "AVCompositionTrackSegment" "AVContentKeySession" "AVContinuityDevice" "AVDepthData" "AVError" "AVExternalStorageDevice" "AVExternalSyncDevice" "AVFAudio" "AVFCapture" "AVFCore" "AVGeometry" "AVMIDIPlayer" "AVMediaFormat" "AVMediaSelection" "AVMediaSelectionGroup" "AVMetadataFormat" "AVMetadataIdentifiers" "AVMetadataItem" "AVMetadataObject" "AVMetrics" "AVMovie" "AVMovieTrack" "AVOutputSettingsAssistant" "AVPlaybackCoordinationMedium" "AVPlaybackCoordinator" "AVPlayer" "AVPlayerInterstitialEventController" "AVPlayerItem" "AVPlayerItemIntegratedTimeline" "AVPlayerItemMediaDataCollector" "AVPlayerItemOutput" "AVPlayerItemProtectedContentAdditions" "AVPlayerItemTrack" "AVPlayerLayer" "AVPlayerLooper" "AVPlayerMediaSelectionCriteria" "AVPlayerOutput" "AVPortraitEffectsMatte" "AVQueuedSampleBufferRendering" "AVRenderedCaptionImage" "AVRouteDetector" "AVSampleBufferAudioRenderer" "AVSampleBufferDisplayLayer" "AVSampleBufferGenerator" "AVSampleBufferRenderSynchronizer" "AVSampleBufferVideoRenderer" "AVSampleCursor" "AVSemanticSegmentationMatte" "AVSpatialVideoConfiguration" "AVSynchronizedLayer" "AVTextStyleRule" "AVTime" "AVTimedMetadataGroup" "AVUtilities" "AVVideoCompositing" "AVVideoComposition" "AVVideoPerformanceMetrics" "AVVideoSettings" "bitflags" "block2" "dispatch2" "objc2-avf-audio" "objc2-core-audio-types" "objc2-core-foundation" "objc2-core-graphics" "objc2-core-image" "objc2-core-video" "objc2-image-io" "objc2-media-toolbox" "objc2-quartz-core" ];
+          "dispatch2" = [ "dep:dispatch2" ];
+          "objc2-avf-audio" = [ "dep:objc2-avf-audio" ];
+          "objc2-core-audio-types" = [ "dep:objc2-core-audio-types" ];
+          "objc2-core-foundation" = [ "dep:objc2-core-foundation" ];
+          "objc2-core-graphics" = [ "dep:objc2-core-graphics" ];
+          "objc2-core-image" = [ "dep:objc2-core-image" ];
+          "objc2-core-media" = [ "dep:objc2-core-media" ];
+          "objc2-core-video" = [ "dep:objc2-core-video" ];
+          "objc2-image-io" = [ "dep:objc2-image-io" ];
+          "objc2-media-toolbox" = [ "dep:objc2-media-toolbox" ];
+          "objc2-quartz-core" = [ "dep:objc2-quartz-core" ];
+          "objc2-uniform-type-identifiers" = [ "dep:objc2-uniform-type-identifiers" ];
+          "std" = [ "alloc" ];
+        };
+        resolvedDefaultFeatures = [ "AVAnimation" "AVAsset" "AVAssetCache" "AVAssetDownloadStorageManager" "AVAssetDownloadTask" "AVAssetExportSession" "AVAssetImageGenerator" "AVAssetPlaybackAssistant" "AVAssetReader" "AVAssetReaderOutput" "AVAssetResourceLoader" "AVAssetSegmentReport" "AVAssetTrack" "AVAssetTrackGroup" "AVAssetTrackSegment" "AVAssetVariant" "AVAssetWriter" "AVAssetWriterInput" "AVAsynchronousKeyValueLoading" "AVAudioBuffer" "AVAudioChannelLayout" "AVAudioConnectionPoint" "AVAudioConverter" "AVAudioEngine" "AVAudioEnvironmentNode" "AVAudioFile" "AVAudioFormat" "AVAudioIONode" "AVAudioMix" "AVAudioMixerNode" "AVAudioMixing" "AVAudioNode" "AVAudioPlayer" "AVAudioPlayerNode" "AVAudioProcessingSettings" "AVAudioRecorder" "AVAudioRoutingArbiter" "AVAudioSequencer" "AVAudioSession" "AVAudioSessionDeprecated" "AVAudioSessionRoute" "AVAudioSessionTypes" "AVAudioSettings" "AVAudioTime" "AVAudioTypes" "AVAudioUnit" "AVAudioUnitComponent" "AVAudioUnitDelay" "AVAudioUnitDistortion" "AVAudioUnitEQ" "AVAudioUnitEffect" "AVAudioUnitGenerator" "AVAudioUnitMIDIInstrument" "AVAudioUnitReverb" "AVAudioUnitSampler" "AVAudioUnitTimeEffect" "AVAudioUnitTimePitch" "AVAudioUnitVarispeed" "AVBase" "AVCameraCalibrationData" "AVCaption" "AVCaptionConversionValidator" "AVCaptionFormatConformer" "AVCaptionGroup" "AVCaptionGrouper" "AVCaptionRenderer" "AVCaptionSettings" "AVCaptureAudioDataOutput" "AVCaptureAudioPreviewOutput" "AVCaptureControl" "AVCaptureDataOutputSynchronizer" "AVCaptureDepthDataOutput" "AVCaptureDeskViewApplication" "AVCaptureDevice" "AVCaptureExternalDisplayConfigurator" "AVCaptureFileOutput" "AVCaptureIndexPicker" "AVCaptureInput" "AVCaptureMetadataOutput" "AVCaptureOutput" "AVCaptureOutputBase" "AVCapturePhotoOutput" "AVCaptureReactions" "AVCaptureSession" "AVCaptureSessionPreset" "AVCaptureSlider" "AVCaptureSpatialAudioMetadataSampleGenerator" "AVCaptureStillImageOutput" "AVCaptureSystemExposureBiasSlider" "AVCaptureSystemPressure" "AVCaptureSystemZoomSlider" "AVCaptureTimecodeGenerator" "AVCaptureVideoDataOutput" "AVCaptureVideoPreviewLayer" "AVComposition" "AVCompositionTrack" "AVCompositionTrackSegment" "AVContentKeySession" "AVContinuityDevice" "AVDepthData" "AVError" "AVExternalStorageDevice" "AVExternalSyncDevice" "AVFAudio" "AVFCapture" "AVFCore" "AVGeometry" "AVMIDIPlayer" "AVMediaFormat" "AVMediaSelection" "AVMediaSelectionGroup" "AVMetadataFormat" "AVMetadataIdentifiers" "AVMetadataItem" "AVMetadataObject" "AVMetrics" "AVMovie" "AVMovieTrack" "AVOutputSettingsAssistant" "AVPlaybackCoordinationMedium" "AVPlaybackCoordinator" "AVPlayer" "AVPlayerInterstitialEventController" "AVPlayerItem" "AVPlayerItemIntegratedTimeline" "AVPlayerItemMediaDataCollector" "AVPlayerItemOutput" "AVPlayerItemProtectedContentAdditions" "AVPlayerItemTrack" "AVPlayerLayer" "AVPlayerLooper" "AVPlayerMediaSelectionCriteria" "AVPlayerOutput" "AVPortraitEffectsMatte" "AVQueuedSampleBufferRendering" "AVRenderedCaptionImage" "AVRouteDetector" "AVSampleBufferAudioRenderer" "AVSampleBufferDisplayLayer" "AVSampleBufferGenerator" "AVSampleBufferRenderSynchronizer" "AVSampleBufferVideoRenderer" "AVSampleCursor" "AVSemanticSegmentationMatte" "AVSpatialVideoConfiguration" "AVSynchronizedLayer" "AVTextStyleRule" "AVTime" "AVTimedMetadataGroup" "AVUtilities" "AVVideoCompositing" "AVVideoComposition" "AVVideoPerformanceMetrics" "AVVideoSettings" "alloc" "bitflags" "block2" "default" "dispatch2" "objc2-avf-audio" "objc2-core-audio-types" "objc2-core-foundation" "objc2-core-graphics" "objc2-core-image" "objc2-core-media" "objc2-core-video" "objc2-image-io" "objc2-media-toolbox" "objc2-quartz-core" "std" ];
+      };
       "objc2-avf-audio" = rec {
         crateName = "objc2-avf-audio";
         version = "0.3.2";
@@ -28006,7 +28554,7 @@ rec {
           "objc2-core-midi" = [ "dep:objc2-core-midi" ];
           "std" = [ "alloc" ];
         };
-        resolvedDefaultFeatures = [ "AVAudioSession" "AVAudioSessionTypes" "alloc" "bitflags" "std" ];
+        resolvedDefaultFeatures = [ "AVAudioSession" "AVAudioSessionRoute" "AVAudioSessionTypes" "alloc" "bitflags" "std" ];
       };
       "objc2-cloud-kit" = rec {
         crateName = "objc2-cloud-kit";
@@ -28529,7 +29077,7 @@ rec {
           "objc2-metal" = [ "dep:objc2-metal" ];
           "std" = [ "alloc" ];
         };
-        resolvedDefaultFeatures = [ "CGColor" "CGColorSpace" "CGContext" "CGDirectDisplay" "CGEventTypes" "CGFont" "CGImage" "CGPath" "alloc" "bitflags" "objc2" "std" ];
+        resolvedDefaultFeatures = [ "CGColor" "CGColorSpace" "CGContext" "CGDataConsumer" "CGDataProvider" "CGDirectDisplay" "CGEventTypes" "CGFont" "CGImage" "CGPath" "alloc" "bitflags" "objc2" "std" ];
       };
       "objc2-core-image 0.2.2" = rec {
         crateName = "objc2-core-image";
@@ -28654,7 +29202,94 @@ rec {
           "objc2-open-gl" = [ "dep:objc2-open-gl" ];
           "std" = [ "alloc" ];
         };
-        resolvedDefaultFeatures = [ "CIColor" "CIContext" "CIFilter" "CIImage" ];
+        resolvedDefaultFeatures = [ "CIBarcodeDescriptor" "CIColor" "CIContext" "CIFilter" "CIImage" ];
+      };
+      "objc2-core-media" = rec {
+        crateName = "objc2-core-media";
+        version = "0.3.2";
+        edition = "2021";
+        sha256 = "07gkxp5cdyfih8s9s59jylqlxsrba7kvwzyfkzfiayhnc1l5gv05";
+        libName = "objc2_core_media";
+        dependencies = [
+          {
+            name = "bitflags";
+            packageId = "bitflags 2.13.2";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "std" ];
+          }
+          {
+            name = "block2";
+            packageId = "block2 0.6.2";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "alloc" ];
+          }
+          {
+            name = "dispatch2";
+            packageId = "dispatch2";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "alloc" ];
+          }
+          {
+            name = "objc2";
+            packageId = "objc2 0.6.5";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "std" ];
+          }
+          {
+            name = "objc2-core-audio";
+            packageId = "objc2-core-audio";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "AudioHardware" "AudioHardwareDeprecated" ];
+          }
+          {
+            name = "objc2-core-audio-types";
+            packageId = "objc2-core-audio-types";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "CoreAudioBaseTypes" ];
+          }
+          {
+            name = "objc2-core-foundation";
+            packageId = "objc2-core-foundation";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "objc2-core-video";
+            packageId = "objc2-core-video";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "CVBuffer" "CVImageBuffer" "CVPixelBuffer" ];
+          }
+        ];
+        features = {
+          "CMAttachment" = [ "objc2-core-foundation/CFDictionary" ];
+          "CMFormatDescription" = [ "objc2-core-foundation/CFArray" "objc2-core-foundation/CFCGTypes" "objc2-core-foundation/CFDictionary" ];
+          "CMFormatDescriptionBridge" = [ "objc2-core-foundation/CFString" ];
+          "CMMemoryPool" = [ "objc2-core-foundation/CFDictionary" ];
+          "CMMetadata" = [ "objc2-core-foundation/CFArray" "objc2-core-foundation/CFData" ];
+          "CMSampleBuffer" = [ "objc2-core-foundation/CFArray" ];
+          "CMSync" = [ "objc2-core-foundation/CFRunLoop" ];
+          "CMTag" = [ "bitflags" "objc2-core-foundation/CFDictionary" ];
+          "CMTagCollection" = [ "objc2-core-foundation/CFData" "objc2-core-foundation/CFDictionary" ];
+          "CMTaggedBufferGroup" = [ "objc2-core-foundation/CFArray" "objc2-core-foundation/CFDictionary" ];
+          "CMTime" = [ "bitflags" "objc2-core-foundation/CFDictionary" ];
+          "CMTimeRange" = [ "objc2-core-foundation/CFDictionary" ];
+          "bitflags" = [ "dep:bitflags" ];
+          "block2" = [ "dep:block2" ];
+          "default" = [ "std" "CMAttachment" "CMAudioClock" "CMAudioDeviceClock" "CMBase" "CMBlockBuffer" "CMBufferQueue" "CMFormatDescription" "CMFormatDescriptionBridge" "CMMemoryPool" "CMMetadata" "CMSampleBuffer" "CMSimpleQueue" "CMSync" "CMTag" "CMTagCollection" "CMTaggedBufferGroup" "CMTextMarkup" "CMTime" "CMTimeRange" "bitflags" "block2" "dispatch2" "objc2" "objc2-core-audio" "objc2-core-audio-types" "objc2-core-video" ];
+          "dispatch2" = [ "dep:dispatch2" ];
+          "objc2" = [ "dep:objc2" "dispatch2?/objc2" "objc2-core-audio-types?/objc2" "objc2-core-audio?/objc2" "objc2-core-foundation/objc2" "objc2-core-video?/objc2" ];
+          "objc2-core-audio" = [ "dep:objc2-core-audio" ];
+          "objc2-core-audio-types" = [ "dep:objc2-core-audio-types" ];
+          "objc2-core-video" = [ "dep:objc2-core-video" ];
+          "std" = [ "alloc" ];
+        };
+        resolvedDefaultFeatures = [ "CMAttachment" "CMAudioClock" "CMAudioDeviceClock" "CMBase" "CMBlockBuffer" "CMBufferQueue" "CMFormatDescription" "CMFormatDescriptionBridge" "CMMemoryPool" "CMMetadata" "CMSampleBuffer" "CMSimpleQueue" "CMSync" "CMTag" "CMTagCollection" "CMTaggedBufferGroup" "CMTextMarkup" "CMTime" "CMTimeRange" "alloc" "bitflags" "block2" "default" "dispatch2" "objc2" "objc2-core-audio" "objc2-core-audio-types" "objc2-core-video" "std" ];
       };
       "objc2-core-text" = rec {
         crateName = "objc2-core-text";
@@ -28730,6 +29365,13 @@ rec {
             features = [ "std" ];
           }
           {
+            name = "block2";
+            packageId = "block2 0.6.2";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "alloc" ];
+          }
+          {
             name = "objc2";
             packageId = "objc2 0.6.5";
             optional = true;
@@ -28788,7 +29430,7 @@ rec {
           "objc2-open-gl" = [ "dep:objc2-open-gl" ];
           "std" = [ "alloc" ];
         };
-        resolvedDefaultFeatures = [ "CVBase" "CVBuffer" "CVHostTime" "CVImageBuffer" "CVMetalTexture" "CVMetalTextureCache" "CVPixelBuffer" "CVReturn" "bitflags" "objc2" "objc2-metal" ];
+        resolvedDefaultFeatures = [ "CVBase" "CVBuffer" "CVDisplayLink" "CVHostTime" "CVImageBuffer" "CVMetalBuffer" "CVMetalBufferCache" "CVMetalTexture" "CVMetalTextureCache" "CVOpenGLBuffer" "CVOpenGLBufferPool" "CVOpenGLTexture" "CVOpenGLTextureCache" "CVPixelBuffer" "CVPixelBufferIOSurface" "CVPixelBufferPool" "CVPixelFormatDescription" "CVReturn" "alloc" "bitflags" "block2" "default" "objc2" "objc2-core-graphics" "objc2-metal" "std" ];
       };
       "objc2-encode" = rec {
         crateName = "objc2-encode";
@@ -28804,6 +29446,31 @@ rec {
           "std" = [ "alloc" ];
         };
         resolvedDefaultFeatures = [ "alloc" "std" ];
+      };
+      "objc2-exception-helper" = rec {
+        crateName = "objc2-exception-helper";
+        version = "0.1.1";
+        edition = "2021";
+        links = "objc2_exception_helper_0_1";
+        sha256 = "12nrg6fhhp2rzmnym6s37h7w9v9sa9wbaixvfsq3axrdnzxwb8f7";
+        libName = "objc2_exception_helper";
+        authors = [
+          "Mads Marquart <mads@marquart.dk>"
+        ];
+        buildDependencies = [
+          {
+            name = "cc";
+            packageId = "cc";
+          }
+        ];
+        features = {
+          "default" = [ "std" ];
+          "gnustep-1-8" = [ "gnustep-1-7" ];
+          "gnustep-1-9" = [ "gnustep-1-8" ];
+          "gnustep-2-0" = [ "gnustep-1-9" ];
+          "gnustep-2-1" = [ "gnustep-2-0" ];
+          "std" = [ "alloc" ];
+        };
       };
       "objc2-foundation 0.2.2" = rec {
         crateName = "objc2-foundation";
@@ -28994,6 +29661,46 @@ rec {
         };
         resolvedDefaultFeatures = [ "FoundationErrors" "FoundationLegacySwiftCompatibility" "NSAffineTransform" "NSAppleEventDescriptor" "NSAppleEventManager" "NSAppleScript" "NSArchiver" "NSArray" "NSAttributedString" "NSAutoreleasePool" "NSBackgroundActivityScheduler" "NSBundle" "NSByteCountFormatter" "NSByteOrder" "NSCache" "NSCalendar" "NSCalendarDate" "NSCharacterSet" "NSClassDescription" "NSCoder" "NSComparisonPredicate" "NSCompoundPredicate" "NSConnection" "NSData" "NSDate" "NSDateComponentsFormatter" "NSDateFormatter" "NSDateInterval" "NSDateIntervalFormatter" "NSDebug" "NSDecimal" "NSDecimalNumber" "NSDictionary" "NSDistantObject" "NSDistributedLock" "NSDistributedNotificationCenter" "NSEnergyFormatter" "NSEnumerator" "NSError" "NSException" "NSExpression" "NSExtensionContext" "NSExtensionItem" "NSExtensionRequestHandling" "NSFileCoordinator" "NSFileHandle" "NSFileManager" "NSFilePresenter" "NSFileVersion" "NSFileWrapper" "NSFormatter" "NSGarbageCollector" "NSGeometry" "NSHFSFileTypes" "NSHTTPCookie" "NSHTTPCookieStorage" "NSHashTable" "NSHost" "NSISO8601DateFormatter" "NSIndexPath" "NSIndexSet" "NSInflectionRule" "NSInvocation" "NSItemProvider" "NSJSONSerialization" "NSKeyValueCoding" "NSKeyValueObserving" "NSKeyValueSharedObservers" "NSKeyedArchiver" "NSLengthFormatter" "NSLinguisticTagger" "NSListFormatter" "NSLocale" "NSLocalizedNumberFormatRule" "NSLock" "NSMapTable" "NSMassFormatter" "NSMeasurement" "NSMeasurementFormatter" "NSMetadata" "NSMetadataAttributes" "NSMethodSignature" "NSMorphology" "NSNetServices" "NSNotification" "NSNotificationQueue" "NSNull" "NSNumberFormatter" "NSObjCRuntime" "NSObject" "NSObjectScripting" "NSOperation" "NSOrderedCollectionChange" "NSOrderedCollectionDifference" "NSOrderedSet" "NSOrthography" "NSPathUtilities" "NSPersonNameComponents" "NSPersonNameComponentsFormatter" "NSPointerArray" "NSPointerFunctions" "NSPort" "NSPortCoder" "NSPortMessage" "NSPortNameServer" "NSPredicate" "NSProcessInfo" "NSProgress" "NSPropertyList" "NSProtocolChecker" "NSProxy" "NSRange" "NSRegularExpression" "NSRelativeDateTimeFormatter" "NSRunLoop" "NSScanner" "NSScriptClassDescription" "NSScriptCoercionHandler" "NSScriptCommand" "NSScriptCommandDescription" "NSScriptExecutionContext" "NSScriptKeyValueCoding" "NSScriptObjectSpecifiers" "NSScriptStandardSuiteCommands" "NSScriptSuiteRegistry" "NSScriptWhoseTests" "NSSet" "NSSortDescriptor" "NSSpellServer" "NSStream" "NSString" "NSTask" "NSTermOfAddress" "NSTextCheckingResult" "NSThread" "NSTimeZone" "NSTimer" "NSURL" "NSURLAuthenticationChallenge" "NSURLCache" "NSURLConnection" "NSURLCredential" "NSURLCredentialStorage" "NSURLDownload" "NSURLError" "NSURLHandle" "NSURLProtectionSpace" "NSURLProtocol" "NSURLRequest" "NSURLResponse" "NSURLSession" "NSUUID" "NSUbiquitousKeyValueStore" "NSUndoManager" "NSUnit" "NSUserActivity" "NSUserDefaults" "NSUserNotification" "NSUserScriptTask" "NSValue" "NSValueTransformer" "NSXMLDTD" "NSXMLDTDNode" "NSXMLDocument" "NSXMLElement" "NSXMLNode" "NSXMLNodeOptions" "NSXMLParser" "NSXPCConnection" "NSZone" "alloc" "bitflags" "block2" "default" "libc" "objc2-core-foundation" "std" ];
       };
+      "objc2-image-io" = rec {
+        crateName = "objc2-image-io";
+        version = "0.3.2";
+        edition = "2021";
+        sha256 = "1sn4agws92n7rwbcch9q8slflziizwapf5x0qx67hjngk1p49c1j";
+        libName = "objc2_image_io";
+        dependencies = [
+          {
+            name = "objc2";
+            packageId = "objc2 0.6.5";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "std" ];
+          }
+          {
+            name = "objc2-core-foundation";
+            packageId = "objc2-core-foundation";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "objc2-core-graphics";
+            packageId = "objc2-core-graphics";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "CGDataConsumer" "CGDataProvider" "CGImage" ];
+          }
+        ];
+        features = {
+          "CGImageAnimation" = [ "objc2-core-foundation/CFData" "objc2-core-foundation/CFDictionary" "objc2-core-foundation/CFURL" ];
+          "CGImageDestination" = [ "objc2-core-foundation/CFArray" "objc2-core-foundation/CFData" "objc2-core-foundation/CFDictionary" "objc2-core-foundation/CFError" "objc2-core-foundation/CFURL" ];
+          "CGImageMetadata" = [ "objc2-core-foundation/CFArray" "objc2-core-foundation/CFData" "objc2-core-foundation/CFDictionary" "objc2-core-foundation/CFError" ];
+          "CGImageSource" = [ "objc2-core-foundation/CFArray" "objc2-core-foundation/CFData" "objc2-core-foundation/CFDictionary" "objc2-core-foundation/CFURL" ];
+          "block2" = [ "dep:block2" ];
+          "default" = [ "std" "CGImageAnimation" "CGImageDestination" "CGImageMetadata" "CGImageProperties" "CGImageSource" "ImageIOBase" "block2" "objc2" "objc2-core-graphics" ];
+          "objc2" = [ "dep:objc2" "objc2-core-foundation/objc2" "objc2-core-graphics?/objc2" ];
+          "objc2-core-graphics" = [ "dep:objc2-core-graphics" ];
+          "std" = [ "alloc" ];
+        };
+        resolvedDefaultFeatures = [ "CGImageProperties" "objc2" ];
+      };
       "objc2-io-surface" = rec {
         crateName = "objc2-io-surface";
         version = "0.3.2";
@@ -29036,6 +29743,49 @@ rec {
           "std" = [ "alloc" ];
         };
         resolvedDefaultFeatures = [ "IOSurfaceRef" "bitflags" "objc2" ];
+      };
+      "objc2-media-toolbox" = rec {
+        crateName = "objc2-media-toolbox";
+        version = "0.3.2";
+        edition = "2021";
+        sha256 = "0c7vh5kxa9vbv64zlyfmbjmygh80220rg45v8rqdmwqdfbggvngd";
+        libName = "objc2_media_toolbox";
+        dependencies = [
+          {
+            name = "objc2";
+            packageId = "objc2 0.6.5";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "std" ];
+          }
+          {
+            name = "objc2-core-audio-types";
+            packageId = "objc2-core-audio-types";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "CoreAudioBaseTypes" ];
+          }
+          {
+            name = "objc2-core-foundation";
+            packageId = "objc2-core-foundation";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "objc2-core-media";
+            packageId = "objc2-core-media";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "CMBase" "CMFormatDescription" "CMTime" "CMTimeRange" ];
+          }
+        ];
+        features = {
+          "default" = [ "std" "MTAudioProcessingTap" "MTFormatNames" "MTProfessionalVideoWorkflow" "objc2" "objc2-core-audio-types" "objc2-core-media" ];
+          "objc2" = [ "dep:objc2" "objc2-core-audio-types?/objc2" "objc2-core-foundation/objc2" "objc2-core-media?/objc2" ];
+          "objc2-core-audio-types" = [ "dep:objc2-core-audio-types" ];
+          "objc2-core-media" = [ "dep:objc2-core-media" ];
+          "std" = [ "alloc" ];
+        };
+        resolvedDefaultFeatures = [ "MTAudioProcessingTap" "objc2" ];
       };
       "objc2-metal 0.2.2" = rec {
         crateName = "objc2-metal";
@@ -29409,6 +30159,82 @@ rec {
           "std" = [ "alloc" ];
         };
         resolvedDefaultFeatures = [ "CADisplayLink" "CAFrameRateRange" "CALayer" "CAMediaTiming" "CAMediaTimingFunction" "CAMetalDisplayLink" "CAMetalLayer" "CAOpenGLLayer" "CATransform3D" "alloc" "bitflags" "objc2-core-foundation" "objc2-core-graphics" "objc2-metal" "std" ];
+      };
+      "objc2-screen-capture-kit" = rec {
+        crateName = "objc2-screen-capture-kit";
+        version = "0.3.2";
+        edition = "2021";
+        sha256 = "150kw6y1ylj51j38wa6mz3jbf3d7f5jlsddw07q84x271wwwbdvl";
+        libName = "objc2_screen_capture_kit";
+        dependencies = [
+          {
+            name = "bitflags";
+            packageId = "bitflags 2.13.2";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "std" ];
+          }
+          {
+            name = "block2";
+            packageId = "block2 0.6.2";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "alloc" ];
+          }
+          {
+            name = "dispatch2";
+            packageId = "dispatch2";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "alloc" "objc2" ];
+          }
+          {
+            name = "objc2";
+            packageId = "objc2 0.6.5";
+            usesDefaultFeatures = false;
+            features = [ "std" ];
+          }
+          {
+            name = "objc2-core-foundation";
+            packageId = "objc2-core-foundation";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "CFCGTypes" "objc2" ];
+          }
+          {
+            name = "objc2-core-media";
+            packageId = "objc2-core-media";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "CMSampleBuffer" "CMSync" "CMTime" "objc2" ];
+          }
+          {
+            name = "objc2-foundation";
+            packageId = "objc2-foundation 0.3.2";
+            usesDefaultFeatures = false;
+            features = [ "alloc" ];
+          }
+        ];
+        features = {
+          "SCContentSharingPicker" = [ "bitflags" "objc2-foundation/NSArray" "objc2-foundation/NSError" "objc2-foundation/NSString" "objc2-foundation/NSValue" ];
+          "SCError" = [ "objc2-foundation/NSString" ];
+          "SCRecordingOutput" = [ "objc2-foundation/NSArray" "objc2-foundation/NSError" "objc2-foundation/NSURL" ];
+          "SCScreenshotManager" = [ "objc2-foundation/NSArray" "objc2-foundation/NSError" "objc2-foundation/NSURL" ];
+          "SCShareableContent" = [ "objc2-foundation/NSArray" "objc2-foundation/NSError" "objc2-foundation/NSString" ];
+          "SCStream" = [ "objc2-foundation/NSArray" "objc2-foundation/NSError" "objc2-foundation/NSString" ];
+          "bitflags" = [ "dep:bitflags" ];
+          "block2" = [ "dep:block2" ];
+          "default" = [ "std" "SCContentSharingPicker" "SCError" "SCRecordingOutput" "SCScreenshotManager" "SCShareableContent" "SCStream" "bitflags" "block2" "dispatch2" "libc" "objc2-av-foundation" "objc2-core-foundation" "objc2-core-graphics" "objc2-core-media" "objc2-uniform-type-identifiers" ];
+          "dispatch2" = [ "dep:dispatch2" ];
+          "libc" = [ "dep:libc" ];
+          "objc2-av-foundation" = [ "dep:objc2-av-foundation" ];
+          "objc2-core-foundation" = [ "dep:objc2-core-foundation" ];
+          "objc2-core-graphics" = [ "dep:objc2-core-graphics" ];
+          "objc2-core-media" = [ "dep:objc2-core-media" ];
+          "objc2-uniform-type-identifiers" = [ "dep:objc2-uniform-type-identifiers" ];
+          "std" = [ "alloc" ];
+        };
+        resolvedDefaultFeatures = [ "SCContentSharingPicker" "SCShareableContent" "SCStream" "alloc" "bitflags" "block2" "dispatch2" "objc2-core-foundation" "objc2-core-media" "std" ];
       };
       "objc2-security" = rec {
         crateName = "objc2-security";
@@ -29985,6 +30811,100 @@ rec {
           "std" = [ "alloc" ];
         };
         resolvedDefaultFeatures = [ "UNNotification" "UNNotificationAction" "UNNotificationCategory" "UNNotificationContent" "UNNotificationRequest" "UNNotificationResponse" "UNNotificationTrigger" "UNUserNotificationCenter" "alloc" "bitflags" "block2" "std" ];
+      };
+      "objc2-video-toolbox" = rec {
+        crateName = "objc2-video-toolbox";
+        version = "0.3.2";
+        edition = "2021";
+        sha256 = "0gnzymb4pa5mgpigvchjl0wf4glivn3ivn5h86b7s6l32hy9mgq5";
+        libName = "objc2_video_toolbox";
+        dependencies = [
+          {
+            name = "bitflags";
+            packageId = "bitflags 2.13.2";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "std" ];
+          }
+          {
+            name = "block2";
+            packageId = "block2 0.6.2";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "alloc" ];
+          }
+          {
+            name = "objc2";
+            packageId = "objc2 0.6.5";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "std" ];
+          }
+          {
+            name = "objc2-core-foundation";
+            packageId = "objc2-core-foundation";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "objc2-core-graphics";
+            packageId = "objc2-core-graphics";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "CGImage" ];
+          }
+          {
+            name = "objc2-core-media";
+            packageId = "objc2-core-media";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "CMBase" "CMFormatDescription" "CMSampleBuffer" "CMTaggedBufferGroup" "CMTime" "CMTimeRange" ];
+          }
+          {
+            name = "objc2-core-video";
+            packageId = "objc2-core-video";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "CVBuffer" "CVImageBuffer" "CVPixelBuffer" "CVPixelBufferPool" ];
+          }
+          {
+            name = "objc2-foundation";
+            packageId = "objc2-foundation 0.3.2";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "NSArray" "NSDictionary" "NSError" "NSIndexSet" "NSString" "NSValue" "alloc" ];
+          }
+          {
+            name = "objc2-metal";
+            packageId = "objc2-metal 0.3.2";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "MTLCommandBuffer" ];
+          }
+        ];
+        features = {
+          "VTCompressionSession" = [ "bitflags" "objc2-core-foundation/CFDictionary" ];
+          "VTDecompressionSession" = [ "objc2-core-foundation/CFDictionary" ];
+          "VTErrors" = [ "bitflags" ];
+          "VTFrameSilo" = [ "objc2-core-foundation/CFDictionary" "objc2-core-foundation/CFURL" ];
+          "VTHDRPerFrameMetadataGenerationSession" = [ "objc2-core-foundation/CFDictionary" ];
+          "VTMotionEstimationSession" = [ "bitflags" "objc2-core-foundation/CFDictionary" ];
+          "VTMultiPassStorage" = [ "objc2-core-foundation/CFDictionary" "objc2-core-foundation/CFURL" ];
+          "VTRAWProcessingSession" = [ "objc2-core-foundation/CFArray" "objc2-core-foundation/CFDictionary" ];
+          "VTSession" = [ "objc2-core-foundation/CFDictionary" ];
+          "VTUtilities" = [ "objc2-core-foundation/CFDictionary" ];
+          "VTVideoEncoderList" = [ "objc2-core-foundation/CFArray" "objc2-core-foundation/CFDictionary" ];
+          "bitflags" = [ "dep:bitflags" ];
+          "block2" = [ "dep:block2" ];
+          "default" = [ "std" "VTBase" "VTCompressionProperties" "VTCompressionSession" "VTDecompressionProperties" "VTDecompressionSession" "VTErrors" "VTFrameProcessor" "VTFrameProcessorConfiguration" "VTFrameProcessorErrors" "VTFrameProcessorFrame" "VTFrameProcessorParameters" "VTFrameProcessor_FrameRateConversion" "VTFrameProcessor_LowLatencyFrameInterpolation" "VTFrameProcessor_LowLatencySuperResolutionScaler" "VTFrameProcessor_MotionBlur" "VTFrameProcessor_OpticalFlow" "VTFrameProcessor_SuperResolutionScaler" "VTFrameProcessor_TemporalNoiseFilter" "VTFrameSilo" "VTHDRPerFrameMetadataGenerationSession" "VTMotionEstimationSession" "VTMotionEstimationSessionProperties" "VTMultiPassStorage" "VTPixelRotationProperties" "VTPixelRotationSession" "VTPixelTransferProperties" "VTPixelTransferSession" "VTProfessionalVideoWorkflow" "VTRAWProcessingProperties" "VTRAWProcessingSession" "VTSession" "VTUtilities" "VTVideoEncoderList" "bitflags" "block2" "objc2" "objc2-core-graphics" "objc2-core-media" "objc2-core-video" "objc2-foundation" "objc2-metal" ];
+          "objc2" = [ "dep:objc2" "objc2-core-foundation/objc2" "objc2-core-graphics?/objc2" "objc2-core-media?/objc2" "objc2-core-video?/objc2" ];
+          "objc2-core-graphics" = [ "dep:objc2-core-graphics" ];
+          "objc2-core-media" = [ "dep:objc2-core-media" ];
+          "objc2-core-video" = [ "dep:objc2-core-video" ];
+          "objc2-foundation" = [ "dep:objc2-foundation" ];
+          "objc2-metal" = [ "dep:objc2-metal" ];
+          "std" = [ "alloc" ];
+        };
+        resolvedDefaultFeatures = [ "VTBase" "VTCompressionProperties" "VTCompressionSession" "VTDecompressionProperties" "VTDecompressionSession" "VTErrors" "VTFrameProcessor" "VTFrameProcessorConfiguration" "VTFrameProcessorErrors" "VTFrameProcessorFrame" "VTFrameProcessorParameters" "VTFrameProcessor_FrameRateConversion" "VTFrameProcessor_LowLatencyFrameInterpolation" "VTFrameProcessor_LowLatencySuperResolutionScaler" "VTFrameProcessor_MotionBlur" "VTFrameProcessor_OpticalFlow" "VTFrameProcessor_SuperResolutionScaler" "VTFrameProcessor_TemporalNoiseFilter" "VTFrameSilo" "VTHDRPerFrameMetadataGenerationSession" "VTMotionEstimationSession" "VTMotionEstimationSessionProperties" "VTMultiPassStorage" "VTPixelRotationProperties" "VTPixelRotationSession" "VTPixelTransferProperties" "VTPixelTransferSession" "VTProfessionalVideoWorkflow" "VTRAWProcessingProperties" "VTRAWProcessingSession" "VTSession" "VTUtilities" "VTVideoEncoderList" "alloc" "bitflags" "block2" "default" "objc2" "objc2-core-graphics" "objc2-core-media" "objc2-core-video" "objc2-foundation" "objc2-metal" "std" ];
       };
       "objc_exception" = rec {
         crateName = "objc_exception";
@@ -31797,6 +32717,16 @@ rec {
         };
         resolvedDefaultFeatures = [ "default" "hmac" ];
       };
+      "peeking_take_while" = rec {
+        crateName = "peeking_take_while";
+        version = "0.1.2";
+        edition = "2015";
+        sha256 = "16bhqr6rdyrp12zv381cxaaqqd0pwysvm1q8h2ygihvypvfprc8r";
+        authors = [
+          "Nick Fitzgerald <fitzgen@gmail.com>"
+        ];
+
+      };
       "pem" = rec {
         crateName = "pem";
         version = "4.0.0";
@@ -32766,7 +33696,7 @@ rec {
         buildDependencies = [
           {
             name = "bindgen";
-            packageId = "bindgen";
+            packageId = "bindgen 0.72.1";
             usesDefaultFeatures = false;
             features = [ "runtime" ];
           }
@@ -36364,7 +37294,7 @@ rec {
           }
           {
             name = "zune-jpeg";
-            packageId = "zune-jpeg";
+            packageId = "zune-jpeg 0.5.15";
             optional = true;
           }
         ];
@@ -36424,7 +37354,7 @@ rec {
           }
           {
             name = "zune-jpeg";
-            packageId = "zune-jpeg";
+            packageId = "zune-jpeg 0.5.15";
             optional = true;
           }
         ];
@@ -37023,6 +37953,7 @@ rec {
         features = {
           "default" = [ "std" ];
         };
+        resolvedDefaultFeatures = [ "default" "std" ];
       };
       "rustc-hash 2.1.3" = rec {
         crateName = "rustc-hash";
@@ -43158,7 +44089,7 @@ rec {
           }
           {
             name = "zune-jpeg";
-            packageId = "zune-jpeg";
+            packageId = "zune-jpeg 0.5.15";
             optional = true;
           }
         ];
@@ -46999,6 +47930,56 @@ rec {
           "zerocopy" = [ "dep:zerocopy" ];
         };
         resolvedDefaultFeatures = [ "atomic" "default" "js" "rng" "serde" "sha1" "std" "v1" "v4" "v5" ];
+      };
+      "v4l" = rec {
+        crateName = "v4l";
+        version = "0.14.0";
+        edition = "2018";
+        sha256 = "00rl3h2a2a6k93c52y2ppqpp5pq6bp2z68skqmi9sya69ajgxyyq";
+        authors = [
+          "Christopher N. Hesse <raymanfx@gmail.com>"
+        ];
+        dependencies = [
+          {
+            name = "bitflags";
+            packageId = "bitflags 1.3.2";
+          }
+          {
+            name = "libc";
+            packageId = "libc";
+          }
+          {
+            name = "v4l2-sys-mit";
+            packageId = "v4l2-sys-mit";
+            rename = "v4l2-sys";
+            optional = true;
+          }
+        ];
+        features = {
+          "default" = [ "v4l2" ];
+          "libv4l" = [ "v4l-sys" ];
+          "v4l-sys" = [ "dep:v4l-sys" ];
+          "v4l2" = [ "v4l2-sys" ];
+          "v4l2-sys" = [ "dep:v4l2-sys" ];
+        };
+        resolvedDefaultFeatures = [ "default" "v4l2" "v4l2-sys" ];
+      };
+      "v4l2-sys-mit" = rec {
+        crateName = "v4l2-sys-mit";
+        version = "0.3.0";
+        edition = "2018";
+        sha256 = "02wr26prs8x5qirnax7g6y42wqb9prmcgslkg3fcmfmrca1qfyb7";
+        libName = "v4l2_sys_mit";
+        authors = [
+          "Christopher N. Hesse <raymanfx@gmail.com>"
+        ];
+        buildDependencies = [
+          {
+            name = "bindgen";
+            packageId = "bindgen 0.65.1";
+          }
+        ];
+
       };
       "v_frame" = rec {
         crateName = "v_frame";
@@ -51363,7 +52344,7 @@ rec {
           "default" = [ "std" ];
           "std" = [ "windows-core/std" ];
         };
-        resolvedDefaultFeatures = [ "Wdk" "Wdk_System" "Wdk_System_SystemServices" "Win32" "Win32_Foundation" "Win32_Security" "Win32_Storage" "Win32_Storage_FileSystem" "Win32_System" "Win32_System_Console" "Win32_UI" "Win32_UI_WindowsAndMessaging" "default" "std" ];
+        resolvedDefaultFeatures = [ "Wdk" "Wdk_System" "Wdk_System_SystemServices" "Win32" "Win32_Devices" "Win32_Devices_Properties" "Win32_Foundation" "Win32_Media" "Win32_Media_MediaFoundation" "Win32_Security" "Win32_Storage" "Win32_Storage_FileSystem" "Win32_System" "Win32_System_Com" "Win32_System_Com_StructuredStorage" "Win32_System_Console" "Win32_UI" "Win32_UI_WindowsAndMessaging" "default" "std" ];
       };
       "windows 0.61.3" = rec {
         crateName = "windows";
@@ -52797,9 +53778,9 @@ rec {
           "default" = [ "std" ];
           "std" = [ "windows-collections/std" "windows-core/std" "windows-future/std" "windows-numerics/std" ];
         };
-        resolvedDefaultFeatures = [ "Data" "Data_Xml" "Data_Xml_Dom" "Foundation" "Foundation_Collections" "UI" "UI_Notifications" "UI_ViewManagement" "Wdk" "Wdk_System" "Wdk_System_SystemServices" "Win32" "Win32_Devices" "Win32_Devices_DeviceAndDriverInstallation" "Win32_Devices_Display" "Win32_Devices_Properties" "Win32_Foundation" "Win32_Globalization" "Win32_Graphics" "Win32_Graphics_Direct3D" "Win32_Graphics_Direct3D11" "Win32_Graphics_Direct3D12" "Win32_Graphics_Direct3D_Dxc" "Win32_Graphics_Direct3D_Fxc" "Win32_Graphics_DirectComposition" "Win32_Graphics_DirectManipulation" "Win32_Graphics_DirectWrite" "Win32_Graphics_Dwm" "Win32_Graphics_Dxgi" "Win32_Graphics_Dxgi_Common" "Win32_Graphics_Gdi" "Win32_Graphics_Hlsl" "Win32_Graphics_OpenGL" "Win32_Media" "Win32_Media_Audio" "Win32_Media_KernelStreaming" "Win32_Media_Multimedia" "Win32_Security" "Win32_Security_Credentials" "Win32_Storage" "Win32_Storage_FileSystem" "Win32_Storage_Packaging" "Win32_Storage_Packaging_Appx" "Win32_System" "Win32_System_Com" "Win32_System_Com_StructuredStorage" "Win32_System_DataExchange" "Win32_System_Diagnostics" "Win32_System_Diagnostics_Debug" "Win32_System_IO" "Win32_System_Kernel" "Win32_System_LibraryLoader" "Win32_System_Memory" "Win32_System_Ole" "Win32_System_Performance" "Win32_System_Power" "Win32_System_RemoteDesktop" "Win32_System_StationsAndDesktops" "Win32_System_SystemInformation" "Win32_System_SystemServices" "Win32_System_Threading" "Win32_System_Variant" "Win32_System_WindowsProgramming" "Win32_UI" "Win32_UI_Accessibility" "Win32_UI_Controls" "Win32_UI_HiDpi" "Win32_UI_Input" "Win32_UI_Input_Ime" "Win32_UI_Input_KeyboardAndMouse" "Win32_UI_Input_Pointer" "Win32_UI_Shell" "Win32_UI_Shell_Common" "Win32_UI_Shell_PropertiesSystem" "Win32_UI_WindowsAndMessaging" "default" "std" ];
+        resolvedDefaultFeatures = [ "Data" "Data_Xml" "Data_Xml_Dom" "Foundation" "Foundation_Collections" "Foundation_Metadata" "Graphics" "Graphics_Capture" "Graphics_DirectX" "Graphics_DirectX_Direct3D11" "Graphics_Imaging" "Media" "Media_Core" "Media_MediaProperties" "Media_Transcoding" "Security" "Security_Cryptography" "Storage" "Storage_Streams" "System" "System_Threading" "UI" "UI_Notifications" "UI_ViewManagement" "Wdk" "Wdk_System" "Wdk_System_SystemServices" "Win32" "Win32_Devices" "Win32_Devices_DeviceAndDriverInstallation" "Win32_Devices_Display" "Win32_Devices_Properties" "Win32_Foundation" "Win32_Globalization" "Win32_Graphics" "Win32_Graphics_Direct3D" "Win32_Graphics_Direct3D11" "Win32_Graphics_Direct3D12" "Win32_Graphics_Direct3D_Dxc" "Win32_Graphics_Direct3D_Fxc" "Win32_Graphics_DirectComposition" "Win32_Graphics_DirectManipulation" "Win32_Graphics_DirectWrite" "Win32_Graphics_Dwm" "Win32_Graphics_Dxgi" "Win32_Graphics_Dxgi_Common" "Win32_Graphics_Gdi" "Win32_Graphics_Hlsl" "Win32_Graphics_OpenGL" "Win32_Media" "Win32_Media_Audio" "Win32_Media_KernelStreaming" "Win32_Media_Multimedia" "Win32_Security" "Win32_Security_Credentials" "Win32_Storage" "Win32_Storage_FileSystem" "Win32_Storage_Packaging" "Win32_Storage_Packaging_Appx" "Win32_System" "Win32_System_Com" "Win32_System_Com_StructuredStorage" "Win32_System_DataExchange" "Win32_System_Diagnostics" "Win32_System_Diagnostics_Debug" "Win32_System_IO" "Win32_System_Kernel" "Win32_System_LibraryLoader" "Win32_System_Memory" "Win32_System_Ole" "Win32_System_Performance" "Win32_System_Power" "Win32_System_ProcessStatus" "Win32_System_RemoteDesktop" "Win32_System_StationsAndDesktops" "Win32_System_SystemInformation" "Win32_System_SystemServices" "Win32_System_Threading" "Win32_System_Variant" "Win32_System_WinRT" "Win32_System_WinRT_Direct3D11" "Win32_System_WinRT_Graphics" "Win32_System_WinRT_Graphics_Capture" "Win32_System_WindowsProgramming" "Win32_UI" "Win32_UI_Accessibility" "Win32_UI_Controls" "Win32_UI_HiDpi" "Win32_UI_Input" "Win32_UI_Input_Ime" "Win32_UI_Input_KeyboardAndMouse" "Win32_UI_Input_Pointer" "Win32_UI_Shell" "Win32_UI_Shell_Common" "Win32_UI_Shell_PropertiesSystem" "Win32_UI_WindowsAndMessaging" "default" "std" ];
       };
-      "windows-capture" = rec {
+      "windows-capture 1.5.0" = rec {
         crateName = "windows-capture";
         version = "1.5.0";
         edition = "2024";
@@ -52829,6 +53810,40 @@ rec {
           {
             name = "windows-future";
             packageId = "windows-future 0.2.1";
+          }
+        ];
+
+      };
+      "windows-capture 2.0.1" = rec {
+        crateName = "windows-capture";
+        version = "2.0.1";
+        edition = "2024";
+        sha256 = "1d1i9d0cbbax8v2crznp7srzkc2vv5w8330fwp6kkl5nx75nl109";
+        libName = "windows_capture";
+        authors = [
+          "NiiightmareXD"
+        ];
+        dependencies = [
+          {
+            name = "parking_lot";
+            packageId = "parking_lot";
+          }
+          {
+            name = "rayon";
+            packageId = "rayon";
+          }
+          {
+            name = "thiserror";
+            packageId = "thiserror 2.0.21";
+          }
+          {
+            name = "windows";
+            packageId = "windows 0.62.2";
+            features = [ "Foundation_Metadata" "Foundation" "Graphics_Capture" "Graphics_DirectX_Direct3D11" "Graphics_Imaging" "Media_Core" "Media_MediaProperties" "Media_Transcoding" "Security_Cryptography" "Storage_Streams" "Storage" "System" "Win32_Devices_Display" "Win32_Foundation" "Win32_Graphics_Direct3D" "Win32_Graphics_Direct3D11" "Win32_Graphics_Dwm" "Win32_Graphics_Dxgi_Common" "Win32_Graphics_Gdi" "Win32_System_Com" "Win32_System_LibraryLoader" "Win32_System_ProcessStatus" "Win32_System_Threading" "Win32_System_WinRT_Direct3D11" "Win32_System_WinRT_Graphics_Capture" "Win32_UI_HiDpi" "Win32_UI_Shell" "Win32_UI_WindowsAndMessaging" "System_Threading" ];
+          }
+          {
+            name = "windows-future";
+            packageId = "windows-future 0.3.2";
           }
         ];
 
@@ -53073,7 +54088,7 @@ rec {
           "default" = [ "std" ];
           "std" = [ "windows-core/std" ];
         };
-        resolvedDefaultFeatures = [ "std" ];
+        resolvedDefaultFeatures = [ "default" "std" ];
       };
       "windows-implement 0.57.0" = rec {
         crateName = "windows-implement";
@@ -56447,7 +57462,7 @@ rec {
           }
           {
             name = "windows-capture";
-            packageId = "windows-capture";
+            packageId = "windows-capture 1.5.0";
             target = { target, features }: ("windows" == target."os" or null);
           }
           {
@@ -56948,7 +57963,19 @@ rec {
           "no-panic" = [ "dep:no-panic" ];
         };
       };
-      "zune-core" = rec {
+      "zune-core 0.4.12" = rec {
+        crateName = "zune-core";
+        version = "0.4.12";
+        edition = "2021";
+        sha256 = "0jj1ra86klzlcj9aha9als9d1dzs7pqv3azs1j3n96822wn3lhiz";
+        libName = "zune_core";
+        features = {
+          "log" = [ "dep:log" ];
+          "serde" = [ "dep:serde" ];
+        };
+        resolvedDefaultFeatures = [ "std" ];
+      };
+      "zune-core 0.5.3" = rec {
         crateName = "zune-core";
         version = "0.5.3";
         edition = "2021";
@@ -56982,7 +58009,29 @@ rec {
         };
         resolvedDefaultFeatures = [ "simd-adler32" "zlib" ];
       };
-      "zune-jpeg" = rec {
+      "zune-jpeg 0.4.21" = rec {
+        crateName = "zune-jpeg";
+        version = "0.4.21";
+        edition = "2021";
+        sha256 = "04r7g6y9jp7d4c9bq23rz3gwzlr1dsl7vdk4yly35bc4jf52rki9";
+        libName = "zune_jpeg";
+        authors = [
+          "caleb <etemesicaleb@gmail.com>"
+        ];
+        dependencies = [
+          {
+            name = "zune-core";
+            packageId = "zune-core 0.4.12";
+          }
+        ];
+        features = {
+          "default" = [ "x86" "neon" "std" ];
+          "log" = [ "zune-core/log" ];
+          "std" = [ "zune-core/std" ];
+        };
+        resolvedDefaultFeatures = [ "default" "neon" "std" "x86" ];
+      };
+      "zune-jpeg 0.5.15" = rec {
         crateName = "zune-jpeg";
         version = "0.5.15";
         edition = "2021";
@@ -56994,7 +58043,7 @@ rec {
         dependencies = [
           {
             name = "zune-core";
-            packageId = "zune-core";
+            packageId = "zune-core 0.5.3";
           }
         ];
         features = {

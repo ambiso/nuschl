@@ -14,13 +14,11 @@ use tokio_tungstenite::{
     tungstenite::{Message, protocol::WebSocketConfig},
 };
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "macos", windows))]
+mod keys;
 mod media;
-#[cfg(target_os = "linux")]
 mod turn;
-#[cfg(target_os = "linux")]
 pub use media::{Media, MediaEvent, MediaOptions, Purpose};
-#[cfg(target_os = "linux")]
 pub use nuschl_stream_quality::{Kind as VideoKind, Quality};
 
 const HANDSHAKE: Duration = Duration::from_secs(10);
@@ -38,7 +36,6 @@ pub enum Error {
     Refused(String),
     #[error("call signaling timed out")]
     Timeout,
-    #[cfg(target_os = "linux")]
     #[error(transparent)]
     Rtc(#[from] nuschl_ipc::rtc::WorkerError),
 }
@@ -59,48 +56,99 @@ pub struct Connection {
     socket: Socket,
     video_limits: bool,
     scope: CallScope,
-    #[cfg(target_os = "linux")]
     policy: PeerPolicy,
-    #[cfg(target_os = "linux")]
     pending_offer: Option<ServerMessage>,
 }
 
 struct CallScope {
+    #[cfg(target_os = "linux")]
     crypto: CryptoHandle,
     generation: u64,
+    #[cfg(target_os = "linux")]
     cleanup: Option<tokio::runtime::Handle>,
+    #[cfg(not(target_os = "linux"))]
+    keys: keys::Keys,
+    #[cfg(not(target_os = "linux"))]
+    epochs: Option<std::io::PipeReader>,
 }
 
 impl CallScope {
+    async fn start_media(
+        &mut self,
+        executable: std::path::PathBuf,
+    ) -> Result<nuschl_ipc::rtc::Worker, Error> {
+        #[cfg(target_os = "linux")]
+        {
+            let (epochs, reader) = std::os::unix::net::UnixStream::pair()?;
+            let worker =
+                nuschl_ipc::rtc::Worker::start(executable, self.generation, reader.into()).await?;
+            if let Err(error) = self
+                .crypto
+                .attach_media(self.generation, epochs.into())
+                .await
+            {
+                let _ = worker.stop().await;
+                return Err(error.into());
+            }
+            Ok(worker)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let reader = self
+                .epochs
+                .take()
+                .ok_or(Error::Protocol("call media already started"))?;
+            Ok(nuschl_ipc::rtc::Worker::start(executable, self.generation, reader).await?)
+        }
+    }
+
     fn new(crypto: CryptoHandle, generation: u64) -> Result<Self, Error> {
+        #[cfg(target_os = "linux")]
         let runtime = tokio::runtime::Handle::try_current()
             .map_err(|_| Error::Protocol("call signaling requires a Tokio runtime"))?;
         crypto.reserve_call_generation(generation)?;
+        #[cfg(not(target_os = "linux"))]
+        let (keys, epochs) = keys::Keys::start()?;
         Ok(Self {
+            #[cfg(target_os = "linux")]
             crypto,
             generation,
+            #[cfg(target_os = "linux")]
             cleanup: Some(runtime),
+            #[cfg(not(target_os = "linux"))]
+            keys,
+            #[cfg(not(target_os = "linux"))]
+            epochs: Some(epochs),
         })
     }
 
     async fn request(&self, action: Action) -> Result<Outcome, Error> {
-        Ok(self
-            .crypto
-            .call_signal_reserved(Request {
-                generation: self.generation,
-                action,
-            })
-            .await?
-            .outcome)
+        let request = Request {
+            generation: self.generation,
+            action,
+        };
+        #[cfg(target_os = "linux")]
+        let reply = self.crypto.call_signal_reserved(request).await?;
+        #[cfg(not(target_os = "linux"))]
+        let reply = self.keys.request(request).await?;
+        Ok(reply.outcome)
     }
 
+    #[cfg(target_os = "linux")]
     async fn close(mut self) -> Result<(), Error> {
         let result = self.request(Action::Close).await.map(|_| ());
         self.cleanup = None;
         result
     }
+
+    #[cfg(not(target_os = "linux"))]
+    async fn close(self) -> Result<(), Error> {
+        let result = self.request(Action::Close).await;
+        result.and(self.keys.stop().await)
+    }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for CallScope {
     fn drop(&mut self) {
         if let Some(runtime) = self.cleanup.take() {
@@ -210,9 +258,7 @@ impl Connection {
             socket,
             video_limits,
             scope,
-            #[cfg(target_os = "linux")]
             policy: options.policy,
-            #[cfg(target_os = "linux")]
             pending_offer: None,
         })
     }
@@ -222,7 +268,6 @@ impl Connection {
     }
 
     pub async fn next(&mut self) -> Result<ServerMessage, Error> {
-        #[cfg(target_os = "linux")]
         if let Some(offer) = self.pending_offer.take() {
             return Ok(offer);
         }
@@ -240,7 +285,6 @@ impl Connection {
     }
 
     /// Keep control signaling current while the owner chooses a video source.
-    #[cfg(target_os = "linux")]
     pub async fn poll_idle(&mut self) -> Result<(), Error> {
         match read(&mut self.socket).await? {
             ServerMessage::Joined { peer, role } => {

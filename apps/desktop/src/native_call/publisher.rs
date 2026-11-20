@@ -1,39 +1,50 @@
 // SPDX-License-Identifier: EUPL-1.2
-//! Each enabled source has its own portal grant, encoder and preview.
+//! Each enabled source has its own capture worker, encoder and preview.
 
-use super::{Display, Latest, Quality, Selection, purpose, stats, text, video_kind};
+use super::{
+    Display, Feed, Grant, Latest, Quality, Selection, Stream, TILES, purpose, stats, text,
+    video_kind,
+};
 use futures_util::{FutureExt as _, future::BoxFuture, stream::FuturesUnordered};
 use nuschl_client::native::sfu::{Media, MediaEvent, Purpose, VideoKind};
-use nuschl_ipc::video::{
-    Capture, CaptureFailure, CaptureLimits, Error, Source, VideoFrame, portal,
-};
+use nuschl_ipc::video::{Capture, CaptureLimits, Error, Source, VideoFrame};
+#[cfg(target_os = "linux")]
+use nuschl_ipc::video::{CaptureFailure, portal};
+#[cfg(target_os = "linux")]
+use std::os::unix::process::ExitStatusExt as _;
 use std::{
     future::pending,
-    os::unix::process::ExitStatusExt as _,
     path::Path,
     sync::Arc,
     time::{Duration, Instant},
 };
+use tokio::{sync::mpsc, task::JoinHandle};
+#[cfg(target_os = "linux")]
 use tokio::{
-    sync::{mpsc, oneshot},
-    task::JoinHandle,
+    sync::oneshot,
     time::{sleep, timeout},
 };
 
 pub(super) const SOURCES: [Source; 2] = [Source::Camera, Source::Screen];
+#[cfg(target_os = "linux")]
 const REOPEN_DELAYS: [Duration; 2] = [Duration::from_millis(500), Duration::from_secs(2)];
+#[cfg(target_os = "linux")]
 const REOPEN_TIMEOUT: Duration = Duration::from_secs(5);
 const HEALTHY_CAPTURE: Duration = Duration::from_secs(30);
-pub(super) type Reopening = BoxFuture<'static, (CaptureAttempt, Option<portal::Grant>)>;
+pub(super) type Reopening = BoxFuture<'static, (CaptureAttempt, Option<Grant>)>;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum CaptureMode {
     #[default]
+    #[cfg(target_os = "linux")]
     HardwareWithPreview,
+    #[cfg(target_os = "linux")]
     Hardware,
+    #[cfg_attr(not(target_os = "linux"), default)]
     Software,
 }
 
+#[cfg(target_os = "linux")]
 impl CaptureMode {
     fn after_failure(self, error: &Error, hardware: Option<bool>) -> Self {
         let hardware_failure = matches!(
@@ -84,7 +95,6 @@ pub(super) struct Publisher {
     pub slots: [Option<LocalVideo>; 2],
     pub retiring: FuturesUnordered<BoxFuture<'static, ()>>,
     pub reopening: Option<Reopening>,
-    focused: Option<Source>,
     next_preview: u64,
     estimate: Option<u64>,
     direct: bool,
@@ -97,7 +107,6 @@ impl Publisher {
             slots: [None, None],
             retiring: FuturesUnordered::new(),
             reopening: None,
-            focused: None,
             next_preview: 0,
             estimate: None,
             direct: false,
@@ -115,13 +124,14 @@ impl Publisher {
 
     pub fn start(
         &mut self,
-        grant: portal::Grant,
+        grant: Grant,
         worker: &Path,
         selection: Selection,
         updates: Arc<Latest>,
         attempt: CaptureAttempt,
     ) -> Result<(), String> {
         let source = grant.source();
+        #[cfg(target_os = "linux")]
         let screen = grant.screen_reopen();
         self.next_preview = self
             .next_preview
@@ -136,16 +146,18 @@ impl Publisher {
             hardware: None,
             capture_format: None,
         };
-        let applied = encoding.ceiling(selection.quality);
-        let (capture, preview) = if attempt.mode == CaptureMode::Hardware {
+        let feed = Feed::local(encoding.kind);
+        let applied = encoding.ceiling(selection.preference(feed).quality);
+        let (pictures, mut previews) = mpsc::channel(1);
+        #[cfg(target_os = "linux")]
+        let (capture, has_preview) = if attempt.mode == CaptureMode::Hardware {
             (
                 grant
                     .start_with_limits(worker.to_owned(), applied)
                     .map_err(text)?,
-                None,
+                false,
             )
         } else {
-            let (pictures, mut preview) = mpsc::channel(1);
             let capture = match attempt.mode {
                 CaptureMode::Software => {
                     grant.start_software_with_preview(worker.to_owned(), applied, pictures)
@@ -153,13 +165,25 @@ impl Publisher {
                 _ => grant.start_with_preview(worker.to_owned(), applied, pictures),
             }
             .map_err(text)?;
-            let preview = tokio::spawn(async move {
-                while let Some(frame) = preview.recv().await {
-                    updates.local_frame(preview_id, frame);
-                }
-            });
-            (capture, Some(preview))
+            (capture, true)
         };
+        #[cfg(not(target_os = "linux"))]
+        let (capture, has_preview) = (
+            Capture::start_native(worker.to_owned(), source, applied, pictures).map_err(text)?,
+            true,
+        );
+        let preview = has_preview.then(|| {
+            let stream = Stream {
+                feed,
+                serial: preview_id,
+                preview: true,
+            };
+            tokio::spawn(async move {
+                while let Some(frame) = previews.recv().await {
+                    updates.frame(stream, frame);
+                }
+            })
+        });
         tracing::info!(target: "nuschl_capture", ?source, mode = ?attempt.mode, attempt = attempt.number, "capture worker started");
         let mut stats = stats::Stats::new(self.relay_only, Instant::now());
         stats.direct(self.direct);
@@ -171,6 +195,7 @@ impl Publisher {
             applied,
             stats,
             ready: false,
+            #[cfg(target_os = "linux")]
             screen,
             attempt,
             recovering_since: None,
@@ -187,6 +212,7 @@ impl Publisher {
         }
     }
 
+    #[cfg(target_os = "linux")]
     pub fn recover(&mut self, source: Source, allowed: bool, error: &Error) -> bool {
         let Some(mut track) = self.slots[index(source)].take() else {
             return false;
@@ -234,6 +260,13 @@ impl Publisher {
         }
     }
 
+    #[cfg(not(target_os = "linux"))]
+    pub fn recover(&mut self, source: Source, _: bool, error: &Error) -> bool {
+        tracing::warn!(target: "nuschl_capture", ?source, %error, "capture stopped");
+        self.retire(source);
+        false
+    }
+
     pub async fn stop(mut self) {
         use futures_util::StreamExt as _;
         for source in SOURCES {
@@ -242,40 +275,32 @@ impl Publisher {
         while self.retiring.next().await.is_some() {}
     }
 
-    pub fn focus(&mut self, selection: Selection, updates: &Latest) -> bool {
-        let next = selection
-            .view
-            .and_then(source)
-            .filter(|source| self.active(*source))
-            .or_else(|| {
-                [Source::Screen, Source::Camera]
-                    .into_iter()
-                    .find(|source| self.active(*source))
-            });
-        if next != self.focused {
-            self.focused = next;
-            updates.local_view(next.and_then(|source| {
-                self.slots[index(source)]
-                    .as_ref()
-                    .map(|track| (track.preview_id, video_kind(source), track.label()))
-            }));
-        }
-        next.is_some()
+    pub fn sources(&self) -> [Option<Stream>; 2] {
+        self.slots.each_ref().map(|track| {
+            track.as_ref().map(|track| Stream {
+                feed: Feed::local(track.encoding.kind),
+                serial: track.preview_id,
+                preview: track.preview.is_some(),
+            })
+        })
     }
 
-    pub fn preview(&self, visible: bool) {
+    pub fn preview(&self, tiles: [Option<Stream>; TILES], visible: bool) {
         for source in SOURCES {
             if let Some(track) = &self.slots[index(source)]
                 && track.preview.is_some()
             {
-                track
-                    .capture
-                    .set_preview(visible && self.focused == Some(source));
+                track.capture.set_preview(
+                    visible
+                        && tiles.into_iter().flatten().any(|stream| {
+                            stream.feed.publisher.is_none() && stream.serial == track.preview_id
+                        }),
+                );
             }
         }
     }
 
-    pub fn event(&mut self, event: &MediaEvent, updates: &Latest) {
+    pub fn event(&mut self, event: &MediaEvent) {
         match *event {
             MediaEvent::SourceReady { purpose } => {
                 if let Some(source) = source(purpose)
@@ -283,9 +308,6 @@ impl Publisher {
                 {
                     track.ready = true;
                     track.capture.request_keyframe();
-                    if self.focused == Some(source) {
-                        updates.status(track.label());
-                    }
                 }
             }
             MediaEvent::SourceKeyframeRequired { purpose } => {
@@ -325,7 +347,7 @@ impl Publisher {
         }
     }
 
-    pub fn retune(&mut self, display: &Display<'_>, selection: Selection, report: bool) {
+    pub fn retune(&mut self, display: &Display<'_>, selection: Selection, report: Option<Feed>) {
         let count = self.slots.iter().flatten().count().max(1) as u64;
         // RTC charges packet and SFrame overhead and splits the video budget across enabled sources.
         let share = self
@@ -335,22 +357,26 @@ impl Publisher {
             let Some(track) = self.slots[index(source)].as_mut() else {
                 continue;
             };
+            let feed = Feed::local(track.encoding.kind);
+            let quality = selection.preference(feed).quality;
             track.encoding.bitrate_estimate = share;
-            let next = track.encoding.limits(selection.quality, track.applied);
+            let next = track.encoding.limits(quality, track.applied);
             // Capture closure is reported by Capture::next.
             if next != track.applied && track.capture.set_limits(next).is_ok() {
                 track.applied = next;
             }
-            if report && self.focused == Some(source) {
+            if report == Some(feed) {
                 let sample = track.stats.sample(Instant::now());
                 display.report(
-                    track.encoding.kind,
+                    Stream {
+                        feed,
+                        serial: track.preview_id,
+                        preview: track.preview.is_some(),
+                    },
                     sample,
                     Some(stats::Encoder {
-                        requested: track.encoding.preferred(selection.quality),
-                        limit: track
-                            .encoding
-                            .active_limit(selection.quality, track.applied),
+                        requested: track.encoding.preferred(quality),
+                        limit: track.encoding.active_limit(quality, track.applied),
                         budget_bps: track.encoding.bitrate_estimate,
                         target: track.applied,
                         ceiling: track.encoding.remote,
@@ -412,22 +438,13 @@ pub(super) struct LocalVideo {
     applied: CaptureLimits,
     stats: stats::Stats,
     ready: bool,
+    #[cfg(target_os = "linux")]
     screen: Option<portal::ScreenGrant>,
     attempt: CaptureAttempt,
     recovering_since: Option<Instant>,
 }
 
 impl LocalVideo {
-    fn label(&self) -> &'static str {
-        match (self.encoding.kind, self.ready, self.preview.is_some()) {
-            (VideoKind::Screen, _, false) => "Your screen · local preview off",
-            (VideoKind::Camera, true, _) => "Your camera",
-            (VideoKind::Screen, true, _) => "Your screen",
-            (VideoKind::Camera, false, _) => "Your camera · waiting for a viewer",
-            (VideoKind::Screen, false, _) => "Your screen · waiting for a viewer",
-        }
-    }
-
     pub async fn next(track: &mut Option<Self>) -> Result<VideoFrame, Error> {
         match track {
             Some(track) => track.capture.next().await,
@@ -436,6 +453,7 @@ impl LocalVideo {
     }
 
     async fn stop(self) {
+        #[cfg(target_os = "linux")]
         drop(self.screen);
         if let Err(error) = self.capture.stop().await {
             tracing::debug!(%error, "could not stop capture");
@@ -450,13 +468,14 @@ impl LocalVideo {
 
 pub(super) async fn next_reopen(
     reopening: &mut Option<Reopening>,
-) -> (CaptureAttempt, Option<portal::Grant>) {
+) -> (CaptureAttempt, Option<Grant>) {
     match reopening {
         Some(reopening) => reopening.await,
         None => pending().await,
     }
 }
 
+#[cfg(target_os = "linux")]
 fn recoverable(error: &Error) -> bool {
     match error {
         Error::CaptureClosed
@@ -580,14 +599,16 @@ fn video_rate(bitrate: u64) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        CaptureFailure, CaptureLimits, CaptureMode, Encoding, Error, Publisher, Quality, Source,
-        VideoKind, recoverable,
-    };
+    #[cfg(target_os = "linux")]
+    use super::{CaptureFailure, CaptureMode, Error, recoverable};
+    use super::{CaptureLimits, Encoding, Publisher, Quality, Source, VideoKind};
     use futures_util::FutureExt as _;
-    use std::{future::pending, io, os::unix::process::ExitStatusExt as _, process::ExitStatus};
+    use std::future::pending;
+    #[cfg(target_os = "linux")]
+    use std::{io, os::unix::process::ExitStatusExt as _, process::ExitStatus};
     use tokio::sync::oneshot;
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn closed_capture_can_reopen_and_protocol_errors_stop() {
         assert!(recoverable(&Error::CaptureClosed));
@@ -601,6 +622,7 @@ mod tests {
         ));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn hardware_failures_try_encoding_alone_then_software() {
         let mut mode = CaptureMode::HardwareWithPreview;
@@ -624,6 +646,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn ordinary_capture_closure_keeps_the_current_mode() {
         for mode in [

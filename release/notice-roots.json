@@ -25,13 +25,13 @@
   },
   "windows-x86_64": {
     "targets": ["x86_64-pc-windows-gnu"],
-    "packages": ["nuschl", "nuschl-content-worker", "nuschl-crypto-worker", "nuschl-math-worker", "nuschl-media-worker", "nuschl-storage-worker", "nuschl-transfer-worker", "nuschl-update-worker"],
+    "packages": ["nuschl", "nuschl-content-worker", "nuschl-crypto-worker", "nuschl-math-worker", "nuschl-media-worker", "nuschl-storage-worker", "nuschl-transfer-worker", "nuschl-video-worker", "nuschl-rtc-worker", "nuschl-update-worker"],
     "features": ["nuschl-update-worker/ed25519", "nuschl-update-worker/mldsa44"],
     "components": ["rust-standard-library", "mumble-protocol", "newcm-math-font", "syntect-default-assets", "emoji-assets", "gcc-runtime", "mingw-w64-runtime"]
   },
   "macos-universal": {
     "targets": ["x86_64-apple-darwin", "aarch64-apple-darwin"],
-    "packages": ["nuschl", "nuschl-content-worker", "nuschl-crypto-worker", "nuschl-math-worker", "nuschl-media-worker", "nuschl-storage-worker", "nuschl-transfer-worker", "nuschl-update-worker"],
+    "packages": ["nuschl", "nuschl-content-worker", "nuschl-crypto-worker", "nuschl-math-worker", "nuschl-media-worker", "nuschl-storage-worker", "nuschl-transfer-worker", "nuschl-video-worker", "nuschl-rtc-worker", "nuschl-update-worker"],
     "features": ["nuschl-update-worker/ed25519", "nuschl-update-worker/mldsa44"],
     "components": ["rust-standard-library", "mumble-protocol", "newcm-math-font", "syntect-default-assets", "emoji-assets"]
   },

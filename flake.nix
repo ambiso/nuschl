@@ -539,7 +539,7 @@
               "aarch64-apple-darwin"
             ];
           };
-        desktopCrates = "-p nuschl -p nuschl-content-worker -p nuschl-crypto-worker -p nuschl-math-worker -p nuschl-media-worker -p nuschl-storage-worker -p nuschl-transfer-worker";
+        desktopCrates = "-p nuschl -p nuschl-content-worker -p nuschl-crypto-worker -p nuschl-math-worker -p nuschl-media-worker -p nuschl-storage-worker -p nuschl-transfer-worker -p nuschl-video-worker -p nuschl-rtc-worker";
         crossCommon = {
           inherit version;
           inherit src dummySrc;
@@ -561,9 +561,10 @@
             __CRANE_EXPORT_CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER = "${pkgs.coreutils}/bin/false";
             CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS = "-C target-feature=+crt-static -L native=${mingw.windows.pthreads}/lib";
             postInstall = ''
+              rm -f "$out/bin/nuschl-video-probe.exe"
               cp ${windowsVerifiers.ed25519}/bin/nuschl-update-verify-ed25519.exe "$out/bin/"
               cp ${windowsVerifiers.mldsa44}/bin/nuschl-update-verify-mldsa44.exe "$out/bin/"
-              for program in nuschl nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-media-worker nuschl-storage-worker nuschl-transfer-worker nuschl-update-verify-ed25519 nuschl-update-verify-mldsa44; do
+              for program in nuschl nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-media-worker nuschl-storage-worker nuschl-transfer-worker nuschl-video-worker nuschl-rtc-worker nuschl-update-verify-ed25519 nuschl-update-verify-mldsa44; do
                 test -f "$out/bin/$program.exe"
               done
               if ${pkgs.binutils}/bin/objdump -p "$out/bin/nuschl.exe" | grep -iE 'DLL Name:.*(libgcc|libstdc|libwinpthread)'; then
@@ -637,9 +638,10 @@
             // {
               pname = "nuschl-macos-${arch}";
               postInstall = ''
+                rm -f "$out/bin/nuschl-video-probe"
                 cp ${macVerifier arch "ed25519"}/bin/nuschl-update-verify-ed25519 "$out/bin/"
                 cp ${macVerifier arch "mldsa44"}/bin/nuschl-update-verify-mldsa44 "$out/bin/"
-                for program in nuschl nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-media-worker nuschl-storage-worker nuschl-transfer-worker nuschl-update-verify-ed25519 nuschl-update-verify-mldsa44; do
+                for program in nuschl nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-media-worker nuschl-storage-worker nuschl-transfer-worker nuschl-video-worker nuschl-rtc-worker nuschl-update-verify-ed25519 nuschl-update-verify-mldsa44; do
                   test -f "$out/bin/$program"
                 done
               ''
@@ -650,7 +652,7 @@
           pkgs.runCommand "nuschl-macos-universal" { nativeBuildInputs = [ pkgs.llvmPackages.llvm ]; }
             ''
               mkdir -p "$out/bin"
-              for program in nuschl nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-media-worker nuschl-storage-worker nuschl-transfer-worker nuschl-update-verify-ed25519 nuschl-update-verify-mldsa44; do
+              for program in nuschl nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-media-worker nuschl-storage-worker nuschl-transfer-worker nuschl-video-worker nuschl-rtc-worker nuschl-update-verify-ed25519 nuschl-update-verify-mldsa44; do
                 llvm-lipo -create ${macSlice "x86_64"}/bin/$program ${macSlice "aarch64"}/bin/$program \
                   -output "$out/bin/$program"
                 llvm-lipo "$out/bin/$program" -verify_arch x86_64 arm64
@@ -692,6 +694,8 @@
                 <key>CFBundleVersion</key><string>$version</string>
                 <key>LSMinimumSystemVersion</key><string>${macMinimum}</string>
                 <key>NSHighResolutionCapable</key><true/>
+                <key>NSCameraUsageDescription</key><string>Nuschl shares your camera when you start it in a video call.</string>
+                <key>NSScreenCaptureUsageDescription</key><string>Nuschl shares the screen or window you choose in a video call.</string>
                 <key>NSMicrophoneUsageDescription</key><string>Nuschl sends your voice to the people in your channel.</string>
                 <key>NSAudioCaptureUsageDescription</key><string>Nuschl removes what your speakers play from your microphone, so others do not hear it. The sound stays on this Mac.</string>
               </dict>

@@ -4,10 +4,10 @@
 #[cfg(feature = "vaapi")]
 mod vaapi;
 
-use nuschl_ipc::video::{
-    CaptureLimits, HEADER_BYTES, Header, Kind, Settings, Source, fit_capture_preview,
-    read_capture_start, write_capture_preview,
+use crate::capture_pixels::{
+    Cadence, Control, MappedPixels, PREVIEW_FPS, convert, watch_control, write_frame,
 };
+use nuschl_ipc::video::{Kind, Settings, Source, read_capture_start, write_capture_preview};
 use pipewire::{self as pw, properties::properties, spa};
 use spa::{
     buffer::{ChunkFlags, DataType},
@@ -20,63 +20,18 @@ use spa::{
     utils::{Direction, Fraction, Rectangle, SpaTypes},
 };
 use std::{
-    io::{self, Cursor, Read as _},
+    io::{self, Cursor},
     os::{fd::AsFd as _, unix::net::UnixStream},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-        mpsc::sync_channel,
-    },
+    sync::{Arc, atomic::Ordering, mpsc::sync_channel},
     time::{Duration, Instant},
 };
 
 type Failure = Box<dyn std::error::Error>;
 
-const PREVIEW_FPS: u16 = 30;
-
 struct Picture {
     settings: Settings,
     captured_at: Duration,
     i420: Vec<u8>,
-}
-
-struct Control {
-    limits: Mutex<CaptureLimits>,
-    keyframe: AtomicBool,
-    preview: AtomicBool,
-}
-
-impl Control {
-    fn limits(&self) -> CaptureLimits {
-        *self
-            .limits
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-    }
-}
-
-#[derive(Default)]
-struct Cadence {
-    fps: u16,
-    next: Duration,
-}
-
-impl Cadence {
-    fn accept(&mut self, elapsed: Duration, fps: u16) -> bool {
-        let interval = Duration::from_secs(1) / u32::from(fps);
-        if fps != self.fps {
-            self.fps = fps;
-            self.next = elapsed;
-        }
-        if elapsed < self.next {
-            return false;
-        }
-        self.next += interval;
-        if self.next <= elapsed {
-            self.next = elapsed + interval;
-        }
-        true
-    }
 }
 
 pub fn run() -> Result<(), Failure> {
@@ -179,7 +134,7 @@ pub fn run() -> Result<(), Failure> {
                 }
                 settings.bitrate = limits.bitrate;
                 let packet =
-                    match super::linux::encode(&super::linux::config(settings), settings, &i420) {
+                    match super::codec::encode(&super::codec::config(settings), settings, &i420) {
                         Ok(packet) => packet,
                         Err(error) => {
                             let _ = done.send(());
@@ -270,7 +225,7 @@ pub fn run() -> Result<(), Failure> {
                     return;
                 };
                 let raw = (width & !1, height & !1);
-                let Some(pixels) = MappedPixels::new(format.format(), raw, stride, pixels) else {
+                let Some(pixels) = map_pixels(format.format(), raw, stride, pixels) else {
                     return;
                 };
                 if let Some(slot) = preview {
@@ -317,81 +272,12 @@ pub fn run() -> Result<(), Failure> {
     })
 }
 
-fn write_frame(
-    output: &mut impl io::Write,
-    kind: Kind,
-    settings: Settings,
-    timestamp_us: u64,
-    keyframe: bool,
-    av1: &[u8],
-) -> io::Result<()> {
-    if av1.is_empty() || av1.len() > settings.packet_limit(keyframe) {
-        return Ok(());
-    }
-    let header = Header {
-        kind,
-        key: keyframe,
-        id: timestamp_us,
-        bytes: av1.len() as u32,
-    };
-    output.write_all(&header.to_bytes())?;
-    output.write_all(&settings.to_bytes())?;
-    output.write_all(av1)?;
-    output.flush()
-}
-
 fn start_control(source: Source) -> io::Result<(Arc<Control>, Option<UnixStream>)> {
     // Standard output is a private full-duplex socket. Writes return video;
     // reads carry settings from the supervisor.
     let mut input = UnixStream::from(io::stdout().as_fd().try_clone_to_owned()?);
     let (limits, preview) = read_capture_start(&mut input, source)?;
-    let set_limits = Header {
-        bytes: CaptureLimits::BYTES as u32,
-        ..Header::empty(Kind::SetCaptureLimits, 0)
-    };
-    let set_preview = Header {
-        bytes: 1,
-        ..Header::empty(Kind::SetCapturePreview, 0)
-    };
-    let control = Arc::new(Control {
-        limits: Mutex::new(limits),
-        keyframe: AtomicBool::new(false),
-        preview: AtomicBool::new(false),
-    });
-    let values = Arc::clone(&control);
-    std::thread::Builder::new().spawn(move || {
-        let mut header = [0; HEADER_BYTES];
-        let mut target = [0; CaptureLimits::BYTES];
-        loop {
-            if let Err(error) = input.read_exact(&mut header) {
-                std::process::exit(i32::from(error.kind() != io::ErrorKind::UnexpectedEof));
-            }
-            let header = Header::from_bytes(header).ok();
-            if header == Some(Header::empty(Kind::CaptureKeyframe, 0)) {
-                values.keyframe.store(true, Ordering::Relaxed);
-                continue;
-            }
-            if header == Some(set_preview) {
-                let mut visible = [0];
-                if input.read_exact(&mut visible).is_err() || visible[0] > 1 {
-                    std::process::exit(1);
-                }
-                values.preview.store(visible[0] != 0, Ordering::Relaxed);
-                continue;
-            }
-            if header != Some(set_limits) || input.read_exact(&mut target).is_err() {
-                std::process::exit(1);
-            }
-            let Ok(next) = CaptureLimits::from_bytes(source, target) else {
-                std::process::exit(1);
-            };
-            *values
-                .limits
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()) = next;
-        }
-    })?;
-    Ok((control, preview))
+    Ok((watch_control(source, limits, input)?, preview))
 }
 
 fn video_format(source: Source) -> io::Result<Vec<u8>> {
@@ -448,153 +334,27 @@ fn video_format(source: Source) -> io::Result<Vec<u8>> {
         .map_err(io::Error::other)
 }
 
-struct MappedPixels<'a> {
-    width: usize,
-    height: usize,
+fn map_pixels(
+    format: VideoFormat,
+    raw: (u16, u16),
     stride: usize,
-    pixel_bytes: usize,
-    red: usize,
-    data: &'a [u8],
-}
-
-impl<'a> MappedPixels<'a> {
-    fn new(format: VideoFormat, raw: (u16, u16), stride: usize, data: &'a [u8]) -> Option<Self> {
-        let (width, height) = (usize::from(raw.0), usize::from(raw.1));
-        let (pixel_bytes, red) = match format {
-            VideoFormat::BGRx | VideoFormat::BGRA => (4, 2),
-            VideoFormat::RGBx | VideoFormat::RGBA => (4, 0),
-            VideoFormat::BGR => (3, 2),
-            VideoFormat::RGB => (3, 0),
-            VideoFormat::YUY2 => (2, 0),
-            _ => return None,
-        };
-        let row_bytes = width * pixel_bytes;
-        if width == 0 || !width.is_multiple_of(2) || stride < row_bytes {
-            return None;
-        }
-        let needed = stride
-            .checked_mul(height.checked_sub(1)?)?
-            .checked_add(row_bytes)?;
-        Some(Self {
-            width,
-            height,
-            stride,
-            pixel_bytes,
-            red,
-            data: data.get(..needed)?,
-        })
-    }
-
-    fn yuy2(&self) -> bool {
-        self.pixel_bytes == 2
-    }
-
-    fn row(&self, row: usize, output_height: usize) -> &[u8] {
-        let start = (row * self.height / output_height) * self.stride;
-        &self.data[start..start + self.width * self.pixel_bytes]
-    }
-
-    fn rgb(&self, row: &[u8], x: usize) -> [u8; 3] {
-        let offset = x * self.pixel_bytes;
-        [
-            row[offset + self.red],
-            row[offset + 1],
-            row[offset + 2 - self.red],
-        ]
-    }
-
-    fn yuv(&self, row: &[u8], x: usize) -> (u8, u8, u8) {
-        if self.yuy2() {
-            let offset = x * 2;
-            let pair = offset & !3;
-            (row[offset], row[pair + 1], row[pair + 3])
-        } else {
-            let [r, g, b] = self.rgb(row, x);
-            yuv(r, g, b)
-        }
-    }
-
-    fn preview(&self) -> (u16, u16, Vec<u8>) {
-        let (width, height) = fit_capture_preview(self.width as u16, self.height as u16);
-        let (w, h) = (usize::from(width), usize::from(height));
-        let columns: Vec<_> = (0..w).map(|x| x * self.width / w).collect();
-        let mut pixels = Vec::with_capacity(w * h * 4);
-        for output_row in 0..h {
-            let row = self.row(output_row, h);
-            for &column in &columns {
-                let [r, g, b] = if self.yuy2() {
-                    let (y, u, v) = self.yuv(row, column);
-                    rgb_from_yuv(y, u, v)
-                } else {
-                    self.rgb(row, column)
-                };
-                pixels.extend_from_slice(&[b, g, r, 255]);
-            }
-        }
-        (width, height, pixels)
-    }
-}
-
-fn convert(raw: &MappedPixels<'_>, settings: Settings) -> Option<Vec<u8>> {
-    let (width, height) = (usize::from(settings.width), usize::from(settings.height));
-    if raw.width < width || raw.height < height {
-        return None;
-    }
-    let len = settings.frame_bytes().ok()?;
-    let mut planar = vec![0; len];
-    let (y, uv) = planar.split_at_mut(width * height);
-    let (u, v) = uv.split_at_mut(uv.len() / 2);
-    let is_yuy2 = raw.yuy2();
-    let columns: Vec<_> = (0..width).map(|x| x * raw.width / width).collect();
-    for row in (0..height).step_by(2) {
-        let top = raw.row(row, height);
-        let bottom = raw.row(row + 1, height);
-        for (pair, &[left, right]) in columns.as_chunks::<2>().0.iter().enumerate() {
-            let chroma = (row / 2) * (width / 2) + pair;
-            let luma = row * width + pair * 2;
-            let quad = [
-                raw.yuv(top, left),
-                raw.yuv(top, right),
-                raw.yuv(bottom, left),
-                raw.yuv(bottom, right),
-            ];
-            let [first, second, third, fourth] = quad;
-            [y[luma], y[luma + 1], y[luma + width], y[luma + width + 1]] =
-                [first.0, second.0, third.0, fourth.0];
-            let average = |a: u8, b: u8, c: u8, d: u8| {
-                ((u16::from(a)
-                    + u16::from(b)
-                    + u16::from(c)
-                    + u16::from(d)
-                    + if is_yuy2 { 0 } else { 2 })
-                    / 4) as u8
-            };
-            u[chroma] = average(first.1, second.1, third.1, fourth.1);
-            v[chroma] = average(first.2, second.2, third.2, fourth.2);
-        }
-    }
-    Some(planar)
-}
-
-fn yuv(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
-    let (r, g, b) = (i32::from(r), i32::from(g), i32::from(b));
-    let y = ((47 * r + 157 * g + 16 * b + 128) >> 8) + 16;
-    let u = ((-26 * r - 87 * g + 113 * b + 128) >> 8) + 128;
-    let v = ((112 * r - 102 * g - 10 * b + 128) >> 8) + 128;
-    (y as u8, u as u8, v as u8)
-}
-
-fn rgb_from_yuv(y: u8, u: u8, v: u8) -> [u8; 3] {
-    let y = 298 * (i32::from(y) - 16);
-    let u = i32::from(u) - 128;
-    let v = i32::from(v) - 128;
-    [y + 459 * v, y - 55 * u - 136 * v, y + 541 * u]
-        .map(|component| ((component + 128) >> 8).clamp(0, 255) as u8)
+    data: &[u8],
+) -> Option<MappedPixels<'_>> {
+    let (pixel_bytes, red) = match format {
+        VideoFormat::BGRx | VideoFormat::BGRA => (4, 2),
+        VideoFormat::RGBx | VideoFormat::RGBA => (4, 0),
+        VideoFormat::BGR => (3, 2),
+        VideoFormat::RGB => (3, 0),
+        VideoFormat::YUY2 => (2, 0),
+        _ => return None,
+    };
+    MappedPixels::new(raw, stride, pixel_bytes, red, data)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nuschl_ipc::video::CaptureLimits;
 
     #[test]
     fn keeps_3440_by_1440_at_the_1440p_tier() {
@@ -618,7 +378,7 @@ mod tests {
         let mut pixels = vec![0; stride * usize::from(raw.1)];
         let last = pixels.len() - 2;
         pixels[last] = 255;
-        let mapped = MappedPixels::new(VideoFormat::BGRx, raw, stride, &pixels).unwrap();
+        let mapped = map_pixels(VideoFormat::BGRx, raw, stride, &pixels).unwrap();
         let frame = convert(&mapped, settings).unwrap();
         assert_eq!(frame.len(), settings.frame_bytes().unwrap());
         assert_eq!(frame[0], 16);
@@ -646,13 +406,13 @@ mod tests {
         let stride = usize::from(settings.width) * 4 + 4;
         let mut pixels = vec![0; stride * 16];
         pixels[2] = 255;
-        let mapped = MappedPixels::new(VideoFormat::BGRx, (16, 16), stride, &pixels).unwrap();
+        let mapped = map_pixels(VideoFormat::BGRx, (16, 16), stride, &pixels).unwrap();
         let converted = convert(&mapped, settings).unwrap();
         assert_eq!(converted[0], 63);
         assert_eq!(converted[16 * 16 + 16 * 16 / 4], 156);
-        assert!(MappedPixels::new(VideoFormat::BGRx, (16, 16), 12, &pixels).is_none());
-        assert!(MappedPixels::new(VideoFormat::BGRx, (16, 16), usize::MAX, &pixels).is_none());
-        assert!(MappedPixels::new(VideoFormat::BGRx, (16, 16), stride, &pixels[..1]).is_none());
+        assert!(map_pixels(VideoFormat::BGRx, (16, 16), 12, &pixels).is_none());
+        assert!(map_pixels(VideoFormat::BGRx, (16, 16), usize::MAX, &pixels).is_none());
+        assert!(map_pixels(VideoFormat::BGRx, (16, 16), stride, &pixels[..1]).is_none());
     }
 
     #[test]
@@ -660,7 +420,7 @@ mod tests {
         let rgb = [
             3, 5, 7, 0, 11, 13, 17, 0, 255, 255, 255, 255, 19, 23, 29, 0, 31, 37, 41, 0,
         ];
-        let mapped = MappedPixels::new(VideoFormat::RGBx, (2, 2), 12, &rgb).unwrap();
+        let mapped = map_pixels(VideoFormat::RGBx, (2, 2), 12, &rgb).unwrap();
         assert_eq!(
             mapped.preview(),
             (
@@ -673,7 +433,7 @@ mod tests {
         );
 
         let yuy2 = [16, 128, 235, 128];
-        let mapped = MappedPixels::new(VideoFormat::YUY2, (2, 1), 4, &yuy2).unwrap();
+        let mapped = map_pixels(VideoFormat::YUY2, (2, 1), 4, &yuy2).unwrap();
         assert_eq!(
             mapped.preview(),
             (2, 1, vec![0, 0, 0, 255, 255, 255, 255, 255])
