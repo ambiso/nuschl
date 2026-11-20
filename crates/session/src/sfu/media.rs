@@ -976,6 +976,7 @@ async fn run(
                 .ok_or(Error::Protocol("call has no publisher"))?;
             discovery = None;
             if let (Some(direct), Some(peer)) = (&mut direct, pair.peer)
+                && direct.leg.is_some()
                 && let Some(id) = direct.close(worker, Some(leg)).await?
             {
                 direct::send(connection, peer, &Signal::Close { id }).await?;

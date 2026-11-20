@@ -36,9 +36,11 @@ async fn native_call_switches_paths_and_sources() {
     // The host path uses only loopback sockets. The STUN test owns its server.
     publisher.welcome.turn = None;
     let mut publisher = publisher
-        .into_media(make_media(Some(Purpose::ScreenVideo)))
+        .into_media(make_media(Some(Purpose::Camera)))
         .await
         .unwrap();
+    // The requests coalesce before the media task can negotiate either of them.
+    publisher.switch_source(Purpose::ScreenVideo).unwrap();
     publisher.switch_source(Purpose::Camera).unwrap();
     let mut viewer = Connection::connect_with_roots(
         CryptoHandle::start(crypto, directory.path().join("viewer")),
@@ -127,7 +129,7 @@ async fn native_call_switches_paths_and_sources() {
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("direct recovery did not complete; SFU={over_sfu}, sender={sender_direct}, receiver={receiver_direct}, keyframe request={requested_keyframe}, outage={outage:?}"));
+    .unwrap_or_else(|_| panic!("direct recovery did not complete; SFU={over_sfu}, sender={sender_direct}, receiver={receiver_direct}, keyframe request={requested_keyframe}, outage={outage:?}, sender fell back={sender_relayed}, receiver fell back={receiver_relayed}, resumed={resumed}"));
     assert!(over_sfu);
     eprintln!(
         "SFU resumed with both endpoints reporting fallback after {:?}",
