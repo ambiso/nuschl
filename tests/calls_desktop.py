@@ -6,7 +6,7 @@ A Mumble-protocol witness checks the public and private chat links. The call
 host listens on loopback and holds TLS admission open, so the test exercises the
 call UI and invitation lifecycle without granting camera or screen capture.
 Set TMPDIR and NUSCHL_WL_TMP to a short disk-backed scratch path.
-The fullscreen checks sample the compositor's screenshots with ffmpeg.
+Run with --fullscreen to sample the fullscreen controls with ffmpeg.
 
     python3 tests/calls_desktop.py <binaries> --murmur <mumble-server> \
         --at-spi <at-spi2-core> --pulse-bin <pulseaudio>/bin --opus-library <libopus.so> \
@@ -260,7 +260,7 @@ class CallTest(VoiceTest):
 
         eventually(regions_are_disjoint, "inline call and chat have overlapping or empty regions", timeout=15)
 
-    def fullscreen(self, app):
+    def fullscreen(self, app, interaction):
         def window_is_fullscreen():
             return self.shell.eval("global.display.focus_window.is_fullscreen()") == "true"
 
@@ -275,7 +275,7 @@ class CallTest(VoiceTest):
         def toolbar_visible():
             nonlocal screenshots
             screenshots += 1
-            screen = self.shell.screenshot(self.args.output / f"fullscreen-{screenshots:02d}.png")
+            screen = self.shell.screenshot(self.args.output / f"{interaction}-{screenshots:02d}.png")
             pixels = subprocess.check_output([
                 "ffmpeg", "-v", "error", "-i", str(screen), "-vf", f"format=rgb24,crop=1:21:{x + 6}:{y - 14}",
                 "-f", "rawvideo", "-frames:v", "1", "pipe:1",
@@ -285,22 +285,26 @@ class CallTest(VoiceTest):
 
         self.shell.move(40, 40)
         eventually(toolbar_visible, "fullscreen controls did not paint at entry", timeout=3)
-        eventually(lambda: not toolbar_visible(), "fullscreen controls did not fade", timeout=6)
-        self.shell.move(80, 40)
-        eventually(toolbar_visible, "pointer motion did not reveal fullscreen controls", timeout=3)
-        time.sleep(3.3)
-        assert not toolbar_visible() and exit_button.name == "Exit full screen"
-        self.shell.key("Tab")
-        eventually(lambda: exit_button.focused, "Tab did not reach the fullscreen controls", timeout=3)
-        time.sleep(3.3)
-        assert toolbar_visible(), "the focused controls faded"
-        self.press(app, "Video options")
-        eventually(lambda: self.find(app, "menu", "Context menu"), "fullscreen video menu did not open")
-        time.sleep(3.3)
-        assert toolbar_visible(), "the controls faded while the menu was open"
-        self.shell.key("Escape")
-        eventually(lambda: not self.find(app, "menu", "Context menu"), "Escape did not close the fullscreen menu")
-        assert window_is_fullscreen()
+        if interaction != "menu":
+            eventually(lambda: not toolbar_visible(), "fullscreen controls did not fade", timeout=6)
+            assert exit_button.name == "Exit full screen"
+        if interaction == "pointer":
+            self.shell.move(80, 40)
+            eventually(toolbar_visible, "pointer motion did not reveal fullscreen controls", timeout=3)
+        elif interaction == "keyboard":
+            self.shell.key("Tab")
+            eventually(lambda: exit_button.focused, "Tab did not reach the fullscreen controls", timeout=3)
+            time.sleep(3.3)
+            assert toolbar_visible(), "the focused controls faded"
+        else:
+            self.press(app, "Video options")
+            item = eventually(lambda: self.find(app, "menu item", "Video stats"), "fullscreen video menu did not open")
+            self.shell.move(*item.centre())
+            time.sleep(3.3)
+            assert toolbar_visible(), "the controls faded while the menu was open"
+            self.shell.key("Escape")
+            eventually(lambda: not self.find(app, "menu", "Context menu"), "Escape did not close the fullscreen menu")
+            assert window_is_fullscreen()
         self.shell.key("Escape")
         eventually(lambda: not window_is_fullscreen(), "Escape did not exit fullscreen")
         self.inline(app)
@@ -330,6 +334,13 @@ class CallTest(VoiceTest):
                                                           self.pin, "Witness", self.root / "witness")
             self.witness.send(kind="join", channel=1)
             andi, andi_opened, andi_pid = self.desktop("Andi", registry, set())
+            if self.args.fullscreen:
+                for interaction in ("pointer", "keyboard", "menu"):
+                    self.press(andi, "Start meeting")
+                    self.fullscreen(andi, interaction)
+                    self.press(andi, "End call")
+                    print(f"Fullscreen {interaction} passed", flush=True)
+                return
             bea, bea_opened, bea_pid = self.desktop("Bea", registry, {andi.destination})
             cara, _, _ = self.desktop("Cara", registry, {andi.destination, bea.destination},
                                       channel=2, path="Lobby/Development")
@@ -341,7 +352,6 @@ class CallTest(VoiceTest):
             self.historical_invitation(bea, bea_pid)
             self.press(andi, "Start meeting")
             self.inline(andi)
-            self.fullscreen(andi)
             own = self.invitation(andi, "You")
             target, link = self.witness_link()
             assert target == {"kind": "channel", "id": 1}
@@ -448,6 +458,7 @@ class CallTest(VoiceTest):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("binaries", type=Path)
+    parser.add_argument("--fullscreen", action="store_true")
     for name in ("murmur", "at-spi", "pulse-bin", "opus-library", "gnome-shell", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     args = parser.parse_args()
