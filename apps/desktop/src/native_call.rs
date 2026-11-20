@@ -773,6 +773,7 @@ pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
     let surface = call.surface.read(cx);
     let has_picture = surface.image.is_some();
     let stats = surface.stats.clone();
+    let owned = surface.own_video.is_some();
     let kind = surface
         .own_video
         .or_else(|| stats.as_ref().map(|stats| stats.kind));
@@ -895,11 +896,7 @@ pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
                 panel.child(quality_choices(kind, quality, cx))
             })
             .when(call.stats_open, |panel| {
-                panel.child(video_stats(
-                    stats.as_deref(),
-                    surface.own_video.is_some(),
-                    quality,
-                ))
+                panel.child(video_stats(stats.as_deref(), owned, quality))
             })
             .child(call.surface.clone())
             .child(actions)
