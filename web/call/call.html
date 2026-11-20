@@ -22,6 +22,7 @@
     <main id="stage" aria-label="Video">
       <div id="large" hidden></div>
       <div id="grid"></div>
+      <div id="shared-audio" hidden></div>
       <p id="empty">No video yet</p>
     </main>
     <aside aria-labelledby="people">
@@ -34,6 +35,7 @@
         <select id="camera-quality" aria-label="Camera quality"></select>
         <button type="button" id="screen" aria-pressed="false" disabled>Share screen</button>
         <select id="screen-quality" aria-label="Screen quality"></select>
+        <label hidden><input type="checkbox" id="screen-audio"> Share browser tab audio</label>
         <span id="notice" role="status" hidden></span>
       </div>
       <div id="host-actions" hidden>

@@ -9,6 +9,7 @@ import { join as joinPath } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { unsized } from "./frames.js";
+import { canShareAudio } from "./controls.js";
 import { publisherMeasurements, receiverRates } from "./receiver-stats.js";
 import { Call } from "./session.js";
 import { MAX_MESSAGE, MAX_PEERS, TIERS, fitTier, join, linkOf, parse, qualityRequest } from "./signal.js";
@@ -35,6 +36,18 @@ const location = (href) => {
   return { origin: url.origin, pathname: url.pathname, search: url.search, hash: url.hash, host: url.host };
 };
 const request = (worker, body) => JSON.parse(worker.handle(JSON.stringify({ v: 1, ...body }), Date.now()));
+
+test("audio capture requires a browser tab and excludes call tabs", () => {
+  const capture = (displaySurface, handle) => ({
+    getSettings: () => ({ displaySurface }),
+    getCaptureHandle: () => handle,
+  });
+  assert.equal(canShareAudio(capture("browser", null)), true);
+  assert.equal(canShareAudio(capture("browser", { handle: "nuschl-call" })), false);
+  assert.equal(canShareAudio(capture("monitor", null)), false);
+  assert.equal(canShareAudio(capture("window", null)), false);
+  assert.equal(canShareAudio({ getSettings: () => ({ displaySurface: "browser" }) }), false);
+});
 
 test("the page hands the worker the call link and reads relay-only from the query", () => {
   const fragment = `#v=1&k=${b64(S)}&h=${b64(V)}`;

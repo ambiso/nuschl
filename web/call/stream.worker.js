@@ -8,6 +8,9 @@ import init, { StreamWorker } from "./nuschl_stream_wasm.js";
 import { unsized } from "./frames.js";
 
 const ready = init().then(() => new StreamWorker());
+const TAB_AUDIO = 3;
+const MAX_OPUS_PACKET = 1275;
+const SFRAME_OVERHEAD = 34; // envelope, header and authentication tag
 /** Each publisher's receive transformers, which ask for a key frame once its keys arrive. */
 const receivers = new Map();
 
@@ -45,14 +48,18 @@ addEventListener("message", async ({ data: { id, request } }) => {
 addEventListener("rtctransform", async ({ transformer }) => {
   const worker = await ready.catch(fatal);
   if (!worker) return;
-  const { side, peer, encoding } = transformer.options;
+  const { side, peer, encoding, audio } = transformer.options;
   let code;
-  if (side === "receive") {
+  if (side === "receive" && audio) {
+    code = (frame) => frame.data.byteLength <= MAX_OPUS_PACKET + SFRAME_OVERHEAD ?
+      worker.decrypt_audio(peer, new Uint8Array(frame.data), Date.now()) : null;
+  } else if (side === "receive") {
     if (!receivers.has(peer)) receivers.set(peer, new Set());
     receivers.get(peer).add(transformer);
     code = (frame) => worker.decrypt(peer, unsized(new Uint8Array(frame.data)), Date.now());
   } else {
-    code = (frame) => worker.encrypt(encoding, frame.type === "key", new Uint8Array(frame.data));
+    code = (frame) => encoding === TAB_AUDIO && frame.data.byteLength > MAX_OPUS_PACKET ? null :
+      worker.encrypt(encoding, frame.type === "key", new Uint8Array(frame.data));
   }
   // A frame that fails to decrypt or encrypt is dropped.
   const frames = new TransformStream({

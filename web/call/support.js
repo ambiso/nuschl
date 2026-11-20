@@ -26,9 +26,10 @@ export function preferences(scope, kind) {
 
 /** The codecs a sender offers in the call codec `codec` ("av1" or "vp9"), with
  * retransmission; empty when this browser cannot encode it. */
-export function sendCodecs(scope, codec) {
-  const codecs = scope.RTCRtpSender?.getCapabilities?.("video")?.codecs ?? [];
-  const primary = codecs.filter((entry) => entry.mimeType.toLowerCase() === `video/${codec}`);
+export function sendCodecs(scope, codec, kind = "video") {
+  const codecs = scope.RTCRtpSender?.getCapabilities?.(kind)?.codecs ?? [];
+  const primary = codecs.filter((entry) => entry.mimeType.toLowerCase() === `${kind}/${codec}`);
+  if (kind === "audio") return primary;
   const rtx = codecs.filter((entry) => entry.mimeType.toLowerCase() === "video/rtx");
   return primary.length ? [...primary, ...rtx] : [];
 }

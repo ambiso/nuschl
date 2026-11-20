@@ -21,7 +21,7 @@ export class Call extends EventTarget {
   tracks = new Map();
   /** Publishers asked for their keys: id → {keyed, asked}. */
   keys = new Map();
-  /** This page's camera and screen, with their local tier and the SFU limits. */
+  /** This page's camera, screen and optional tab audio. */
   sources = new Map();
   self = null;
   role = null;
@@ -157,10 +157,12 @@ export class Call extends EventTarget {
       const track = offered.get(transceiver.mid);
       if (!track || transceiver.currentDirection === "stopped") continue;
       const { receiver } = transceiver;
+      const audio = track.kind === "audio";
+      if (audio !== (receiver.track.kind === "audio")) throw new Error("track kind mismatch");
       const known = this.tracks.get(transceiver.mid);
       const sameSource = known?.receiver === receiver && known.peer === track.peer && known.source === track.source;
       if (!sameSource) {
-        receiver.transform = new RTCRtpScriptTransform(this.stream.worker, { side: "receive", peer: track.peer });
+        receiver.transform = new RTCRtpScriptTransform(this.stream.worker, { side: "receive", peer: track.peer, audio });
         try {
           transceiver.setCodecPreferences(preferences(globalThis, receiver.track.kind));
         } catch {
@@ -202,7 +204,7 @@ export class Call extends EventTarget {
   }
 
   /** Publishes `track`, from the user's own Start camera or Share screen, as this
-   * page's `kind` source ("camera" or "screen"). */
+   * page's camera, screen or tab audio source. */
   async publish(kind, track, tier) {
     const pending = Promise.resolve(this.publishing).catch(() => {})
       .then(() => this.publishTrack(kind, track, tier));
@@ -218,9 +220,11 @@ export class Call extends EventTarget {
   }
 
   async publishTrack(kind, track, tier) {
-    const mode = await scalabilityMode(globalThis, this.codec, kind, track.getSettings());
+    const audio = kind === "audio";
+    if (audio !== (track.kind === "audio") || (audio && !this.sources.has("screen"))) return track.stop();
+    const mode = audio ? undefined : await scalabilityMode(globalThis, this.codec, kind, track.getSettings());
     if (this.ended || this.sources.has(kind) || track.readyState === "ended") return track.stop();
-    if (this.publisher) await this.direct.resetPublisher();
+    if (this.publisher && !audio) await this.direct.resetPublisher();
     if (this.ended || track.readyState === "ended") return track.stop();
     if (!this.publisher) {
       this.deliver(await this.stream.request({ kind: "publish" }));
@@ -291,6 +295,7 @@ export class Call extends EventTarget {
   }
 
   applyCap(kind, source) {
+    if (kind === "audio") return;
     source.applying = Promise.resolve(source.applying).then(async () => {
       if (this.sources.get(kind) !== source || this.ended) return;
       const local = TIERS[kind][source.tier] ?? TIERS[kind].at(-1);
@@ -320,7 +325,7 @@ export class Call extends EventTarget {
   async recodec() {
     await this.direct.resetPublisher();
     for (const [kind, source] of this.sources) {
-      if (source.transceiver.codec === this.codec) continue;
+      if (kind === "audio" || source.transceiver.codec === this.codec) continue;
       source.transceiver.stop();
       const mode = await scalabilityMode(globalThis, this.codec, kind, source.track.getSettings());
       if (this.sources.get(kind) !== source || this.ended) continue;
@@ -335,7 +340,15 @@ export class Call extends EventTarget {
     if (!source) return;
     this.sources.delete(kind);
     source.track.stop();
-    await this.direct.resetPublisher();
+    if (kind === "screen") {
+      const audio = this.sources.get("audio");
+      if (audio) {
+        this.sources.delete("audio");
+        audio.track.stop();
+        audio.transceiver.stop();
+      }
+    }
+    if (kind !== "audio") await this.direct.resetPublisher();
     source.transceiver.stop();
     this.changed();
     await this.offer();
@@ -351,7 +364,9 @@ export class Call extends EventTarget {
     this.again = false;
     const codecs = sendCodecs(globalThis, this.codec);
     try {
-      for (const { transceiver } of this.sources.values()) transceiver.setCodecPreferences(codecs);
+      for (const [kind, { transceiver }] of this.sources) {
+        transceiver.setCodecPreferences(kind === "audio" ? sendCodecs(globalThis, "opus", "audio") : codecs);
+      }
       await this.publisher.setLocalDescription();
       const screen = this.sources.get("screen")?.transceiver.mid;
       this.send({ type: "offer", sdp: this.publisher.localDescription.sdp, screens: screen ? [screen] : [] });

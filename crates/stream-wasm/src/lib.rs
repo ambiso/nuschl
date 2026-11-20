@@ -283,6 +283,18 @@ impl<R: TryCryptoRng> Worker<R> {
         Ok(frame)
     }
 
+    pub fn decrypt_audio(&mut self, peer: u64, frame: &[u8], now: u64) -> Result<Vec<u8>, String> {
+        let remote = self.remotes.get_mut(&peer).ok_or("unknown peer")?;
+        let (_, packet) = remote
+            .frames
+            .decrypt_encoding(3, frame, now)
+            .map_err(text)?;
+        if packet.is_empty() || packet.len() > 1275 {
+            return Err("invalid Opus packet size".into());
+        }
+        Ok(packet)
+    }
+
     fn link(&self) -> Result<&Link, String> {
         self.link.as_ref().ok_or_else(|| "no call link".into())
     }
@@ -614,6 +626,15 @@ mod browser {
 
         pub fn decrypt(&mut self, peer: f64, frame: &[u8], now: f64) -> Result<Vec<u8>, String> {
             self.0.decrypt(integer(peer)?, frame, integer(now)?)
+        }
+
+        pub fn decrypt_audio(
+            &mut self,
+            peer: f64,
+            frame: &[u8],
+            now: f64,
+        ) -> Result<Vec<u8>, String> {
+            self.0.decrypt_audio(integer(peer)?, frame, integer(now)?)
         }
     }
 

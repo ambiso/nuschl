@@ -23,15 +23,20 @@ const capture = {
       audio: false,
     }),
   // Window sharing first in the picker; a whole monitor stays possible and shows a warning.
-  screen: (media) =>
+  screen: (media, audio) =>
     media.getDisplayMedia({
-      video: { displaySurface: "window", frameRate: { ideal: 60 } },
-      audio: false,
+      video: { displaySurface: audio ? "browser" : "window", frameRate: { ideal: 60 } },
+      audio,
+      systemAudio: "exclude",
+      windowAudio: "exclude",
       selfBrowserSurface: "exclude",
       surfaceSwitching: "exclude",
       monitorTypeSurfaces: "include",
     }),
 };
+const callCaptureHandle = "nuschl-call";
+export const canShareAudio = (video) => video?.getSettings().displaySurface === "browser" &&
+  typeof video.getCaptureHandle === "function" && video.getCaptureHandle()?.handle !== callCaptureHandle;
 const labels = { camera: ["Start camera", "Stop camera"], screen: ["Share screen", "Stop sharing"] };
 const failures = {
   camera: { NotAllowedError: "Camera blocked", NotFoundError: "No camera found" },
@@ -48,6 +53,17 @@ export class Controls {
     this.media = document.defaultView.navigator.mediaDevices;
     const $ = (id) => document.getElementById(id);
     this.status = $("notice");
+    this.audio = $("screen-audio");
+    if (typeof document.defaultView.MediaStreamTrack?.prototype.getCaptureHandle === "function") {
+      try {
+        this.media.setCaptureHandleConfig({
+          handle: callCaptureHandle, permittedOrigins: [document.defaultView.location.origin],
+        });
+        this.audio.parentElement.hidden = false;
+      } catch {
+        // Browsers with video capture alone still share screens normally.
+      }
+    }
     this.sources = {};
     for (const kind of ["camera", "screen"]) {
       const button = $(kind);
@@ -66,14 +82,39 @@ export class Controls {
     this.busy.add(kind);
     this.notice = "";
     this.render();
+    const wantsAudio = kind === "screen" && !this.audio.parentElement.hidden && this.audio.checked;
     try {
-      const [track] = (await capture[kind](this.media)).getVideoTracks();
+      const media = await capture[kind](this.media, wantsAudio);
+      const [track] = media.getVideoTracks();
+      const [audio, ...extra] = media.getAudioTracks();
+      const shareAudio = wantsAudio && canShareAudio(track) && audio;
+      for (const unwanted of extra) unwanted.stop();
+      if (!shareAudio) audio?.stop();
+      if (!track) throw new Error("no video in capture");
       if (kind === "screen") track.contentHint = "detail";
-      await this.call.publish(kind, track, this.sources[kind].quality.value);
+      if (shareAudio) {
+        track.addEventListener("capturehandlechange", () => {
+          if (canShareAudio(track)) return;
+          audio.stop();
+          if (this.call.sources.get("audio")?.track === audio) {
+            this.call.unpublish("audio").catch(() => this.call.end("media"));
+          }
+        });
+        track.addEventListener("ended", () => audio.stop(), { once: true });
+      }
+      try {
+        await this.call.publish(kind, track, this.sources[kind].quality.value);
+        if (shareAudio) await this.call.publish("audio", audio);
+      } catch (error) {
+        audio?.stop();
+        throw error;
+      }
+      if (wantsAudio && !this.call.sources.has("audio")) this.notice = "Tab audio unavailable for this share";
     } catch (error) {
       // A cancelled screen picker is the user's choice and needs no notice.
       if (kind === "camera" || error.name !== "NotAllowedError") {
-        this.notice = failures[kind][error.name] ?? (kind === "camera" ? "Camera unavailable" : "Screen sharing unavailable");
+        this.notice = failures[kind][error.name] ?? (kind === "camera" ? "Camera unavailable" :
+          this.call.sources.has("screen") ? "Tab audio unavailable for this share" : "Screen sharing unavailable");
       }
     } finally {
       this.busy.delete(kind);
@@ -90,8 +131,12 @@ export class Controls {
       button.disabled = Boolean(call.ended) || this.busy.has(kind) || (!on && !call.canPublish);
     }
     const monitor = call.sources.get("screen")?.track.getSettings().displaySurface === "monitor";
+    this.audio.disabled = Boolean(call.ended) || this.busy.has("screen") || call.sources.has("screen");
     const unsupported = call.codec && !call.canPublish ? `Can't send ${call.codec.toUpperCase()}` : "";
-    this.status.textContent = monitor ? "Sharing your whole screen" : this.notice || unsupported;
+    this.status.textContent = [
+      monitor && "Sharing your whole screen",
+      call.sources.has("audio") ? "Sharing tab audio" : this.notice || unsupported,
+    ].filter(Boolean).join(" · ");
     this.status.hidden = !this.status.textContent;
     this.status.classList.toggle("warning", monitor);
   }
