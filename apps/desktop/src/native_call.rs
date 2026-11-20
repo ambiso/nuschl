@@ -9,6 +9,7 @@ mod viewer;
 
 use crate::{
     dialogs::{Tone, icon_button, styled_button},
+    images::VideoImage,
     layout,
     menus::{MenuAnchor, MenuTarget},
     services::ServiceEvent,
@@ -264,7 +265,7 @@ impl Latest {
     }
 }
 
-type Picture = (Stream, Option<Arc<RenderImage>>, bool);
+type Picture = (Stream, Option<VideoImage>, bool);
 
 struct Surface {
     status: String,
@@ -431,7 +432,12 @@ impl Surface {
 impl Render for Surface {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         crate::images::collect(window);
-        let count = self.pictures.iter().flatten().count();
+        let mut pictures = self.pictures.each_mut().map(|picture| {
+            picture.as_mut().map(|(stream, image, failed)| {
+                (*stream, image.as_mut().map(VideoImage::for_render), *failed)
+            })
+        });
+        let count = pictures.iter().flatten().count();
         let gallery = count > 1;
         div()
             .flex()
@@ -450,26 +456,26 @@ impl Render for Surface {
                         .child(gpui_kit::text!(self.status.clone())),
                 )
             })
-            .children(self.pictures[..count].chunks(2).map(|row| {
+            .children(pictures[..count].chunks_mut(2).map(|row| {
                 div()
                     .flex()
                     .flex_1()
                     .min_w_0()
                     .min_h_0()
                     .when(gallery, |row| row.gap_1())
-                    .children(row.iter().flatten().map(|(stream, image, failed)| {
-                        self.tile(*stream, image.clone(), *failed, gallery, window)
+                    .children(row.iter_mut().flatten().map(|(stream, image, failed)| {
+                        self.tile(*stream, image.take(), *failed, gallery, window)
                     }))
             }))
     }
 }
 
-fn render_frame(frame: DecodedFrame) -> Option<Arc<RenderImage>> {
+fn render_frame(frame: DecodedFrame) -> Option<VideoImage> {
     let (width, height) = (u32::from(frame.width), u32::from(frame.height));
     let image = image::RgbaImage::from_raw(width, height, frame.bgra)?;
-    Some(crate::images::track(Arc::new(RenderImage::new(vec![
-        image::Frame::new(image),
-    ]))))
+    Some(VideoImage::new(RenderImage::new(vec![image::Frame::new(
+        image,
+    )])))
 }
 
 impl Desktop {

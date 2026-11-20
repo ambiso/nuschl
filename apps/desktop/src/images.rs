@@ -15,6 +15,30 @@ pub fn track(image: Arc<RenderImage>) -> Arc<RenderImage> {
     image
 }
 
+/// Keep a replacement video frame local until its view renders it.
+pub struct VideoImage {
+    image: Arc<RenderImage>,
+    tracked: bool,
+}
+
+impl VideoImage {
+    pub fn new(image: RenderImage) -> Self {
+        Self {
+            image: Arc::new(image),
+            tracked: false,
+        }
+    }
+
+    pub fn for_render(&mut self) -> Arc<RenderImage> {
+        if self.tracked {
+            self.image.clone()
+        } else {
+            self.tracked = true;
+            track(self.image.clone())
+        }
+    }
+}
+
 /// Release the atlas space of images no message, avatar or viewer uses any more.
 pub fn collect(window: &mut Window) {
     TRACKED.with_borrow_mut(|tracked| {
@@ -26,4 +50,28 @@ pub fn collect(window: &mut Window) {
             used
         })
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RenderImage, TRACKED, VideoImage};
+    use std::sync::Arc;
+
+    #[test]
+    fn video_images_enter_the_tracker_once_when_rendered() {
+        let image = VideoImage::new(RenderImage::new(Vec::new()));
+        let skipped = Arc::downgrade(&image.image);
+        drop(image);
+        assert_eq!(skipped.strong_count(), 0);
+
+        let mut image = VideoImage::new(RenderImage::new(Vec::new()));
+        let rendered = Arc::downgrade(&image.image);
+        drop(image.for_render());
+        drop(image.for_render());
+        drop(image);
+        assert_eq!(rendered.strong_count(), 1);
+
+        TRACKED.with_borrow_mut(|tracked| tracked.clear());
+        assert_eq!(rendered.strong_count(), 0);
+    }
 }
