@@ -58,8 +58,7 @@ impl QualityRate {
         self.debt <= rate * VIDEO_BURST.as_secs_f64()
     }
 
-    fn fall_back(&mut self, encoder: &gst::Element, bitrate: u32, oversized: bool) {
-        encoder.set_property_from_value("rate-control", &self.fallback);
+    fn fall_back(&mut self, bitrate: u32, oversized: bool) {
         // A higher budget can absorb the measured burst. Require a material
         // increase to avoid switching in response to small estimate changes.
         self.retry_at = Some(if oversized {
@@ -116,7 +115,7 @@ pub fn prepare(
             "{tee}queue name=encode_queue {queue} ! ",
             "vapostproc name=scale ! capsfilter name=limit ",
             "caps=\"video/x-raw(memory:VAMemory),format=NV12,width=[16,{width}],height=[16,{height}]\" ! ",
-            "vaav1enc name=encoder bitrate={bitrate} target-percentage=100 hierarchical-level=1 ",
+            "valve name=encoder_gate ! vaav1enc name=encoder bitrate={bitrate} target-percentage=100 hierarchical-level=1 ",
             "ref-frames=1 key-int-max=60 ! ",
             "av1parse ! video/x-av1,stream-format=obu-stream,alignment=tu ! ",
             "appsink name=encoded max-buffers=1 sync=false{preview_path}",
@@ -506,7 +505,7 @@ fn write_frames(
         if let Some(rate) = &mut quality
             && rate.retry_at.is_some_and(|retry| limits.bitrate >= retry)
         {
-            rate.enable(encoder);
+            restart_encoder(pipeline, sink, encoder, || rate.enable(encoder))?;
             waiting_for_key = true;
             requested_at = None;
         }
@@ -586,7 +585,10 @@ fn write_frames(
             && rate.retry_at.is_none()
             && (oversized || !rate.admit(size, settings.bitrate, Instant::now()))
         {
-            rate.fall_back(encoder, settings.bitrate, oversized);
+            rate.fall_back(settings.bitrate, oversized);
+            restart_encoder(pipeline, sink, encoder, || {
+                encoder.set_property_from_value("rate-control", &rate.fallback);
+            })?;
             waiting_for_key = true;
             requested_at = None;
             continue;
@@ -616,6 +618,26 @@ fn write_frames(
             bytes.as_slice(),
         )?;
     }
+}
+
+fn restart_encoder(
+    pipeline: &gst::Pipeline,
+    sink: &AppSink,
+    encoder: &gst::Element,
+    configure: impl FnOnce(),
+) -> Result<(), Failure> {
+    // The valve keeps the authorized capture and preview running while READY
+    // releases the encoder's VA context.
+    let gate = pipeline
+        .by_name("encoder_gate")
+        .ok_or("missing encoder gate")?;
+    gate.set_property("drop", true);
+    encoder.set_state(gst::State::Ready)?;
+    let _ = sink.try_pull_sample(gst::ClockTime::ZERO);
+    configure();
+    encoder.sync_state_with_parent()?;
+    gate.set_property("drop", false);
+    Ok(())
 }
 
 fn force_keyframe(encoder: &gst::Element) -> Result<(), Failure> {
