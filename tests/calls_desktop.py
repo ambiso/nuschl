@@ -113,6 +113,8 @@ class CallTest(VoiceTest):
 
     def select_quality(self, app, current, selected, *, above):
         trigger = self.control(app, f"Quality · {current}")
+        chat = self.timeline(app)
+        chat_bounds = chat.extents()
         _, trigger_y, _, trigger_height = trigger.extents()
         trigger.press()
         menu = eventually(lambda: self.find(app, "menu", "Video quality"),
@@ -123,11 +125,13 @@ class CallTest(VoiceTest):
             assert menu_y + menu_height <= trigger_y, f"quality menu should open above: {geometry}"
         else:
             assert menu_y >= trigger_y + trigger_height, f"quality menu should fit below: {geometry}"
+        assert chat.extents() == chat_bounds, "opening the quality menu moved the chat"
         eventually(lambda: self.find(menu, AT_SPI_RADIO_MENU_ITEM, selected),
                    f"quality radio menu item missing: {selected}").press()
         self.control(app, f"Quality · {selected}")
         eventually(lambda: not self.find(app, "menu", "Video quality"),
                    "video quality dropdown did not close")
+        assert chat.extents() == chat_bounds, "selecting a quality moved the chat"
 
     def toggle_quality(self, app):
         def closed():
@@ -135,10 +139,14 @@ class CallTest(VoiceTest):
             return ("push button", "Quality · Auto") in names and ("menu", "Video quality") not in names
 
         trigger = self.control(app, "Quality · Auto")
+        chat = self.timeline(app)
+        chat_bounds = chat.extents()
         self.click(trigger)
         eventually(lambda: self.find(app, "menu", "Video quality"), "video quality dropdown did not open", timeout=5)
+        assert chat.extents() == chat_bounds, "opening the quality menu moved the chat with stats hidden"
         self.click(trigger)
         eventually(closed, "video quality dropdown did not close on a second click", timeout=5)
+        assert chat.extents() == chat_bounds, "closing the quality menu moved the chat"
 
     def video_stats(self, app, show):
         self.press(app, "Video options")
@@ -410,12 +418,9 @@ class CallTest(VoiceTest):
             self.press(andi, "Start camera")
             self.inline(andi)
             self.control(andi, "Open in browser", shown=False)
-            chat = self.find(andi, "list", "Messages in #Lobby")
-            chat_bounds = chat.extents()
             self.toggle_quality(andi)
             self.video_stats(andi, show=True)
             self.select_quality(andi, "Auto", "720p30", above=True)
-            assert chat.extents() == chat_bounds, "quality choices changed the chat layout"
             self.video_stats(andi, show=False)
             height = self.resize_desktop(andi_pid, 520)
             settings = self.root / "Andi" / "config/settings.json"
