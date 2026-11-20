@@ -491,6 +491,14 @@ impl Platform for BrowserPlatform {
             Request::RequestPermissions(channel) => {
                 connection.session.borrow_mut().request_permissions(channel)
             }
+            Request::PluginData {
+                receivers, payload, ..
+            } => {
+                connection
+                    .session
+                    .borrow_mut()
+                    .send_call_card(receivers, payload)?;
+            }
             _ => return Err(NOT_YET.into()),
         }
         let (shared, generation) = (self.0.clone(), connection.generation);
@@ -1062,6 +1070,31 @@ impl WebClient {
             nuschl_client::SendError::TooLong => "Message exceeds the 256 KiB client limit.".into(),
             nuschl_client::SendError::Refused(reason) => reason,
         })
+    }
+
+    /// Publish the link to the selected conversation after the stream host admits the room.
+    pub fn start_video_call(&mut self, invitation: String) -> Result<(), String> {
+        if !snapshot::guest_invitation(&invitation) {
+            return Err("Invalid call invitation.".into());
+        }
+        let (index, channel) = self
+            .client
+            .selected_indices()
+            .ok_or("Choose a conversation.")?;
+        let target = self.client.servers[index].channels[channel].target.clone();
+        self.client.start_call(index, target, invitation)?;
+        self.client.announce_own_call();
+        Ok(())
+    }
+
+    pub fn end_video_call(&mut self, invitation: String) {
+        if self
+            .client
+            .own_call()
+            .is_some_and(|call| call.link == invitation)
+        {
+            self.client.end_call();
+        }
     }
 
     pub fn older(&mut self) -> Result<(), String> {

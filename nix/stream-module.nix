@@ -219,6 +219,9 @@ in
             "= /sfu/lease" = {
               proxyPass = "http://unix:${socket}:";
               extraConfig = ''
+                ${headers "()"}
+                # The host key authorizes a lease. The browser receives only its HTTP status.
+                add_header Access-Control-Allow-Origin "*" always;
                 proxy_set_header X-Real-IP $remote_addr;
                 client_max_body_size 1k;
               '';

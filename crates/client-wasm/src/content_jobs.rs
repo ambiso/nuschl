@@ -932,6 +932,8 @@ mod tests {
             loading: false,
             has_older: false,
             sending: false,
+            hosted_video_call: None,
+            video_calls: Vec::new(),
             messages: servers[0].channels[0]
                 .timeline
                 .messages
@@ -946,6 +948,7 @@ mod tests {
                     at_ms: message.observed_at_ms,
                     outgoing: message.outgoing,
                     status: message.status.label(),
+                    call: None,
                     document: message.document.clone(),
                 })
                 .collect(),

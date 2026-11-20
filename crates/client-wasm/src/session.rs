@@ -17,6 +17,7 @@ use nuschl_core::{
 };
 use nuschl_protocol::{
     control as proto, decode_control, encode_control, kind,
+    plugin::{Payload, PluginData},
     tunnel::{self, CloseReason, Frame},
 };
 use prost::Message as _;
@@ -561,6 +562,32 @@ impl Session {
         let frame = nuschl_protocol::encode_tunnel(&bytes);
         self.send_frame(&frame)?;
         Ok(())
+    }
+
+    /// Send a call card to the presences named by the browser SDK.
+    pub fn send_call_card(
+        &mut self,
+        recipients: Vec<(u32, u64)>,
+        payload: Payload,
+    ) -> Result<(), String> {
+        if self.phase != Phase::LoggedIn
+            || payload.data_id() != nuschl_core::call::CARD_DATA_ID
+            || recipients.is_empty()
+            || recipients.len() > nuschl_client::client::MAX_PLUGIN_RECEIVERS
+            || recipients.iter().any(|(id, instance)| {
+                self.users
+                    .get(id)
+                    .is_none_or(|user| user.instance != *instance)
+            })
+        {
+            return Err("Call recipients changed.".into());
+        }
+        let message = PluginData {
+            sender: None,
+            receivers: recipients.into_iter().map(|(id, _)| id).collect(),
+            payload,
+        };
+        self.send_control(kind::PLUGIN_DATA_TRANSMISSION, &message.into_message())
     }
 
     /// Legacy text only. Modern/encrypted sends have no fallback here.
@@ -1119,6 +1146,27 @@ impl Session {
                     .push_back(Event::Server(ServerEvent::PermissionDenied(
                         "The server refused this action.".into(),
                     )));
+            }
+            kind::PLUGIN_DATA_TRANSMISSION if self.phase == Phase::LoggedIn => {
+                let Ok(data) =
+                    PluginData::decode(&payload, nuschl_client::client::MAX_PLUGIN_RECEIVERS)
+                else {
+                    return;
+                };
+                let Some(sender) = data.sender.and_then(|id| self.users.get(&id)) else {
+                    return;
+                };
+                if data.payload.data_id() == nuschl_core::call::CARD_DATA_ID {
+                    self.events.push_back(Event::Server(ServerEvent::PluginData(
+                        nuschl_client::client::ReceivedPluginData {
+                            sender: sender.session,
+                            sender_instance: sender.instance,
+                            sender_user_id: sender.user_id,
+                            sender_certificate_hash: None,
+                            payload: data.payload,
+                        },
+                    )));
+                }
             }
             kind::TEXT_MESSAGE => {
                 let Ok(message) = proto::TextMessage::decode(payload) else {
