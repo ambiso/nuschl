@@ -105,8 +105,7 @@ pub(super) fn controls(
                                 && let Some(call) = &this.native_call
                                 && !call.minimized
                                 && call.quality.send_if_modified(|selection| {
-                                    std::mem::replace(&mut selection.view, Some(purpose))
-                                        != Some(purpose)
+                                    selection.view.replace(purpose) != Some(purpose)
                                 })
                             {
                                 cx.notify();
