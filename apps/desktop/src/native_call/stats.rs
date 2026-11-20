@@ -349,6 +349,8 @@ mod tests {
             bitrate: 8_000_000,
         };
         let measured = Encoder {
+            requested: limits,
+            limit: "Sender upload",
             budget_bps: Some(122_000),
             target: limits,
             ceiling: Some(limits),
@@ -361,19 +363,25 @@ mod tests {
             true,
         )
         .collect::<Vec<_>>();
-        assert!(empty.iter().all(|(_, value)| value == "—"));
+        assert_eq!(empty[5], ("Active limit", "Unavailable".into()));
+        assert!(
+            empty
+                .iter()
+                .all(|(name, value)| *name == "Active limit" || value == "—")
+        );
         assert!(
             empty
                 .iter()
                 .map(|row| row.0)
                 .eq(populated.iter().map(|row| row.0))
         );
+        assert_eq!(populated[5], ("Active limit", "Sender upload".into()));
         assert_eq!(
-            populated[4],
+            populated[6],
             ("Estimated video budget", "122.0 kb/s".into())
         );
         assert_eq!(
-            populated[5],
+            populated[7],
             ("Encoder target", "1440p60 · 8.00 Mb/s".into())
         );
     }
