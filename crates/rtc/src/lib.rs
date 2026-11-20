@@ -840,12 +840,26 @@ impl Peer {
                     }
                     RtcEvent::EgressBitrateEstimate(estimate) => {
                         let rate = match estimate {
-                            str0m::bwe::BweKind::Twcc { estimate, .. }
-                            | str0m::bwe::BweKind::Remb { estimate, .. } => estimate,
+                            str0m::bwe::BweKind::Twcc {
+                                estimate,
+                                can_probe,
+                            } if can_probe || self.call_video_limit.is_none() => {
+                                let rate = estimate.as_u64();
+                                // str0m publishes its configured seed as soon as
+                                // the path supports probing. Report changes from it.
+                                if self.call_video_limit.is_some()
+                                    && self.bandwidth_bps == CALL_INITIAL_BITRATE
+                                    && rate == CALL_INITIAL_BITRATE
+                                {
+                                    continue;
+                                }
+                                rate
+                            }
+                            str0m::bwe::BweKind::Remb { estimate, .. } => estimate.as_u64(),
                             _ => continue,
                         };
-                        self.bandwidth_bps = rate.as_u64();
-                        return Ok(Output::Event(Event::BandwidthEstimate(rate.as_u64())));
+                        self.bandwidth_bps = rate;
+                        return Ok(Output::Event(Event::BandwidthEstimate(rate)));
                     }
                     RtcEvent::KeyframeRequest(request) => {
                         if self

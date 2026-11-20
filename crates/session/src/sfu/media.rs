@@ -412,7 +412,8 @@ async fn receive(leg: Option<&mut Leg>, bytes: &mut [u8]) -> std::io::Result<(us
 
 async fn wake(until: Option<Instant>) {
     match until {
-        Some(until) => sleep_until(until).await,
+        Some(until) if until > Instant::now() => sleep_until(until).await,
+        Some(_) => {}
         None => pending().await,
     }
 }

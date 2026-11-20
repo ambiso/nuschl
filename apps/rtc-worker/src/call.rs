@@ -365,8 +365,15 @@ impl Call {
             match leg.peer.poll().map_err(|_| ())? {
                 Output::WakeAt(at) => {
                     leg.wake = at;
+                    // str0m needs a fresh time sample after each paced packet.
+                    // Service due work before returning a millisecond deadline.
+                    let current = Instant::now();
+                    if at <= current {
+                        leg.peer.timeout(current).map_err(|_| ())?;
+                        continue;
+                    }
                     let after_millis = at
-                        .saturating_duration_since(now)
+                        .duration_since(current)
                         .as_nanos()
                         .div_ceil(1_000_000)
                         .min(60_000) as u64;
