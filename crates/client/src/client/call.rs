@@ -11,7 +11,10 @@
 //! the connection, on [`Client::end_call`] and when the caller's lease on the
 //! call host ends.
 use super::{Client, TextDestination};
-use crate::server::{ServerState, Status};
+use crate::{
+    server::{ServerState, Status},
+    timeline::Message,
+};
 use nuschl_core::{
     call::{CARD_DATA_ID, Card},
     model::TextTarget,
@@ -21,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::plugin::{MAX_PLUGIN_RECEIVERS, ReceivedPluginData};
 
-/// Received calls kept per server.
+/// Limit on active calls and on remembered endings, per server.
 pub const MAX_CALLS: usize = 64;
 
 /// A call someone announced: in a channel, or with us in the direct
@@ -35,7 +38,19 @@ pub struct Call {
     pub link: String,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct EndedCall {
+    target: TextTarget,
+    link: String,
+    /// An absent sender identifies our own invitation.
+    sender_instance: Option<u64>,
+}
+
 impl Call {
+    pub fn matches_author(&self, message: &Message) -> bool {
+        message.sender_instance == Some(self.sender_instance)
+    }
+
     fn live(&self, server: &ServerState) -> bool {
         server.users.get(&self.sender).is_some_and(|user| {
             user.instance == self.sender_instance
@@ -78,6 +93,44 @@ impl Client {
             .iter()
             .filter(|call| call.target == *target && call.live(server))
             .collect()
+    }
+
+    /// Whether this invitation's creator ended the call.
+    pub fn call_ended(
+        &self,
+        index: usize,
+        target: &TextTarget,
+        guest_link: &str,
+        message: &Message,
+    ) -> bool {
+        let Some(server) = self.servers.get(index) else {
+            return false;
+        };
+        server.ended_calls.iter().any(|call| {
+            call.target == *target
+                && call.link == guest_link
+                && match call.sender_instance {
+                    Some(sender) => message.sender_instance == Some(sender),
+                    None => message.ours(server.own_user_id()),
+                }
+        })
+    }
+
+    /// The call host confirmed that the room for this invitation closed.
+    pub fn end_received_call(
+        &mut self,
+        index: usize,
+        target: &TextTarget,
+        guest_link: &str,
+        sender: (u32, u64),
+    ) {
+        if let Some(server) = self.servers.get_mut(index) {
+            finish_received_call(server, |call| {
+                (call.sender, call.sender_instance) == sender
+                    && call.target == *target
+                    && call.link == guest_link
+            });
+        }
     }
 
     pub fn own_call(&self) -> Option<&OwnCall> {
@@ -157,6 +210,7 @@ impl Client {
         };
         let told: Vec<_> = call.told.into_iter().collect();
         if let Some(index) = self.current(&call.server, call.generation) {
+            remember_end(&mut self.servers[index], call.target, call.link, None);
             for receivers in told.chunks(MAX_PLUGIN_RECEIVERS) {
                 let _ = self.send_payload(index, receivers, payload(&Card::Ended));
             }
@@ -205,12 +259,12 @@ impl Client {
                 )
             }
             _ => {
-                self.own_call = None;
+                self.end_call();
                 return;
             }
         };
         if server.status != Status::Connected || server.mls || !server.has_mumble_voice() {
-            self.own_call = None;
+            self.end_call();
             return;
         }
         let card = payload(&card);
@@ -272,27 +326,53 @@ impl Client {
         else {
             return;
         };
-        let channel = sender.channel;
-        let sender = data.sender;
+        let (target, link) = match card {
+            Card::Active(link) => (TextTarget::Channel(sender.channel), link),
+            Card::Direct(link) => (TextTarget::Direct(data.sender), link),
+            Card::Ended => {
+                finish_received_call(server, |call| {
+                    call.sender == data.sender && call.sender_instance == data.sender_instance
+                });
+                return;
+            }
+        };
         let calls = std::mem::take(&mut server.calls);
         server.calls = calls
             .into_iter()
             .filter(|call| call.sender != data.sender && call.live(server))
             .collect();
-        let (target, link) = match card {
-            Card::Active(link) => (TextTarget::Channel(channel), link),
-            Card::Direct(link) => (TextTarget::Direct(sender), link),
-            Card::Ended => return,
-        };
         if server.calls.len() < MAX_CALLS {
             server.calls.push(Call {
-                sender,
+                sender: data.sender,
                 sender_instance: data.sender_instance,
                 target,
                 link,
             });
         }
     }
+}
+
+fn finish_received_call(server: &mut ServerState, matches: impl FnMut(&Call) -> bool) {
+    if let Some(active) = server.calls.iter().position(matches) {
+        let call = server.calls.remove(active);
+        remember_end(server, call.target, call.link, Some(call.sender_instance));
+    }
+}
+
+fn remember_end(
+    server: &mut ServerState,
+    target: TextTarget,
+    link: String,
+    sender_instance: Option<u64>,
+) {
+    if server.ended_calls.len() == MAX_CALLS {
+        server.ended_calls.pop_front();
+    }
+    server.ended_calls.push_back(EndedCall {
+        target,
+        link,
+        sender_instance,
+    });
 }
 
 fn payload(card: &Card) -> Payload {
