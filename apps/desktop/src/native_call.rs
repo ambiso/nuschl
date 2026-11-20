@@ -10,7 +10,7 @@ use crate::{
     menus::MenuTarget,
     services::ServiceEvent,
     state::Desktop,
-    theme::{BORDER, MAIN, TEXT, TEXT_MUTED, color},
+    theme::{BACKDROP, BORDER, DANGER, DANGER_TEXT, MAIN, SIDEBAR, TEXT, TEXT_MUTED, color},
 };
 use gpui_kit::{prelude::*, *};
 use nuschl_client::native::sfu::{
@@ -272,7 +272,8 @@ impl Render for Surface {
                         .min_h_0()
                         .flex_1()
                         .overflow_hidden()
-                        .bg(rgb(0x08090c))
+                        .rounded(px(8.))
+                        .bg(color(BACKDROP))
                         .child(
                             img(image)
                                 .absolute()
@@ -627,6 +628,30 @@ pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
         .or_else(|| stats.as_ref().map(|stats| stats.kind));
     let quality = call.quality.borrow().quality;
     let actions = layout::actions()
+        .id("native-call-toolbar")
+        .role(Role::Toolbar)
+        .aria_label("Video call controls")
+        .items_center()
+        .justify_center()
+        .rounded(px(8.))
+        .bg(color(SIDEBAR))
+        .px_2()
+        .py_1()
+        .when_some(kind, |actions, kind| {
+            actions.child(styled_button(
+                "native-call-quality",
+                format!("Quality · {}", quality_label(kind, quality)),
+                Tone::Secondary,
+                |this, _, cx| {
+                    if let Some(call) = &mut this.native_call {
+                        call.quality_open = !call.quality_open;
+                        call.stats_open = false;
+                        cx.notify();
+                    }
+                },
+                cx,
+            ))
+        })
         .child(icon_button(
             "native-call-expand",
             if expanded {
@@ -644,28 +669,15 @@ pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
             move |this, window, cx| this.set_call_expanded(!expanded, window, cx),
             cx,
         ))
-        .child(styled_button(
+        .child(icon_button(
             "native-call-minimize",
+            "window-minimize",
             "Minimize call",
-            Tone::Secondary,
+            TEXT,
+            None,
             |this, window, cx| this.minimize_native_call(window, cx),
             cx,
         ))
-        .when_some(kind, |actions, kind| {
-            actions.child(styled_button(
-                "native-call-quality",
-                format!("Quality · {}", quality_label(kind, quality)),
-                Tone::Secondary,
-                |this, _, cx| {
-                    if let Some(call) = &mut this.native_call {
-                        call.quality_open = !call.quality_open;
-                        call.stats_open = false;
-                        cx.notify();
-                    }
-                },
-                cx,
-            ))
-        })
         .child(icon_button(
             "native-call-options",
             "more",
@@ -703,9 +715,9 @@ pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
             .border_b_1()
             .border_color(color(BORDER))
             .bg(color(MAIN))
-            .child(actions)
             .when(call.monitor, |panel| {
-                panel.child(div().text_sm().child(
+                panel.child(layout::text(
+                    "native-call-monitor-warning",
                     "Anyone watching can see the Nuschl window while it’s on the shared monitor.",
                 ))
             })
@@ -720,6 +732,7 @@ pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
                 ))
             })
             .child(call.surface.clone())
+            .child(actions)
             .into_any_element(),
     )
 }
@@ -856,14 +869,16 @@ fn video_kind(source: Source) -> VideoKind {
 }
 
 fn stop_button(call: &Active, cx: &mut Context<Desktop>) -> impl IntoElement {
-    styled_button(
+    icon_button(
         "native-call-stop",
+        "hang-up",
         if call.owner {
             "End call"
         } else {
             "Leave video"
         },
-        Tone::Danger,
+        DANGER_TEXT,
+        Some(DANGER),
         |this, _, cx| {
             this.stop_native();
             cx.notify();
