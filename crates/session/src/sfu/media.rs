@@ -714,6 +714,7 @@ impl FrameGate {
     fn arrived(&mut self, key_frame: bool) {
         if key_frame {
             self.awaiting_key = false;
+            self.requested = None;
         }
     }
 }
@@ -1548,4 +1549,25 @@ async fn drain(
     }
     leg.wake = Some(Instant::now());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_accepted_keyframe_starts_a_fresh_recovery_window() {
+        let mut gate = FrameGate::new();
+        let request = Instant::now();
+        gate.requested = Some(request);
+
+        gate.arrived(false);
+        assert!(gate.awaiting_key);
+        assert_eq!(gate.requested, Some(request));
+
+        gate.arrived(true);
+        assert!(!gate.awaiting_key);
+        assert_eq!(gate.requested, None);
+        assert!(gate.request());
+    }
 }

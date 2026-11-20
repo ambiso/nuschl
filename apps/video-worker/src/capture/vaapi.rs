@@ -68,7 +68,7 @@ pub fn prepare(
             "{tee}queue name=encode_queue {queue} ! ",
             "vapostproc name=scale ! capsfilter name=limit ",
             "caps=\"video/x-raw(memory:VAMemory),format=NV12,width=[16,{width}],height=[16,{height}]\" ! ",
-            "vaav1enc name=encoder bitrate={bitrate} rate-control=cbr hierarchical-level=1 ",
+            "vaav1enc name=encoder bitrate={bitrate} target-percentage=100 hierarchical-level=1 ",
             "ref-frames=1 key-int-max=60 ! ",
             "av1parse ! video/x-av1,stream-format=obu-stream,alignment=tu ! ",
             "appsink name=encoded max-buffers=1 sync=false{preview_path}",
@@ -81,10 +81,26 @@ pub fn prepare(
         bitrate = bitrate / 1000,
         preview_path = preview_path,
     );
-    let pipeline = gst::parse::launch(&description)?;
-    pipeline
-        .downcast()
-        .map_err(|_| "invalid video pipeline".into())
+    let pipeline = gst::parse::launch(&description)?
+        .downcast::<gst::Pipeline>()
+        .map_err(|_| "invalid video pipeline")?;
+    let encoder = pipeline.by_name("encoder").ok_or("missing video encoder")?;
+    let modes: &[&str] = match source {
+        Source::Screen => &["vbr", "cbr"],
+        Source::Camera => &["cbr"],
+    };
+    let rates = encoder
+        .find_property("rate-control")
+        .and_then(|property| gst::glib::EnumClass::with_type(property.value_type()))
+        .ok_or("missing video rate control")?;
+    let rate = modes
+        .iter()
+        .find_map(|mode| rates.to_value_by_nick(mode))
+        .ok_or("the render node has no supported video rate control")?;
+    // Variable rate control lets sparse screen updates stay small. The target
+    // percentage makes the negotiated bitrate the codec's peak rate budget.
+    encoder.set_property_from_value("rate-control", &rate);
+    Ok(pipeline)
 }
 
 pub fn run(
