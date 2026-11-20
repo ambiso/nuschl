@@ -667,12 +667,10 @@
       </div>
     </header>
     {#if showSearch}<form class="search-bar" onsubmit={(event) => event.preventDefault()}><label for="search-messages">Search this loaded history</label><input id="search-messages" bind:this={searchElement} bind:value={search} type="search" placeholder="Message text or person…" onkeydown={(event) => { if (event.key === "Escape") { showSearch = false; search = ""; } }}><small>{displayedMessages.length} results</small><button class="icon-button" aria-label="Close search" onclick={() => { showSearch = false; search = ""; }}>{@render icon("close")}</button></form>{/if}
-    {#if video}
-      {#key video.call}
-        <VideoCallPanel call={video.call} owner={video.creating} url={video.link} minimized={videoMinimized}
-          ontoggle={() => videoMinimized = !videoMinimized} onleave={closeVideo}/>
-      {/key}
-    {/if}
+    {#each video ? [video] : [] as active (active.call)}
+      <VideoCallPanel call={active.call} owner={active.creating} url={active.link} minimized={videoMinimized}
+        ontoggle={() => videoMinimized = !videoMinimized} onleave={closeVideo}/>
+    {/each}
     {#if clientUnavailable}<div class="error" role="alert"><span>{error || "The client is unavailable. Reload to reconnect."}</span><button class="control-button" onclick={() => location.reload()}>Reload client</button></div>{:else if error}<div class="error" role="alert"><span>{error}</span><button class="icon-button" aria-label="Dismiss error" onclick={() => setError("")}>{@render icon("close")}</button></div>{/if}
     {#if welcome}
       {#key welcome.token}<section class="server-welcome" aria-label="Server welcome">
