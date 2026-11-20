@@ -409,21 +409,34 @@ try:
     for driver in [chrome, fox]:
         wait(driver, f"return Boolean(document.querySelector('{selector}')?.srcObject)", "shared audio track")
         assert driver.execute_script(f"return document.querySelector('{selector}').paused"), "audio autoplayed"
-        # Decode a short in-memory recording of the synthetic remote stream. This
-        # consumes audio independently of the VM's playback devices.
+        wait(driver, f"""const track = document.querySelector('{selector}')?.srcObject?.getAudioTracks()[0];
+                         return track?.readyState === 'live' && !track.muted""", "shared audio receiving")
+        # Wait for actual recorder output. A negotiated track can precede its
+        # first packets, and under VM load the recorder can begin late.
         tone = driver.execute_async_script("""
           const [selector, done] = arguments;
           const stream = document.querySelector(selector).srcObject;
           const recorder = new MediaRecorder(stream);
           const chunks = [];
-          recorder.ondataavailable = event => chunks.push(event.data);
-          recorder.onerror = event => done({error: String(event.error)});
+          const stop = () => { if (recorder.state === 'recording') recorder.stop(); };
+          const deadline = setTimeout(stop, 20000);
+          recorder.ondataavailable = ({ data }) => {
+            if (data.size) chunks.push(data);
+            if (chunks.length >= 2) stop();
+          };
+          recorder.onerror = event => {
+            clearTimeout(deadline);
+            done({error: String(event.error)});
+          };
           recorder.onstop = async () => {
+            clearTimeout(deadline);
+            const recording = new Blob(chunks, {type: recorder.mimeType});
             try {
-              const data = await new Blob(chunks, {type: recorder.mimeType}).arrayBuffer();
+              const data = await recording.arrayBuffer();
               const context = new OfflineAudioContext(1, 48000, 48000);
               const decoded = await context.decodeAudioData(data);
               const samples = decoded.getChannelData(0);
+              if (samples.length < decoded.sampleRate) throw new Error('recorded less than a second of audio');
               const middle = samples.subarray(samples.length / 4, 3 * samples.length / 4);
               let power = 0;
               let crossings = 0;
@@ -438,13 +451,12 @@ try:
               }
               done({hertz: crossings * decoded.sampleRate / middle.length, rms: Math.sqrt(power / middle.length)});
             } catch (error) {
-              done({error: String(error)});
+              done({error: String(error), bytes: recording.size, type: recording.type, chunks: chunks.length});
             }
           };
-          recorder.start();
-          setTimeout(() => recorder.stop(), 2000);
+          recorder.start(1000);
         """, selector)
-        assert "error" not in tone and abs(tone["hertz"] - 660) < 25 and tone["rms"] > 0.2, tone
+        assert "error" not in tone and abs(tone["hertz"] - 660) < 25 and tone["rms"] > 0.2, (driver.name, tone)
         print(f"{driver.name}: received the encrypted tab audio tone {tone}", flush=True)
 
     user.save_screenshot(str(OUT / "publishing.png"))
