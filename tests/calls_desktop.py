@@ -279,7 +279,7 @@ class CallTest(VoiceTest):
             left, top = json.loads(self.shell.eval(
                 "const bounds = global.display.focus_window.get_buffer_rect(); JSON.stringify([bounds.x, bounds.y])"))
             inline = pixels("inline-status", width, height, left + x, top + y)
-            assert black in inline, "the inline video backdrop was not black"
+            assert any(inline[i:i + 3] == black for i in range(0, len(inline), 3)), "the inline video backdrop was not black"
             assert any(min(inline[i:i + 3]) >= 192 for i in range(0, len(inline), 3)), "the light-theme status was not legible"
 
         self.press(app, "Full screen")
