@@ -1,19 +1,15 @@
 // SPDX-License-Identifier: EUPL-1.2
-//! One ephemeral call and its two-peer signaling exchange. The session moves
+//! One ephemeral call and its independent key exchanges. The session moves
 //! opaque messages between workers. This worker keeps the cryptographic state.
 
-use nuschl_ipc::crypto::call::{Action, Create, Outcome, Reply, Request};
+use nuschl_ipc::crypto::call::{
+    Action, Create, KeyMessage, MAX_MEDIA_PEERS, Outcome, Reply, Request,
+};
 use nuschl_ipc::crypto::epoch::{Direction, Update};
-use nuschl_stream::{
-    EpochKey, Link, Publisher, PublisherEvent, Subscriber, SubscriberEvent, SubscriberId,
-};
-use std::io::Write;
+use nuschl_stream::{EpochKey, Link, Publishing, Subscriber, SubscriberEvent};
+use std::{collections::BTreeMap, io::Write};
 #[cfg(target_os = "linux")]
-use std::{
-    net::Shutdown,
-    os::{fd::OwnedFd, unix::net::UnixStream},
-    time::Duration,
-};
+use std::{net::Shutdown, os::fd::OwnedFd, time::Duration};
 use zeroize::Zeroize as _;
 
 #[derive(Default)]
@@ -27,22 +23,9 @@ pub(crate) struct Signaling {
 struct Call {
     link: Link,
     relay_only: bool,
-    pair: Option<Pair>,
+    publishing: Option<(u64, Publishing)>,
+    subscribers: BTreeMap<u64, Subscriber>,
     media: Option<Box<dyn Write + Send>>,
-}
-
-struct Pair {
-    peer: u64,
-    keys: Keys,
-}
-
-enum Keys {
-    Publisher {
-        exchange: Publisher,
-        subscriber: Option<SubscriberId>,
-        pending_media: Option<Update>,
-    },
-    Subscriber(Subscriber),
 }
 
 impl Signaling {
@@ -73,7 +56,8 @@ impl Signaling {
             self.call = Some(Call {
                 link,
                 relay_only,
-                pair: None,
+                publishing: None,
+                subscribers: BTreeMap::new(),
                 media,
             });
             outcome
@@ -102,7 +86,7 @@ impl Signaling {
             return Err("stale call media generation".into());
         }
         let call = self.call.as_mut().ok_or("no open call")?;
-        if call.media.is_some() || call.pair.is_some() {
+        if call.media.is_some() || call.publishing.is_some() || !call.subscribers.is_empty() {
             return Err("call media endpoint is already committed".into());
         }
         let media = nuschl_ipc::crypto::descriptor::connected_stream(fd)
@@ -136,50 +120,91 @@ impl Call {
                     create,
                 })
             }
-            Action::Pair { peer, publisher } => {
-                if self.pair.is_some() {
-                    return Err("call peer already paired".into());
+            Action::Publish { peer } => {
+                if self.publishing.is_some() || self.subscribers.contains_key(&peer) {
+                    return Err("invalid call publisher".into());
                 }
-                let keys = self.link.keys();
-                let (keys, reply) = if publisher {
-                    let exchange = Publisher::new(keys);
-                    (
-                        Keys::Publisher {
-                            exchange,
-                            subscriber: None,
-                            pending_media: None,
-                        },
-                        Outcome::Done,
-                    )
-                } else {
-                    let (subscriber, data) =
-                        Subscriber::join(keys, now, &mut getrandom::SysRng).map_err(text)?;
-                    (
-                        Keys::Subscriber(subscriber),
-                        Outcome::Send {
-                            peer,
-                            data,
-                            ready: false,
-                        },
-                    )
+                let (keys, key) = Publishing::start(
+                    self.link.keys(),
+                    MAX_MEDIA_PEERS,
+                    now,
+                    &mut getrandom::SysRng,
+                )
+                .map_err(text)?;
+                self.publishing = Some((peer, keys));
+                self.deliver(Some(media_update(generation, peer, Direction::Send, key)))?;
+                Ok(Outcome::Done)
+            }
+            Action::Subscribe { peer } => {
+                if self.subscribers.contains_key(&peer) {
+                    return Ok(Outcome::Done);
+                }
+                if self.subscribers.len() >= MAX_MEDIA_PEERS
+                    || self.publishing.as_ref().is_some_and(|(id, _)| *id == peer)
+                {
+                    return Err("invalid call subscription".into());
+                }
+                let (subscriber, data) =
+                    Subscriber::join(self.link.keys(), now, &mut getrandom::SysRng)
+                        .map_err(text)?;
+                self.subscribers.insert(peer, subscriber);
+                Ok(Outcome::Send {
+                    peer,
+                    data,
+                    ready: false,
+                })
+            }
+            Action::Left { peer } => {
+                if let Some((_, publishing)) = &mut self.publishing {
+                    publishing.remove(peer);
+                }
+                if self.subscribers.remove(&peer).is_some() {
+                    self.deliver(Some(Update {
+                        generation,
+                        peer,
+                        direction: Direction::ForgetReceive,
+                        epoch: 0,
+                        key: [0; 32],
+                    }))?;
+                }
+                Ok(Outcome::Done)
+            }
+            Action::Tick => {
+                let Some((peer, publishing)) = &mut self.publishing else {
+                    return Ok(Outcome::Done);
                 };
-                self.pair = Some(Pair { peer, keys });
-                Ok(reply)
-            }
-            Action::Key { peer, data } => {
-                if nuschl_stream::direct_for_publisher(&data).is_some() {
-                    self.direct_allowed()?;
-                    let data = self.pair(peer)?.keys.open(&data)?;
-                    return Ok(Outcome::Signal { peer, data });
+                let delivery = publishing.tick(now, &mut getrandom::SysRng).map_err(text)?;
+                let sender = *peer;
+                self.deliver(
+                    delivery
+                        .key
+                        .map(|key| media_update(generation, sender, Direction::Send, key)),
+                )?;
+                if delivery.messages.is_empty() {
+                    Ok(Outcome::Done)
+                } else {
+                    Ok(Outcome::KeyBatch {
+                        messages: delivery
+                            .messages
+                            .into_iter()
+                            .map(|(peer, data)| KeyMessage { peer, data })
+                            .collect(),
+                    })
                 }
-                let pair = self.pair(peer)?;
-                let (reply, update) = pair.receive(generation, &data, now)?;
-                self.deliver(update)?;
-                Ok(reply)
             }
-            Action::Seal { peer, data } => {
+            Action::Key { peer, data } => self.receive(generation, peer, &data, now),
+            Action::Seal {
+                peer,
+                publisher,
+                data,
+            } => {
                 self.direct_allowed()?;
-                let data = self.pair(peer)?.keys.seal(&data)?;
+                let data = if publisher {
+                    self.publisher()?.seal(peer, &data)
+                } else {
+                    self.subscriber(peer)?.seal_direct(&data)
+                }
+                .map_err(text)?;
                 Ok(Outcome::Send {
                     peer,
                     data,
@@ -209,11 +234,69 @@ impl Call {
         }
     }
 
-    fn pair(&mut self, peer: u64) -> Result<&mut Pair, String> {
-        self.pair
+    fn publisher(&mut self) -> Result<&mut Publishing, String> {
+        self.publishing
             .as_mut()
-            .filter(|pair| pair.peer == peer)
-            .ok_or_else(|| "unknown call peer".into())
+            .map(|(_, keys)| keys)
+            .ok_or_else(|| "call has no local publisher".into())
+    }
+
+    fn subscriber(&mut self, peer: u64) -> Result<&mut Subscriber, String> {
+        self.subscribers
+            .get_mut(&peer)
+            .ok_or_else(|| "unknown call publisher".into())
+    }
+
+    fn receive(
+        &mut self,
+        generation: u64,
+        peer: u64,
+        data: &[u8],
+        now: u64,
+    ) -> Result<Outcome, String> {
+        if let Some(publisher) = nuschl_stream::direct_for_publisher(data) {
+            self.direct_allowed()?;
+            let data = if publisher {
+                self.publisher()?.open(peer, data)
+            } else {
+                self.subscriber(peer)?.open_direct(data)
+            }
+            .map_err(text)?;
+            return Ok(Outcome::Signal {
+                peer,
+                publisher,
+                data,
+            });
+        }
+        if nuschl_stream::for_publisher(data) {
+            return if self.publisher()?.receive(peer, data, now).map_err(text)? {
+                Ok(Outcome::Ready { peer })
+            } else {
+                Ok(Outcome::Done)
+            };
+        }
+        let (outcome, key) = match self
+            .subscriber(peer)?
+            .receive(data, now, &mut getrandom::SysRng)
+            .map_err(text)?
+        {
+            SubscriberEvent::Granted { ack, key } => (
+                Outcome::Send {
+                    peer,
+                    data: ack,
+                    ready: true,
+                },
+                key,
+            ),
+            SubscriberEvent::Rekeyed(key) => (Outcome::Done, key),
+        };
+        self.deliver(Some(media_update(
+            generation,
+            peer,
+            Direction::Receive,
+            key,
+        )))?;
+        Ok(outcome)
     }
 }
 
@@ -260,99 +343,6 @@ pub fn serve() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
-}
-
-impl Pair {
-    fn receive(
-        &mut self,
-        generation: u64,
-        data: &[u8],
-        now: u64,
-    ) -> Result<(Outcome, Option<Update>), String> {
-        let peer = self.peer;
-        match &mut self.keys {
-            Keys::Publisher {
-                exchange,
-                subscriber,
-                pending_media,
-            } => match exchange.receive(data, now).map_err(text)? {
-                PublisherEvent::Requested(id) => {
-                    if subscriber.is_some() {
-                        exchange.remove(&id);
-                        return Err("call peer already granted".into());
-                    }
-                    let rekey = match exchange.rekey(now, &mut getrandom::SysRng) {
-                        Ok(rekey) => rekey,
-                        Err(error) => {
-                            exchange.remove(&id);
-                            return Err(text(error));
-                        }
-                    };
-                    let update = media_update(generation, peer, Direction::Send, rekey.key);
-                    let [(_, data)] = rekey
-                        .messages
-                        .try_into()
-                        .map_err(|_| "missing call grant")?;
-                    *subscriber = Some(id);
-                    *pending_media = Some(update);
-                    Ok((
-                        Outcome::Send {
-                            peer,
-                            data,
-                            ready: false,
-                        },
-                        None,
-                    ))
-                }
-                PublisherEvent::Confirmed(_) => Ok((Outcome::Ready { peer }, pending_media.take())),
-            },
-            Keys::Subscriber(subscriber) => match subscriber
-                .receive(data, now, &mut getrandom::SysRng)
-                .map_err(text)?
-            {
-                SubscriberEvent::Granted { ack, key } => Ok((
-                    Outcome::Send {
-                        peer,
-                        data: ack,
-                        ready: true,
-                    },
-                    Some(media_update(generation, peer, Direction::Receive, key)),
-                )),
-                SubscriberEvent::Rekeyed(key) => Ok((
-                    Outcome::Done,
-                    Some(media_update(generation, peer, Direction::Receive, key)),
-                )),
-            },
-        }
-    }
-}
-
-impl Keys {
-    fn seal(&mut self, data: &[u8]) -> Result<Vec<u8>, String> {
-        match self {
-            Self::Publisher {
-                exchange,
-                subscriber: Some(id),
-                ..
-            } => exchange.seal_direct(id, data),
-            Self::Subscriber(subscriber) => subscriber.seal_direct(data),
-            _ => return Err("call peer is waiting for a grant".into()),
-        }
-        .map_err(text)
-    }
-
-    fn open(&mut self, data: &[u8]) -> Result<Vec<u8>, String> {
-        match self {
-            Self::Publisher {
-                exchange,
-                subscriber: Some(id),
-                ..
-            } => exchange.open_direct(id, data),
-            Self::Subscriber(subscriber) => subscriber.open_direct(data),
-            _ => return Err("call peer is waiting for a grant".into()),
-        }
-        .map_err(text)
-    }
 }
 
 fn media_update(generation: u64, peer: u64, direction: Direction, mut key: EpochKey) -> Update {

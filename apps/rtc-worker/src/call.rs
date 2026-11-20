@@ -2,7 +2,10 @@
 //! One call's transport state. The supervisor owns UDP and authenticates SDP.
 
 use nuschl_ipc::{
-    crypto::epoch::{self, Direction, Update},
+    crypto::{
+        call::MAX_MEDIA_PEERS,
+        epoch::{self, Direction, Update},
+    },
     rtc::{
         self as wire, Codec, Command, Description, Event, LegRole, Packet, Purpose, Reply, Track,
     },
@@ -137,12 +140,16 @@ struct Leg {
     role: LegRole,
     wake: Instant,
     local: SocketAddr,
-    from: Vec<Track>,
-    discontinuous: [bool; MAX_ENCODINGS as usize],
+    from: Vec<Incoming>,
+}
+
+struct Incoming {
+    track: Track,
+    discontinuous: bool,
 }
 
 struct Sending {
-    recipient: u64,
+    publisher: u64,
     epoch: u32,
     keys: [FrameEncryptor; MAX_ENCODINGS as usize],
 }
@@ -151,9 +158,11 @@ struct Call {
     generation: u64,
     origin: Instant,
     legs: BTreeMap<u32, Leg>,
-    last_leg: u32,
+    last_direct_leg: u32,
+    opened_publish: bool,
+    opened_subscribe: bool,
     sending: Option<Sending>,
-    receiving: Option<(u64, FrameDecryptor)>,
+    receiving: BTreeMap<u64, FrameDecryptor>,
     active: Option<u32>,
     keyframe: [bool; MAX_ENCODINGS as usize],
 }
@@ -164,9 +173,11 @@ impl Call {
             generation,
             origin: Instant::now(),
             legs: BTreeMap::new(),
-            last_leg: 0,
+            last_direct_leg: 0,
+            opened_publish: false,
+            opened_subscribe: false,
             sending: None,
-            receiving: None,
+            receiving: BTreeMap::new(),
             active: None,
             keyframe: [false; MAX_ENCODINGS as usize],
         }
@@ -182,26 +193,30 @@ impl Call {
                 if self
                     .sending
                     .as_ref()
-                    .is_some_and(|s| s.recipient != update.peer || s.epoch >= update.epoch)
+                    .is_some_and(|s| s.publisher != update.peer || s.epoch >= update.epoch)
                 {
                     return Err(());
                 }
                 self.sending = Some(Sending {
-                    recipient: update.peer,
+                    publisher: update.peer,
                     epoch: update.epoch,
                     keys: encryptors(update.epoch, &update.key),
                 });
             }
             Direction::Receive => {
-                let (publisher, decryptor) = self
-                    .receiving
-                    .get_or_insert_with(|| (update.peer, FrameDecryptor::new()));
-                if *publisher != update.peer {
+                if self.receiving.len() >= MAX_MEDIA_PEERS
+                    && !self.receiving.contains_key(&update.peer)
+                {
                     return Err(());
                 }
-                decryptor
+                self.receiving
+                    .entry(update.peer)
+                    .or_default()
                     .install(update.epoch, &update.key, now)
                     .map_err(|_| ())?;
+            }
+            Direction::ForgetReceive => {
+                self.receiving.remove(&update.peer);
             }
         }
         Ok(())
@@ -218,10 +233,16 @@ impl Call {
                 role,
                 relayed,
             } => {
-                if leg <= self.last_leg
-                    || self.legs.len() == MAX_LEGS
-                    || relayed && role == LegRole::Direct
-                {
+                let fresh = match role {
+                    LegRole::Direct => {
+                        leg >= wire::FIRST_DIRECT_LEG && leg > self.last_direct_leg && !relayed
+                    }
+                    LegRole::SfuPublish => leg == wire::SFU_PUBLISH_LEG && !self.opened_publish,
+                    LegRole::SfuSubscribe => {
+                        leg == wire::SFU_SUBSCRIBE_LEG && !self.opened_subscribe
+                    }
+                };
+                if !fresh || self.legs.len() == MAX_LEGS {
                     return Err(());
                 }
                 let codec = match codec {
@@ -238,10 +259,13 @@ impl Call {
                         wake: now,
                         local,
                         from: Vec::new(),
-                        discontinuous: [false; MAX_ENCODINGS as usize],
                     },
                 );
-                self.last_leg = leg;
+                match role {
+                    LegRole::Direct => self.last_direct_leg = leg,
+                    LegRole::SfuPublish => self.opened_publish = true,
+                    LegRole::SfuSubscribe => self.opened_subscribe = true,
+                }
                 Reply::Done
             }
             Command::CloseLeg { leg } => {
@@ -327,14 +351,9 @@ impl Call {
             Command::Poll { leg } => return self.poll(leg, now),
             Command::SetSendLeg { leg } => {
                 let live = self.legs.get(&leg).ok_or(())?;
-                let keys = self.sending.as_ref().ok_or(())?;
-                if live.role == LegRole::SfuSubscribe
+                if self.sending.is_none()
+                    || live.role == LegRole::SfuSubscribe
                     || !live.peer.is_connected()
-                    || (live.role == LegRole::Direct
-                        && !live
-                            .from
-                            .iter()
-                            .all(|track| track.publisher == Some(keys.recipient)))
                 {
                     return Err(());
                 }
@@ -361,15 +380,21 @@ impl Call {
                 self.write(purpose, timestamp, key_frame, now, &data)?;
                 Reply::Done
             }
-            Command::RequestKeyframe { leg, purpose } => {
+            Command::RequestKeyframe {
+                leg,
+                publisher,
+                purpose,
+            } => {
                 let live = self.legs.get_mut(&leg).ok_or(())?;
-                let (publisher, _) = self.receiving.as_ref().ok_or(())?;
                 let incoming = live
                     .from
                     .iter()
-                    .find(|track| track.purpose == purpose && track.publisher == Some(*publisher))
+                    .find(|incoming| {
+                        incoming.track.purpose == purpose
+                            && incoming.track.publisher == Some(publisher)
+                    })
                     .ok_or(())?;
-                let track = live.peer.track_by_mid(&incoming.mid).ok_or(())?;
+                let track = live.peer.track_by_mid(&incoming.track.mid).ok_or(())?;
                 live.peer.request_keyframe(track).map_err(|_| ())?;
                 Reply::Done
             }
@@ -470,17 +495,20 @@ impl Call {
                             Event::Keyframe { purpose }
                         }
                         rtc::Event::Frame(frame) => {
-                            let Some((publisher, decryptor)) = self.receiving.as_mut() else {
+                            let purpose = from_purpose(frame.purpose);
+                            let Some(incoming) = leg.from.iter_mut().find(|incoming| {
+                                incoming.track.mid == frame.track.mid()
+                                    && incoming.track.purpose == purpose
+                            }) else {
                                 continue;
                             };
-                            let mid = frame.track.mid();
-                            if !leg.from.iter().any(|track| {
-                                track.mid == mid && track.publisher == Some(*publisher)
-                            }) {
+                            let Some(publisher) = incoming.track.publisher else {
                                 continue;
-                            }
-                            let purpose = from_purpose(frame.purpose);
-                            let lost = &mut leg.discontinuous[usize::from(encoding(purpose))];
+                            };
+                            let Some(decryptor) = self.receiving.get_mut(&publisher) else {
+                                continue;
+                            };
+                            let lost = &mut incoming.discontinuous;
                             let Ok((key_frame, data)) =
                                 decryptor.decrypt_encoding(encoding(purpose), &frame.data, millis)
                             else {
@@ -492,7 +520,7 @@ impl Call {
                                 continue;
                             }
                             let event = Event::Frame {
-                                publisher: *publisher,
+                                publisher,
                                 purpose,
                                 timestamp: frame.timestamp,
                                 contiguous: !std::mem::take(lost) && frame.contiguous,
@@ -537,17 +565,16 @@ impl Leg {
             LegRole::SfuPublish => return Err(()),
         }
         .map_err(|_| ())?;
-        self.from = description.tracks;
+        self.set_tracks(&description.tracks);
         Ok(Description {
             id: description.id,
             sdp: answer,
-            tracks: self
-                .from
-                .iter()
-                .cloned()
-                .map(|mut t| {
-                    t.publisher = None;
-                    t
+            tracks: description
+                .tracks
+                .into_iter()
+                .map(|mut track| {
+                    track.publisher = None;
+                    track
                 })
                 .collect(),
         })
@@ -570,8 +597,29 @@ impl Leg {
         self.peer
             .accept_answer_tracks(&rtc, rtc.id)
             .map_err(|_| ())?;
-        self.from = description.tracks;
+        self.set_tracks(&description.tracks);
         Ok(())
+    }
+
+    fn set_tracks(&mut self, tracks: &[Track]) {
+        let mut previous = std::mem::take(&mut self.from);
+        for track in tracks {
+            if self.from.iter().any(|incoming| {
+                incoming.track.publisher == track.publisher
+                    && incoming.track.purpose == track.purpose
+            }) {
+                continue;
+            }
+            let incoming = previous
+                .iter()
+                .position(|entry| entry.track == *track)
+                .map(|index| previous.swap_remove(index))
+                .unwrap_or_else(|| Incoming {
+                    track: track.clone(),
+                    discontinuous: false,
+                });
+            self.from.push(incoming);
+        }
     }
 }
 

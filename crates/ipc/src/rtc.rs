@@ -17,9 +17,14 @@ pub const MAX_SDP: usize = 32 * 1024;
 pub const MAX_DATAGRAM: usize = 2048;
 pub const MAX_VIDEO: usize = 1024 * 1024;
 const MAX_METADATA: usize = MAX_SDP * 2 + 8192;
-const MAX_TRACKS: usize = 16;
+pub const MAX_TRACKS: usize = 48;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+// The publish leg may first open after a direct receive leg has been used.
+pub const SFU_SUBSCRIBE_LEG: u32 = 1;
+pub const SFU_PUBLISH_LEG: u32 = 2;
+pub const FIRST_DIRECT_LEG: u32 = 3;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Purpose {
     Microphone,
@@ -146,6 +151,7 @@ pub enum Command {
     },
     RequestKeyframe {
         leg: u32,
+        publisher: u64,
         purpose: Purpose,
     },
 }
@@ -183,10 +189,8 @@ impl Command {
             Self::AcceptOffer { leg, description } | Self::AcceptAnswer { leg, description } => {
                 *leg != 0 && description.valid()
             }
-            Self::CloseLeg { leg }
-            | Self::Poll { leg }
-            | Self::SetSendLeg { leg }
-            | Self::RequestKeyframe { leg, .. } => *leg != 0,
+            Self::CloseLeg { leg } | Self::Poll { leg } | Self::SetSendLeg { leg } => *leg != 0,
+            Self::RequestKeyframe { leg, publisher, .. } => *leg != 0 && *publisher != 0,
             Self::Datagram { .. } | Self::Write { .. } => false,
         }
     }
