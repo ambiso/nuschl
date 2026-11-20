@@ -225,12 +225,13 @@ impl Viewer {
     ) -> Result<(), String> {
         let current = self.sources.current(selection.view);
         if let Some(track) = current {
-            let _ = media.set_quality(
-                track.publisher,
-                track.purpose,
-                selection.quality,
-                selection.pixels,
-            );
+            // Screen shares need readable text even in the inline stage.
+            let pixels = if track.purpose == Purpose::ScreenVideo {
+                selection.pixels.max(1080)
+            } else {
+                selection.pixels
+            };
+            let _ = media.set_quality(track.publisher, track.purpose, selection.quality, pixels);
         }
         if self.current != current {
             self.current = current;

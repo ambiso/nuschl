@@ -217,8 +217,9 @@ to return to chat. **Minimize call** hides the video while the call continues.
 **Quality** selects a resolution and frame-rate ceiling. A 1440p tier can
 carry 3440 × 1440 when the capture, encoder and connection support it. Open
 **Video options** and choose **Video stats** for delivered dimensions, frame
-rate, encoded payload rate and the current route. Viewer Auto fits the video
-tile.
+rate, encoded payload rate and the current route. The stats overlay leaves
+the video size unchanged. Viewer Auto fits the video tile and requests at
+least the 1080p tier for screen shares to keep text readable.
 
 Native media uses one encrypted peer pair per desktop. Two native clients can
 switch to a direct connection when it can carry their video and return to the
