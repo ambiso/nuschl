@@ -17,6 +17,7 @@ use windows_capture::{
     },
 };
 
+#[path = "windows/camera.rs"]
 mod camera;
 
 type Failure = Box<dyn Error + Send + Sync>;
