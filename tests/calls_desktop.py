@@ -267,34 +267,37 @@ class CallTest(VoiceTest):
         self.press(app, "Full screen")
         eventually(window_is_fullscreen, "the compositor did not enter fullscreen")
         exit_button = self.control(app, "Exit full screen")
+        eventually(lambda: exit_button.extents()[1] > 800,
+                   "fullscreen controls did not reach the display's bottom edge")
         x, y, _, _ = exit_button.extents()
         screenshots = 0
 
-        def toolbar_color():
+        def toolbar_visible():
             nonlocal screenshots
             screenshots += 1
             screen = self.shell.screenshot(self.args.output / f"fullscreen-{screenshots:02d}.png")
-            return subprocess.check_output([
-                "ffmpeg", "-v", "error", "-i", str(screen), "-vf", f"format=rgb24,crop=1:1:{x + 6}:{y + 6}",
+            pixels = subprocess.check_output([
+                "ffmpeg", "-v", "error", "-i", str(screen), "-vf", f"format=rgb24,crop=1:21:{x + 6}:{y - 14}",
                 "-f", "rawvideo", "-frames:v", "1", "pipe:1",
             ], timeout=10)
+            assert len(pixels) == 63
+            return pixels[:3] != pixels[-3:]
 
         self.shell.move(40, 40)
-        shown = toolbar_color()
-        eventually(lambda: toolbar_color() != shown, "fullscreen controls did not fade", timeout=6)
+        eventually(toolbar_visible, "fullscreen controls did not paint at entry", timeout=3)
+        eventually(lambda: not toolbar_visible(), "fullscreen controls did not fade", timeout=6)
         self.shell.move(80, 40)
-        eventually(lambda: toolbar_color() == shown, "pointer motion did not reveal fullscreen controls", timeout=3)
+        eventually(toolbar_visible, "pointer motion did not reveal fullscreen controls", timeout=3)
         time.sleep(3.3)
-        hidden = toolbar_color()
-        assert hidden != shown and exit_button.name == "Exit full screen"
+        assert not toolbar_visible() and exit_button.name == "Exit full screen"
         self.shell.key("Tab")
         eventually(lambda: exit_button.focused, "Tab did not reach the fullscreen controls", timeout=3)
         time.sleep(3.3)
-        assert toolbar_color() != hidden, "the focused controls faded"
+        assert toolbar_visible(), "the focused controls faded"
         self.press(app, "Video options")
         eventually(lambda: self.find(app, "menu", "Context menu"), "fullscreen video menu did not open")
         time.sleep(3.3)
-        assert toolbar_color() != hidden, "the controls faded while the menu was open"
+        assert toolbar_visible(), "the controls faded while the menu was open"
         self.shell.key("Escape")
         eventually(lambda: not self.find(app, "menu", "Context menu"), "Escape did not close the fullscreen menu")
         assert window_is_fullscreen()
