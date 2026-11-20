@@ -85,7 +85,7 @@ impl Grant {
         executable: PathBuf,
         limits: CaptureLimits,
     ) -> Result<Capture, super::Error> {
-        self.start_capture(executable, limits, None)
+        self.start_capture(executable, limits, true, None)
     }
 
     pub fn start_with_preview(
@@ -94,13 +94,24 @@ impl Grant {
         limits: CaptureLimits,
         preview: tokio::sync::mpsc::Sender<super::DecodedFrame>,
     ) -> Result<Capture, super::Error> {
-        self.start_capture(executable, limits, Some(preview))
+        self.start_capture(executable, limits, true, Some(preview))
+    }
+
+    /// Start the software encoder with the same authorized capture source.
+    pub fn start_software_with_preview(
+        self,
+        executable: PathBuf,
+        limits: CaptureLimits,
+        preview: tokio::sync::mpsc::Sender<super::DecodedFrame>,
+    ) -> Result<Capture, super::Error> {
+        self.start_capture(executable, limits, false, Some(preview))
     }
 
     fn start_capture(
         self,
         executable: PathBuf,
         limits: CaptureLimits,
+        vaapi: bool,
         preview: Option<tokio::sync::mpsc::Sender<super::DecodedFrame>>,
     ) -> Result<Capture, super::Error> {
         let source = self.source();
@@ -113,7 +124,7 @@ impl Grant {
             self.remote,
             source,
             node_id,
-            true,
+            vaapi,
             limits,
             preview,
         )?;
