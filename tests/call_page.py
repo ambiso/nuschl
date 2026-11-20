@@ -484,6 +484,12 @@ try:
     for driver in [chrome, fox]:
         advancing(driver, u, "after the switch back to AV1")
 
+    user.find_element(By.ID, "screen-audio").click()
+    wait(user, "return document.getElementById('screen').textContent === 'Stop sharing'", "screen kept sharing")
+    for driver in [chrome, fox]:
+        wait(driver, f"return !document.querySelector('{selector}')", "tab audio after turning it off")
+        showing(driver, everyone[driver], "video without tab audio")
+
     # Stop ends both captures and takes the tiles off every page.
     user.find_element(By.ID, "camera").click()
     user.find_element(By.ID, "screen").click()

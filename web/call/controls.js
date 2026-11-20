@@ -54,6 +54,10 @@ export class Controls {
     const $ = (id) => document.getElementById(id);
     this.status = $("notice");
     this.audio = $("screen-audio");
+    this.audio.checked = false;
+    this.audio.addEventListener("change", () => {
+      if (!this.audio.checked) this.stopAudio();
+    });
     if (typeof document.defaultView.MediaStreamTrack?.prototype.getCaptureHandle === "function") {
       try {
         this.media.setCaptureHandleConfig({
@@ -83,6 +87,7 @@ export class Controls {
     this.notice = "";
     this.render();
     const wantsAudio = kind === "screen" && !this.audio.parentElement.hidden && this.audio.checked;
+    if (kind === "screen") this.audio.checked = false;
     try {
       const media = await capture[kind](this.media, wantsAudio);
       const [track] = media.getVideoTracks();
@@ -95,10 +100,8 @@ export class Controls {
       if (shareAudio) {
         track.addEventListener("capturehandlechange", () => {
           if (canShareAudio(track)) return;
-          audio.stop();
-          if (this.call.sources.get("audio")?.track === audio) {
-            this.call.unpublish("audio").catch(() => this.call.end("media"));
-          }
+          if (this.call.sources.get("audio")?.track === audio) this.stopAudio();
+          else audio.stop();
         });
         track.addEventListener("ended", () => audio.stop(), { once: true });
       }
@@ -122,6 +125,10 @@ export class Controls {
     }
   }
 
+  stopAudio() {
+    this.call.unpublish("audio").catch(() => this.call.end("media"));
+  }
+
   render() {
     const { call } = this;
     for (const [kind, { button }] of Object.entries(this.sources)) {
@@ -130,12 +137,15 @@ export class Controls {
       button.setAttribute("aria-pressed", String(on));
       button.disabled = Boolean(call.ended) || this.busy.has(kind) || (!on && !call.canPublish);
     }
-    const monitor = call.sources.get("screen")?.track.getSettings().displaySurface === "monitor";
-    this.audio.disabled = Boolean(call.ended) || this.busy.has("screen") || call.sources.has("screen");
+    const screen = call.sources.get("screen");
+    const sharingAudio = call.sources.has("audio");
+    const monitor = screen?.track.getSettings().displaySurface === "monitor";
+    if (screen) this.audio.checked = sharingAudio;
+    this.audio.disabled = Boolean(call.ended) || this.busy.has("screen") || Boolean(screen && !sharingAudio);
     const unsupported = call.codec && !call.canPublish ? `Can't send ${call.codec.toUpperCase()}` : "";
     this.status.textContent = [
       monitor && "Sharing your whole screen",
-      call.sources.has("audio") ? "Sharing tab audio" : this.notice || unsupported,
+      sharingAudio ? "Sharing tab audio" : this.notice || unsupported,
     ].filter(Boolean).join(" · ");
     this.status.hidden = !this.status.textContent;
     this.status.classList.toggle("warning", monitor);
