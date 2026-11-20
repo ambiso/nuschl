@@ -86,6 +86,35 @@ class CallTest(VoiceTest):
     def press(self, app, name):
         self.control(app, name).press()
 
+    def resize_desktop(self, pid, height):
+        lookup = ("const window = global.get_window_actors().map(actor => actor.meta_window)"
+                  f".find(window => window.get_pid() === {pid});")
+        previous = int(self.shell.eval(
+            lookup + "const rect = window.get_frame_rect();"
+            f"window.move_resize_frame(true, rect.x, rect.y, rect.width, {height});"
+            "window.activate(global.get_current_time()); String(rect.height)"))
+        eventually(lambda: abs(int(self.shell.eval(lookup + "String(window.get_frame_rect().height)")) - height) <= 24,
+                   "the fixture window did not resize", timeout=15)
+        return previous
+
+    def select_quality(self, app, current, selected, *, above):
+        trigger = self.control(app, f"Quality · {current}")
+        _, trigger_y, _, trigger_height = trigger.extents()
+        trigger.press()
+        menu = eventually(lambda: self.find(app, "menu", "Video quality"),
+                           "video quality dropdown did not open")
+        _, menu_y, _, menu_height = menu.extents()
+        geometry = f"trigger at {trigger_y} with height {trigger_height}, menu at {menu_y} with height {menu_height}"
+        if above:
+            assert menu_y + menu_height <= trigger_y, f"quality menu should open above: {geometry}"
+        else:
+            assert menu_y >= trigger_y + trigger_height, f"quality menu should fit below: {geometry}"
+        eventually(lambda: self.find(menu, AT_SPI_RADIO_MENU_ITEM, selected),
+                   f"quality radio menu item missing: {selected}").press()
+        self.control(app, f"Quality · {selected}")
+        eventually(lambda: not self.find(app, "menu", "Video quality"),
+                   "video quality dropdown did not close")
+
     def video_stats(self, app, show):
         self.press(app, "Video options")
         label = "Video stats" if show else "Hide video stats"
@@ -200,15 +229,18 @@ class CallTest(VoiceTest):
             self.control(andi, "Open in browser", shown=False)
             chat = self.find(andi, "list", "Messages in #Lobby")
             chat_bounds = chat.extents()
-            self.press(andi, "Quality · Auto")
-            quality = eventually(lambda: self.find(andi, "menu", "Video quality"),
-                                 "video quality dropdown did not open")
+            self.select_quality(andi, "Auto", "720p30", above=True)
             assert chat.extents() == chat_bounds, "quality choices changed the chat layout"
-            eventually(lambda: self.find(quality, AT_SPI_RADIO_MENU_ITEM, "720p30"),
-                       "720p30 radio menu item missing").press()
-            self.control(andi, "Quality · 720p30")
-            eventually(lambda: not self.find(andi, "menu", "Video quality"),
-                       "video quality dropdown did not close")
+            height = self.resize_desktop(andi_pid, 520)
+            settings = self.root / "Andi" / "config/settings.json"
+            for _ in range(2):
+                self.shell.chord("Control_L", "equal")
+            eventually(lambda: json.loads(settings.read_text()).get("appearance", {}).get("zoom") == 1.25,
+                       "the short fixture window did not reach 125% zoom", timeout=15)
+            self.select_quality(andi, "720p30", "Auto", above=False)
+            self.shell.chord("Control_L", "0")
+            self.resize_desktop(andi_pid, height)
+            self.inline(andi)
             self.control(andi, "Video stats", shown=False)
             self.video_stats(andi, show=True)
             self.video_stats(andi, show=False)
