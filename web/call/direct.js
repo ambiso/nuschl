@@ -2,6 +2,7 @@
 // One optional WebRTC leg per publisher in a two-person call. Signalling goes
 // through the stream worker's authenticated pair, and the SFU stays available
 // for fallback. A direct leg negotiates with detached senders.
+import { TIERS, fitTier, publishTier } from "./signal.js";
 import { sendCodecs } from "./support.js";
 
 const GATHER_TIMEOUT = 3000;
@@ -72,12 +73,21 @@ function encodingOf(sender) {
   return encodings?.length === 1 ? encodings[0] : null;
 }
 
-function desiredRate(sources) {
+function desiredRate(call, sources) {
   let total = 0;
-  for (const { local } of sources) {
+  for (const { kind, local } of sources) {
     const rate = encodingOf(local.sender)?.maxBitrate;
     if (!Number.isFinite(rate) || rate <= 0) return 0;
-    total += rate;
+    if (kind === "screen" && call.screenRate) {
+      const source = call.sources.get(kind);
+      const [height] = publishTier(kind, source.tier);
+      const remoteHeight = source.remoteCap?.[0] ?? height;
+      // Route selection uses the selected tier's bitrate baseline.
+      const baseline = TIERS.screen[fitTier(kind, Math.min(height, remoteHeight))][2];
+      total += Math.min(rate, baseline);
+    } else {
+      total += rate;
+    }
   }
   return total;
 }
@@ -270,7 +280,7 @@ export class DirectPaths {
       local: { track, sender: transceiver.sender },
     }));
     if (sources.some(({ mid, local }) => !mid || local.track.readyState !== "live")) return;
-    const desired = desiredRate(sources);
+    const desired = desiredRate(call, sources);
     if (!desired) return;
     const leg = this.#outgoing;
     if (leg && (!sameSources(leg.sources, call) || leg.peer !== peer)) return this.#drop(leg, true);
@@ -343,7 +353,7 @@ export class DirectPaths {
       return this.#drop(leg, true);
     }
     const { bitrate } = await selectedPair(call.publisher);
-    const desired = desiredRate(leg.sources);
+    const desired = desiredRate(call, leg.sources);
     if (!desired || !Number.isFinite(bitrate) || bitrate * 0.8 < desired) return this.#drop(leg, true);
     // Install the same encoder caps while the direct senders are detached.
     for (const source of leg.sources) await applyCaps(source);

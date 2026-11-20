@@ -232,13 +232,16 @@ test("negotiated video limits follow only the accepted video track", async () =>
   const hello = { type: "hello", nonce: "01".repeat(32) };
   await call.receive(parse(JSON.stringify(hello)));
   assert.equal(messages[0].video_limits, undefined);
+  assert.equal(messages[0].screen_rate, undefined);
   const track = { peer: 4, kind: "video" };
   call.tracks.set("1", track);
   const report = { type: "video_limit", mid: "1", peer: 4, limit: "sfu_host" };
   await call.receive(parse(JSON.stringify(report)));
   assert.equal(track.limit, undefined);
-  await call.receive(parse(JSON.stringify({ ...hello, video_limits: true })));
+  await call.receive(parse(JSON.stringify({ ...hello, video_limits: true, screen_rate: true })));
   assert.equal(messages[1].video_limits, true);
+  assert.equal(messages[1].screen_rate, true);
+  assert.throws(() => parse(JSON.stringify({ ...hello, screen_rate: 1 })), /malformed hello/);
   await call.receive(parse(JSON.stringify({ ...report, peer: 7 })));
   assert.equal(track.limit, undefined);
   await call.receive(parse(JSON.stringify(report)));
@@ -254,7 +257,7 @@ test("publisher quality applies bounded encoder limits to the matching MID", asy
   const request = "0100000000000000040100";
   const quality = { type: "quality", request, source: "3", max_height: 720, max_fps: 15, max_bitrate: 800_000 };
   assert.equal(parse(JSON.stringify({ type: "quality", request })), null);
-  for (const limits of [{ source: "x".repeat(17) }, { max_height: 0 }, { max_fps: 61 }, { max_bitrate: 1.5 }]) {
+  for (const limits of [{ source: "x".repeat(17) }, { max_height: 0 }, { max_fps: 61 }, { max_bitrate: 1.5 }, { max_bitrate: 50_000_001 }]) {
     assert.throws(() => parse(JSON.stringify({ ...quality, ...limits })), /malformed quality/);
   }
 
@@ -283,6 +286,17 @@ test("publisher quality applies bounded encoder limits to the matching MID", asy
   });
   await call.receive({ ...quality, source: "4" });
   assert.deepEqual(applied[4], { scaleResolutionDownBy: 2, maxFramerate: 15, maxBitrate: 800_000 });
+
+  call.screenRate = true;
+  await call.receive(parse(JSON.stringify({ ...quality, source: "4", max_height: 2160, max_fps: 60, max_bitrate: 24_000_000 })));
+  assert.deepEqual(applied[5], { scaleResolutionDownBy: 1440 / 1080, maxFramerate: 30, maxBitrate: 24_000_000 });
+  await call.setPublishTier("screen", "2");
+  assert.deepEqual(applied[6], { scaleResolutionDownBy: 1, maxFramerate: 60, maxBitrate: 24_000_000 });
+  await call.receive({ ...quality, source: "4", max_height: 1440, max_fps: 60, max_bitrate: 6_000_000 });
+  assert.deepEqual(applied[7], { scaleResolutionDownBy: 1, maxFramerate: 60, maxBitrate: 6_000_000 });
+  call.sources.set("camera", { transceiver: { mid: "5", sender }, track, tier: "2" });
+  await call.receive({ ...quality, source: "5", max_height: 1080, max_fps: 30, max_bitrate: 4_000_000 });
+  assert.deepEqual(applied[8], { scaleResolutionDownBy: 2, maxFramerate: 30, maxBitrate: 2_000_000 });
 });
 
 test("ultrawide publisher stats distinguish capture, verified caps and encoded resolution", () => {
@@ -297,6 +311,9 @@ test("ultrawide publisher stats distinguish capture, verified caps and encoded r
     ["3440 × 1440", "1440p60", "2160p60 · 15.0 Mb/s", "3440 × 1440", "2580 × 1080", "30.0 fps", "2.0 Mb/s", "Sender upload"]);
   assert.deepEqual(publisherMeasurements(capture, target, { cap: TIERS.screen[1], scale: 1440 / 1080, reason: "traffic_budget" }),
     ["3440 × 1440", "1440p60", "1080p30 · 3.0 Mb/s", "2580 × 1080", "—", "—", "—", "SFU traffic budget pacing"]);
+  assert.deepEqual(publisherMeasurements(capture, target, {
+    cap: [1440, 60, 24_000_000], scale: 1, reason: "sfu_viewer", screenRate: true,
+  }).slice(-2), ["—", "SFU per-viewer cap"]);
   const idle = { ...encoded, frameWidth: 3440, frameHeight: 1440, framesPerSecond: 0, bytesSent: 0, qualityLimitationReason: "none" };
   assert.deepEqual(publisherMeasurements(capture, target, { scale: 1 }, idle, previous).slice(-2),
     ["0.0 kb/s", "Within selected quality"]);

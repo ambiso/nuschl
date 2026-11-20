@@ -11,6 +11,7 @@ export const MAX_PEERS = 256;
 export const MAX_TRACKS = 3 * MAX_PEERS;
 /** A key message in hex (16 KiB). */
 const MAX_KEY = 2 * 16 * 1024;
+const MAX_VIDEO_BITRATE = 50_000_000;
 
 const id = (value) => Number.isSafeInteger(value) && value >= 0;
 const limit = (max) => (value) => Number.isInteger(value) && value > 0 && value <= max;
@@ -45,7 +46,11 @@ const codec = oneOf("av1", "vp9");
 const sdp = text(MAX_MESSAGE);
 const mid = text(16);
 const messages = {
-  hello: { nonce: hex(64, 64), video_limits: optional((value) => typeof value === "boolean") },
+  hello: {
+    nonce: hex(64, 64),
+    video_limits: optional((value) => typeof value === "boolean"),
+    screen_rate: optional((value) => typeof value === "boolean"),
+  },
   welcome: {
     peer: id,
     role,
@@ -60,7 +65,7 @@ const messages = {
   answer: { sdp },
   key: { from: id, data: hex(2, MAX_KEY) },
   quality: {
-    request: hex(22, 22), source: mid, max_height: limit(2160), max_fps: limit(60), max_bitrate: limit(15_000_000),
+    request: hex(22, 22), source: mid, max_height: limit(2160), max_fps: limit(60), max_bitrate: limit(MAX_VIDEO_BITRATE),
     limit: optional((value) => videoLimits.has(value)),
   },
   video_limit: { mid, peer: (value) => id(value) && value > 0, limit: (value) => videoLimits.has(value) },
@@ -72,6 +77,10 @@ export const TIERS = {
   camera: [[180, 15, 200_000], [360, 30, 600_000], [720, 30, 2_000_000], [1080, 30, 4_000_000]],
   screen: [[720, 15, 800_000], [1080, 30, 3_000_000], [1440, 60, 8_000_000], [2160, 60, 15_000_000]],
 };
+
+export function publishTier(kind, choice) {
+  return TIERS[kind][choice] ?? TIERS[kind].at(-1);
+}
 
 export function fitTier(kind, pixels) {
   const tiers = TIERS[kind];
@@ -109,7 +118,7 @@ export function linkOf(location) {
 
 /** The SFU `join` from the stream worker's `opened` and `admitted` replies and the
  * codecs this browser decodes. */
-export function join(opened, admitted, codecs, videoLimitReports = false) {
+export function join(opened, admitted, codecs, { videoLimits, screenRate } = {}) {
   return {
     type: "join",
     room: opened.room,
@@ -118,6 +127,7 @@ export function join(opened, admitted, codecs, videoLimitReports = false) {
     host_proof: admitted.host_proof,
     create: admitted.create,
     codecs,
-    ...(videoLimitReports ? { video_limits: true } : {}),
+    ...(videoLimits ? { video_limits: true } : {}),
+    ...(screenRate ? { screen_rate: true } : {}),
   };
 }
