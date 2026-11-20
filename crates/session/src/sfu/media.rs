@@ -991,12 +991,13 @@ async fn run(
                         && let Ok(index) = video_index(track.purpose)
                         && let Some(revision) = source.tracks[index]
                     {
-                        if let Some(kind) = video_kind(track.purpose) {
-                            // Direct admission needs the tier's baseline, which fits below
-                            // the optional headroom for high-detail screen content.
-                            let tier = kind.ladder()[kind.tier_of(u32::from(max_height))];
-                            desired[index] = Some(max_bitrate.min(tier.ceiling));
-                        }
+                        // Direct admission is based on the selected tier. The
+                        // SFU path's headroom can move during setup or handoff.
+                        desired[index] = Some(if video_kind(track.purpose) == Some(VideoKind::Screen) {
+                            VideoKind::Screen.ladder()[VideoKind::Screen.tier_of(u32::from(max_height))].ceiling
+                        } else {
+                            max_bitrate
+                        });
                         output.limits.send_modify(|limits| limits[index] = Some(EncoderCaps {
                             revision, height: max_height, fps: max_fps, bitrate: max_bitrate, limit,
                         }));

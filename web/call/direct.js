@@ -85,7 +85,7 @@ function desiredRate(call, sources) {
       const remoteHeight = source.remoteCap?.[0] ?? height;
       // Route selection uses the selected tier's bitrate baseline.
       const baseline = TIERS.screen[fitTier(kind, Math.min(height, remoteHeight))][2];
-      total += Math.min(rate, baseline);
+      total += baseline;
     } else {
       total += rate;
     }
