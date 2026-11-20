@@ -16,10 +16,11 @@ const browser = await chromium.launch({
   ],
 });
 const errors = [];
+const pages = [];
 
 async function joinApp(name) {
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
-  context.setDefaultTimeout(120000);
+  context.setDefaultTimeout(60000);
   await context.addInitScript(() => {
     const media = navigator.mediaDevices;
     const camera = media.getUserMedia.bind(media);
@@ -36,7 +37,11 @@ async function joinApp(name) {
     };
   });
   const page = await context.newPage();
+  pages.push(page);
   page.on("pageerror", error => errors.push(error.message));
+  page.on("console", message => {
+    if (message.type() === "error") console.error("Chromium:", message.text());
+  });
   await page.goto(`${app}#s=${host}:${port}&u=${name}`);
   await page.getByRole("button", { name: "Trust this certificate", exact: true }).click();
   await page.waitForFunction(() => document.querySelector(".server-connection .status")?.textContent === "Connected");
@@ -47,9 +52,13 @@ try {
   const hostPage = await joinApp("video-host");
   const guest = await joinApp("video-guest");
   const nextLease = hostPage.waitForRequest(request => new URL(request.url()).pathname === "/sfu/lease");
+  nextLease.catch(() => {});
   await hostPage.getByRole("button", { name: "Start call", exact: true }).click();
+  const joined = page => page.waitForFunction(() =>
+    /AV1|VP9/.test(document.querySelector(".video-session #status")?.textContent ?? ""));
+  await joined(hostPage);
   await guest.getByRole("button", { name: "Join call", exact: true }).first().click();
-  await guest.locator(".video-session #status").getByText(/AV1|VP9/).waitFor();
+  await joined(guest);
   assert.deepEqual(await hostPage.evaluate(() => videoCaptureCalls), []);
   assert.deepEqual(await guest.evaluate(() => videoCaptureCalls), []);
 
@@ -72,6 +81,12 @@ try {
   await guest.locator("article").getByText("Call ended", { exact: true }).waitFor();
   assert.deepEqual(errors, []);
   console.log("web app: camera and screen decoded, chat card and call lifecycle passed");
+} catch (error) {
+  for (const page of pages) {
+    const alerts = await page.locator(".error, .video-session #ending, .video-session #status").allTextContents();
+    console.error("Call status:", alerts.join(" "));
+  }
+  throw error;
 } finally {
   await browser.close();
 }

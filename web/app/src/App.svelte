@@ -201,7 +201,7 @@
       closeVideo();
     } else if (active.creating && active.link && hosted === active.link) {
       active.announced = true;
-    } else if (active.announced && hosted !== active.link) {
+    } else if (active.announced && timeline && hosted !== active.link) {
       closeVideo();
     }
   });
