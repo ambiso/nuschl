@@ -118,31 +118,36 @@ async fn native_call_signaling_keeps_keys_in_two_confined_workers() {
     assert!(alice.attach_media(1, endpoint).await.is_err());
     assert!(next_epoch(&mut duplicate).await.is_none());
 
-    request(
-        &alice,
-        1,
-        Action::Pair {
-            peer: 2,
-            publisher: true,
-        },
-    )
-    .await;
+    request(&alice, 1, Action::Publish { peer: 1 }).await;
+    let initial = next_epoch(&mut alice_rtc).await.unwrap();
+    assert_eq!((initial.peer, initial.epoch), (1, 1));
     let join = send(
-        request(
-            &bob,
-            1,
-            Action::Pair {
-                peer: 1,
-                publisher: false,
-            },
-        )
-        .await,
+        request(&bob, 1, Action::Subscribe { peer: 1 }).await,
         1,
         false,
     );
     let key = |peer, data| Action::Key { peer, data };
-    let seal = |peer, data| Action::Seal { peer, data };
-    let grant = send(request(&alice, 1, key(2, join)).await, 2, false);
+    let seal = |peer, data| Action::Seal {
+        peer,
+        publisher: true,
+        data,
+    };
+    assert!(matches!(
+        request(&alice, 1, key(2, join)).await,
+        Outcome::Done
+    ));
+    let grant = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Outcome::KeyBatch { messages } = request(&alice, 1, Action::Tick).await {
+                let [message]: [_; 1] = messages.try_into().ok().unwrap();
+                assert_eq!(message.peer, 2);
+                break message.data;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
     let ack = send(request(&bob, 1, key(1, grant)).await, 1, true);
     let receive = next_epoch(&mut bob_rtc).await.unwrap();
     assert_eq!(
@@ -152,7 +157,7 @@ async fn native_call_signaling_keeps_keys_in_two_confined_workers() {
             receive.epoch,
             receive.direction
         ),
-        (1, 1, 1, epoch::Direction::Receive)
+        (1, 1, 2, epoch::Direction::Receive)
     );
     let mut byte = [0];
     assert_eq!(
@@ -175,6 +180,8 @@ async fn native_call_signaling_keeps_keys_in_two_confined_workers() {
         Outcome::Ready { peer: 2 }
     ));
 
+    tokio::time::sleep(Duration::from_millis(1_010)).await;
+    request(&alice, 1, Action::Tick).await;
     let send_key = next_epoch(&mut alice_rtc).await.unwrap();
     assert_eq!(
         (
@@ -183,7 +190,7 @@ async fn native_call_signaling_keeps_keys_in_two_confined_workers() {
             send_key.epoch,
             send_key.direction
         ),
-        (1, 2, 1, epoch::Direction::Send)
+        (1, 1, 2, epoch::Direction::Send)
     );
     assert!(send_key.key == receive.key);
 
@@ -214,7 +221,7 @@ async fn native_call_signaling_keeps_keys_in_two_confined_workers() {
         .is_err()
     );
     assert!(matches!(request(&bob, 1, key(1, offer.clone())).await,
-        Outcome::Signal { peer: 1, data } if data == candidate));
+        Outcome::Signal { peer: 1, publisher: false, data } if data == candidate));
     assert!(
         bob.call_signal(Request {
             generation: 1,

@@ -77,6 +77,7 @@
 mod direct;
 mod exchange;
 mod link;
+mod publishing;
 mod wire;
 
 #[cfg(test)]
@@ -91,6 +92,7 @@ pub use exchange::{
     SubscriberId, for_publisher,
 };
 pub use link::{Link, LinkKeys, admit_key, host_key, room_check, stream_id};
+pub use publishing::{Delivery, Publishing, REKEY_INTERVAL_MS};
 
 /// The largest key message.
 pub const MAX_KEY_MESSAGE: usize = 16 * 1024;

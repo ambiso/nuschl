@@ -262,6 +262,7 @@ impl Direct {
                 description,
                 remote,
             } => {
+                attempt.transport.set_video_tracks(&description.tracks);
                 let description =
                     describe(worker, Command::AcceptOffer { leg, description }).await?;
                 attempt.connect(remote);
@@ -346,10 +347,17 @@ impl Attempt {
 pub(super) async fn send(
     connection: &mut Connection,
     peer: u64,
+    publisher: bool,
     signal: &Signal,
 ) -> Result<(), Error> {
     let data = serde_json::to_vec(signal).map_err(|_| Error::Protocol("invalid direct signal"))?;
-    connection.signal(Action::Seal { peer, data }).await?;
+    connection
+        .signal(Action::Seal {
+            peer,
+            publisher,
+            data,
+        })
+        .await?;
     Ok(())
 }
 

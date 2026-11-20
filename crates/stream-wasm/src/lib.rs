@@ -42,7 +42,7 @@
 //!   relay-only calls keep it false, for both sealing and opening.
 //! - `leave`: the SFU's `left {peer}`; the next `tick` locks `peer` out.
 //! - `tick`: every 250 ms while publishing. Rekeys after joins and leaves and every
-//!   [`REKEY_INTERVAL_MS`], sends each rekey's messages a second time, and moves the
+//!   15 minutes, sends each rekey's messages a second time, and moves the
 //!   encryptors to the new epoch ([`nuschl_stream`]'s delivery rules).
 //!
 //! Send each `send` entry as the SFU message `key {to, data}`. `keyed`: frames from
@@ -70,10 +70,7 @@ use std::collections::BTreeMap;
 use std::fmt::Display;
 
 use nuschl_sframe::{FrameDecryptor, FrameEncryptor, MAX_ENCODINGS};
-use nuschl_stream::{
-    EpochKey, Link, MAX_KEY_MESSAGE, Publisher, PublisherEvent, RESEND_AFTER_MS, SWITCH_AFTER_MS,
-    Subscriber, SubscriberEvent, SubscriberId,
-};
+use nuschl_stream::{Link, MAX_KEY_MESSAGE, Publishing, Subscriber, SubscriberEvent};
 use rand_core::TryCryptoRng;
 use serde::{Deserialize, Serialize};
 
@@ -85,8 +82,6 @@ pub const VERSION: u8 = 1;
 pub const MAX_REQUEST: usize = 2 * MAX_KEY_MESSAGE + 1024;
 /// Publishers this worker subscribes to, and subscribers to its own sources.
 pub const MAX_PEERS: usize = 256;
-/// The periodic rekey (docs/video-plan.md §4, "Rekeying").
-pub const REKEY_INTERVAL_MS: u64 = 15 * 60 * 1000;
 
 #[derive(Deserialize)]
 struct Envelope {
@@ -188,7 +183,7 @@ pub enum Event {
 pub struct Worker<R> {
     rng: R,
     link: Option<Link>,
-    publishing: Option<Publishing>,
+    publishing: Option<Sender>,
     remotes: BTreeMap<u64, Remote>,
     allow_direct: bool,
 }
@@ -200,23 +195,9 @@ struct Remote {
 }
 
 /// This participant's sender keys.
-struct Publishing {
-    publisher: Publisher,
-    /// Each peer's current subscription.
-    peers: BTreeMap<u64, SubscriberId>,
+struct Sender {
+    keys: Publishing,
     encryptors: [FrameEncryptor; MAX_ENCODINGS as usize],
-    /// The last rekey until its encryptors are in use.
-    next: Option<Next>,
-    /// A join or leave waits for the next rekey.
-    due: bool,
-    last_rekey: u64,
-}
-
-struct Next {
-    key: EpochKey,
-    sent: u64,
-    /// Emptied once sent a second time.
-    messages: Vec<Message>,
 }
 
 impl<R: TryCryptoRng> Worker<R> {
@@ -255,7 +236,20 @@ impl<R: TryCryptoRng> Worker<R> {
             } => self.send_direct(peer, publisher, data.as_bytes())?,
             Request::Leave { peer } => self.leave(peer),
             Request::Tick {} => match &mut self.publishing {
-                Some(publishing) => done(publishing.tick(now, &mut self.rng)?, Vec::new()),
+                Some(sender) => {
+                    let delivery = sender.keys.tick(now, &mut self.rng).map_err(text)?;
+                    if let Some(key) = delivery.key {
+                        sender.encryptors = nuschl_sframe::encryptors(key.epoch, &key.key);
+                    }
+                    done(
+                        delivery
+                            .messages
+                            .iter()
+                            .map(|(to, data)| message(*to, data))
+                            .collect(),
+                        Vec::new(),
+                    )
+                }
                 None => done(Vec::new(), Vec::new()),
             },
         };
@@ -334,15 +328,11 @@ impl<R: TryCryptoRng> Worker<R> {
         if self.publishing.is_some() {
             return Err("already publishing".into());
         }
-        let mut publisher = Publisher::new(self.link()?.keys());
-        let key = publisher.rekey(now, &mut self.rng).map_err(text)?.key;
-        self.publishing = Some(Publishing {
-            publisher,
-            peers: BTreeMap::new(),
+        let (keys, key) =
+            Publishing::start(self.link()?.keys(), MAX_PEERS, now, &mut self.rng).map_err(text)?;
+        self.publishing = Some(Sender {
+            keys,
             encryptors: nuschl_sframe::encryptors(key.epoch, &key.key),
-            next: None,
-            due: false,
-            last_rekey: now,
         });
         Ok(done(Vec::new(), Vec::new()))
     }
@@ -374,8 +364,14 @@ impl<R: TryCryptoRng> Worker<R> {
         }
         if nuschl_stream::for_publisher(&message) {
             let publishing = self.publishing.as_mut().ok_or("not publishing")?;
-            let events = publishing.receive(from, &message, now)?;
-            return Ok(done(Vec::new(), events));
+            let confirmed = publishing.keys.receive(from, &message, now).map_err(text)?;
+            return Ok(done(
+                Vec::new(),
+                confirmed
+                    .then_some(Event::Confirmed { peer: from })
+                    .into_iter()
+                    .collect(),
+            ));
         }
         let remote = self.remotes.get_mut(&from).ok_or("unknown peer")?;
         let (key, send) = match remote.subscriber.receive(&message, now, &mut self.rng) {
@@ -397,8 +393,7 @@ impl<R: TryCryptoRng> Worker<R> {
     fn send_direct(&mut self, peer: u64, publisher: bool, body: &[u8]) -> Result<Reply, String> {
         self.check_direct()?;
         let sealed = if publisher {
-            let (publisher, subscriber) = self.publishing_pair(peer)?;
-            publisher.seal_direct(&subscriber, body)
+            self.publisher()?.seal(peer, body)
         } else {
             self.subscriber(peer)?.seal_direct(body)
         }
@@ -414,8 +409,7 @@ impl<R: TryCryptoRng> Worker<R> {
     ) -> Result<Reply, String> {
         self.check_direct()?;
         let body = if publisher {
-            let (publisher, subscriber) = self.publishing_pair(peer)?;
-            publisher.open_direct(&subscriber, message)
+            self.publisher()?.open(peer, message)
         } else {
             self.subscriber(peer)?.open_direct(message)
         }
@@ -437,10 +431,11 @@ impl<R: TryCryptoRng> Worker<R> {
             .ok_or_else(|| "direct signaling disabled".into())
     }
 
-    fn publishing_pair(&mut self, peer: u64) -> Result<(&mut Publisher, SubscriberId), String> {
-        let publishing = self.publishing.as_mut().ok_or("not publishing")?;
-        let subscriber = *publishing.peers.get(&peer).ok_or("unknown peer")?;
-        Ok((&mut publishing.publisher, subscriber))
+    fn publisher(&mut self) -> Result<&mut Publishing, String> {
+        self.publishing
+            .as_mut()
+            .map(|sender| &mut sender.keys)
+            .ok_or_else(|| "not publishing".into())
     }
 
     fn subscriber(&mut self, peer: u64) -> Result<&mut Subscriber, String> {
@@ -452,91 +447,10 @@ impl<R: TryCryptoRng> Worker<R> {
 
     fn leave(&mut self, peer: u64) -> Reply {
         self.remotes.remove(&peer);
-        if let Some(publishing) = &mut self.publishing
-            && let Some(subscriber) = publishing.peers.remove(&peer)
-        {
-            publishing.due |= publishing.publisher.remove(&subscriber);
+        if let Some(sender) = &mut self.publishing {
+            sender.keys.remove(peer);
         }
         done(Vec::new(), Vec::new())
-    }
-}
-
-impl Publishing {
-    fn receive(&mut self, from: u64, message: &[u8], now: u64) -> Result<Vec<Event>, String> {
-        match self.publisher.receive(message, now).map_err(text)? {
-            PublisherEvent::Requested(subscriber) => {
-                if let Some(previous) = self.peers.get(&from) {
-                    self.publisher.remove(previous);
-                } else if self.peers.len() >= MAX_PEERS {
-                    self.publisher.remove(&subscriber);
-                    return Err("limit reached".into());
-                }
-                self.peers.insert(from, subscriber);
-                self.due = true;
-                Ok(Vec::new())
-            }
-            PublisherEvent::Confirmed(subscriber) => Ok(self
-                .peer(&subscriber)
-                .map(|peer| Event::Confirmed { peer })
-                .into_iter()
-                .collect()),
-        }
-    }
-
-    fn peer(&self, subscriber: &SubscriberId) -> Option<u64> {
-        self.peers
-            .iter()
-            .find_map(|(peer, known)| (known == subscriber).then_some(*peer))
-    }
-
-    fn tick<R: TryCryptoRng>(&mut self, now: u64, rng: &mut R) -> Result<Vec<Message>, String> {
-        let mut send = Vec::new();
-        if let Some(next) = &mut self.next {
-            let elapsed = now.abs_diff(next.sent);
-            if elapsed >= RESEND_AFTER_MS {
-                send.append(&mut next.messages);
-            }
-            if elapsed >= SWITCH_AFTER_MS {
-                self.switch();
-            }
-        }
-        if !self.due && now.abs_diff(self.last_rekey) < REKEY_INTERVAL_MS {
-            return Ok(send);
-        }
-        let rekey = match self.publisher.rekey(now, rng) {
-            Err(nuschl_stream::Error::TooSoon) => return Ok(send),
-            rekey => rekey.map_err(text)?,
-        };
-        // The epoch before goes into use now, and its messages out a second time.
-        if let Some(next) = &mut self.next {
-            send.append(&mut next.messages);
-        }
-        self.switch();
-        self.due = false;
-        self.last_rekey = now;
-        let messages: Vec<Message> = rekey
-            .messages
-            .iter()
-            .filter_map(|(subscriber, data)| Some(message(self.peer(subscriber)?, data)))
-            .collect();
-        send.extend(messages.iter().cloned());
-        self.next = Some(Next {
-            key: rekey.key,
-            sent: now,
-            messages,
-        });
-        if rekey.messages.is_empty() {
-            // Without subscribers, nobody waits for the key.
-            self.switch();
-        }
-        Ok(send)
-    }
-
-    /// Puts the next epoch's encryptors in use.
-    fn switch(&mut self) {
-        if let Some(Next { key, .. }) = self.next.take() {
-            self.encryptors = nuschl_sframe::encryptors(key.epoch, &key.key);
-        }
     }
 }
 

@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 const MAX_MESSAGE: usize = 16 * 1024;
-pub const MAX_REPLY_FRAME_BYTES: usize = MAX_MESSAGE.div_ceil(3) * 4 + 1024;
+pub const MAX_MEDIA_PEERS: usize = 48;
+// A tick can carry a cohort's grants and the previous rekey's retry.
+const MAX_BATCH: usize = MAX_MEDIA_PEERS * 2 * 1400;
+pub const MAX_REPLY_FRAME_BYTES: usize = MAX_BATCH.div_ceil(3) * 4 + 4096;
 
 /// A call generation increases for the life of one crypto handle.
 #[derive(Clone, Serialize, Deserialize)]
@@ -28,11 +31,16 @@ pub enum Action {
     Admit {
         nonce: [u8; 32],
     },
-    Pair {
+    Publish {
         peer: u64,
-        /// This client's side of the exchange.
-        publisher: bool,
     },
+    Subscribe {
+        peer: u64,
+    },
+    Left {
+        peer: u64,
+    },
+    Tick,
     Key {
         peer: u64,
         #[serde(with = "base64_bytes")]
@@ -40,6 +48,7 @@ pub enum Action {
     },
     Seal {
         peer: u64,
+        publisher: bool,
         #[serde(with = "base64_bytes")]
         data: Vec<u8>,
     },
@@ -64,7 +73,11 @@ impl Request {
             {
                 Err("call signal")
             }
-            Action::Pair { peer, .. } | Action::Key { peer, .. } | Action::Seal { peer, .. }
+            Action::Publish { peer }
+            | Action::Subscribe { peer }
+            | Action::Left { peer }
+            | Action::Key { peer, .. }
+            | Action::Seal { peer, .. }
                 if *peer == 0 =>
             {
                 Err("call peer")
@@ -105,10 +118,22 @@ pub enum Outcome {
     },
     Signal {
         peer: u64,
+        publisher: bool,
         #[serde(with = "base64_bytes")]
         data: Vec<u8>,
     },
+    KeyBatch {
+        messages: Vec<KeyMessage>,
+    },
     Done,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeyMessage {
+    pub peer: u64,
+    #[serde(with = "base64_bytes")]
+    pub data: Vec<u8>,
 }
 
 /// The credentials the creator sends to the configured SFU to create the room.
@@ -127,24 +152,30 @@ impl Reply {
             && match (&request.action, &self.outcome) {
                 (Action::Open { .. }, Outcome::Opened { .. })
                 | (
-                    Action::Pair {
-                        publisher: true, ..
-                    },
+                    Action::Publish { .. }
+                    | Action::Subscribe { .. }
+                    | Action::Left { .. }
+                    | Action::Tick,
                     Outcome::Done,
                 )
                 | (Action::Key { .. }, Outcome::Done)
                 | (Action::AttachMedia | Action::Close, Outcome::Done) => true,
                 (
-                    Action::Pair {
-                        peer,
-                        publisher: false,
-                    }
+                    Action::Subscribe { peer }
                     | Action::Key { peer, .. }
                     | Action::Seal { peer, .. },
                     Outcome::Send { peer: to, data, .. },
                 )
-                | (Action::Key { peer, .. }, Outcome::Signal { peer: to, data }) => {
+                | (Action::Key { peer, .. }, Outcome::Signal { peer: to, data, .. }) => {
                     peer == to && !data.is_empty() && data.len() <= MAX_MESSAGE
+                }
+                (Action::Tick, Outcome::KeyBatch { messages }) => {
+                    !messages.is_empty()
+                        && messages.len() <= 2 * MAX_MEDIA_PEERS
+                        && messages.iter().all(|msg| {
+                            msg.peer != 0 && !msg.data.is_empty() && msg.data.len() <= MAX_MESSAGE
+                        })
+                        && messages.iter().map(|msg| msg.data.len()).sum::<usize>() <= MAX_BATCH
                 }
                 (Action::Key { peer, .. }, Outcome::Ready { peer: from }) => peer == from,
                 (
