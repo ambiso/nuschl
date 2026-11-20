@@ -9,11 +9,7 @@ use nuschl_ipc::crypto::epoch::{Direction, Update};
 use nuschl_stream::{EpochKey, Link, Publishing, Subscriber, SubscriberEvent};
 use std::{collections::BTreeMap, io::Write};
 #[cfg(target_os = "linux")]
-use std::{
-    net::Shutdown,
-    os::{fd::OwnedFd, unix::net::UnixStream},
-    time::Duration,
-};
+use std::{net::Shutdown, os::fd::OwnedFd, time::Duration};
 use zeroize::Zeroize as _;
 
 #[derive(Default)]
