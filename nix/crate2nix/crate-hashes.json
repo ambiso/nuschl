@@ -1,4 +1,5 @@
 {
   "git+https://github.com/ambiso/opus-rs#0.1.42": "1i1h1d1fzx5ax9rf88vnwsw2bc9li2x6q7grjy31vljjiiwpj049",
+  "git+https://github.com/ambiso/str0m?rev=f9a5d0f40730a46e89d081e75940c6937ac63ca6#0.25.0": "0mhrfh801ma3ppdcf9wzppgid2sza5998jc2pgz40cfr56cm3lim",
   "git+https://github.com/memorysafety/rav1d?rev=2e7216c20ac2a75de204d6c8d7268b75a45959b4#1.1.1": "1llirkmg890d4r0pwx0flbbix9lk5qhk7jy1lqzk56k1hw3h3n5g"
 }
