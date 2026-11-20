@@ -356,37 +356,63 @@ impl Peer {
     }
 
     /// The publish leg sends the caller's tracks to its configured SFU.
-    /// Re-offering a single video track retires its old MID and adds the new source.
     pub fn offer_publish(
         &mut self,
         purposes: &[Purpose],
         id: SignalingId,
     ) -> Result<Description, Error> {
-        if !self.publishing {
-            let offer = self.make_offer(purposes, id, false, Direction::SendOnly)?;
-            self.publishing = true;
-            return Ok(offer);
-        }
-        if self.closed || !matches!(self.signaling, Signaling::Negotiated) {
+        let offer = self.make_offer(purposes, id, false, Direction::SendOnly)?;
+        self.publishing = true;
+        Ok(offer)
+    }
+
+    /// Retire removed and restarted sources. The remaining MIDs keep their RTP state.
+    pub fn update_publish(
+        &mut self,
+        purposes: &[Purpose],
+        restart: &[Purpose],
+        id: SignalingId,
+    ) -> Result<Description, Error> {
+        if !self.publishing || self.closed || !matches!(self.signaling, Signaling::Negotiated) {
             return Err(Error::SignalingState);
         }
-        let ([previous], [purpose]) = (self.tracks.as_slice(), purposes) else {
-            return Err(Error::Description);
-        };
-        if previous.purpose.kind() != Kind::Video || purpose.kind() != Kind::Video {
+        if purposes.len() > 4
+            || purposes.iter().enumerate().any(|(i, p)| purposes[..i].contains(p))
+            || restart.iter().any(|p| !purposes.contains(p))
+        {
             return Err(Error::Description);
         }
         let mut api = self.rtc.sdp_api();
-        api.stop_media(previous.track.0);
-        let mid = api.add_media(MediaKind::Video, Direction::SendOnly, None, None, None);
+        let mut bindings = Vec::with_capacity(purposes.len());
+        for track in &self.tracks {
+            if purposes.contains(&track.purpose) && !restart.contains(&track.purpose) {
+                bindings.push(TrackBinding {
+                    mid: track.track.mid(),
+                    purpose: track.purpose,
+                });
+            } else {
+                api.stop_media(track.track.0);
+            }
+        }
+        for &purpose in purposes {
+            if bindings.iter().any(|binding| binding.purpose == purpose) {
+                continue;
+            }
+            let kind = match purpose.kind() {
+                Kind::Audio => MediaKind::Audio,
+                Kind::Video => MediaKind::Video,
+            };
+            let mid = api.add_media(kind, Direction::SendOnly, None, None, None);
+            bindings.push(TrackBinding {
+                mid: mid.to_string(),
+                purpose,
+            });
+        }
         let (offer, pending) = api.apply().ok_or(Error::SignalingState)?;
         let description = Description {
             id,
             sdp: offer.to_sdp_string(),
-            bindings: vec![TrackBinding {
-                mid: mid.to_string(),
-                purpose: *purpose,
-            }],
+            bindings,
         };
         signaling::validate_subscription(&description.sdp, &description.bindings)?;
         self.bind_tracks(&description.bindings);
@@ -597,21 +623,30 @@ impl Peer {
     }
 
     fn bind_tracks(&mut self, bindings: &[TrackBinding]) {
+        let mut previous = std::mem::take(&mut self.tracks);
         self.tracks = bindings
             .iter()
-            .map(|b| TrackState {
-                track: Track(Mid::from(b.mid.as_str())),
-                purpose: b.purpose,
-                bucket: Bucket::new(
-                    self.now,
-                    if self.call_video_limit.is_some() && b.purpose.kind() == Kind::Video {
-                        CALL_VIDEO_WINDOW
-                    } else {
-                        WINDOW
-                    },
-                ),
-                next: self.now,
-                timestamp: None,
+            .map(|b| {
+                let track = Track(Mid::from(b.mid.as_str()));
+                if let Some(index) = previous.iter().position(|old| {
+                    old.track == track && old.purpose == b.purpose
+                }) {
+                    return previous.swap_remove(index);
+                }
+                TrackState {
+                    track,
+                    purpose: b.purpose,
+                    bucket: Bucket::new(
+                        self.now,
+                        if self.call_video_limit.is_some() && b.purpose.kind() == Kind::Video {
+                            CALL_VIDEO_WINDOW
+                        } else {
+                            WINDOW
+                        },
+                    ),
+                    next: self.now,
+                    timestamp: None,
+                }
             })
             .collect();
     }
