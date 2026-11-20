@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 
+use nuschl_ipc::video::CaptureLimits;
 use std::{
     mem,
     time::{Duration, Instant},
@@ -89,46 +90,107 @@ impl Stats {
                 .then(|| 8. * window.bytes as f64 / elapsed.as_secs_f64()),
             decode_ms: (valid_span && window.decoded > 0)
                 .then(|| 1000. * window.decode_time.as_secs_f64() / f64::from(window.decoded)),
-            path: self.path,
+            path: Some(self.path),
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct Snapshot {
     resolution: Option<(u16, u16)>,
     fps: Option<f64>,
     bitrate: Option<f64>,
     decode_ms: Option<f64>,
-    path: Path,
+    path: Option<Path>,
 }
 
 impl Snapshot {
-    pub(super) fn resolution(self) -> Option<(u16, u16)> {
-        self.resolution
-    }
-
-    pub(super) fn rows(self, owned: bool) -> impl Iterator<Item = (&'static str, String)> {
+    fn rows(self, owned: bool) -> impl Iterator<Item = (&'static str, String)> {
         let resolution = self
             .resolution
             .map_or_else(unavailable, |(width, height)| format!("{width} × {height}"));
         let frame_label = if owned { "Encoded FPS" } else { "Decoded FPS" };
-        let bitrate = self.bitrate.map_or_else(unavailable, |rate| {
-            if rate >= 1_000_000. {
-                format!("{:.1} Mb/s", rate / 1_000_000.)
-            } else {
-                format!("{:.1} kb/s", rate / 1000.)
-            }
-        });
         [
             ("Resolution", resolution),
             (frame_label, number(self.fps, "fps")),
-            ("Video payload bitrate", bitrate),
-            ("Connection", self.path.label().into()),
+            ("Video payload bitrate", bitrate(self.bitrate)),
+            (
+                "Connection",
+                self.path
+                    .map_or_else(unavailable, |path| path.label().into()),
+            ),
         ]
         .into_iter()
         .chain((!owned).then(|| ("Local decode delay", number(self.decode_ms, "ms"))))
     }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct Encoder {
+    pub budget_bps: Option<u32>,
+    pub target: CaptureLimits,
+    pub ceiling: Option<CaptureLimits>,
+    pub hardware: Option<bool>,
+}
+
+pub(super) fn rows(
+    sample: Option<Snapshot>,
+    encoder: Option<Encoder>,
+    owned: bool,
+) -> impl Iterator<Item = (&'static str, String)> {
+    let encoder_rows = owned.then(|| {
+        [
+            (
+                "Estimated video budget",
+                bitrate(encoder.and_then(|enc| enc.budget_bps).map(f64::from)),
+            ),
+            (
+                "Encoder target",
+                encoder.map_or_else(unavailable, |enc| limits(enc.target)),
+            ),
+            (
+                "Server ceiling",
+                encoder
+                    .and_then(|enc| enc.ceiling)
+                    .map_or_else(unavailable, limits),
+            ),
+            (
+                "Video encoder",
+                encoder
+                    .and_then(|enc| enc.hardware)
+                    .map_or_else(unavailable, |hardware| {
+                        if hardware {
+                            "Hardware AV1".into()
+                        } else {
+                            "Software AV1".into()
+                        }
+                    }),
+            ),
+        ]
+    });
+    sample
+        .unwrap_or_default()
+        .rows(owned)
+        .chain(encoder_rows.into_iter().flatten())
+}
+
+fn limits(limits: CaptureLimits) -> String {
+    format!(
+        "{}p{} · {}",
+        limits.height,
+        limits.fps,
+        bitrate(Some(f64::from(limits.bitrate)))
+    )
+}
+
+fn bitrate(rate: Option<f64>) -> String {
+    rate.map_or_else(unavailable, |rate| {
+        if rate >= 1_000_000. {
+            format!("{:.2} Mb/s", rate / 1_000_000.)
+        } else {
+            format!("{:.1} kb/s", rate / 1000.)
+        }
+    })
 }
 
 fn unavailable() -> String {
@@ -158,7 +220,7 @@ mod tests {
             [
                 ("Resolution", "1920 × 1080".into()),
                 ("Encoded FPS", "30.0 fps".into()),
-                ("Video payload bitrate", "1.5 Mb/s".into()),
+                ("Video payload bitrate", "1.50 Mb/s".into()),
                 ("Connection", "Call server (SFU)".into()),
             ]
         );
@@ -202,14 +264,54 @@ mod tests {
         stats.encoded(16_000);
         stats.direct(true);
         let delayed = stats.sample(start + Duration::from_secs(6));
-        assert_eq!(delayed.path, Path::Direct);
+        assert_eq!(delayed.path, Some(Path::Direct));
         assert_eq!(delayed.fps, None);
         assert_eq!(delayed.bitrate, None);
         stats.direct(false);
-        assert_eq!(stats.sample(start + Duration::from_secs(7)).path, Path::Sfu);
+        assert_eq!(
+            stats.sample(start + Duration::from_secs(7)).path,
+            Some(Path::Sfu)
+        );
 
         let mut forced = Stats::new(true, start);
         forced.direct(true);
-        assert_eq!(forced.sample(start + INTERVAL).path, Path::Turn);
+        assert_eq!(forced.sample(start + INTERVAL).path, Some(Path::Turn));
+    }
+
+    #[test]
+    fn missing_measurements_preserve_the_metric_positions() {
+        let limits = CaptureLimits {
+            height: 1440,
+            fps: 60,
+            bitrate: 8_000_000,
+        };
+        let measured = Encoder {
+            budget_bps: Some(122_000),
+            target: limits,
+            ceiling: Some(limits),
+            hardware: Some(true),
+        };
+        let empty = rows(None, None, true).collect::<Vec<_>>();
+        let populated = rows(
+            Some(Stats::new(false, Instant::now()).sample(Instant::now())),
+            Some(measured),
+            true,
+        )
+        .collect::<Vec<_>>();
+        assert!(empty.iter().all(|(_, value)| value == "—"));
+        assert!(
+            empty
+                .iter()
+                .map(|row| row.0)
+                .eq(populated.iter().map(|row| row.0))
+        );
+        assert_eq!(
+            populated[4],
+            ("Estimated video budget", "122.0 kb/s".into())
+        );
+        assert_eq!(
+            populated[5],
+            ("Encoder target", "1440p60 · 8.00 Mb/s".into())
+        );
     }
 }
