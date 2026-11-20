@@ -197,9 +197,9 @@ async fn confined_workers_switch_udp_legs_without_reusing_the_sframe_counter() {
     let (left, mut left_keys) = start(&executable).await;
     let (right, mut right_keys) = start(&executable).await;
     let mut workers = [left, right];
-    let mut initial = Leg::open(1, &mut workers).await;
+    let mut initial = Leg::open(nuschl_ipc::rtc::FIRST_DIRECT_LEG, &mut workers).await;
     assert!(matches!(
-        command(&mut workers[0], Command::SetSendLeg { leg: 1 }).await,
+        command(&mut workers[0], Command::SetSendLeg { leg: initial.id }).await,
         Reply::Rejected
     ));
     for (channel, peer, direction) in [
@@ -220,7 +220,7 @@ async fn confined_workers_switch_udp_legs_without_reusing_the_sframe_counter() {
     }
     timeout(Duration::from_secs(1), async {
         while !matches!(
-            command(&mut workers[0], Command::SetSendLeg { leg: 1 }).await,
+            command(&mut workers[0], Command::SetSendLeg { leg: initial.id }).await,
             Reply::Done
         ) {
             sleep(Duration::from_millis(1)).await;
@@ -263,13 +263,19 @@ async fn confined_workers_switch_udp_legs_without_reusing_the_sframe_counter() {
     ));
     assert_eq!(frame.1, VIDEO);
 
-    let mut replacement = Leg::open(2, &mut workers).await;
+    let mut replacement = Leg::open(initial.id + 1, &mut workers).await;
     assert!(matches!(
-        command(&mut workers[0], Command::SetSendLeg { leg: 2 }).await,
+        command(
+            &mut workers[0],
+            Command::SetSendLeg {
+                leg: replacement.id
+            }
+        )
+        .await,
         Reply::Done
     ));
     assert!(matches!(
-        command(&mut workers[0], Command::Poll { leg: 1 }).await,
+        command(&mut workers[0], Command::Poll { leg: initial.id }).await,
         Reply::Rejected
     ));
     assert!(matches!(

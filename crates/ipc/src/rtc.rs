@@ -19,6 +19,11 @@ pub const MAX_VIDEO: usize = 1024 * 1024;
 const MAX_METADATA: usize = MAX_SDP * 2 + 8192;
 pub const MAX_TRACKS: usize = 48;
 
+// The publish leg may first open after a direct receive leg has been used.
+pub const SFU_SUBSCRIBE_LEG: u32 = 1;
+pub const SFU_PUBLISH_LEG: u32 = 2;
+pub const FIRST_DIRECT_LEG: u32 = 3;
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Purpose {

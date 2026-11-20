@@ -130,7 +130,9 @@ struct Call {
     generation: u64,
     origin: Instant,
     legs: BTreeMap<u32, Leg>,
-    last_leg: u32,
+    last_direct_leg: u32,
+    opened_publish: bool,
+    opened_subscribe: bool,
     sending: Option<Sending>,
     receiving: BTreeMap<u64, FrameDecryptor>,
     active: Option<u32>,
@@ -143,7 +145,9 @@ impl Call {
             generation,
             origin: Instant::now(),
             legs: BTreeMap::new(),
-            last_leg: 0,
+            last_direct_leg: 0,
+            opened_publish: false,
+            opened_subscribe: false,
             sending: None,
             receiving: BTreeMap::new(),
             active: None,
@@ -201,10 +205,16 @@ impl Call {
                 role,
                 relayed,
             } => {
-                if leg <= self.last_leg
-                    || self.legs.len() == MAX_LEGS
-                    || relayed && role == LegRole::Direct
-                {
+                let fresh = match role {
+                    LegRole::Direct => {
+                        leg >= wire::FIRST_DIRECT_LEG && leg > self.last_direct_leg && !relayed
+                    }
+                    LegRole::SfuPublish => leg == wire::SFU_PUBLISH_LEG && !self.opened_publish,
+                    LegRole::SfuSubscribe => {
+                        leg == wire::SFU_SUBSCRIBE_LEG && !self.opened_subscribe
+                    }
+                };
+                if !fresh || self.legs.len() == MAX_LEGS {
                     return Err(());
                 }
                 let codec = match codec {
@@ -223,7 +233,11 @@ impl Call {
                         from: Vec::new(),
                     },
                 );
-                self.last_leg = leg;
+                match role {
+                    LegRole::Direct => self.last_direct_leg = leg,
+                    LegRole::SfuPublish => self.opened_publish = true,
+                    LegRole::SfuSubscribe => self.opened_subscribe = true,
+                }
                 Reply::Done
             }
             Command::CloseLeg { leg } => {
