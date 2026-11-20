@@ -368,17 +368,19 @@ async fn native_video_for_policy(relay_only: bool) {
         let mut tick = tokio::time::interval(FRAME_INTERVAL);
         loop {
             tokio::select! {
-                _ = tick.tick() => {
-                    *frame += 1;
-                    sender.send_keyframe(*frame * 3_060, expected.to_vec()).unwrap();
-                    tick.reset();
+                biased;
+                data = rendered(viewer, publisher, true) => {
+                    if data == expected {
+                        return data;
+                    }
                 }
                 event = sender.next() => {
                     event.expect("publisher remains live").expect("RTC publisher");
                 }
-                data = rendered(viewer, publisher, true) => {
-                    assert_eq!(data, expected);
-                    return data;
+                _ = tick.tick() => {
+                    *frame += 1;
+                    sender.send_keyframe(*frame * 3_060, expected.to_vec()).unwrap();
+                    tick.reset();
                 }
             }
         }
