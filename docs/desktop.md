@@ -196,17 +196,18 @@ without text.
 
 ## Calls
 
-On Linux with the video and RTC workers installed, **Start camera** and
-**Share screen** start an in-app video call and request capture through the
-desktop portal. Your camera or screen preview appears above the chat. The
-call card offers **Join video call** for native playback. The channel also
-receives a link people can open in a browser, including people using Mumble.
-People who enter the channel later receive the card while the call is active.
+On Linux with the video and RTC workers installed, **Start meeting** opens an
+in-app room with your camera and screen off. **Start camera** and **Share
+screen** open a room and request capture through the desktop portal. The call
+card offers **Join video call** for native playback. The channel also receives
+a browser link for guests, including people using Mumble. People who enter the
+channel later receive the card while the call is active.
 
-Use the presenter’s **Share screen** or **Use camera** icon to change what
-you share in the current call. The current source stays live while you choose.
-Sharing starts after you accept the system picker. The panel indicates when
-viewers can see the Nuschl window on the selected monitor.
+The presenter can enable camera and screen independently in the call toolbar.
+Sharing begins after the system picker grants access. Each source has its own
+stop control. The panel shows a preview and indicates when viewers can see the
+Nuschl window on the selected monitor. With both sources active, **View camera**
+and **View screen** select which picture appears on the stage.
 
 Choose **Full screen** to focus on video and **Exit full screen** or Escape
 to return to chat. **Minimize call** hides the video while the call continues.
@@ -218,11 +219,16 @@ carry 3440 × 1440 when the capture, encoder and connection support it. Open
 rate, encoded payload rate and the current route. Viewer Auto fits the video
 tile.
 
-The native path supports one publisher and one viewer. Two native clients can
+Native media uses one encrypted peer pair per desktop. Two native clients can
 switch to a direct connection when it can carry their video and return to the
-call server if needed. **Relay-only connections** sends native video through
-the call host's UDP TURN relay. The link in chat opens the call page for
-browser and group calls. Voice stays in Mumble.
+call server if needed. **Relay-only connections** routes native video through
+the call host's UDP TURN relay. Browser guests can use the link for group
+calls. The desktop keeps its meeting open for browser guests if native
+playback ends. Voice stays in Mumble.
+
+On supported browsers, **Share browser tab audio** includes sound from the tab
+you choose in the picker. Browser receivers can listen to that audio. Native
+desktop audio capture and playback are tracked in the [audio sharing design](screen-share-audio.md).
 
 In a direct conversation with someone online, the same buttons start a call
 with that person alone. The link goes to them as a private message and the

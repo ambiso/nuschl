@@ -46,17 +46,23 @@ decisions (§11).
   admission and sealed pairwise signaling. The Linux RTC worker receives media
   epochs directly from the crypto worker. Two native SDK participants can send
   and receive authenticated AV1 keyframes and interframes through the SFU.
-- On Linux the desktop can publish a camera or screen source or play incoming
-  AV1. A fresh portal grant supplies one PipeWire FD to the capture worker.
+- On Linux the desktop can publish camera and screen together or play the
+  selected incoming AV1 source. Starting a room can leave both devices off.
+  Each fresh portal grant supplies one PipeWire FD to a capture worker.
   VA-API handles encoding and decoding where available. The software fallbacks
   are rav1e and rav1d. The decoder returns bounded BGRA to GPUI.
-- The native path supports one publisher and one viewer. Two native peers can
+- A native desktop handles one encrypted peer pair. Two native peers can
   upgrade from the SFU to a direct connection and fall back to the SFU. Relay-only
-  native connections use UDP TURN with the SFU as their only media peer. The
-  browser handles group calls. Receiver limits currently adjust native bitrate.
-- The companion browser page captures camera and screen, sets receive
-  quality per tile and switches two-person video between the SFU and a direct
-  connection. The chat web app uses the companion page for video.
+  native connections use UDP TURN with the SFU as their only media peer.
+- The companion browser page handles group calls, captures camera and screen,
+  and can share the selected browser tab's audio in supported browsers. It
+  sets receive quality per tile and switches two-person video between the SFU
+  and a direct connection. The chat web app uses the companion page for video.
+- The SFU's three-source default fits camera, screen and shared audio.
+  WebRTC voice would add a fourth simultaneous source. Reserve a separate
+  microphone purpose and preserve mute, deafen and per-conversation routing
+  before raising the bound. See [screen-share audio](screen-share-audio.md)
+  for native audio capture scope and playback exclusion.
 - `privacy/1` relay-only and `PeerPolicy` exist; `rtc/1` is still to build
   (#141).
 - Voice playout knows its per-talker delay, which video playout can follow.
