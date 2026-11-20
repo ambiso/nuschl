@@ -183,6 +183,13 @@ impl Connection {
                 ServerMessage::Welcome(welcome)
                     if welcome.peer > 0
                         && welcome.peers.len() <= 256
+                        && welcome.peers.iter().enumerate().all(|(index, peer)| {
+                            peer.id != 0
+                                && peer.id != welcome.peer
+                                && welcome.peers[..index]
+                                    .iter()
+                                    .all(|previous| previous.id != peer.id)
+                        })
                         && options.codecs.contains(&welcome.codec) =>
                 {
                     Ok((socket, welcome, video_limits))

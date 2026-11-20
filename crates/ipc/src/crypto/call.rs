@@ -10,7 +10,8 @@ const MAX_MESSAGE: usize = 16 * 1024;
 pub const MAX_MEDIA_PEERS: usize = 48;
 // A tick can carry a cohort's grants and the previous rekey's retry.
 const MAX_BATCH: usize = MAX_MEDIA_PEERS * 2 * 1400;
-pub const MAX_REPLY_FRAME_BYTES: usize = MAX_BATCH.div_ceil(3) * 4 + 4096;
+pub const MAX_REPLY_FRAME_BYTES: usize =
+    MAX_BATCH.div_ceil(3) * 4 + MAX_MEDIA_PEERS * 2 * 64 + 1024;
 
 /// A call generation increases for the life of one crypto handle.
 #[derive(Clone, Serialize, Deserialize)]
