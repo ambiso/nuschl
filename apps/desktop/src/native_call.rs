@@ -28,7 +28,6 @@ use nuschl_session::{config::ClientSettings, identity::CryptoHandle};
 use std::{
     future::pending,
     path::{Path, PathBuf},
-    pin::Pin,
     sync::{Arc, LazyLock, Mutex},
     time::{Duration, Instant},
 };
