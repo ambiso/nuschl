@@ -75,6 +75,7 @@ pub enum MediaEvent {
 
 enum Input {
     Frame(Video),
+    RequestKeyframe(Purpose),
     #[cfg(test)]
     LoseDirect,
 }
@@ -169,6 +170,18 @@ impl Media {
             true
         });
         Ok(())
+    }
+
+    /// Recover decoding for the active subscription with a fresh keyframe.
+    /// Subsequent requests share the transport's keyframe cooldown.
+    pub fn request_keyframe(&self, purpose: Purpose) -> Result<(), Error> {
+        if self.source.is_some() || video_kind(purpose).is_none() {
+            return Err(Error::Protocol("invalid video subscription"));
+        }
+        match self.input.try_send(Input::RequestKeyframe(purpose)) {
+            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => Ok(()),
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(Error::Protocol("media ended")),
+        }
     }
 
     #[cfg(test)]
@@ -343,6 +356,29 @@ impl Leg {
             Purpose::ScreenVideo => Some(&mut self.screen),
             _ => None,
         }
+    }
+
+    async fn request_keyframe(
+        &mut self,
+        worker: &mut Worker,
+        purpose: Purpose,
+    ) -> Result<(), Error> {
+        if let Some(gate) = self.video_gate(purpose) {
+            gate.awaiting_key = true;
+            if gate.request() {
+                worker
+                    .exchange(
+                        Command::RequestKeyframe {
+                            leg: self.id,
+                            purpose,
+                        },
+                        Vec::new(),
+                    )
+                    .await?;
+                self.wake = Some(Instant::now());
+            }
+        }
+        Ok(())
     }
 
     async fn start(
@@ -805,6 +841,16 @@ async fn run(
             input = inputs.frames.recv() => {
                 let frame = match input {
                     Some(Input::Frame(frame)) => frame,
+                    Some(Input::RequestKeyframe(purpose)) => {
+                        if subscribed.iter().any(|track| track.purpose == purpose) {
+                            let active = direct.as_mut()
+                                .and_then(|direct| direct.leg.as_mut())
+                                .filter(|attempt| attempt.transport.selected)
+                                .map_or(&mut subscribe, |attempt| &mut attempt.transport);
+                            active.request_keyframe(worker, purpose).await?;
+                        }
+                        continue;
+                    }
                     #[cfg(test)]
                     Some(Input::LoseDirect) => {
                         if let Some(attempt) = direct.as_mut().and_then(|direct| direct.leg.as_mut())
@@ -947,9 +993,7 @@ async fn run(
                                 && let Some(gate) = subscribe.video_gate(purpose)
                             {
                                 *gate = FrameGate::new();
-                                gate.request();
-                                request_keyframe(worker, SUBSCRIBE, purpose).await?;
-                                subscribe.wake = Some(Instant::now());
+                                subscribe.request_keyframe(worker, purpose).await?;
                             }
                         }
                     }
@@ -1102,10 +1146,7 @@ async fn drain(
                                 }
                             }
                         } else {
-                            gate.awaiting_key = true;
-                            if gate.request() {
-                                request_keyframe(worker, leg.id, purpose).await?;
-                            }
+                            leg.request_keyframe(worker, purpose).await?;
                         }
                         continue;
                     }
@@ -1117,12 +1158,5 @@ async fn drain(
         }
     }
     leg.wake = Some(Instant::now());
-    Ok(())
-}
-
-async fn request_keyframe(worker: &mut Worker, leg: u32, purpose: Purpose) -> Result<(), Error> {
-    worker
-        .exchange(Command::RequestKeyframe { leg, purpose }, Vec::new())
-        .await?;
     Ok(())
 }
