@@ -238,17 +238,19 @@ and pacing use measured payload rates.
 - Key-frame requests: one per receiver and source per 2 s, coalesced per
   source; native senders repair loss with intra refresh.
 - Per room: ≤150 Mbit/s egress, ≤25 Mbit/s per receiver, ≤70 % of the host's
-  upload, all lowered by the traffic budget below. A full budget is shared
-  max-min by dropping layers; a join fails only when the base layers do not
-  fit.
+  upload. Available capacity is shared max-min by dropping layers; a join
+  fails when the base layers do not fit.
 - Traffic budget (Owner, #443): each SFU has a configurable egress budget per
   period (module options `trafficBudget` and `period`; the project uses
   Hetzner's 20 TB a month). The paced share is the budget times the elapsed
-  fraction of the period. Below it the normal caps apply, so long bursts run
-  at full quality; above it the SFU lowers the room and receiver caps step
-  by step, tiers down, then base layers only; at the budget it refuses new
-  video. The counter lives in the SFU's state directory and survives
-  restarts.
+  fraction of the period. Unused share accrues within the period, allowing
+  bursts at normal caps for as long as the running count fits that share.
+  Each started 1% of the period's budget above the share lowers the
+  available video tier by one, down to base layers only. At the nominal
+  budget, the SFU refuses joins and publishing offers. Established media
+  continues under the paced quality limits and can add egress beyond the
+  nominal budget. The counter lives in the SFU's state directory, survives
+  restarts and resets at the next UTC period.
 
 ### 5.3 Adaptation
 
