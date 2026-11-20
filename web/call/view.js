@@ -40,6 +40,7 @@ export class View {
   pinned = null;
   /** A tile per video track mid, kept while the track lasts. */
   tiles = new Map();
+  audio = new Map();
   /** Explicit viewer choices survive a publisher's encoder restart. */
   tiers = new Map();
   sentTiers = new WeakMap();
@@ -60,6 +61,7 @@ export class View {
     const $ = (id) => document.getElementById(id);
     this.nodes = {
       status: $("status"), stage: $("stage"), large: $("large"), grid: $("grid"), empty: $("empty"),
+      audio: $("shared-audio"),
       roster: $("roster"), count: $("count"), controls: $("controls"), host: $("host-actions"),
       ending: $("ending"), main: $("call"),
     };
@@ -77,6 +79,7 @@ export class View {
     const { ending, main } = this.nodes;
     this.stats.close();
     this.observer.disconnect();
+    this.sharedAudio(new Map());
     for (const size of this.sizes.values()) size.cancel();
     this.sizes.clear();
     main.hidden = true;
@@ -101,12 +104,13 @@ export class View {
 
     // Tiles: one per video track and per own source; the large view holds the pinned
     // tile or someone else's screen.
-    const own = [...call.sources].map(([kind, source]) => [
+    const own = [...call.sources].filter(([kind]) => kind !== "audio").map(([kind, source]) => [
       `own:${source.track.id}`,
       { peer: call.self, screen: kind === "screen", stream: source.stream, own: true, source },
     ]);
     const videos = [...call.tracks].filter(([, track]) => track.kind === "video")
       .map(([mid, track]) => [mid, call.direct.track(track)]).concat(own);
+    this.sharedAudio(call.tracks);
     const shown = new Map(videos);
     for (const [key, tile] of this.tiles) {
       const video = tile.querySelector("video");
@@ -140,6 +144,26 @@ export class View {
     count.textContent = String(people.length);
     roster.replaceChildren(...people.map(([id, role]) => this.person(id, role)));
     host.hidden = call.role !== "host";
+  }
+
+  sharedAudio(tracks) {
+    const { audio } = this.nodes;
+    for (const [mid, { track, player, row }] of this.audio) {
+      if (tracks.get(mid) === track) continue;
+      player.srcObject = null;
+      row.remove();
+      this.audio.delete(mid);
+    }
+    for (const [mid, track] of tracks) {
+      if (track.kind !== "audio" || this.audio.has(mid)) continue;
+      const label = `${this.name(track.peer)} · Shared audio`;
+      const player = element(this.document, "audio", { controls: "", "aria-label": label });
+      player.srcObject = track.stream;
+      const row = element(this.document, "div", {}, element(this.document, "span", {}, label), player);
+      audio.append(row);
+      this.audio.set(mid, { track, player, row });
+    }
+    audio.hidden = this.audio.size === 0;
   }
 
   tile(mid, track) {
@@ -246,11 +270,12 @@ export class View {
   }
 
   person(id, role) {
-    const own = id === this.call.self ? [...this.call.sources.keys()].map((kind) => ({ screen: kind === "screen" })) : [];
+    const labels = { camera: "Camera", screen: "Screen", audio: "Shared audio" };
+    const own = id === this.call.self ? [...this.call.sources.keys()].map((kind) => labels[kind]) : [];
     const sources = [...this.call.tracks.values()]
-      .filter((track) => track.peer === id && track.kind === "video")
-      .concat(own)
-      .map((track) => (track.screen ? "Screen" : "Camera"));
+      .filter((track) => track.peer === id)
+      .map((track) => labels[track.kind === "audio" ? "audio" : track.screen ? "screen" : "camera"])
+      .concat(own);
     const item = element(this.document, "li", {}, element(this.document, "span", { class: "name" }, this.name(id)));
     if (role === "host") item.append(element(this.document, "span", { class: "tag" }, "Host"));
     if (sources.length) item.append(element(this.document, "span", { class: "sources" }, sources.join(", ")));

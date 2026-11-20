@@ -52,6 +52,9 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 #large:not([hidden]) + #grid { flex: none; grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: 12rem; overflow-x: auto; }
 #empty { margin: auto; color: var(--muted); }
+#shared-audio { max-height: 25%; overflow: auto; }
+#shared-audio > div { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+#shared-audio audio { max-width: 100%; }
 .tile { position: relative; margin: 0; aspect-ratio: 16 / 9; background: var(--tile); border-radius: 8px; overflow: hidden; }
 .tile video { width: 100%; height: 100%; object-fit: contain; display: block; }
 .tile figcaption {

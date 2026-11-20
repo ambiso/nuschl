@@ -8,7 +8,7 @@ const GATHER_TIMEOUT = 3000;
 const SETUP_TIMEOUT = 15000;
 const RETRY_DELAY = 15000;
 const MAX_SDP = 12000;
-export const ENCODINGS = { camera: 0, screen: 1 };
+export const ENCODINGS = { camera: 0, screen: 1, audio: 3 };
 const id = (value) => Number.isSafeInteger(value) && value > 0;
 const mid = (value) => typeof value === "string" && /^[a-zA-Z0-9_-]{1,16}$/.test(value);
 
@@ -96,7 +96,7 @@ async function applyCaps({ local, direct }) {
 }
 
 function sameSources(sources, call) {
-  return sources.length === call.sources.size && sources.every(({ kind, local }) => {
+  return sources.length === call.sources.size - Number(call.sources.has("audio")) && sources.every(({ kind, local }) => {
     const source = call.sources.get(kind);
     return local.track.readyState === "live" && source?.track === local.track && source.transceiver.sender === local.sender;
   });
@@ -264,7 +264,7 @@ export class DirectPaths {
   async #consider(peer) {
     const call = this.#call;
     if (this.#ready !== peer || performance.now() < this.#retryAt || !call.publisher || !call.sources.size) return;
-    const sources = [...call.sources].map(([kind, { track, transceiver }]) => ({
+    const sources = [...call.sources].filter(([kind]) => kind !== "audio").map(([kind, { track, transceiver }]) => ({
       kind,
       mid: transceiver.mid,
       local: { track, sender: transceiver.sender },

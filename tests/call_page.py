@@ -11,8 +11,9 @@ video and back as the publisher's bandwidth estimate changes. The screen exposes
 receiver video statistics. A pinned camera takes
 the large view; a publisher leaving takes its tile
 and roster row along. A page user then publishes Chromium's fake camera and
-screen with Start camera and Share screen: nothing is captured before the
-buttons, no audio is asked for, the subscribers show both, a participant without
+screen with Start camera and Share screen. Captures start at the buttons.
+An explicit audio opt-in shares a synthetic tab tone over the SFU. The subscribers
+show both videos, a participant without
 AV1 switches the call to VP9 and back while the streams keep going, and Stop
 ends the captures and the tiles. A Chromium without encoded transforms and a
 broken link get their refusals. Screenshots land in the directory given as the
@@ -71,6 +72,27 @@ for (const name of ['getUserMedia', 'getDisplayMedia']) {
   navigator.mediaDevices[name] = async (constraints) => {
     window.captures.push([name, Boolean(constraints.audio), constraints.video.displaySurface || null]);
     const stream = await original(name === 'getDisplayMedia' ? {video: true} : constraints);
+    if (name === 'getDisplayMedia' && constraints.audio) {
+      const [video] = stream.getVideoTracks();
+      const settings = video.getSettings.bind(video);
+      video.getSettings = () => ({...settings(), displaySurface: 'browser'});
+      video.getCaptureHandle = () => null;
+      const context = new AudioContext();
+      const output = context.createMediaStreamDestination();
+      const oscillator = context.createOscillator();
+      oscillator.frequency.value = 660;
+      oscillator.connect(output);
+      oscillator.start();
+      const [track] = output.stream.getAudioTracks();
+      const stop = track.stop.bind(track);
+      track.stop = () => {
+        if (track.readyState === 'ended') return;
+        stop();
+        oscillator.disconnect();
+        context.close();
+      };
+      stream.addTrack(track);
+    }
     window.capturedTracks.push(...stream.getTracks());
     return stream;
   };
@@ -375,6 +397,56 @@ try:
         showing(driver, expected, "a page user's camera and screen")
     showing(user, {(a, False): (COLOURS["a"], False), (c, True): (COLOURS["c"], True),
                    (u, False): (green, False), (u, True): (green, False)}, "the page user's own view")
+
+    user.find_element(By.ID, "screen").click()
+    wait(user, "return document.getElementById('screen').textContent === 'Share screen'", "screen stopped")
+    user.find_element(By.ID, "screen-audio").click()
+    user.find_element(By.ID, "screen").click()
+    wait(user, "return document.getElementById('notice').textContent.includes('Sharing tab audio')",
+         "tab audio announced")
+    assert user.execute_script("return window.captures.at(-1)") == ["getDisplayMedia", True, "browser"]
+    selector = "#shared-audio audio"
+    for driver in [chrome, fox]:
+        wait(driver, f"return Boolean(document.querySelector('{selector}')?.srcObject)", "shared audio track")
+        assert driver.execute_script(f"return document.querySelector('{selector}').paused"), "audio autoplayed"
+        # Decode a short in-memory recording of the synthetic remote stream. This
+        # consumes audio independently of the VM's playback devices.
+        tone = driver.execute_async_script("""
+          const [selector, done] = arguments;
+          const stream = document.querySelector(selector).srcObject;
+          const recorder = new MediaRecorder(stream);
+          const chunks = [];
+          recorder.ondataavailable = event => chunks.push(event.data);
+          recorder.onerror = event => done({error: String(event.error)});
+          recorder.onstop = async () => {
+            try {
+              const data = await new Blob(chunks, {type: recorder.mimeType}).arrayBuffer();
+              const context = new OfflineAudioContext(1, 48000, 48000);
+              const decoded = await context.decodeAudioData(data);
+              const samples = decoded.getChannelData(0);
+              const middle = samples.subarray(samples.length / 4, 3 * samples.length / 4);
+              let power = 0;
+              let crossings = 0;
+              let positive = false;
+              for (const sample of middle) {
+                power += sample * sample;
+                if (sample > 0.1 && !positive) {
+                  positive = true;
+                  crossings++;
+                }
+                if (sample < -0.1) positive = false;
+              }
+              done({hertz: crossings * decoded.sampleRate / middle.length, rms: Math.sqrt(power / middle.length)});
+            } catch (error) {
+              done({error: String(error)});
+            }
+          };
+          recorder.start();
+          setTimeout(() => recorder.stop(), 2000);
+        """, selector)
+        assert "error" not in tone and abs(tone["hertz"] - 660) < 25 and tone["rms"] > 0.2, tone
+        print(f"{driver.name}: received the encrypted tab audio tone {tone}", flush=True)
+
     user.save_screenshot(str(OUT / "publishing.png"))
     chrome.save_screenshot(str(OUT / "publishing-subscriber.png"))
 
@@ -433,11 +505,18 @@ try:
     for driver in [chrome, fox]:
         advancing(driver, u, "after the switch back to AV1")
 
+    user.find_element(By.ID, "screen-audio").click()
+    wait(user, "return document.getElementById('screen').textContent === 'Stop sharing'", "screen kept sharing")
+    for driver in [chrome, fox]:
+        wait(driver, f"return !document.querySelector('{selector}')", "tab audio after turning it off")
+        showing(driver, everyone[driver], "video without tab audio")
+
     # Stop ends both captures and takes the tiles off every page.
     user.find_element(By.ID, "camera").click()
     user.find_element(By.ID, "screen").click()
     for driver in [chrome, fox]:
         wait(driver, f"return !document.querySelector('.tile[data-peer=\"{u}\"]')", "tiles after Stop")
+        wait(driver, f"return !document.querySelector('{selector}')", "tab audio after Stop")
     assert user.execute_script("return window.capturedTracks.every(track => track.readyState === 'ended')")
     assert user.find_element(By.ID, "camera").text == "Start camera"
 

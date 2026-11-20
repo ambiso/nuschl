@@ -31,6 +31,8 @@ const CHANNELS_SHEET_LIST: &str = "channels-sheet-list";
 struct PaneLayout {
     sidebar: Option<f32>,
     dense: bool,
+    #[cfg(target_os = "linux")]
+    room_for_capture_buttons: bool,
     chrome: Pixels,
     auxiliary: Pixels,
     rows: usize,
@@ -38,11 +40,12 @@ struct PaneLayout {
 
 impl PaneLayout {
     fn new(size: Size<Pixels>, preferred: f32, line: Pixels, wrap: Pixels) -> Self {
+        let width = f32::from(size.width);
         let height = f32::from(size.height).max(0.);
         let line = f32::from(line).max(1.);
         let wrap = f32::from(wrap).max(0.);
         let minimum = *nuschl_session::config::SIDEBAR_WIDTH.start();
-        let available = f32::from(size.width) - RAIL_WIDTH - SPLITTER_WIDTH - minimum;
+        let available = width - RAIL_WIDTH - SPLITTER_WIDTH - minimum;
         // Header, notices, preview and hints share a scroll region at short heights.
         // The editor and at least one timeline line retain dedicated space.
         let (input, bottom, gap) = Self::padding(false);
@@ -61,9 +64,15 @@ impl PaneLayout {
         let rows = ((height - chrome - auxiliary - line - padding) / line)
             .floor()
             .clamp(1., 10.) as usize;
+        let sidebar = navigation_fits.then(|| preferred.min(available));
         Self {
-            sidebar: navigation_fits.then(|| preferred.min(available)),
+            sidebar,
             dense,
+            #[cfg(target_os = "linux")]
+            room_for_capture_buttons: width
+                - RAIL_WIDTH
+                - sidebar.map_or(0., |w| w + SPLITTER_WIDTH)
+                >= 360.,
             chrome: px(chrome),
             auxiliary: px(auxiliary),
             rows,
@@ -2060,19 +2069,24 @@ fn conversation_header(
                             cx,
                         )
                     };
+                    let meeting = button("native-meeting", "meeting", "Start meeting", None);
                     controls
-                        .child(button(
-                            "native-camera",
-                            "video",
-                            "Start camera",
-                            Source::Camera,
-                        ))
-                        .child(button(
-                            "share-screen",
-                            "screen",
-                            "Share screen",
-                            Source::Screen,
-                        ))
+                        .child(meeting)
+                        .when(pane.room_for_capture_buttons, |controls| {
+                            controls
+                                .child(button(
+                                    "native-camera",
+                                    "video",
+                                    "Start camera",
+                                    Some(Source::Camera),
+                                ))
+                                .child(button(
+                                    "share-screen",
+                                    "screen",
+                                    "Share screen",
+                                    Some(Source::Screen),
+                                ))
+                        })
                 },
             );
             controls

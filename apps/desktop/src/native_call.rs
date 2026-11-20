@@ -2,7 +2,9 @@
 //! Linux calls on the desktop. Capture and decoding use confined video workers.
 
 mod preview;
+mod publisher;
 mod stats;
+mod viewer;
 
 use crate::{
     dialogs::{Tone, icon_button, styled_button},
@@ -11,23 +13,21 @@ use crate::{
     services::ServiceEvent,
     state::Desktop,
     theme::{
-        ACCENT, BACKDROP, BORDER, DANGER, DANGER_TEXT, MAIN, SIDEBAR, TEXT, TEXT_MUTED, color, tint,
+        ACCENT, BACKDROP, BORDER, DANGER, DANGER_TEXT, MAIN, SIDEBAR, TEXT, TEXT_MUTED, color,
     },
 };
-use futures_util::{Stream, StreamExt as _, stream};
+use futures_util::{FutureExt as _, StreamExt as _, future::BoxFuture};
 use gpui_kit::{prelude::*, *};
 use nuschl_client::native::sfu::{
     Connect, Connection, Media, MediaEvent, MediaOptions, Purpose, Quality, VideoKind,
 };
 use nuschl_core::{model::TextTarget, network::PeerPolicy};
-use nuschl_ipc::video::{
-    Capture, CaptureLimits, DecodeError, DecodedFrame, Decoder, Source, portal,
-};
+use nuschl_ipc::video::{DecodedFrame, Source, portal};
 use nuschl_protocol::sfu::Codec;
 use nuschl_session::{config::ClientSettings, identity::CryptoHandle};
 use std::{
-    path::PathBuf,
-    pin::Pin,
+    future::pending,
+    path::{Path, PathBuf},
     sync::{Arc, LazyLock, Mutex},
     time::{Duration, Instant},
 };
@@ -51,8 +51,9 @@ pub struct Active {
     quality: watch::Sender<Selection>,
     quality_open: bool,
     stats_open: bool,
-    own_video: Option<VideoKind>,
-    source_requests: mpsc::Sender<Source>,
+    local_sources: [bool; 2],
+    can_publish: bool,
+    source_requests: mpsc::Sender<SourceRequest>,
     source_pending: Option<Source>,
     updates: Arc<Latest>,
     stop: Option<oneshot::Sender<()>>,
@@ -64,22 +65,33 @@ pub struct Active {
 pub enum Finish {
     Left,
     RoomEnded,
+    MediaEnded,
+}
+
+#[derive(Clone, Copy)]
+struct SourceRequest {
+    source: Source,
+    enable: bool,
 }
 
 pub enum SourceChange {
+    CanPublish(bool),
+    MediaClosed,
     Active { source: Source, monitor: bool },
-    Cancelled,
-    Failed(String),
+    Stopped(Source),
+    Cancelled(Source),
+    Failed(Source, String),
 }
 
 pub struct Start {
+    owner: bool,
     crypto: CryptoHandle,
     generation: u64,
     url: String,
     host: String,
     policy: PeerPolicy,
     source: Option<Source>,
-    source_requests: mpsc::Receiver<Source>,
+    source_requests: mpsc::Receiver<SourceRequest>,
     updates: Arc<Latest>,
     quality: watch::Receiver<Selection>,
     stop: oneshot::Receiver<()>,
@@ -89,6 +101,7 @@ pub struct Start {
 struct Selection {
     quality: Quality,
     pixels: u32,
+    view: Option<Purpose>,
 }
 
 struct VideoStats {
@@ -101,14 +114,13 @@ struct Display<'a> {
     source_changes: SourceChanges<'a>,
     updates: Arc<Latest>,
     quality: watch::Receiver<Selection>,
-    stats: stats::Stats,
 }
 
 impl Display<'_> {
-    fn report(&mut self, kind: VideoKind, limits: Option<String>) {
+    fn report(&self, kind: VideoKind, sample: stats::Snapshot, limits: Option<String>) {
         self.updates.stats(Some(Arc::new(VideoStats {
             kind,
-            sample: self.stats.sample(Instant::now()),
+            sample,
             limits,
         })));
     }
@@ -118,6 +130,8 @@ struct Update {
     status: String,
     frame: Option<DecodedFrame>,
     stats: Option<Arc<VideoStats>>,
+    local_view: Option<(u64, VideoKind)>,
+    viewer_sources: viewer::Sources,
     visible: bool,
     clear: bool,
 }
@@ -173,6 +187,44 @@ impl Latest {
         self.ready.notify_one();
     }
 
+    fn local_view(&self, view: Option<(u64, VideoKind, bool)>) {
+        let mut update = self
+            .update
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        update.local_view = view.map(|(id, kind, _)| (id, kind));
+        update.status = view
+            .map_or("Waiting for video", |(_, kind, ready)| {
+                publisher::label(kind, ready)
+            })
+            .into();
+        update.frame = None;
+        update.stats = None;
+        update.clear = true;
+        drop(update);
+        self.ready.notify_one();
+    }
+
+    fn without_viewers(&self) {
+        self.update
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .viewer_sources = viewer::Sources::default();
+        self.ready.notify_one();
+    }
+
+    fn local_frame(&self, id: u64, frame: DecodedFrame) {
+        let mut update = self
+            .update
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if update.local_view.is_some_and(|(current, _)| current == id) && update.visible {
+            update.frame = Some(frame);
+            drop(update);
+            self.ready.notify_one();
+        }
+    }
+
     fn frame(&self, frame: DecodedFrame, watching: bool) {
         let mut update = self
             .update
@@ -192,6 +244,7 @@ struct Surface {
     image: Option<Arc<RenderImage>>,
     stats: Option<Arc<VideoStats>>,
     own_video: Option<VideoKind>,
+    viewer_sources: viewer::Sources,
     quality: watch::Sender<Selection>,
     _updates: Task<()>,
 }
@@ -207,7 +260,7 @@ impl Surface {
         let observe = cx.spawn(async move |this, cx| {
             loop {
                 updates.ready.notified().await;
-                let (status, frame, clear, stats) = {
+                let (status, frame, clear, stats, local_view, viewer_sources) = {
                     let mut update = updates
                         .update
                         .lock()
@@ -221,12 +274,16 @@ impl Surface {
                         },
                         std::mem::take(&mut update.clear),
                         update.stats.clone(),
+                        update.local_view,
+                        update.viewer_sources,
                     )
                 };
                 if this
                     .update(cx, |this, cx| {
                         this.status = status;
                         this.stats = stats;
+                        this.own_video = local_view.map(|(_, kind)| kind);
+                        this.viewer_sources = viewer_sources;
                         if let Some(frame) = frame.and_then(render_frame) {
                             this.image = Some(frame);
                         } else if clear {
@@ -245,6 +302,7 @@ impl Surface {
             image: None,
             stats: None,
             own_video,
+            viewer_sources: viewer::Sources::default(),
             quality,
             _updates: observe,
         }
@@ -378,12 +436,14 @@ impl Desktop {
             room.clone()
         };
         let own_video = source.map(video_kind);
-        let status = source.map_or("Joining video call", portal_prompt);
+        let status = "Joining video call";
         let updates = Arc::new(Latest {
             update: Mutex::new(Update {
                 status: status.into(),
                 frame: None,
                 stats: None,
+                local_view: None,
+                viewer_sources: viewer::Sources::default(),
                 visible: true,
                 clear: false,
             }),
@@ -394,6 +454,7 @@ impl Desktop {
         let (selection, quality) = watch::channel(Selection {
             quality: Quality::Auto,
             pixels: 0,
+            view: None,
         });
         let policy = PeerPolicy {
             relay_only: self.settings.relay_only,
@@ -411,9 +472,10 @@ impl Desktop {
             quality: selection,
             quality_open: false,
             stats_open: false,
-            own_video: None,
+            local_sources: [false; 2],
+            can_publish: false,
             source_requests: request_source,
-            source_pending: None,
+            source_pending: source,
             updates: updates.clone(),
             stop: Some(stop),
             minimized: false,
@@ -421,6 +483,7 @@ impl Desktop {
             monitor: false,
         });
         self.services.native_call(Start {
+            owner,
             crypto: self.driver.call_crypto(),
             generation,
             url,
@@ -438,7 +501,7 @@ impl Desktop {
         &mut self,
         index: usize,
         target: TextTarget,
-        source: Source,
+        source: Option<Source>,
         cx: &mut Context<Self>,
     ) {
         if self.native_call.is_some() || !self.native_available(self.call_host()) {
@@ -447,7 +510,7 @@ impl Desktop {
         match self.create_call(index, target.clone()) {
             Ok(link) => {
                 let server = self.client.servers[index].id.clone();
-                self.open_native_call(server, target, &link, Some(source), cx);
+                self.open_native_call(server, target, &link, source, cx);
                 self.announce_call(link);
             }
             Err(error) => self.client.servers[index].set_notice(error),
@@ -561,13 +624,18 @@ impl Desktop {
     }
 
     fn choose_native_source(&mut self, source: Source, cx: &mut Context<Self>) {
-        if let Some(call) = &mut self.native_call
-            && call.stop.is_some()
-            && call.source_pending.is_none()
-            && call
-                .own_video
-                .is_some_and(|kind| kind != video_kind(source))
-            && call.source_requests.try_send(source).is_ok()
+        let Some(call) = self.native_call.as_mut().filter(|call| call.stop.is_some()) else {
+            return;
+        };
+        let enable = !call.local_sources[publisher::index(source)];
+        if enable && (!call.can_publish || call.source_pending.is_some()) {
+            return;
+        }
+        if call
+            .source_requests
+            .try_send(SourceRequest { source, enable })
+            .is_ok()
+            && enable
         {
             call.source_pending = Some(source);
             cx.notify();
@@ -587,25 +655,46 @@ impl Desktop {
         else {
             return;
         };
-        call.source_pending = None;
-        match change {
-            SourceChange::Active { source, monitor } => {
-                let kind = video_kind(source);
-                call.monitor = monitor;
-                call.own_video = Some(kind);
-                call.surface.update(cx, |surface, cx| {
-                    surface.own_video = Some(kind);
-                    cx.notify();
-                });
+        let source = match change {
+            SourceChange::CanPublish(allowed) => {
+                call.can_publish = allowed;
+                cx.notify();
+                return;
             }
-            SourceChange::Cancelled => {}
-            SourceChange::Failed(error) => {
+            SourceChange::MediaClosed => {
+                call.can_publish = false;
+                call.local_sources = [false; 2];
+                call.source_pending = None;
+                call.monitor = false;
+                cx.notify();
+                return;
+            }
+            SourceChange::Active { source, monitor } => {
+                call.local_sources[publisher::index(source)] = true;
+                if source == Source::Screen {
+                    call.monitor = monitor;
+                }
+                source
+            }
+            SourceChange::Stopped(source) => {
+                call.local_sources[publisher::index(source)] = false;
+                if source == Source::Screen {
+                    call.monitor = false;
+                }
+                source
+            }
+            SourceChange::Cancelled(source) => source,
+            SourceChange::Failed(source, error) => {
                 if let Some(server) = self.client.servers.iter_mut().find(|server| {
                     server.id == call.server && server.generation == call.voice_generation
                 }) {
-                    server.set_notice(format!("Could not switch video source. {error}"));
+                    server.set_notice(format!("Video source unavailable. {error}"));
                 }
+                source
             }
+        };
+        if call.source_pending == Some(source) {
+            call.source_pending = None;
         }
         cx.notify();
     }
@@ -683,10 +772,20 @@ pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
     let surface = call.surface.read(cx);
     let has_picture = surface.image.is_some();
     let stats = surface.stats.clone();
+    let owned = surface.own_video.is_some();
     let kind = surface
         .own_video
         .or_else(|| stats.as_ref().map(|stats| stats.kind));
-    let quality = call.quality.borrow().quality;
+    let selection = *call.quality.borrow();
+    let quality = selection.quality;
+    let (camera, screen) = surface.viewer_sources.available();
+    let picker = viewer::controls(
+        camera || call.local_sources[publisher::index(Source::Camera)],
+        screen || call.local_sources[publisher::index(Source::Screen)],
+        selection.view,
+        generation,
+        cx,
+    );
     let actions = layout::actions()
         .id("native-call-toolbar")
         .role(Role::Toolbar)
@@ -701,6 +800,7 @@ pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
         .px_2()
         .py_1()
         .children(source_controls(call, cx))
+        .children(picker)
         .when_some(kind, |actions, kind| {
             actions.child(styled_button(
                 "native-call-quality",
@@ -795,11 +895,7 @@ pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
                 panel.child(quality_choices(kind, quality, cx))
             })
             .when(call.stats_open, |panel| {
-                panel.child(video_stats(
-                    stats.as_deref(),
-                    call.own_video.is_some(),
-                    quality,
-                ))
+                panel.child(video_stats(stats.as_deref(), owned, quality))
             })
             .child(call.surface.clone())
             .child(actions)
@@ -939,57 +1035,40 @@ fn video_kind(source: Source) -> VideoKind {
 }
 
 fn source_controls(call: &Active, cx: &mut Context<Desktop>) -> Vec<AnyElement> {
-    let Some(active) = call.own_video else {
+    if !call.can_publish && !call.local_sources.into_iter().any(|active| active) {
         return Vec::new();
-    };
-    let choose = call.source_pending.is_none() && call.stop.is_some();
+    }
     [
         (
             Source::Camera,
             "native-call-camera",
             "video",
-            "Use camera",
-            "Camera is on",
+            "Start camera",
+            "Stop camera",
         ),
         (
             Source::Screen,
             "native-call-screen",
             "screen",
             "Share screen",
-            "Sharing screen",
+            "Stop sharing screen",
         ),
     ]
     .into_iter()
-    .map(|(source, id, icon, action, status)| {
-        let enabled = active == video_kind(source);
-        if choose && !enabled {
-            return icon_button(
-                id,
-                icon,
-                action,
-                TEXT,
-                None,
-                move |this, _, cx| this.choose_native_source(source, cx),
-                cx,
-            );
+    .filter_map(|(source, id, icon, start, stop)| {
+        let active = call.local_sources[publisher::index(source)];
+        if !active && (!call.can_publish || call.source_pending.is_some()) {
+            return None;
         }
-        div()
-            .id(id)
-            .role(Role::Image)
-            .aria_label(if enabled { status } else { action })
-            .size(px(32.))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(6.))
-            .when(enabled, |icon| icon.bg(tint(ACCENT, 0x35)))
-            .child(crate::assets::icon(
-                icon,
-                18.,
-                color(if enabled { ACCENT } else { TEXT_MUTED }),
-            ))
-            .into_any_element()
+        Some(icon_button(
+            id,
+            icon,
+            if active { stop } else { start },
+            if active { ACCENT } else { TEXT },
+            active.then_some(ACCENT),
+            move |this, _, cx| this.choose_native_source(source, cx),
+            cx,
+        ))
     })
     .collect()
 }
@@ -1079,6 +1158,7 @@ async fn drive(
     events: &mpsc::Sender<ServiceEvent>,
 ) -> Result<Finish, String> {
     let Start {
+        owner,
         crypto,
         generation,
         url,
@@ -1114,34 +1194,45 @@ async fn drive(
         codecs: &[Codec::Av1],
         policy,
     };
-    let (mut media, grant, video_worker) = tokio::select! {
+    let (mut media, video_worker) = tokio::select! {
         biased;
         () = &mut cancel => return Ok(Finish::Left),
-        result = prepare(crypto, options, source, &updates) => result?,
+        result = prepare(crypto, options) => result?,
     };
     let mut display = Display {
         source_changes: SourceChanges { generation, events },
         updates,
         quality,
-        stats: stats::Stats::new(policy.relay_only, Instant::now()),
     };
-    let result = if let Some(grant) = grant {
-        publish_video(
-            &mut media,
-            grant,
-            video_worker,
-            &mut display,
-            source_requests,
-            cancel,
-        )
-        .await
-        .map(|()| Finish::Left)
-    } else {
-        display.updates.status("Waiting for video");
-        receive_video(&mut media, video_worker, &mut display, cancel).await
+    let mut publisher = publisher::Publisher::new(policy.relay_only);
+    let mut viewer = viewer::Viewer::new(video_worker.clone(), policy.relay_only);
+    let result = tokio::select! {
+        biased;
+        () = &mut cancel => Ok(Finish::Left),
+        result = meeting(
+            &mut media, &mut display, &mut publisher, &mut viewer,
+            (video_worker.as_path(), source), source_requests,
+        ) => result,
     };
-    let closed = media.stop().await.map_err(text);
-    result.and_then(|finish| closed.map(|()| finish))
+    let (closed, (), decoded) = tokio::join!(media.stop(), publisher.stop(), viewer.stop());
+    let result = result.and_then(|finish| closed.map_err(text).and(decoded).map(|()| finish));
+    if owner && matches!(result, Ok(Finish::MediaEnded) | Err(_)) {
+        if let Err(error) = result {
+            tracing::warn!(%error, "native video stopped while the meeting remains open");
+        }
+        display.updates.local_view(None);
+        display.updates.without_viewers();
+        display
+            .updates
+            .status("Meeting open · browser guests can use the chat link");
+        display
+            .source_changes
+            .report(SourceChange::MediaClosed)
+            .await?;
+        cancel.await;
+        return Ok(Finish::Left);
+    }
+    result
 }
 
 #[derive(Clone, Copy)]
@@ -1162,489 +1253,156 @@ impl SourceChanges<'_> {
     }
 }
 
-async fn publish_video(
-    media: &mut Media,
-    mut grant: portal::Grant,
-    worker: PathBuf,
-    display: &mut Display<'_>,
-    mut source_requests: mpsc::Receiver<Source>,
-    mut cancel: Pin<&mut impl Future<Output = ()>>,
-) -> Result<(), String> {
-    let changes = display.source_changes;
-    loop {
-        let source = grant.source();
-        let monitor = grant.can_include_app();
-        let encoding = Encoding {
-            kind: video_kind(source),
-            remote: None,
-            bitrate_estimate: None,
-            software: false,
-        };
-        let initial = encoding.ceiling(display.quality.borrow_and_update().quality);
-        let starting = async {
-            changes
-                .report(SourceChange::Active { source, monitor })
-                .await?;
-            grant
-                .start_with_limits(worker.clone(), initial)
-                .map_err(text)
-        };
-        let mut capture = tokio::select! {
-            biased;
-            () = &mut cancel => return Ok(()),
-            capture = starting => capture?,
-        };
-        let updates = display.updates.clone();
-        let mut preview = preview::Preview::start(worker.clone(), source, move |frame| {
-            updates.frame(frame, false)
-        })
-        .map_err(|error| tracing::debug!(%error, "local video preview unavailable"))
-        .ok();
-        let status = match source {
-            Source::Screen => "Your screen · waiting for a viewer",
-            Source::Camera => "Your camera · waiting for a viewer",
-        };
-        display.updates.clear(status);
-        display.updates.stats(None);
-        display.stats.clear(Instant::now());
+type Picker = BoxFuture<'static, (Source, Result<portal::Grant, ashpd::Error>)>;
 
-        let result = {
-            let choices = stream::unfold(&mut source_requests, |requests| async move {
-                loop {
-                    let source = requests.recv().await?;
-                    let change = match portal::request(source, None).await {
-                        Ok(grant) => return Some((Ok(grant), requests)),
-                        Err(ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled)) => {
-                            SourceChange::Cancelled
-                        }
-                        Err(error) => SourceChange::Failed(text(error)),
-                    };
-                    if let Err(error) = changes.report(change).await {
-                        return Some((Err(error), requests));
-                    }
-                }
-            });
-            tokio::pin!(choices);
-            tokio::select! {
-                biased;
-                () = &mut cancel => Ok(None),
-                result = send_video(
-                    media, &mut capture, &mut preview, encoding, initial, display, choices.as_mut(),
-                ) => result,
-            }
-        };
-        let closed = capture.stop().await.map_err(text);
-        if let Some(preview) = preview
-            && let Err(error) = preview.stop().await
-        {
-            tracing::debug!(%error, "could not stop the local preview");
-        }
-        closed?;
-        let Some(next) = result? else {
-            return Ok(());
-        };
-        grant = next;
+fn pick_source(source: Source) -> Picker {
+    async move { (source, portal::request(source, None).await) }.boxed()
+}
+
+async fn next_grant(picker: &mut Option<Picker>) -> (Source, Result<portal::Grant, ashpd::Error>) {
+    match picker {
+        Some(picker) => picker.await,
+        None => pending().await,
     }
 }
 
-async fn prepare(
-    crypto: CryptoHandle,
-    options: Connect<'_>,
-    source: Option<Source>,
-    updates: &Latest,
-) -> Result<(Media, Option<portal::Grant>, PathBuf), String> {
+async fn meeting(
+    media: &mut Media,
+    display: &mut Display<'_>,
+    publisher: &mut publisher::Publisher,
+    viewer: &mut viewer::Viewer,
+    (worker, initial): (&Path, Option<Source>),
+    mut source_requests: mpsc::Receiver<SourceRequest>,
+) -> Result<Finish, String> {
+    let changes = display.source_changes;
+    let mut selection = *display.quality.borrow_and_update();
+    let mut picker = initial.map(pick_source);
+    let mut allowed = None;
+    let mut timer = tokio::time::interval(stats::INTERVAL);
+    timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    display.updates.status("Waiting for video");
+    loop {
+        let can_publish = media.can_publish();
+        if allowed != Some(can_publish) {
+            changes
+                .report(SourceChange::CanPublish(can_publish))
+                .await?;
+            allowed = Some(can_publish);
+        }
+        let [camera, screen] = &mut publisher.slots;
+        let (source, frame) = tokio::select! {
+            event = media.next() => {
+                let event = match event {
+                    Some(Ok(event)) => event,
+                    Some(Err(nuschl_client::native::sfu::Error::Refused(reason))) if reason == "ended" => {
+                        return Ok(Finish::RoomEnded);
+                    }
+                    Some(Err(error)) => return Err(text(error)),
+                    None => return Ok(Finish::MediaEnded),
+                };
+                let retune = matches!(event, MediaEvent::SourceLimits { .. } | MediaEvent::Direct { .. });
+                publisher.event(&event, &display.updates);
+                if retune {
+                    publisher.retune(display, selection, false);
+                }
+                viewer.handle_event(media, display, event).await?;
+                continue;
+            }
+            request = source_requests.recv() => {
+                let Some(SourceRequest { source, enable }) = request else { return Ok(Finish::Left); };
+                if enable {
+                    if picker.is_none() && !publisher.active(source) && can_publish {
+                        picker = Some(pick_source(source));
+                    } else {
+                        changes.report(SourceChange::Cancelled(source)).await?;
+                    }
+                } else if publisher.active(source) {
+                    publisher.retire(source);
+                    media.set_source(purpose(source), false).map_err(text)?;
+                    changes.report(SourceChange::Stopped(source)).await?;
+                    publisher.focus(selection, &display.updates);
+                    publisher.retune(display, selection, false);
+                }
+                continue;
+            }
+            (source, result) = next_grant(&mut picker) => {
+                picker = None;
+                let change = match result {
+                    Ok(grant) => {
+                        let monitor = grant.can_include_app();
+                        match media.set_source(purpose(source), true) {
+                            Ok(()) => match publisher.start(grant, worker, selection, display.updates.clone()) {
+                                Ok(()) => SourceChange::Active { source, monitor },
+                                Err(error) => {
+                                    media.set_source(purpose(source), false).map_err(text)?;
+                                    SourceChange::Failed(source, error)
+                                }
+                            },
+                            Err(error) => SourceChange::Failed(source, text(error)),
+                        }
+                    }
+                    Err(ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled)) => SourceChange::Cancelled(source),
+                    Err(error) => SourceChange::Failed(source, text(error)),
+                };
+                changes.report(change).await?;
+                publisher.focus(selection, &display.updates);
+                publisher.retune(display, selection, false);
+                continue;
+            }
+            frame = publisher::LocalVideo::next(camera) => (Source::Camera, frame),
+            frame = publisher::LocalVideo::next(screen) => (Source::Screen, frame),
+            _ = publisher.retiring.next(), if !publisher.retiring.is_empty() => continue,
+            Ok(()) = display.quality.changed() => {
+                selection = *display.quality.borrow_and_update();
+                if publisher.focus(selection, &display.updates) {
+                    publisher.retune(display, selection, false);
+                } else {
+                    viewer.selection_changed(media, display, selection).await?;
+                }
+                continue;
+            }
+            _ = timer.tick() => {
+                if publisher.focus(selection, &display.updates) {
+                    publisher.retune(display, selection, true);
+                } else {
+                    viewer.report(display);
+                }
+                continue;
+            }
+        };
+        match frame {
+            Ok(frame) => publisher.frame(source, frame, media, display.updates.visible())?,
+            Err(error) => {
+                publisher.retire(source);
+                media.set_source(purpose(source), false).map_err(text)?;
+                changes.report(SourceChange::Stopped(source)).await?;
+                changes
+                    .report(SourceChange::Failed(source, text(error)))
+                    .await?;
+                publisher.focus(selection, &display.updates);
+                publisher.retune(display, selection, false);
+            }
+        }
+    }
+}
+
+async fn prepare(crypto: CryptoHandle, options: Connect<'_>) -> Result<(Media, PathBuf), String> {
     let (executable, video_worker) = WORKERS
         .as_ref()
         .ok_or("The native video workers are unavailable.")?
         .clone();
-    let mut connection = Connection::connect(crypto, options).await.map_err(text)?;
-    let permission = async {
-        let Some(source) = source else {
-            return Ok::<_, String>(None);
-        };
-        updates.status(portal_prompt(source));
-        portal::request(source, None).await.map(Some).map_err(text)
-    };
-    tokio::pin!(permission);
-    let grant = loop {
-        tokio::select! {
-            biased;
-            grant = &mut permission => break grant?,
-            tick = connection.poll_idle() => tick.map_err(text)?,
-        }
-    };
-    let source = grant.as_ref().map(portal::Grant::source);
-    updates.status("Joining video call");
-    let publish = source.map(purpose);
+    let connection = Connection::connect(crypto, options).await.map_err(text)?;
     let media = connection
         .into_media(MediaOptions {
             executable,
             sfu_port: SFU_PORT,
-            publish,
+            publish: None,
         })
         .await
         .map_err(text)?;
-    Ok((media, grant, video_worker))
+    Ok((media, video_worker))
 }
 
-struct Encoding {
-    kind: VideoKind,
-    remote: Option<CaptureLimits>,
-    bitrate_estimate: Option<u32>,
-    software: bool,
-}
-
-impl Encoding {
-    fn preferred(&self, quality: Quality) -> CaptureLimits {
-        let tier = self.kind.ladder()[self.kind.request(quality, u32::MAX)];
-        CaptureLimits {
-            height: tier.height,
-            fps: tier.fps.into(),
-            bitrate: video_rate(tier.ceiling),
-        }
-    }
-
-    fn ceiling(&self, quality: Quality) -> CaptureLimits {
-        let local = self.preferred(quality);
-        let initial_bitrate = match self.kind {
-            VideoKind::Camera => 2_000_000,
-            VideoKind::Screen => 4_000_000,
-        };
-        let remote = self.remote.unwrap_or(CaptureLimits {
-            bitrate: initial_bitrate,
-            ..local
-        });
-        CaptureLimits {
-            height: local.height.min(remote.height),
-            fps: local.fps.min(remote.fps),
-            bitrate: local.bitrate.min(remote.bitrate),
-        }
-    }
-
-    fn limits(&self, quality: Quality, applied: CaptureLimits) -> CaptureLimits {
-        let mut limits = self.ceiling(quality);
-        let Some(upload) = self.bitrate_estimate else {
-            return limits;
-        };
-        let budget = u64::from(limits.bitrate.min(upload));
-        let current = self.kind.tier_of(u32::from(applied.height));
-        let affordable = self.kind.affordable(budget);
-        // Reserve headroom for an upgrade to keep small estimates from repeatedly
-        // changing the capture format.
-        let tier = if affordable > current {
-            current.max(self.kind.affordable(budget * 10 / 13))
-        } else {
-            affordable
-        };
-        let tier = self.kind.ladder()[tier];
-        let base = self.kind.ladder()[0];
-        let recovering = applied.height < base.height && limits.height >= base.height;
-        let floor = if recovering {
-            base.floor * 13 / 10
-        } else {
-            base.floor
-        };
-        let (height, fps) = if self.kind == VideoKind::Screen && budget < floor {
-            (base.height / 2, base.fps / 2)
-        } else {
-            (tier.height, tier.fps)
-        };
-        limits.height = limits.height.min(height);
-        limits.fps = limits.fps.min(u16::from(fps));
-        limits.bitrate = video_rate(budget.min(tier.ceiling));
-        limits
-    }
-
-    fn limit_note(&self, quality: Quality, effective: CaptureLimits) -> Option<String> {
-        let local = self.preferred(quality);
-        let ceiling = self.ceiling(quality);
-        let mut notes = Vec::new();
-        if let Some(remote) = self.remote
-            && (remote.height < local.height
-                || remote.fps < local.fps
-                || remote.bitrate < local.bitrate)
-        {
-            notes.push(format!(
-                "The call server allows up to {}p{} at {:.1} Mb/s.",
-                remote.height,
-                remote.fps,
-                f64::from(remote.bitrate) / 1_000_000.,
-            ));
-        }
-        if let Some(estimate) = self.bitrate_estimate
-            && estimate < ceiling.bitrate
-        {
-            notes.push(format!(
-                "Estimated video budget is {:.2} Mb/s. Target video is {}p at up to {} fps.",
-                f64::from(estimate) / 1_000_000.,
-                effective.height,
-                effective.fps,
-            ));
-        }
-        if self.software && effective.fps > 15 {
-            notes.push("Software encoding runs at up to 15 fps.".into());
-        }
-        (!notes.is_empty()).then(|| notes.join(" "))
-    }
-}
-
-async fn send_video(
-    media: &mut Media,
-    capture: &mut Capture,
-    preview: &mut Option<preview::Preview>,
-    mut encoding: Encoding,
-    mut applied: CaptureLimits,
-    display: &mut Display<'_>,
-    mut choices: Pin<&mut impl Stream<Item = Result<portal::Grant, String>>>,
-) -> Result<Option<portal::Grant>, String> {
-    let mut ready = false;
-    let mut sent = false;
-    let mut timer = tokio::time::interval(stats::INTERVAL);
-    timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    loop {
-        let mut retune = false;
-        let mut report = false;
-        tokio::select! {
-            choice = choices.next() => {
-                let Some(grant) = choice.transpose()? else { return Ok(None); };
-                match media.switch_source(purpose(grant.source())) {
-                    Ok(()) => return Ok(Some(grant)),
-                    Err(error) => {
-                        drop(grant);
-                        display.source_changes.report(SourceChange::Failed(text(error))).await?;
-                    }
-                }
-            }
-            event = media.next() => match call_event(event)? {
-                Some(MediaEvent::SendReady) => { ready = true; capture.request_keyframe(); }
-                Some(MediaEvent::KeyframeRequired) => capture.request_keyframe(),
-                Some(MediaEvent::EncoderLimits { height, fps, bitrate }) => {
-                    encoding.remote = Some(CaptureLimits {
-                        height,
-                        fps: fps.into(),
-                        bitrate: video_rate(bitrate),
-                    });
-                    retune = true;
-                }
-                Some(MediaEvent::BandwidthEstimate { bitrate }) => {
-                    // RTC admits 80% of the estimate, including packet and SFrame overhead.
-                    encoding.bitrate_estimate = Some((bitrate.saturating_mul(72) / 100).min(50_000_000) as u32);
-                }
-                Some(MediaEvent::Direct { active }) => {
-                    display.stats.direct(active);
-                    encoding.bitrate_estimate = None;
-                    retune = true;
-                }
-                Some(_) => {}
-                None => return Ok(None),
-            },
-            frame = capture.next() => {
-                let frame = frame.map_err(text)?;
-                encoding.software = !frame.hardware;
-                display.stats.frame(frame.width, frame.height, None);
-                if let Some(preview) = preview {
-                    preview.offer(&frame, display.updates.visible());
-                }
-                if ready {
-                    let ticks = frame.capture_time_us.saturating_mul(9) / 100;
-                    let bytes = frame.av1.len();
-                    if media.send_frame(ticks, frame.keyframe, frame.av1).map_err(text)? {
-                        display.stats.encoded(bytes);
-                        if !sent {
-                            sent = true;
-                            display.updates.status(match encoding.kind {
-                                VideoKind::Camera => "Your camera",
-                                VideoKind::Screen => "Your screen",
-                            });
-                        }
-                    } else {
-                        capture.request_keyframe();
-                    }
-                }
-            }
-            _ = timer.tick() => { retune = true; report = true; }
-            Ok(()) = display.quality.changed() => { retune = true; }
-        }
-        if retune {
-            let quality = display.quality.borrow_and_update().quality;
-            let next = encoding.limits(quality, applied);
-            if next != applied {
-                capture.set_limits(next).map_err(text)?;
-                applied = next;
-            }
-            if report {
-                display.report(encoding.kind, encoding.limit_note(quality, applied));
-            }
-        }
-    }
-}
-
-async fn receive_video(
-    media: &mut Media,
-    executable: PathBuf,
-    display: &mut Display<'_>,
-    cancel: std::pin::Pin<&mut impl Future<Output = ()>>,
-) -> Result<Finish, String> {
-    let mut decoder = None;
-    let receive = async {
-        let mut selected = None;
-        let mut timer = tokio::time::interval(stats::INTERVAL);
-        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            let event = tokio::select! {
-                event = media.next() => call_event(event)?,
-                Ok(()) = display.quality.changed() => {
-                    let selection = *display.quality.borrow_and_update();
-                    if let Some((publisher, purpose, _)) = selected {
-                        let _ = media.set_quality(publisher, purpose, selection.quality, selection.pixels);
-                    }
-                    continue;
-                }
-                _ = timer.tick() => {
-                    if let Some((_, _, kind)) = selected {
-                        display.report(kind, None);
-                    }
-                    continue;
-                }
-            };
-            let Some(event) = event else {
-                break;
-            };
-            let (publisher, purpose, contiguous, key_frame, data) = match event {
-                MediaEvent::Frame {
-                    publisher,
-                    purpose,
-                    contiguous,
-                    key_frame,
-                    data,
-                    ..
-                } => (publisher, purpose, contiguous, key_frame, data),
-                MediaEvent::SourceEnded { purpose } => {
-                    if let Some((_, session)) = decoder.take_if(|(chosen, _)| *chosen == purpose) {
-                        selected = None;
-                        display.stats.clear(Instant::now());
-                        display.updates.stats(None);
-                        display.updates.clear("Waiting for video");
-                        Decoder::stop(session).await.map_err(text)?;
-                    }
-                    continue;
-                }
-                MediaEvent::Direct { active } => {
-                    display.stats.direct(active);
-                    continue;
-                }
-                _ => continue,
-            };
-            let source = match purpose {
-                Purpose::Camera => Source::Camera,
-                Purpose::ScreenVideo => Source::Screen,
-                _ => continue,
-            };
-            let decoder = match &mut decoder {
-                Some((chosen, decoder)) if *chosen == purpose => decoder,
-                Some(_) => continue,
-                None => {
-                    selected = Some((publisher, purpose, video_kind(source)));
-                    let selection = *display.quality.borrow_and_update();
-                    let _ =
-                        media.set_quality(publisher, purpose, selection.quality, selection.pixels);
-                    &mut decoder
-                        .insert((
-                            purpose,
-                            Decoder::start(executable.clone(), source).map_err(text)?,
-                        ))
-                        .1
-                }
-            };
-            if !contiguous {
-                decoder.reset();
-                if !key_frame {
-                    media.request_keyframe(purpose).map_err(text)?;
-                }
-            }
-            display.stats.encoded(data.len());
-            let started = Instant::now();
-            match decoder.decode(key_frame, data).await {
-                Ok(Some(frame)) => {
-                    display
-                        .stats
-                        .frame(frame.width, frame.height, Some(started.elapsed()));
-                    display.updates.frame(frame, true);
-                }
-                Ok(None) => {}
-                Err(DecodeError::Io(_) | DecodeError::Timeout | DecodeError::Busy) => {
-                    display.updates.status("Waiting for a fresh video frame");
-                    media.request_keyframe(purpose).map_err(text)?;
-                }
-                Err(error) => return Err(text(error)),
-            }
-        }
-        Ok(Finish::RoomEnded)
-    };
-    let result = tokio::select! {
-        biased;
-        () = cancel => Ok(Finish::Left),
-        result = receive => result,
-    };
-    if let Some((_, decoder)) = decoder {
-        let closed = decoder.stop().await.map_err(text);
-        result.and_then(|finish| closed.map(|()| finish))
-    } else {
-        result
-    }
-}
-
-fn video_rate(bitrate: u64) -> u32 {
-    bitrate.clamp(64_000, 50_000_000) as u32
-}
 fn text(error: impl std::fmt::Display) -> String {
     error.to_string()
-}
-
-fn call_event(
-    event: Option<Result<MediaEvent, nuschl_client::native::sfu::Error>>,
-) -> Result<Option<MediaEvent>, String> {
-    match event.transpose() {
-        Err(nuschl_client::native::sfu::Error::Refused(reason)) if reason == "ended" => Ok(None),
-        result => result.map_err(text),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{CaptureLimits, Encoding, Quality, VideoKind};
-
-    #[test]
-    fn a_constrained_screen_reduces_dimensions_and_cadence_then_recovers() {
-        let mut encoding = Encoding {
-            kind: VideoKind::Screen,
-            remote: Some(CaptureLimits {
-                height: 1440,
-                fps: 60,
-                bitrate: 8_000_000,
-            }),
-            bitrate_estimate: None,
-            software: false,
-        };
-        let quality = Quality::Tier(2);
-        let full = encoding.ceiling(quality);
-        assert_eq!((full.height, full.fps, full.bitrate), (1440, 60, 8_000_000));
-        encoding.bitrate_estimate = Some(100_000);
-        let reduced = encoding.limits(quality, full);
-        assert_eq!(
-            (reduced.height, reduced.fps, reduced.bitrate),
-            (360, 7, 100_000)
-        );
-        encoding.bitrate_estimate = Some(450_000);
-        assert_eq!(encoding.limits(quality, reduced).height, 360);
-        encoding.bitrate_estimate = Some(6_000_000);
-        assert_eq!(
-            encoding.limits(quality, reduced),
-            CaptureLimits {
-                height: 1440,
-                fps: 60,
-                bitrate: 6_000_000,
-            }
-        );
-    }
 }

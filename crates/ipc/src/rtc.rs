@@ -115,6 +115,12 @@ pub enum Command {
         id: [u8; 16],
         purposes: Vec<Purpose>,
     },
+    UpdatePublish {
+        leg: u32,
+        id: [u8; 16],
+        purposes: Vec<Purpose>,
+        restart: Vec<Purpose>,
+    },
     AcceptOffer {
         leg: u32,
         description: Description,
@@ -161,6 +167,18 @@ impl Command {
             Self::AddReflexive { leg, address } => *leg != 0 && endpoint(*address),
             Self::Offer { leg, id, purposes } => {
                 *leg != 0 && *id != [0; 16] && (1..=4).contains(&purposes.len())
+            }
+            Self::UpdatePublish {
+                leg,
+                id,
+                purposes,
+                restart,
+            } => {
+                *leg != 0
+                    && *id != [0; 16]
+                    && purposes.len() <= 4
+                    && restart.len() <= 4
+                    && restart.iter().all(|purpose| purposes.contains(purpose))
             }
             Self::AcceptOffer { leg, description } | Self::AcceptAnswer { leg, description } => {
                 *leg != 0 && description.valid()
@@ -214,7 +232,7 @@ impl Reply {
         }
         match (command, self) {
             (
-                Command::Offer { leg, id, .. },
+                Command::Offer { leg, id, .. } | Command::UpdatePublish { leg, id, .. },
                 Self::Description {
                     leg: answered,
                     description,
@@ -236,9 +254,13 @@ impl Reply {
                 | Self::Datagram { leg: answered, .. }
                 | Self::Event { leg: answered, .. },
             ) => leg == answered,
-            (Command::Offer { .. } | Command::AcceptOffer { .. } | Command::Poll { .. }, _) => {
-                false
-            }
+            (
+                Command::Offer { .. }
+                | Command::UpdatePublish { .. }
+                | Command::AcceptOffer { .. }
+                | Command::Poll { .. },
+                _,
+            ) => false,
             (_, Self::Done) => true,
             _ => false,
         }

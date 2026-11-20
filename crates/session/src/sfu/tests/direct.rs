@@ -35,17 +35,15 @@ async fn native_call_switches_paths_and_sources() {
     let from = publisher.welcome().peer;
     // The host path uses only loopback sockets. The STUN test owns its server.
     publisher.welcome.turn = None;
-    let mut publisher = publisher
-        .into_media(make_media(Some(Purpose::Camera)))
-        .await
-        .unwrap();
+    let mut publisher = publisher.into_media(make_media(None)).await.unwrap();
+    publisher.set_source(Purpose::Camera, true).unwrap();
     // The requests coalesce before the media task can negotiate either of them.
     publisher.switch_source(Purpose::ScreenVideo).unwrap();
     publisher.switch_source(Purpose::Camera).unwrap();
     let mut viewer = Connection::connect_with_roots(
-        CryptoHandle::start(crypto, directory.path().join("viewer")),
+        CryptoHandle::start(crypto.clone(), directory.path().join("viewer")),
         connect(&posted),
-        roots,
+        roots.clone(),
     )
     .await
     .unwrap();
@@ -90,10 +88,10 @@ async fn native_call_switches_paths_and_sources() {
                     }
                 }
                 event = publisher.next() => match event.unwrap().unwrap() {
-                    MediaEvent::SendReady => ready = true,
+                    MediaEvent::SourceReady { .. } => ready = true,
                     MediaEvent::Direct { active: true } => sender_direct = true,
                     MediaEvent::Direct { active: false } => sender_relayed = true,
-                    MediaEvent::KeyframeRequired if requested_keyframe && outage.is_none() => {
+                    MediaEvent::SourceKeyframeRequired { .. } if requested_keyframe && outage.is_none() => {
                         // Drop packets after the direct leg delivered the viewer's request.
                         publisher.lose_direct().await;
                         outage = Some(tokio::time::Instant::now());
@@ -151,7 +149,7 @@ async fn native_call_switches_paths_and_sources() {
                         publisher.send_keyframe(timestamp, picture.clone()).unwrap();
                     }
                     event = publisher.next() => {
-                        ready |= matches!(event.unwrap().unwrap(), MediaEvent::SendReady);
+                        ready |= matches!(event.unwrap().unwrap(), MediaEvent::SourceReady { .. });
                     }
                     event = viewer.next() => match event.unwrap().unwrap() {
                         MediaEvent::SourceEnded { purpose } => {
@@ -173,6 +171,113 @@ async fn native_call_switches_paths_and_sources() {
         .await
         .expect("fresh frames arrive for the replaced source on the same call");
     }
+    publisher.set_source(Purpose::ScreenVideo, true).unwrap();
+    let mut seen = [false; 2];
+    let mut screen_ready = false;
+    let mut screen_available = false;
+    let mut timestamp = 1_000_000;
+    timeout(HANDSHAKE, async {
+        while seen != [true, true] {
+            tokio::select! {
+                _ = tick.tick() => {
+                    timestamp += 2970;
+                    publisher.send_source_frame(Purpose::Camera, timestamp, true, picture.clone()).unwrap();
+                    if screen_ready {
+                        publisher.send_source_frame(Purpose::ScreenVideo, timestamp, true, picture.clone()).unwrap();
+                    }
+                }
+                event = publisher.next() => {
+                    screen_ready |= matches!(event.unwrap().unwrap(), MediaEvent::SourceReady { purpose: Purpose::ScreenVideo });
+                }
+                event = viewer.next() => match event.unwrap().unwrap() {
+                    MediaEvent::SourceAvailable { publisher, purpose: Purpose::ScreenVideo } => {
+                        assert_eq!(publisher, from);
+                        screen_available = true;
+                    }
+                    MediaEvent::SourceEnded { .. } => panic!("starting a screen retired an active source"),
+                    MediaEvent::Frame { publisher, purpose, key_frame, data, .. } if screen_ready => {
+                        assert_eq!(publisher, from);
+                        assert!(key_frame);
+                        assert_eq!(data, picture);
+                        if purpose == Purpose::ScreenVideo {
+                            assert!(screen_available);
+                        }
+                        seen[usize::from(purpose == Purpose::ScreenVideo)] = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }).await.expect("both camera and screen remain live");
+
+    let extra = Connection::connect_with_roots(
+        CryptoHandle::start(crypto, directory.path().join("extra")),
+        connect(&posted),
+        roots,
+    )
+    .await
+    .unwrap();
+    assert_eq!(extra.welcome().peers.len(), 2);
+
+    publisher.set_source(Purpose::ScreenVideo, false).unwrap();
+    let mut screen_ended = false;
+    timeout(HANDSHAKE, async {
+        loop {
+            tokio::select! {
+                _ = tick.tick() => {
+                    timestamp += 2970;
+                    publisher.send_source_frame(Purpose::Camera, timestamp, true, picture.clone()).unwrap();
+                }
+                event = publisher.next() => { event.unwrap().unwrap(); }
+                event = viewer.next() => match event.unwrap().unwrap() {
+                    MediaEvent::SourceEnded { purpose } => {
+                        assert_eq!(purpose, Purpose::ScreenVideo);
+                        screen_ended = true;
+                    }
+                    MediaEvent::Frame { purpose: Purpose::Camera, .. } if screen_ended => break,
+                    _ => {}
+                }
+            }
+        }
+    }).await.expect("stopping the screen keeps the camera live");
+    publisher.set_source(Purpose::Camera, false).unwrap();
+    timeout(HANDSHAKE, async {
+        loop {
+            if matches!(
+                viewer.next().await.unwrap().unwrap(),
+                MediaEvent::SourceEnded {
+                    purpose: Purpose::Camera
+                }
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the room stays open after stopping its final source");
+
+    publisher.set_source(Purpose::Camera, true).unwrap();
+    let mut ready = false;
+    let mut timestamp = 0;
+    timeout(HANDSHAKE, async {
+        loop {
+            tokio::select! {
+                _ = tick.tick(), if ready => {
+                    timestamp += 2970;
+                    publisher.send_source_frame(Purpose::Camera, timestamp, true, picture.clone()).unwrap();
+                }
+                event = publisher.next() => {
+                    ready |= matches!(event.unwrap().unwrap(), MediaEvent::SourceReady { purpose: Purpose::Camera });
+                }
+                event = viewer.next() => {
+                    if matches!(event.unwrap().unwrap(), MediaEvent::Frame { purpose: Purpose::Camera, .. }) {
+                        break;
+                    }
+                }
+            }
+        }
+    }).await.expect("the presenter can resume video without opening a new room");
     publisher.stop().await.unwrap();
     viewer.stop().await.unwrap();
+    extra.close().await.unwrap();
 }

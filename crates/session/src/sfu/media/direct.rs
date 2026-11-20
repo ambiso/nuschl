@@ -51,7 +51,7 @@ impl Candidates {
 }
 
 pub(super) enum Setup {
-    Offer(Purpose),
+    Offer(Vec<Purpose>),
     Answer {
         description: Description,
         remote: Candidates,
@@ -181,18 +181,20 @@ impl Direct {
         mut description: Description,
         subscribed: &[Track],
     ) -> Option<Discovery> {
-        let [track] = description.tracks.as_mut_slice() else {
-            return None;
-        };
-        if track.publisher.is_some()
-            || !subscribed
-                .iter()
-                .any(|known| known.publisher == Some(peer) && known.purpose == track.purpose)
+        if !(1..=2).contains(&description.tracks.len())
+            || description.tracks.iter().any(|track| {
+                track.publisher.is_some()
+                    || !subscribed.iter().any(|known| {
+                        known.publisher == Some(peer) && known.purpose == track.purpose
+                    })
+            })
             || !valid_sdp(self.interface, candidates, &description.sdp)
         {
             return None;
         }
-        track.publisher = Some(peer);
+        for track in &mut description.tracks {
+            track.publisher = Some(peer);
+        }
         Some(self.discover(Setup::Answer {
             description,
             remote: candidates,
@@ -248,16 +250,8 @@ impl Direct {
             local.reflexive = None;
         }
         match setup {
-            Setup::Offer(purpose) => {
-                let description = describe(
-                    worker,
-                    Command::Offer {
-                        leg,
-                        id,
-                        purposes: vec![purpose],
-                    },
-                )
-                .await?;
+            Setup::Offer(purposes) => {
+                let description = describe(worker, Command::Offer { leg, id, purposes }).await?;
                 attempt.tracks = description.tracks.clone();
                 Ok(Signal::Offer {
                     candidates: local,

@@ -37,6 +37,7 @@ const ICONS: &[(&str, &[u8])] = icons!(
     "keyboard",
     "link",
     "lock",
+    "meeting",
     "message",
     "mic",
     "mic-lock",
