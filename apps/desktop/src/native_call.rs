@@ -303,7 +303,9 @@ impl Render for Surface {
                                     move |bounds, (), window, _| {
                                         let fitted =
                                             ObjectFit::Contain.get_bounds(bounds, image_size);
-                                        let pixels = (f32::from(fitted.size.height)
+                                        let shorter_side =
+                                            fitted.size.width.min(fitted.size.height);
+                                        let pixels = (f32::from(shorter_side)
                                             * window.scale_factor())
                                             as u32;
                                         quality.send_if_modified(|selection| {
