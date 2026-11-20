@@ -240,6 +240,43 @@ async fn native_call_switches_paths_and_sources() {
             }
         }
     }).await.expect("stopping the screen keeps the camera live");
+    publisher.set_source(Purpose::Camera, false).unwrap();
+    timeout(HANDSHAKE, async {
+        loop {
+            if matches!(
+                viewer.next().await.unwrap().unwrap(),
+                MediaEvent::SourceEnded {
+                    purpose: Purpose::Camera
+                }
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the room stays open after stopping its final source");
+
+    publisher.set_source(Purpose::Camera, true).unwrap();
+    let mut ready = false;
+    let mut timestamp = 0;
+    timeout(HANDSHAKE, async {
+        loop {
+            tokio::select! {
+                _ = tick.tick(), if ready => {
+                    timestamp += 2970;
+                    publisher.send_source_frame(Purpose::Camera, timestamp, true, picture.clone()).unwrap();
+                }
+                event = publisher.next() => {
+                    ready |= matches!(event.unwrap().unwrap(), MediaEvent::SourceReady { purpose: Purpose::Camera });
+                }
+                event = viewer.next() => {
+                    if matches!(event.unwrap().unwrap(), MediaEvent::Frame { purpose: Purpose::Camera, .. }) {
+                        break;
+                    }
+                }
+            }
+        }
+    }).await.expect("the presenter can resume video without opening a new room");
     publisher.stop().await.unwrap();
     viewer.stop().await.unwrap();
     extra.close().await.unwrap();

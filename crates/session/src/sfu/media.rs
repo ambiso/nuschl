@@ -168,13 +168,13 @@ pub struct Media {
 }
 
 impl Media {
-    /// Submit an independent encoded frame on a call with one active source.
-    pub fn send_keyframe(&self, timestamp: u64, data: Vec<u8>) -> Result<bool, Error> {
+    #[cfg(test)]
+    pub(super) fn send_keyframe(&self, timestamp: u64, data: Vec<u8>) -> Result<bool, Error> {
         self.send_frame(timestamp, true, data)
     }
 
-    /// Submit a frame on a call with one active source.
-    pub fn send_frame(
+    #[cfg(test)]
+    pub(super) fn send_frame(
         &self,
         timestamp: u64,
         key_frame: bool,
@@ -233,8 +233,8 @@ impl Media {
         self.set_sources(tracks)
     }
 
-    /// Replace the current source set with one source.
-    pub fn switch_source(&mut self, purpose: Purpose) -> Result<(), Error> {
+    #[cfg(test)]
+    pub(super) fn switch_source(&mut self, purpose: Purpose) -> Result<(), Error> {
         let index = video_index(purpose)?;
         self.set_sources(std::array::from_fn(|i| i == index))
     }
@@ -954,7 +954,8 @@ async fn run(
                         Ok(Track { mid: track.mid, purpose, publisher: Some(track.peer) })
                     }).collect::<Result<Vec<_>, _>>()?;
                     if pair.peer.is_none()
-                        && let Some(peer) = tracks.first().and_then(|track| track.publisher)
+                        && let Some(peer) = tracks.iter().find(|track| video_kind(track.purpose).is_some())
+                            .and_then(|track| track.publisher)
                         && role.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |role| {
                             (role != SENDING).then_some(RECEIVING)
                         }).is_ok()
