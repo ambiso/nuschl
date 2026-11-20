@@ -205,6 +205,7 @@ fn join(message: ClientMessage) -> Option<Join> {
         create,
         codecs,
         video_limits,
+        screen_rate,
     } = message
     else {
         return None;
@@ -222,6 +223,7 @@ fn join(message: ClientMessage) -> Option<Join> {
         },
         decoders: Decoders::new(&codecs)?,
         video_limits,
+        screen_rate,
     })
 }
 
@@ -306,6 +308,7 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(
     let hello = ServerMessage::Hello {
         nonce: hex::encode(nonce),
         video_limits: true,
+        screen_rate: true,
     };
     if socket.send(text(&hello)).await.is_err() {
         return;

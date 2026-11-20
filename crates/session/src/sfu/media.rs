@@ -986,12 +986,17 @@ async fn run(
                     }
                 }
                 ServerMessage::Quality { source: mid, max_height, max_fps, max_bitrate, limit, .. }
-                    if (16..=2160).contains(&max_height) && (1..=120).contains(&max_fps) && (64_000..=50_000_000).contains(&max_bitrate) => {
+                    if (16..=2160).contains(&max_height) && (1..=120).contains(&max_fps) && (64_000..=nuschl_protocol::sfu::MAX_SCREEN_BITRATE).contains(&max_bitrate) => {
                     if let Some(track) = publish_tracks.iter().find(|track| track.mid == mid)
                         && let Ok(index) = video_index(track.purpose)
                         && let Some(revision) = source.tracks[index]
                     {
-                        desired[index] = Some(max_bitrate);
+                        if let Some(kind) = video_kind(track.purpose) {
+                            // Direct admission needs the tier's baseline, which fits below
+                            // the optional headroom for high-detail screen content.
+                            let tier = kind.ladder()[kind.tier_of(u32::from(max_height))];
+                            desired[index] = Some(max_bitrate.min(tier.ceiling));
+                        }
                         output.limits.send_modify(|limits| limits[index] = Some(EncoderCaps {
                             revision, height: max_height, fps: max_fps, bitrate: max_bitrate, limit,
                         }));

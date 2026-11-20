@@ -35,7 +35,7 @@ const RECOVERY_INTERVAL: Duration = Duration::from_secs(10);
 /// A video source: its kind and the demand last sent to its publisher.
 pub struct Video {
     pub kind: Kind,
-    pub demand: Option<(usize, Option<VideoLimit>)>,
+    pub demand: Option<(usize, u64, Option<VideoLimit>)>,
     pub throttle: Throttle,
     pub layers: Layers,
 }
