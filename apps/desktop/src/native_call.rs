@@ -1178,13 +1178,9 @@ pub fn minimized(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement
     )
 }
 
-pub fn minimized_card(
-    this: &Desktop,
-    index: usize,
-    cx: &mut Context<Desktop>,
-) -> Option<AnyElement> {
-    let call = this.native_call.as_ref().filter(|call| call.minimized)?;
-    let host = nuschl_core::call::link_host(&call.room)?;
+pub fn call_card(this: &Desktop, index: usize, cx: &mut Context<Desktop>) -> Option<AnyElement> {
+    let call = this.native_call.as_ref()?;
+    let link = crate::call::join_link(&call.room)?;
     let who = if call.owner {
         "You"
     } else {
@@ -1195,13 +1191,12 @@ pub fn minimized_card(
             .and_then(|invite| this.client.servers[index].users.get(&invite.sender))
             .map_or("", |user| user.name.as_str())
     };
-    Some(crate::view::banner(
-        "call-card",
-        ACCENT,
-        "video",
-        format!("Video call · {who} · {host}"),
-        Some(return_actions(call, cx).into_any_element()),
-    ))
+    let actions = if call.minimized {
+        return_actions(call, cx)
+    } else {
+        layout::actions()
+    };
+    Some(crate::view::video_call_card(who, &link, actions, cx))
 }
 
 pub async fn run(
