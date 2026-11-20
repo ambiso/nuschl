@@ -1572,6 +1572,7 @@ async fn meeting(
         match frame {
             Ok(frame) => publisher.frame(source, frame, media)?,
             Err(error) => {
+                tracing::warn!(target: "nuschl_capture", ?source, %error, "capture stopped");
                 publisher.retire(source);
                 media.set_source(purpose(source), false).map_err(text)?;
                 changes.report(SourceChange::Stopped(source)).await?;
