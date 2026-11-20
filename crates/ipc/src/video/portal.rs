@@ -50,6 +50,25 @@ impl Grant {
             self.node_id,
             true,
             limits,
+            None,
+        )?;
+        capture.retain_grant(self.connection);
+        Ok(capture)
+    }
+
+    pub fn start_with_preview(
+        self,
+        executable: PathBuf,
+        limits: CaptureLimits,
+        preview: tokio::sync::mpsc::Sender<super::DecodedFrame>,
+    ) -> Result<Capture, super::Error> {
+        let mut capture = Capture::start_with_preview(
+            executable,
+            self.remote,
+            self.source,
+            self.node_id,
+            limits,
+            preview,
         )?;
         capture.retain_grant(self.connection);
         Ok(capture)

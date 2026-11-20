@@ -54,15 +54,13 @@ pub async fn send_first(socket: &AsyncStream, byte: u8, fd: &OwnedFd) -> io::Res
         .await
 }
 
-pub fn read_request<T: serde::de::DeserializeOwned>(
-    socket: &mut UnixStream,
-) -> io::Result<Option<(Envelope<T>, Option<OwnedFd>)>> {
+pub(crate) fn receive_first(socket: &UnixStream) -> io::Result<Option<(u8, Option<OwnedFd>)>> {
     let mut first = [0; 1];
     let mut storage = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
     let mut control = RecvAncillaryBuffer::new(&mut storage);
     let result = loop {
         match recvmsg(
-            &*socket,
+            socket,
             &mut [IoSliceMut::new(&mut first)],
             &mut control,
             RecvFlags::CMSG_CLOEXEC,
@@ -85,10 +83,16 @@ pub fn read_request<T: serde::de::DeserializeOwned>(
         }
         endpoint = Some(fd);
     }
-    if result.bytes == 0 {
+    Ok((result.bytes != 0).then_some((first[0], endpoint)))
+}
+
+pub fn read_request<T: serde::de::DeserializeOwned>(
+    socket: &mut UnixStream,
+) -> io::Result<Option<(Envelope<T>, Option<OwnedFd>)>> {
+    let Some((first, endpoint)) = receive_first(socket)? else {
         return Ok(None);
-    }
-    let frame = read_frame(&mut first.as_slice().chain(socket))?.ok_or_else(invalid)?;
+    };
+    let frame = read_frame(&mut [first].as_slice().chain(socket))?.ok_or_else(invalid)?;
     Ok(Some((frame, endpoint)))
 }
 

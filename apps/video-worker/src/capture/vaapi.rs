@@ -2,17 +2,31 @@
 //! Hardware AV1 from the authorized PipeWire stream. GStreamer imports
 //! DMA-BUFs supported by the VA driver and uses VA surfaces through encode.
 
-use super::{Cadence, Control, Failure};
+use super::{Cadence, Control, Failure, PREVIEW_FPS};
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app::AppSink;
-use nuschl_ipc::video::{CaptureLimits, Kind, Settings, Source};
+use nuschl_ipc::video::{
+    CaptureLimits, Kind, PREVIEW_HEIGHT, PREVIEW_WIDTH, Settings, Source, write_capture_preview,
+};
 use std::{
     io,
-    sync::{Arc, Mutex, atomic::Ordering},
+    net::Shutdown,
+    os::unix::net::UnixStream,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
-pub fn prepare(source: Source, node: Option<u32>, bitrate: u32) -> Result<gst::Pipeline, Failure> {
+const QUEUE: &str = "max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream";
+
+pub fn prepare(
+    source: Source,
+    node: Option<u32>,
+    bitrate: u32,
+    preview: bool,
+) -> Result<gst::Pipeline, Failure> {
     let plugins = option_env!("NUSCHL_VIDEO_GST_PLUGINS")
         .ok_or("the VA-API GStreamer plugin list is missing")?;
     gst::init()?;
@@ -26,21 +40,45 @@ pub fn prepare(source: Source, node: Option<u32>, bitrate: u32) -> Result<gst::P
 
     let target = node.map_or_else(String::new, |node| format!("path={node}"));
     let (width, height) = source.max_dimensions();
+    // Fix square pixels before the branches negotiate their output dimensions.
+    let tee = if preview {
+        "video/x-raw(ANY),pixel-aspect-ratio=1/1 ! tee name=split split. ! "
+    } else {
+        ""
+    };
+    let preview_path = if preview {
+        format!(
+            concat!(
+                " split. ! queue name=preview_queue {queue} ! vapostproc ! ",
+                "video/x-raw,format=BGRA,width=[1,{width}],height=[1,{height}],pixel-aspect-ratio=1/1 ! ",
+                "appsink name=preview max-buffers=1 leaky-type=downstream sync=false async=false ",
+                "enable-last-sample=false wait-on-eos=false",
+            ),
+            queue = QUEUE,
+            width = PREVIEW_WIDTH,
+            height = PREVIEW_HEIGHT,
+        )
+    } else {
+        String::new()
+    };
     let description = format!(
         concat!(
             "pipewiresrc name=capture fd=0 {target} ! ",
-            "queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! ",
+            "{tee}queue name=encode_queue {queue} ! ",
             "vapostproc name=scale ! capsfilter name=limit ",
             "caps=\"video/x-raw(memory:VAMemory),format=NV12,width=[16,{width}],height=[16,{height}]\" ! ",
             "vaav1enc name=encoder bitrate={bitrate} rate-control=cbr hierarchical-level=1 ",
             "ref-frames=1 key-int-max=60 ! ",
             "av1parse ! video/x-av1,stream-format=obu-stream,alignment=tu ! ",
-            "appsink name=encoded max-buffers=1 sync=false",
+            "appsink name=encoded max-buffers=1 sync=false{preview_path}",
         ),
         target = target,
+        tee = tee,
+        queue = QUEUE,
         width = width,
         height = height,
         bitrate = bitrate / 1000,
+        preview_path = preview_path,
     );
     let pipeline = gst::parse::launch(&description)?;
     pipeline
@@ -48,7 +86,12 @@ pub fn prepare(source: Source, node: Option<u32>, bitrate: u32) -> Result<gst::P
         .map_err(|_| "invalid video pipeline".into())
 }
 
-pub fn run(pipeline: gst::Pipeline, source: Source, control: Arc<Control>) -> Result<(), Failure> {
+pub fn run(
+    pipeline: gst::Pipeline,
+    source: Source,
+    control: Arc<Control>,
+    preview: Option<UnixStream>,
+) -> Result<(), Failure> {
     let sink = pipeline
         .by_name("encoded")
         .ok_or("missing video sink")?
@@ -72,22 +115,100 @@ pub fn run(pipeline: gst::Pipeline, source: Source, control: Arc<Control>) -> Re
             }
         })
         .ok_or("could not isolate capture caps")?;
-    let input = pipeline
-        .by_name("capture")
-        .and_then(|element| element.static_pad("src"))
-        .ok_or("missing PipeWire capture output")?;
+    let input = branch_input(&pipeline, "encode_queue")?;
     let frames = input
         .add_probe(
             gst::PadProbeType::BUFFER | gst::PadProbeType::EVENT_DOWNSTREAM,
             move |pad, info| timing_probe(pad, info, &timing, timing_control.limits().fps),
         )
         .ok_or("could not install the capture cadence limit")?;
+    let preview_running = Arc::new(AtomicBool::new(preview.is_some()));
+    let preview = preview
+        .map(|stream| {
+            stream.set_write_timeout(Some(Duration::from_millis(200)))?;
+            let sink = preview_sink(&pipeline, control.clone(), preview_running.clone())?;
+            Ok::<_, Failure>((stream.try_clone()?, stream, sink))
+        })
+        .transpose()?;
     pipeline.set_state(gst::State::Playing)?;
-    let result = write_frames(&pipeline, &sink, &encoder, &mut scale, source, &control);
-    input.remove_probe(frames);
-    scale.input.remove_probe(reconfigure);
-    let _ = pipeline.set_state(gst::State::Null);
-    result
+    std::thread::scope(|scope| {
+        let stop_preview = preview.map(|(shutdown, stream, sink)| {
+            let running = &preview_running;
+            let control = &control;
+            scope.spawn(move || write_previews(stream, &sink, control, running));
+            shutdown
+        });
+        let result = write_frames(&pipeline, &sink, &encoder, &mut scale, source, &control);
+        preview_running.store(false, Ordering::Relaxed);
+        if let Some(stream) = stop_preview {
+            let _ = stream.shutdown(Shutdown::Write);
+        }
+        input.remove_probe(frames);
+        scale.input.remove_probe(reconfigure);
+        let _ = pipeline.set_state(gst::State::Null);
+        result
+    })
+}
+
+fn branch_input(pipeline: &gst::Pipeline, queue: &str) -> Result<gst::Pad, Failure> {
+    pipeline
+        .by_name(queue)
+        .and_then(|element| element.static_pad("sink"))
+        .and_then(|pad| pad.peer())
+        .ok_or_else(|| "missing capture branch input".into())
+}
+
+fn preview_sink(
+    pipeline: &gst::Pipeline,
+    control: Arc<Control>,
+    running: Arc<AtomicBool>,
+) -> Result<AppSink, Failure> {
+    let sink = pipeline
+        .by_name("preview")
+        .and_then(|element| element.downcast::<AppSink>().ok())
+        .ok_or("missing video preview sink")?;
+    let clock = Instant::now();
+    let cadence = Mutex::new(Cadence::default());
+    branch_input(pipeline, "preview_queue")?
+        .add_probe(gst::PadProbeType::BUFFER, move |_, _| {
+            if running.load(Ordering::Relaxed)
+                && control.preview.load(Ordering::Relaxed)
+                && cadence
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .accept(clock.elapsed(), PREVIEW_FPS)
+            {
+                gst::PadProbeReturn::Ok
+            } else {
+                gst::PadProbeReturn::Drop
+            }
+        })
+        .ok_or("could not install the preview cadence limit")?;
+    Ok(sink)
+}
+
+fn write_previews(mut stream: UnixStream, sink: &AppSink, control: &Control, running: &AtomicBool) {
+    while running.load(Ordering::Relaxed) {
+        let Some(sample) = sink.try_pull_sample(gst::ClockTime::from_mseconds(100)) else {
+            continue;
+        };
+        if control.preview.load(Ordering::Relaxed) && write_preview(&mut stream, &sample).is_err() {
+            running.store(false, Ordering::Relaxed);
+        }
+    }
+    let _ = stream.shutdown(Shutdown::Write);
+}
+
+fn write_preview(stream: &mut UnixStream, sample: &gst::Sample) -> Result<(), Failure> {
+    let format = sample
+        .caps()
+        .and_then(|caps| caps.structure(0))
+        .ok_or("missing preview format")?;
+    let (width, height) = dimensions(format)?;
+    let buffer = sample.buffer().ok_or("missing preview video frame")?;
+    let pixels = buffer.map_readable()?;
+    write_capture_preview(stream, width, height, pixels.as_slice())?;
+    Ok(())
 }
 
 #[derive(Default)]

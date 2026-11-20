@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 //! Linux calls on the desktop. Capture and decoding use confined video workers.
 
-mod preview;
 mod publisher;
 mod stats;
 mod viewer;
@@ -145,11 +144,17 @@ struct Latest {
 
 impl Latest {
     fn show_video(&self, visible: bool) {
-        self.update
+        let mut update = self
+            .update
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .visible = visible;
-        self.ready.notify_one();
+            .unwrap_or_else(|error| error.into_inner());
+        if std::mem::replace(&mut update.visible, visible) != visible {
+            if !visible {
+                update.frame = None;
+            }
+            drop(update);
+            self.ready.notify_one();
+        }
     }
 
     fn status(&self, status: impl Into<String>) {
@@ -558,7 +563,15 @@ impl Desktop {
             });
         if !current || (self.settings.relay_only && !call.policy.relay_only) {
             self.stop_native();
+            return;
         }
+        let shown = !call.minimized
+            && (call.expanded
+                || self.selected_indices().is_some_and(|(index, channel)| {
+                    let server = &self.client.servers[index];
+                    self.native_call_in(&server.id, &server.channels[channel].target)
+                }));
+        call.updates.show_video(shown);
     }
 
     fn set_call_expanded(&mut self, expanded: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -1440,6 +1453,7 @@ async fn meeting(
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     display.updates.status("Waiting for video");
     loop {
+        publisher.preview(display.updates.visible());
         let can_publish = media.can_publish();
         if allowed != Some(can_publish) {
             changes
@@ -1529,7 +1543,7 @@ async fn meeting(
             }
         };
         match frame {
-            Ok(frame) => publisher.frame(source, frame, media, display.updates.visible())?,
+            Ok(frame) => publisher.frame(source, frame, media)?,
             Err(error) => {
                 publisher.retire(source);
                 media.set_source(purpose(source), false).map_err(text)?;

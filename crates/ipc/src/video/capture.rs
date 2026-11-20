@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 
 use super::{
-    CaptureLimits, Error, HEADER_BYTES, Header, Kind, Settings, Source, invalid,
+    CaptureLimits, DecodedFrame, Error, HEADER_BYTES, Header, Kind, Settings, Source, invalid,
+    preview::{read_capture_preview, send_capture_start},
     supervisor::{DEADLINE, SOURCES},
 };
 use crate::host::preview_lifecycle::Retirement;
@@ -46,6 +47,7 @@ pub struct Capture {
 struct Control {
     limits: CaptureLimits,
     key_request: u64,
+    preview: bool,
 }
 
 const MAX_AGE: Duration = Duration::from_millis(250);
@@ -65,6 +67,7 @@ impl Capture {
             node_id,
             false,
             CaptureLimits::for_source(source, 2_000_000),
+            None,
         )
     }
 
@@ -82,6 +85,27 @@ impl Capture {
             node_id,
             true,
             CaptureLimits::for_source(source, 20_000_000),
+            None,
+        )
+    }
+
+    /// Send local preview pixels over a dedicated socket from the capture worker.
+    pub fn start_with_preview(
+        executable: PathBuf,
+        remote: OwnedFd,
+        source: Source,
+        node_id: Option<u32>,
+        limits: CaptureLimits,
+        preview: mpsc::Sender<DecodedFrame>,
+    ) -> Result<Self, Error> {
+        Self::start_inner(
+            executable,
+            remote,
+            source,
+            node_id,
+            true,
+            limits,
+            Some(preview),
         )
     }
 
@@ -92,6 +116,7 @@ impl Capture {
         node_id: Option<u32>,
         vaapi: bool,
         limits: CaptureLimits,
+        preview: Option<mpsc::Sender<DecodedFrame>>,
     ) -> Result<Self, Error> {
         if (source == Source::Screen) != node_id.is_some() || matches!(node_id, Some(0 | u32::MAX))
         {
@@ -103,6 +128,7 @@ impl Capture {
         let (control, updates) = watch::channel(Control {
             limits,
             key_request: 0,
+            preview: false,
         });
         let requests = control.clone();
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| Error::Runtime)?;
@@ -115,7 +141,7 @@ impl Capture {
                 node_id,
                 vaapi,
                 &sender,
-                (updates, requests),
+                (updates, requests, preview),
             )
             .await
             {
@@ -169,6 +195,12 @@ impl Capture {
         request_keyframe(&self.control);
     }
 
+    pub fn set_preview(&self, visible: bool) {
+        self.control.send_if_modified(|control| {
+            std::mem::replace(&mut control.preview, visible) != visible
+        });
+    }
+
     pub async fn next(&mut self) -> Result<VideoFrame, Error> {
         loop {
             let frame = self.frames.recv().await.ok_or(Error::Stopped)??;
@@ -201,11 +233,15 @@ async fn capture(
     node: Option<u32>,
     vaapi: bool,
     sender: &mpsc::Sender<Result<VideoFrame, Error>>,
-    (mut updates, requests): (watch::Receiver<Control>, watch::Sender<Control>),
+    (mut updates, requests, preview): (
+        watch::Receiver<Control>,
+        watch::Sender<Control>,
+        Option<mpsc::Sender<DecodedFrame>>,
+    ),
 ) -> Result<(), Error> {
     let (supervisor, worker) = Socket::pair()?;
     supervisor.set_nonblocking(true)?;
-    let (mut output, mut control) = UnixStream::from_std(supervisor)?.into_split();
+    let mut supervisor = UnixStream::from_std(supervisor)?;
     let mut child = nuschl_sandbox::command(&executable, Role::VideoCapture { node, vaapi })?
         .stdin(Stdio::from(remote))
         .stdout(Stdio::from(OwnedFd::from(worker)))
@@ -217,11 +253,33 @@ async fn capture(
     let result = async {
         retirement.ready().await.map_err(|_| Error::Confinement)?;
         let initial = *updates.borrow_and_update();
-        send_control(&mut control, Kind::CaptureStart, &initial.limits.to_bytes()).await?;
+        let (preview_socket, descriptor) = if preview.is_some() {
+            let (reader, writer) = Socket::pair()?;
+            reader.set_nonblocking(true)?;
+            (Some(UnixStream::from_std(reader)?), Some(writer.into()))
+        } else {
+            (None, None)
+        };
+        timeout(
+            DEADLINE,
+            send_capture_start(&mut supervisor, initial.limits, descriptor),
+        )
+        .await
+        .map_err(|_| Error::Timeout)??;
+        let (mut output, mut control) = supervisor.into_split();
+        let preview = async move {
+            if let Some((mut socket, sender)) = preview_socket.zip(preview) {
+                // A failed preview closes its own socket. The AV1 stream
+                // continues on the capture socket.
+                let _ = receive_previews(&mut socket, &sender).await;
+            }
+            std::future::pending::<Result<(), Error>>().await
+        };
         tokio::select! {
             _ = sender.closed() => Ok(()),
             result = receive_frames(&mut output, source, sender, &requests) => result,
             result = send_updates(&mut control, &mut updates, initial) => result,
+            result = preview => result,
         }
     }
     .await;
@@ -232,11 +290,31 @@ async fn capture(
     Ok(())
 }
 
+async fn receive_previews(
+    socket: &mut UnixStream,
+    sender: &mpsc::Sender<DecodedFrame>,
+) -> Result<(), Error> {
+    loop {
+        let first = match socket.read_u8().await {
+            Ok(first) => first,
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        let frame = timeout(DEADLINE, read_capture_preview(socket, first))
+            .await
+            .map_err(|_| Error::Timeout)??;
+        let _ = sender.try_send(frame);
+    }
+}
+
 async fn send_updates(
     socket: &mut (impl AsyncWrite + Unpin),
     updates: &mut watch::Receiver<Control>,
     mut previous: Control,
 ) -> Result<(), Error> {
+    if previous.preview {
+        send_control(socket, Kind::SetCapturePreview, &[1]).await?;
+    }
     while updates.changed().await.is_ok() {
         let target = *updates.borrow_and_update();
         if target.limits != previous.limits {
@@ -244,6 +322,9 @@ async fn send_updates(
         }
         if target.key_request != previous.key_request {
             send_control(socket, Kind::CaptureKeyframe, &[]).await?;
+        }
+        if target.preview != previous.preview {
+            send_control(socket, Kind::SetCapturePreview, &[u8::from(target.preview)]).await?;
         }
         previous = target;
     }

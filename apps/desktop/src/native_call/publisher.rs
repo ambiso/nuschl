@@ -6,6 +6,7 @@ use futures_util::{FutureExt as _, future::BoxFuture, stream::FuturesUnordered};
 use nuschl_client::native::sfu::{Media, MediaEvent, Purpose, VideoKind};
 use nuschl_ipc::video::{Capture, CaptureLimits, Error, Source, VideoFrame, portal};
 use std::{future::pending, path::Path, sync::Arc, time::Instant};
+use tokio::{sync::mpsc, task::JoinHandle};
 
 pub(super) const SOURCES: [Source; 2] = [Source::Camera, Source::Screen];
 
@@ -71,14 +72,15 @@ impl Publisher {
             hardware: None,
         };
         let applied = encoding.ceiling(selection.quality);
+        let (pictures, mut preview) = mpsc::channel(1);
         let capture = grant
-            .start_with_limits(worker.to_owned(), applied)
+            .start_with_preview(worker.to_owned(), applied, pictures)
             .map_err(text)?;
-        let preview = super::preview::Preview::start(worker.to_owned(), source, move |frame| {
-            updates.local_frame(preview_id, frame);
-        })
-        .map_err(|error| tracing::debug!(%error, "local video preview unavailable"))
-        .ok();
+        let preview = tokio::spawn(async move {
+            while let Some(frame) = preview.recv().await {
+                updates.local_frame(preview_id, frame);
+            }
+        });
         let mut stats = stats::Stats::new(self.relay_only, Instant::now());
         stats.direct(self.direct);
         self.slots[index(source)] = Some(LocalVideo {
@@ -124,11 +126,18 @@ impl Publisher {
                     .as_ref()
                     .map(|track| (track.preview_id, video_kind(source), track.ready))
             }));
-            if let Some(track) = next.and_then(|source| self.slots[index(source)].as_ref()) {
-                track.capture.request_keyframe();
-            }
         }
         next.is_some()
+    }
+
+    pub fn preview(&self, visible: bool) {
+        for source in SOURCES {
+            if let Some(track) = &self.slots[index(source)] {
+                track
+                    .capture
+                    .set_preview(visible && self.focused == Some(source));
+            }
+        }
     }
 
     pub fn event(&mut self, event: &MediaEvent, updates: &Latest) {
@@ -215,16 +224,12 @@ impl Publisher {
         source: Source,
         frame: VideoFrame,
         media: &Media,
-        visible: bool,
     ) -> Result<(), String> {
         let Some(track) = &mut self.slots[index(source)] else {
             return Ok(());
         };
         track.encoding.hardware = Some(frame.hardware);
         track.stats.frame(frame.width, frame.height, None);
-        if let Some(preview) = &mut track.preview {
-            preview.offer(&frame, visible && self.focused == Some(source));
-        }
         if track.ready {
             let bytes = frame.av1.len();
             let ticks = frame.capture_time_us.saturating_mul(9) / 100;
@@ -243,7 +248,7 @@ impl Publisher {
 
 pub(super) struct LocalVideo {
     capture: Capture,
-    preview: Option<super::preview::Preview>,
+    preview: JoinHandle<()>,
     preview_id: u64,
     encoding: Encoding,
     applied: CaptureLimits,
@@ -263,9 +268,7 @@ impl LocalVideo {
         if let Err(error) = self.capture.stop().await {
             tracing::debug!(%error, "could not stop capture");
         }
-        if let Some(preview) = self.preview
-            && let Err(error) = preview.stop().await
-        {
+        if let Err(error) = self.preview.await {
             tracing::debug!(%error, "could not stop the local preview");
         }
     }
