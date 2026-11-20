@@ -409,26 +409,43 @@ try:
     for driver in [chrome, fox]:
         wait(driver, f"return Boolean(document.querySelector('{selector}')?.srcObject)", "shared audio track")
         assert driver.execute_script(f"return document.querySelector('{selector}').paused"), "audio autoplayed"
-        driver.execute_script(f"""
-          window.toneContext = new AudioContext();
-          window.toneContext.resume();
-          window.toneAnalyser = window.toneContext.createAnalyser();
-          const stream = document.querySelector('{selector}').srcObject;
-          window.toneSource = window.toneContext.createMediaStreamSource(stream);
-          window.toneSource.connect(window.toneAnalyser);
-          const silent = window.toneContext.createGain();
-          silent.gain.value = 0;
-          window.toneAnalyser.connect(silent).connect(window.toneContext.destination);
-        """)
-        wait(driver, """
-          const data = new Float32Array(window.toneAnalyser.frequencyBinCount);
-          window.toneAnalyser.getFloatFrequencyData(data);
-          const peak = data.indexOf(Math.max(...data));
-          const hertz = peak * window.toneContext.sampleRate / window.toneAnalyser.fftSize;
-          return Math.abs(hertz - 660) < 25 && data[peak] > -45;
-        """, "decrypted tab audio tone", timeout=15)
-        print(f"{driver.name}: received the encrypted tab audio tone", flush=True)
-        driver.execute_script("window.toneContext.close()")
+        # Decode a short in-memory recording of the synthetic remote stream. This
+        # consumes audio independently of the VM's playback devices.
+        tone = driver.execute_async_script("""
+          const [selector, done] = arguments;
+          const stream = document.querySelector(selector).srcObject;
+          const recorder = new MediaRecorder(stream);
+          const chunks = [];
+          recorder.ondataavailable = event => chunks.push(event.data);
+          recorder.onerror = event => done({error: String(event.error)});
+          recorder.onstop = async () => {
+            try {
+              const data = await new Blob(chunks, {type: recorder.mimeType}).arrayBuffer();
+              const context = new OfflineAudioContext(1, 48000, 48000);
+              const decoded = await context.decodeAudioData(data);
+              const samples = decoded.getChannelData(0);
+              const middle = samples.subarray(samples.length / 4, 3 * samples.length / 4);
+              let power = 0;
+              let crossings = 0;
+              let positive = false;
+              for (const sample of middle) {
+                power += sample * sample;
+                if (sample > 0.1 && !positive) {
+                  positive = true;
+                  crossings++;
+                }
+                if (sample < -0.1) positive = false;
+              }
+              done({hertz: crossings * decoded.sampleRate / middle.length, rms: Math.sqrt(power / middle.length)});
+            } catch (error) {
+              done({error: String(error)});
+            }
+          };
+          recorder.start();
+          setTimeout(() => recorder.stop(), 2000);
+        """, selector)
+        assert "error" not in tone and abs(tone["hertz"] - 660) < 25 and tone["rms"] > 0.2, tone
+        print(f"{driver.name}: received the encrypted tab audio tone {tone}", flush=True)
 
     user.save_screenshot(str(OUT / "publishing.png"))
     chrome.save_screenshot(str(OUT / "publishing-subscriber.png"))
