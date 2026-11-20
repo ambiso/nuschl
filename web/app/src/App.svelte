@@ -11,6 +11,8 @@
   import { channelRows, initials, avatarColor, conversationKey, filterMessages, appearance } from "./presentation.js";
   import {observeMessageTimeLocale} from "./message-time.js";
   import Message from "./Message.svelte";
+  import VideoCallPanel from "./VideoCallPanel.svelte";
+  import { configuredCallHost, configuredCallLink, createVideoCall } from "./video-call.js";
   import TypedDocument from "./TypedDocument.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
   import { loadEmoji } from "./emoji-state.svelte.js";
@@ -34,6 +36,8 @@
   let emojiOpen = $state(false), emojiRecent = $state([]);
   let messagesElement = $state(), composerElement = $state(), navigationButton = $state(), searchElement = $state();
   let settings = $state(appearance(null)), voice = $state(null), audioState = $state(null), audioActionPending = $state(null), capabilities = $state([]);
+  const videoHost = configuredCallHost();
+  let video = $state.raw(null), videoMinimized = $state(false);
   // The requested voice bitrate (voice-bitrate.js); the SDK worker resolves it per server.
   import { VOICE_BITRATES, initialVoiceBitrate, storeVoiceBitrate, kbps } from "./voice-bitrate.js";
   let voiceBitrate = $state(initialVoiceBitrate()), sentVoiceBitrate = null;
@@ -78,6 +82,10 @@
   const rows = $derived(selected ? channelRows(selected.channels, expanded, selected.id, selected.users) : []);
   const currentChannel = $derived(selected?.channels.find((channel) => channel.id === timeline?.channel));
   const ownUser = $derived(selected?.users.find((user) => user.session === selected.own_session));
+  const canStartVideo = $derived(videoHost && capabilities.includes("video_call") && selected?.status === "connected" &&
+    timeline && (timeline.peer
+      ? selected.users.some(user => user.session === timeline.peer.session && user.instance === timeline.peer.instance)
+      : ownUser?.channel === timeline.channel));
   // Current save availability, then this connection's rows that were not saved.
   const historyHealth = $derived.by(() => {
     const history = selected?.history;
@@ -102,6 +110,7 @@
   const icons = {
     menu:"M4 6h16M4 12h16M4 18h16", close:"m6 6 12 12M6 18 18 6", plus:"M12 5v14M5 12h14", hash:"M10 3 8 21M17 3l-2 18M4 9h17M3 15h17",
     voice:"M11 5 6 9H3v6h3l5 4V5Zm4 3a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14", mic:"M12 15a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v7a3 3 0 0 0 3 3Zm-6-4v1a6 6 0 0 0 12 0v-1M12 18v4M8 22h8",
+    video:"M3 6h12v12H3zM15 10l6-3v10l-6-3",
     smile:"M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM8.5 14.5a4.5 4.5 0 0 0 7 0M9 9.5h.01M15 9.5h.01",
     headphones:"M4 14v-3a8 8 0 0 1 16 0v3M4 13h4v8H4v-8Zm12 0h4v8h-4v-8", search:"m21 21-5-5M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16", user:"M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z", people:"M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M16 3a4 4 0 0 1 0 8m6 10v-2a4 4 0 0 0-3-3.87M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0",
     settings:"m9 3-.7 3-2.8 1-2.5-1.5-2 3.5 2.3 2V14L1 16l2 3.5L5.5 18l2.8 1L9 22h4l.7-3 2.8-1 2.5 1.5 2-3.5-2.3-2v-3L21 9l-2-3.5L16.5 7l-2.8-1L13 3H9ZM15 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0", send:"m22 2-7 20-4-9-9-4 20-7ZM11 13 22 2", leave:"M10 17l5-5-5-5M15 12H3M15 3h5v18h-5", lock:"M5 10h14v11H5V10Zm3 0V6a4 4 0 0 1 8 0", unlock:"M5 10h14v11H5V10Zm3 0V6a4 4 0 0 1 7-3", chevron:"m9 5 7 7-7 7",
@@ -117,6 +126,78 @@
   }
   function command(method,...args){return commandFrom(undefined,method,...args);}
   async function act(method, ...args) { try { return await command(method, ...args); } catch (reason) { setError(String(reason?.message || reason)); } }
+
+  function openVideo(link) {
+    const creating = link === undefined;
+    if (!(creating ? canStartVideo : configuredCallLink(link, videoHost) && selected?.status === "connected")) return;
+    if (video?.link === link && video && !video.call.ended) {
+      videoMinimized = false;
+      return;
+    }
+    let proof;
+    try {
+      if (creating) proof = actionProof("start_video_call", [""], servers, timeline, voice);
+    } catch (reason) {
+      setError(String(reason?.message || reason));
+      return;
+    }
+    closeVideo();
+    let call;
+    try { call = createVideoCall(new URLSearchParams(location.search).has("relay")); }
+    catch { setError("Video call could not start."); return; }
+    const active = {
+      call, link, creating, server: selected.id, generation: selected.generation,
+      channel: ownUser?.channel, joined: false, announced: false,
+    };
+    video = active;
+    videoMinimized = false;
+    active.changed = () => {
+      if (video !== active) return;
+      if (call.ended) {
+        if (active.link && active.creating) void command("end_video_call", active.link).catch(() => {});
+        call.removeEventListener("change", active.changed);
+        return;
+      }
+      if (!creating || active.joined || call.role !== "host") return;
+      active.joined = true;
+      active.link = call.opened.invitation;
+      if (!configuredCallLink(active.link, videoHost)) return call.end("link");
+      rpc.request("start_video_call", [active.link], proof).catch(reason => {
+        if (video !== active) return;
+        setError(String(reason?.message || reason));
+        call.endForEveryone();
+        call.end("ended");
+      });
+    };
+    call.addEventListener("change", active.changed);
+    if (!call.ended) void call.start({ link, host: videoHost });
+  }
+
+  function closeVideo() {
+    const active = video;
+    if (!active) return;
+    video = null;
+    active.call.removeEventListener("change", active.changed);
+    if (active.creating) {
+      active.call.endForEveryone();
+      if (active.link) void command("end_video_call", active.link).catch(() => {});
+    }
+    active.call.end("ended");
+  }
+
+  $effect(() => {
+    const active = video;
+    if (!active) return;
+    const server = servers.find(item => item.id === active.server);
+    const own = server?.users.find(user => user.session === server.own_session);
+    if (server?.status !== "connected" || server.generation !== active.generation || own?.channel !== active.channel) {
+      closeVideo();
+    } else if (active.creating && active.link && timeline?.hosted_video_call === active.link) {
+      active.announced = true;
+    } else if (active.announced && timeline?.hosted_video_call !== active.link) {
+      closeVideo();
+    }
+  });
   function rememberDraft() {
     const key = conversationKey(timeline, selected);
     if (!key) return;
@@ -178,7 +259,8 @@
     const resizeViewport = () => { if (orderDrag) cancelOrder(); document.documentElement.style.setProperty("--app-height", `${viewport?.height || window.innerHeight}px`); };
     resizeViewport(); viewport?.addEventListener("resize", resizeViewport);
     callSession.attach();
-    const cleanup = () => { callSession.detach(); stopTimeLocale(); contentBridge?.dispose(); cancelOrder(); window.removeEventListener("keydown", escapeOrder, true); window.removeEventListener("resize", cancelOrder); motion.removeEventListener("change", updateMotion); media.removeEventListener("change", updateMobile); viewport?.removeEventListener("resize", resizeViewport); rpc?.close("Client closed.",{notify:false}); worker = null; disposeAudio(); };
+    window.addEventListener("pagehide", closeVideo);
+    const cleanup = () => { closeVideo(); window.removeEventListener("pagehide", closeVideo); callSession.detach(); stopTimeLocale(); contentBridge?.dispose(); cancelOrder(); window.removeEventListener("keydown", escapeOrder, true); window.removeEventListener("resize", cancelOrder); motion.removeEventListener("change", updateMotion); media.removeEventListener("change", updateMobile); viewport?.removeEventListener("resize", resizeViewport); rpc?.close("Client closed.",{notify:false}); worker = null; disposeAudio(); };
     const unavailable = reason => {
       contentBridge?.dispose();
       worker = null; clientUnavailable = true; loaded = false; cancelOrder(); arrangeServers = false;
@@ -570,6 +652,7 @@
       {#if mobile}<button class="icon-button menu-button" bind:this={navigationButton} aria-label="Open navigation" aria-expanded={drawer} onclick={() => drawer = true}>{@render icon("menu")}</button>{/if}
       <span class="header-hash" aria-hidden="true">{currentChannel?.direct ? "@" : "#"}</span><div class="channel-title"><h2>{timeline?.name || "Welcome to Nuschl"}</h2><span>{currentChannel?.direct ? "Private conversation" : selected?.name || "Your voice. Your space."}</span></div>
       <div class="header-actions">
+        {#if canStartVideo && !video}<button class="icon-button" title="Start call" aria-label="Start call" onclick={() => openVideo()}>{@render icon("video")}</button>{/if}
         {#if timeline && !currentChannel?.direct}<button class="join-button" disabled={selected?.status !== "connected"} onclick={() => joinVoice()} title="Join this voice channel" aria-label="Join voice">{@render icon("voice")}<span>Join voice</span></button>{/if}
         <button class:pressed={showSearch} class="icon-button" aria-label="Search messages" aria-expanded={showSearch} title={`Search loaded messages (${primary}+F)`} disabled={!timeline} onclick={searchMessages}>{@render icon("search")}</button>
         <button class:pressed={membersOpen} class="icon-button members-toggle" aria-label="Show members" aria-expanded={membersOpen} disabled={!timeline} onclick={() => membersOpen = !membersOpen}>{@render icon("people")}</button>
@@ -577,6 +660,12 @@
       </div>
     </header>
     {#if showSearch}<form class="search-bar" onsubmit={(event) => event.preventDefault()}><label for="search-messages">Search this loaded history</label><input id="search-messages" bind:this={searchElement} bind:value={search} type="search" placeholder="Message text or person…" onkeydown={(event) => { if (event.key === "Escape") { showSearch = false; search = ""; } }}><small>{displayedMessages.length} results</small><button class="icon-button" aria-label="Close search" onclick={() => { showSearch = false; search = ""; }}>{@render icon("close")}</button></form>{/if}
+    {#if video}
+      {#key video.call}
+        <VideoCallPanel call={video.call} owner={video.creating} url={video.link} minimized={videoMinimized}
+          ontoggle={() => videoMinimized = !videoMinimized} onleave={closeVideo}/>
+      {/key}
+    {/if}
     {#if clientUnavailable}<div class="error" role="alert"><span>{error || "The client is unavailable. Reload to reconnect."}</span><button class="control-button" onclick={() => location.reload()}>Reload client</button></div>{:else if error}<div class="error" role="alert"><span>{error}</span><button class="icon-button" aria-label="Dismiss error" onclick={() => setError("")}>{@render icon("close")}</button></div>{/if}
     {#if welcome}
       {#key welcome.token}<section class="server-welcome" aria-label="Server welcome">
@@ -589,7 +678,15 @@
         {#if timeline?.has_older}<div class="history-start"><button class="text-button" disabled={timeline.loading} onclick={older}>{timeline.loading ? "Loading history…" : "Load older messages"}</button></div>{/if}
         {#if !timeline}<div class="welcome"><div class="welcome-logo"><img src="/nuschl.svg" alt="" width="74" height="74"></div><p class="eyebrow">A LITTLE CLOSER, FROM ANYWHERE</p><h2>Your voice. Your space.</h2><p>Drop into your server, find your people, and pick up the conversation.</p><button class="primary" onclick={addServer}>Add a server</button><small>Compatible with Mumble · history saved in this browser</small></div>
         {:else if !displayedMessages.length}<div class="channel-welcome"><span class="welcome-hash" aria-hidden="true">{currentChannel?.direct ? "@" : "#"}</span><h2>{search ? "No messages found" : `Welcome to ${timeline.name}`}</h2><p>{search ? "Try another word, or load older history." : timeline.loading ? "Loading your conversations…" : "This is the start of the history saved in this browser. Say hello."}</p></div>{/if}
-        {#each displayedMessages as message (message.serial)}<Message {message}/>{/each}
+        {#each (timeline?.video_calls ?? []).filter(call => configuredCallLink(call.link, videoHost) &&
+          !timeline.messages.some(message => message.call?.link === call.link && !message.call.ended)) as call (call.link + call.author)}
+          <div class="video-invitation"><strong>{call.author} started a video call</strong>
+            <button class="control-button" disabled={selected?.status !== "connected"} onclick={() => openVideo(call.link)}>Join call</button></div>
+        {/each}
+        {#each displayedMessages as message (message.serial)}
+          <Message {message} callAction={configuredCallLink(message.call?.link, videoHost)
+            ? () => openVideo(message.call.link) : null} canJoinCall={selected?.status === "connected"}/>
+        {/each}
       </div>
       {#if membersOpen && timeline}<aside class="members" aria-label="Channel members"><div class="section-label"><span>IN THIS CHANNEL</span><span>{selectedUsers.length}</span></div>{#each selectedUsers as user (user.session)}<button class="member" disabled={user.session === selected.own_session} onclick={() => act("open_direct",selectedIndex,user.session)}><span class={`mini-avatar ${avatarColor(user.name)}`}>{initials(user.name)}</span><span>{user.name}{user.session === selected.own_session ? " (you)" : ""}</span></button>{/each}{#if !selectedUsers.length}<p class="muted">No one here yet.</p>{/if}</aside>{/if}
     </div>

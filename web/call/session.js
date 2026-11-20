@@ -13,6 +13,7 @@ const RESUBSCRIBE_MS = 5000;
 const TICK_MS = 250;
 /** Samples transport readiness and the outgoing estimate once per second. */
 const PATH_MS = 1000;
+const LEASE_MS = 10000;
 
 export class Call extends EventTarget {
   /** The other peers: id → role. */
@@ -30,21 +31,27 @@ export class Call extends EventTarget {
   ended = null;
 
   /** `stream`: a StreamClient. `codecs`: the codecs this browser decodes. */
-  constructor(stream, { codecs, relay }) {
+  constructor(stream, { codecs, relay, allowDirect = !relay }) {
     super();
     this.stream = stream;
     this.codecs = codecs;
     this.relay = relay;
+    this.allowDirect = allowDirect && !relay;
     this.direct = new DirectPaths(this);
   }
 
-  /** Opens the call `link` on the stream host `host` and joins it. */
+  /** Opens an invitation, or creates a room on the configured stream host. */
   async start({ link, host }) {
+    this.host = host;
+    this.ownsLease = link === undefined;
     try {
-      this.opened = await this.stream.request({ kind: "open", link, host, allow_direct: !this.relay });
+      this.opened = await this.stream.request({
+        kind: this.ownsLease ? "create" : "open", link, host, allow_direct: this.allowDirect,
+      });
     } catch {
       return this.end("link");
     }
+    if (this.ended) return;
     this.socket = new WebSocket(`wss://${host}/sfu`);
     let inbox = Promise.resolve();
     this.socket.addEventListener("message", ({ data }) => {
@@ -58,7 +65,7 @@ export class Call extends EventTarget {
       inbox = inbox.then(() => this.end("lost"));
     });
     this.timer = setInterval(() => this.resubscribe(), RESUBSCRIBE_MS);
-    if (!this.relay) this.pathTimer = setInterval(() => this.checkPath(), PATH_MS);
+    if (this.allowDirect) this.pathTimer = setInterval(() => this.checkPath(), PATH_MS);
   }
 
   get creator() {
@@ -84,11 +91,17 @@ export class Call extends EventTarget {
 
   async receive(message) {
     switch (message?.type) {
-      case "hello":
-        this.send(join(this.opened, await this.stream.request({ kind: "admit", nonce: message.nonce }), this.codecs));
+      case "hello": {
+        const admission = await this.stream.request({ kind: "admit", nonce: message.nonce });
+        if (this.ownsLease && admission.create) {
+          this.leaseBody = JSON.stringify({ stream_id: this.opened.room, host_key: admission.create.host_key });
+        }
+        this.send(join(this.opened, admission, this.codecs));
         return;
+      }
       case "welcome":
         if (this.relay && !message.turn) return this.end("relay");
+        if (this.leaseBody) this.leaseTimer = setInterval(() => this.renewLease(), LEASE_MS);
         this.self = message.peer;
         this.role = message.role;
         this.codec = message.codec;
@@ -382,6 +395,15 @@ export class Call extends EventTarget {
     this.send({ type: "end" });
   }
 
+  renewLease() {
+    // The stream host accepts this small JSON body as a simple POST. The room's
+    // WebSocket reports expiration; the browser can discard the HTTP response.
+    fetch(`https://${this.host}/sfu/lease`, {
+      method: "POST", mode: "no-cors", credentials: "omit", redirect: "error",
+      body: this.leaseBody, signal: AbortSignal.timeout(LEASE_MS),
+    }).catch(() => {});
+  }
+
   remove(peer) {
     this.send({ type: "remove", peer });
   }
@@ -393,17 +415,20 @@ export class Call extends EventTarget {
     clearInterval(this.timer);
     clearInterval(this.ticker);
     clearInterval(this.pathTimer);
+    clearInterval(this.leaseTimer);
+    this.leaseBody = null;
     this.direct.close();
     for (const { track } of this.sources.values()) track.stop();
     this.sources.clear();
     this.socket?.close();
     this.subscriber?.close();
     this.publisher?.close();
+    this.stream?.close();
     this.changed();
   }
 
   checkPath() {
-    if (!this.relay && !this.ended) this.direct.tick().catch(() => {});
+    if (this.allowDirect && !this.ended) this.direct.tick().catch(() => {});
   }
 
   changed() {

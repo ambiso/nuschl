@@ -4,7 +4,7 @@
   import {messageTime,timestampFormats} from "./message-time.js";
   import TypedDocument from "./TypedDocument.svelte";
   import {observeDocument,contentDocument,retainDocument,contentFailed,contentUnavailable,retryContent} from "./content-bridge.js";
-  let { message } = $props();
+  let { message, callAction, canJoinCall } = $props();
   const token = $derived(message.content_token);
   const serverFailed = $derived(message.content_failed);
   let prepared = $state(null), cacheFailed = $state(false), unavailable = $state(false);
@@ -25,7 +25,14 @@
   <div class={`avatar ${avatarColor(message.author)}`} aria-hidden="true">{initials(message.author)}</div>
   <div class="message-content">
     <header><strong>{message.author}</strong><time datetime={time.iso} title={time.title}>{time.label}</time>{#if message.status}<span class:failed={message.status.toLowerCase().includes("fail")}>{message.status}</span>{/if}</header>
-    <TypedDocument document={content} />
+    {#if callAction}
+      <div class="video-invitation">
+        <strong>{message.call.ended ? "Call ended" : "Video call"}</strong>
+        {#if !message.call.ended}<button class="control-button" disabled={!canJoinCall} onclick={callAction}>Join call</button>{/if}
+      </div>
+    {:else}
+      <TypedDocument document={content} />
+    {/if}
     {#if failed}
       {#if unavailable}<small role="status">Preview unavailable. Reload to try again.</small>
       {:else}<button onclick={() => retryContent(message.content_token)}>Retry message preview</button>{/if}

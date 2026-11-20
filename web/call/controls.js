@@ -48,17 +48,18 @@ export class Controls {
   busy = new Set();
   notice = "";
 
-  constructor(document, call) {
+  constructor(root, call, enableTabAudio = true) {
+    const document = root.ownerDocument ?? root;
     this.call = call;
     this.media = document.defaultView.navigator.mediaDevices;
-    const $ = (id) => document.getElementById(id);
+    const $ = (id) => root.querySelector(`#${id}`);
     this.status = $("notice");
     this.audio = $("screen-audio");
     this.audio.checked = false;
     this.audio.addEventListener("change", () => {
       if (!this.audio.checked) this.stopAudio();
     });
-    if (typeof document.defaultView.MediaStreamTrack?.prototype.getCaptureHandle === "function") {
+    if (enableTabAudio && typeof document.defaultView.MediaStreamTrack?.prototype.getCaptureHandle === "function") {
       try {
         this.media.setCaptureHandleConfig({
           handle: callCaptureHandle, permittedOrigins: [document.defaultView.location.origin],
@@ -77,8 +78,13 @@ export class Controls {
       button.addEventListener("click", () => this.toggle(kind));
       this.sources[kind] = { button, quality };
     }
-    call.addEventListener("change", () => this.render());
+    this.changed = () => this.render();
+    call.addEventListener("change", this.changed);
     this.render();
+  }
+
+  close() {
+    this.call.removeEventListener("change", this.changed);
   }
 
   async toggle(kind) {
@@ -90,6 +96,10 @@ export class Controls {
     if (kind === "screen") this.audio.checked = false;
     try {
       const media = await capture[kind](this.media, wantsAudio);
+      if (this.call.ended) {
+        for (const stopped of media.getTracks()) stopped.stop();
+        return;
+      }
       const [track] = media.getVideoTracks();
       const [audio, ...extra] = media.getAudioTracks();
       const shareAudio = wantsAudio && canShareAudio(track) && audio;
