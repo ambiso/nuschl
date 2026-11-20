@@ -7,6 +7,7 @@ mod viewer;
 
 use crate::{
     dialogs::{Tone, icon_button, styled_button},
+    images::VideoImage,
     layout,
     menus::{MenuAnchor, MenuTarget},
     services::ServiceEvent,
@@ -249,7 +250,7 @@ impl Latest {
 
 struct Surface {
     status: String,
-    image: Option<Arc<RenderImage>>,
+    image: Option<VideoImage>,
     stats: Option<Arc<VideoStats>>,
     own_video: Option<VideoKind>,
     viewer_sources: viewer::Sources,
@@ -320,6 +321,7 @@ impl Surface {
 impl Render for Surface {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         crate::images::collect(window);
+        let image = self.image.as_mut().map(VideoImage::for_render);
         div()
             .flex()
             .flex_col()
@@ -327,7 +329,7 @@ impl Render for Surface {
             .gap_1()
             .min_h_0()
             .w_full()
-            .when(self.image.is_none(), |stage| {
+            .when(image.is_none(), |stage| {
                 stage.items_center().justify_center()
             })
             .child(
@@ -338,7 +340,7 @@ impl Render for Surface {
                     .text_color(color(TEXT_MUTED))
                     .child(gpui_kit::text!(self.status.clone())),
             )
-            .when_some(self.image.clone(), |view, image| {
+            .when_some(image, |view, image| {
                 let image_size = image.size(0);
                 let quality = self.quality.clone();
                 view.child(
@@ -390,12 +392,12 @@ impl Render for Surface {
     }
 }
 
-fn render_frame(frame: DecodedFrame) -> Option<Arc<RenderImage>> {
+fn render_frame(frame: DecodedFrame) -> Option<VideoImage> {
     let (width, height) = (u32::from(frame.width), u32::from(frame.height));
     let image = image::RgbaImage::from_raw(width, height, frame.bgra)?;
-    Some(crate::images::track(Arc::new(RenderImage::new(vec![
-        image::Frame::new(image),
-    ]))))
+    Some(VideoImage::new(RenderImage::new(vec![image::Frame::new(
+        image,
+    )])))
 }
 
 impl Desktop {
