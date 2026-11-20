@@ -57,6 +57,7 @@ pub struct Connect<'a> {
 pub struct Connection {
     welcome: Welcome,
     socket: Socket,
+    video_limits: bool,
     scope: CallScope,
     #[cfg(target_os = "linux")]
     policy: PeerPolicy,
@@ -144,7 +145,7 @@ impl Connection {
         else {
             return Err(Error::Protocol("invalid room metadata"));
         };
-        let (socket, welcome) = timeout(HANDSHAKE, async {
+        let (socket, welcome, video_limits) = timeout(HANDSHAKE, async {
             let mut socket = open(options.host, roots).await?;
             let ServerMessage::Hello {
                 nonce,
@@ -184,7 +185,7 @@ impl Connection {
                         && welcome.peers.len() <= 256
                         && options.codecs.contains(&welcome.codec) =>
                 {
-                    Ok((socket, welcome))
+                    Ok((socket, welcome, video_limits))
                 }
                 ServerMessage::Error { reason }
                     if reason.len() <= 32
@@ -200,6 +201,7 @@ impl Connection {
         Ok(Self {
             welcome,
             socket,
+            video_limits,
             scope,
             #[cfg(target_os = "linux")]
             policy: options.policy,
@@ -217,7 +219,17 @@ impl Connection {
         if let Some(offer) = self.pending_offer.take() {
             return Ok(offer);
         }
-        read(&mut self.socket).await
+        let mut message = read(&mut self.socket).await?;
+        if !self.video_limits {
+            match &mut message {
+                ServerMessage::Quality { limit, .. } => *limit = None,
+                ServerMessage::VideoLimit { .. } => {
+                    return Err(Error::Protocol("unexpected video limit report"));
+                }
+                _ => {}
+            }
+        }
+        Ok(message)
     }
 
     /// Keep control signaling current while the owner chooses a video source.

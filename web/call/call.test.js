@@ -277,7 +277,7 @@ test("ultrawide publisher stats distinguish capture, verified caps and encoded r
   assert.deepEqual(publisherMeasurements(capture, target, { cap: TIERS.screen[3], scale: 1 }, encoded, previous),
     ["3440 × 1440", "1440p60", "2160p60 · 15.0 Mb/s", "3440 × 1440", "2580 × 1080", "30.0 fps", "2.0 Mb/s", "Sender upload"]);
   assert.deepEqual(publisherMeasurements(capture, target, { cap: TIERS.screen[1], scale: 1440 / 1080, reason: "traffic_budget" }),
-    ["3440 × 1440", "1440p60", "1080p30 · 3.0 Mb/s", "2580 × 1080", "—", "—", "—", "SFU monthly traffic pacing"]);
+    ["3440 × 1440", "1440p60", "1080p30 · 3.0 Mb/s", "2580 × 1080", "—", "—", "—", "SFU traffic budget pacing"]);
   const idle = { ...encoded, frameWidth: 3440, frameHeight: 1440, framesPerSecond: 0, bytesSent: 0, qualityLimitationReason: "none" };
   assert.deepEqual(publisherMeasurements(capture, target, { scale: 1 }, idle, previous).slice(-2),
     ["0.0 kb/s", "Within selected quality"]);
