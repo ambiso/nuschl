@@ -356,6 +356,34 @@ async fn native_video_for_policy(relay_only: bool) {
             0x86, 0x80,
         ],
     ];
+    const FRAME_INTERVAL: Duration = Duration::from_millis(34);
+
+    async fn send_until_keyframe(
+        sender: &mut Media,
+        viewer: &mut Media,
+        publisher: u64,
+        frame: &mut u64,
+        expected: &[u8],
+    ) -> Vec<u8> {
+        let mut tick = tokio::time::interval(FRAME_INTERVAL);
+        loop {
+            tokio::select! {
+                _ = tick.tick() => {
+                    *frame += 1;
+                    sender.send_keyframe(*frame * 3_060, expected.to_vec()).unwrap();
+                    tick.reset();
+                }
+                event = sender.next() => {
+                    event.expect("publisher remains live").expect("RTC publisher");
+                }
+                data = rendered(viewer, publisher, true) => {
+                    assert_eq!(data, expected);
+                    return data;
+                }
+            }
+        }
+    }
+
     async fn rendered(media: &mut Media, publisher: u64, key: bool) -> Vec<u8> {
         loop {
             if let MediaEvent::Frame {
@@ -474,23 +502,14 @@ async fn native_video_for_policy(relay_only: bool) {
         }
         phase = "initial keyframe";
         let mut frame = 0u64;
-        let mut tick = tokio::time::interval(Duration::from_millis(34));
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let initial = loop {
-            tokio::select! {
-                _ = tick.tick() => {
-                    frame += 1;
-                    alice.send_keyframe(frame * 3_060, KEY.to_vec()).unwrap();
-                }
-                data = rendered(&mut bob, publisher, true) => {
-                    assert_eq!(data, KEY);
-                    if let Some(frame) = decoder.decode(true, data).await.unwrap() {
-                        break frame;
-                    }
-                }
+            let key = send_until_keyframe(&mut alice, &mut bob, publisher, &mut frame, &KEY).await;
+            if let Some(frame) = decoder.decode(true, key).await.unwrap() {
+                break frame;
             }
         };
-        tick.tick().await;
+        // Each dependent frame follows its acknowledged reference at capture cadence.
+        tokio::time::sleep(FRAME_INTERVAL).await;
         frame += 1;
         assert!(
             alice
@@ -515,7 +534,7 @@ async fn native_video_for_policy(relay_only: bool) {
 
         // Dropping an input frame invalidates later dependent frames until a
         // fresh keyframe. The RTC worker remains live through the recovery.
-        tick.tick().await;
+        tokio::time::sleep(FRAME_INTERVAL).await;
         frame += 2;
         assert!(
             alice
@@ -544,12 +563,8 @@ async fn native_video_for_policy(relay_only: bool) {
             }
         }
         phase = "recovery keyframe";
-        frame += 1;
-        assert!(alice.send_keyframe(frame * 3_060, KEY.to_vec()).unwrap());
-        assert_eq!(rendered(&mut bob, publisher, true).await, KEY);
-        // Start a new capture interval after the intentionally skipped frame.
-        tick.reset();
-        tick.tick().await;
+        send_until_keyframe(&mut alice, &mut bob, publisher, &mut frame, &KEY).await;
+        tokio::time::sleep(FRAME_INTERVAL).await;
         frame += 1;
         assert!(
             alice
@@ -559,12 +574,9 @@ async fn native_video_for_policy(relay_only: bool) {
         phase = "dependent frame after recovery";
         assert_eq!(rendered(&mut bob, publisher, false).await, DELTAS[0]);
 
-        tick.tick().await;
-        frame += 1;
-        assert!(alice.send_keyframe(frame * 3_060, red.clone()).unwrap());
+        tokio::time::sleep(FRAME_INTERVAL).await;
         phase = "second picture";
-        let packet = rendered(&mut bob, publisher, true).await;
-        assert_eq!(packet, red);
+        let packet = send_until_keyframe(&mut alice, &mut bob, publisher, &mut frame, &red).await;
         let decoded = decoder
             .decode(true, packet)
             .await
