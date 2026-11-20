@@ -141,7 +141,7 @@ pub fn frame(window: &mut Window, content: AnyElement) -> AnyElement {
         return div().size_full().child(content).into_any_element();
     };
     let outer = frame_radii(edges, RADIUS);
-    window.set_client_inset(if edges.is_tiled() { px(0.) } else { INSET });
+    window.set_client_inset(INSET);
     div()
         .id("window-frame")
         .size_full()
