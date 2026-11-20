@@ -7,7 +7,10 @@ use super::{
 };
 use crate::sfu::turn::turn_address;
 use futures_util::{FutureExt, future::BoxFuture};
-use nuschl_ipc::{crypto::call::Action, rtc::Codec};
+use nuschl_ipc::{
+    crypto::call::Action,
+    rtc::{Codec, FIRST_DIRECT_LEG},
+};
 use serde::{Deserialize, Serialize};
 use std::{
     future::pending,
@@ -121,7 +124,7 @@ impl Direct {
                 .take(6)
                 .find_map(|url| turn_address(url))
                 .map(|(host, port)| (host.to_owned(), port)),
-            next_leg: 3,
+            next_leg: FIRST_DIRECT_LEG,
             ready: false,
             asked: false,
             leg: None,

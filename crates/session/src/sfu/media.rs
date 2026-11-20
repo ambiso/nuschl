@@ -8,7 +8,10 @@ use super::{
     VideoKind, write,
 };
 use nuschl_core::network::Destination;
-use nuschl_ipc::rtc::{self, Command, Description, Event, LegRole, Reply, Track, Worker};
+use nuschl_ipc::rtc::{
+    self, Command, Description, Event, LegRole, Reply, SFU_PUBLISH_LEG as PUBLISH,
+    SFU_SUBSCRIBE_LEG as SUBSCRIBE, Track, Worker,
+};
 use nuschl_stream_quality::{QualityRequest, Throttle};
 use std::{
     collections::{HashMap, HashSet},
@@ -30,8 +33,6 @@ use direct::{Candidates, Direct, Signal};
 
 pub use rtc::Purpose;
 
-const SUBSCRIBE: u32 = 1;
-const PUBLISH: u32 = 2;
 const UDP_BURST: usize = 64;
 const MAX_PENDING_FRAME_AGE: Duration = Duration::from_millis(150);
 const KEYFRAME_INTERVAL: Duration = Duration::from_secs(1);
@@ -1506,7 +1507,7 @@ async fn drain(
                     contiguous,
                     key_frame,
                 } if receiving => {
-                    let upgrading = leg.id > PUBLISH && !leg.selected;
+                    let upgrading = leg.id >= rtc::FIRST_DIRECT_LEG && !leg.selected;
                     let Some(gate) = leg.video_gates.get_mut(&(publisher, purpose)) else {
                         continue;
                     };
