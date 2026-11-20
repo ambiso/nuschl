@@ -97,9 +97,11 @@ checks the resulting pixels. Compositor DMA-BUF verification is tracked in #418.
 
 The VA-API decoder writes mapped BGRA directly into the bounded worker pipe.
 The client reads those bytes into the frame allocation, and compatible BGRA
-atlases stage them directly in wgpu. The vendored atlas GPU readback tests
-run locally because they require a Vulkan device. The NixOS desktop tests
-exercise image rendering in the packaged app.
+atlases stage them directly in wgpu. The sender's local preview feeds consecutive
+AV1 frames to the confined software decoder with a smaller output pixel budget.
+Its short input queue recovers on a keyframe after a gap. The vendored atlas
+GPU readback tests run locally because they require a Vulkan device. The NixOS
+desktop tests exercise image rendering in the packaged app.
 
 ## Continuous integration
 
