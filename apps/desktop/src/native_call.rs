@@ -1407,7 +1407,7 @@ fn call_event(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{CaptureLimits, Encoding, Quality, VideoKind};
 
     #[test]
     fn a_constrained_screen_reduces_dimensions_and_cadence_then_recovers() {
