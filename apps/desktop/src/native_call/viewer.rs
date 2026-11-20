@@ -170,7 +170,8 @@ impl Viewer {
                 data,
                 ..
             } => {
-                if self.current == Some(Track { publisher, purpose })
+                let track = Some(Track { publisher, purpose });
+                if self.current == track
                     && let Some(source) = capture_source(purpose)
                 {
                     let decoder = match &mut self.decoder {
@@ -188,12 +189,14 @@ impl Viewer {
                     self.stats.encoded(data.len());
                     let started = Instant::now();
                     match decoder.decode(key_frame, data).await {
-                        Ok(Some(frame)) => {
+                        Ok(Some(frame))
+                            if self.sources.current(display.quality.borrow().view) == track =>
+                        {
                             self.stats
                                 .frame(frame.width, frame.height, Some(started.elapsed()));
                             display.updates.frame(frame, true);
                         }
-                        Ok(None) => {}
+                        Ok(_) => {}
                         Err(DecodeError::Io(_) | DecodeError::Timeout | DecodeError::Busy) => {
                             display.updates.status("Waiting for a fresh video frame");
                             media.request_keyframe(purpose).map_err(text)?;
@@ -208,13 +211,14 @@ impl Viewer {
         if !changed {
             return Ok(());
         }
-        let mut update = display
-            .updates
-            .update
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        update.viewer_sources = self.sources;
-        drop(update);
+        {
+            let mut update = display
+                .updates
+                .update
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            update.viewer_sources = self.sources;
+        }
         display.updates.ready.notify_one();
         let selection = *display.quality.borrow();
         self.selection_changed(media, display, selection).await
