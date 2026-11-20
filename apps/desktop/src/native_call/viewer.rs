@@ -163,7 +163,9 @@ impl Viewer {
                 }
                 changed
             }
-            MediaEvent::SourceEnded { purpose } => {
+            MediaEvent::SourceEnded { publisher, purpose }
+                if self.sources.get(purpose) == Some(Track { publisher, purpose }) =>
+            {
                 self.limit(purpose, None);
                 self.sources.set(purpose, None)
             }
@@ -202,7 +204,9 @@ impl Viewer {
                     if !contiguous {
                         decoder.reset();
                         if !key_frame {
-                            media.request_keyframe(purpose).map_err(text)?;
+                            media
+                                .request_source_keyframe(publisher, purpose)
+                                .map_err(text)?;
                         }
                     }
                     self.stats.encoded(data.len());
@@ -220,7 +224,9 @@ impl Viewer {
                         Ok(None) => {}
                         Err(DecodeError::Io(_) | DecodeError::Timeout | DecodeError::Busy) => {
                             display.updates.status("Waiting for a fresh video frame");
-                            media.request_keyframe(purpose).map_err(text)?;
+                            media
+                                .request_source_keyframe(publisher, purpose)
+                                .map_err(text)?;
                         }
                         Err(error) => return Err(text(error)),
                     }
@@ -291,7 +297,9 @@ impl Viewer {
                 decoder.stop().await.map_err(text)?;
             }
             if let Some(track) = current {
-                media.request_keyframe(track.purpose).map_err(text)?;
+                media
+                    .request_source_keyframe(track.publisher, track.purpose)
+                    .map_err(text)?;
             }
         }
         Ok(())
