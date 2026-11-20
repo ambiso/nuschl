@@ -51,41 +51,69 @@ impl Stream<'_> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Limit {
+    Host,
+    Room,
+    Viewer,
+    Network,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Allocation {
+    pub layers: usize,
+    /// The tightest budget that could not fit the next choice.
+    pub limited_by: Option<Limit>,
+}
+
 /// The number of choices each stream gets, 0 for none. Rounds give the stream
 /// with the lowest rate its next choice while that fits the host's, its room's
 /// and its receiver's budget; a receiver's budget is the least of
 /// `limits.receiver` and `receivers[stream.receiver]`, its network capacity.
-pub fn allocate(limits: &Limits, receivers: &[u64], streams: &[Stream]) -> Vec<usize> {
+pub fn allocate(limits: &Limits, receivers: &[u64], streams: &[Stream]) -> Vec<Allocation> {
     let rooms = streams.iter().map(|s| s.room + 1).max().unwrap_or(0);
     let mut room_used = vec![0; rooms];
     let mut receiver_used = vec![0; receivers.len()];
     let mut host_used = 0;
-    let mut choices = vec![0; streams.len()];
+    let mut allocations = vec![Allocation::default(); streams.len()];
     let mut queue: BinaryHeap<_> = (0..streams.len())
         .filter(|&i| !streams[i].rates.is_empty())
         .map(|i| Reverse((0, i)))
         .collect();
     while let Some(Reverse((_, i))) = queue.pop() {
         let stream = &streams[i];
+        let allocation = &mut allocations[i];
         let extra = stream
-            .cost(choices[i] + 1)
-            .saturating_sub(stream.cost(choices[i]));
-        let fits = host_used + extra <= limits.host
-            && room_used[stream.room] + extra <= limits.room
-            && receiver_used[stream.receiver] + extra
-                <= limits.receiver.min(receivers[stream.receiver]);
-        if !fits {
+            .cost(allocation.layers + 1)
+            .saturating_sub(stream.cost(allocation.layers));
+        let (credit, limit) = [
+            (limits.room - room_used[stream.room], Limit::Room),
+            (
+                limits.receiver - receiver_used[stream.receiver],
+                Limit::Viewer,
+            ),
+            (
+                receivers[stream.receiver] - receiver_used[stream.receiver],
+                Limit::Network,
+            ),
+        ]
+        .into_iter()
+        .fold((limits.host - host_used, Limit::Host), |best, budget| {
+            if budget.0 < best.0 { budget } else { best }
+        });
+        if extra > credit {
+            allocation.limited_by = Some(limit);
             continue;
         }
         host_used += extra;
         room_used[stream.room] += extra;
         receiver_used[stream.receiver] += extra;
-        choices[i] += 1;
-        if choices[i] < stream.rates.len() {
-            queue.push(Reverse((stream.rates[choices[i] - 1], i)));
+        allocation.layers += 1;
+        if allocation.layers < stream.rates.len() {
+            queue.push(Reverse((stream.rates[allocation.layers - 1], i)));
         }
     }
-    choices
+    allocations
 }
 
 /// Whether all base layers fit the configured egress budgets.
@@ -128,6 +156,42 @@ mod tests {
             host,
             room,
             receiver: u64::MAX,
+        }
+    }
+
+    fn allocate(limits: &Limits, receivers: &[u64], streams: &[Stream]) -> Vec<usize> {
+        super::allocate(limits, receivers, streams)
+            .into_iter()
+            .map(|allocation| allocation.layers)
+            .collect()
+    }
+
+    #[test]
+    fn identifies_the_budget_that_blocks_the_next_layer() {
+        let wide = wide(1000, 1000);
+        let stream = [stream(0, 0, 3)];
+        let cases = [
+            (Limits { host: 500, ..wide }, 1000, Some(Limit::Host)),
+            (Limits { room: 500, ..wide }, 1000, Some(Limit::Room)),
+            (
+                Limits {
+                    receiver: 500,
+                    ..wide
+                },
+                1000,
+                Some(Limit::Viewer),
+            ),
+            (wide, 500, Some(Limit::Network)),
+            (wide, 1000, None),
+        ];
+        for (limits, estimate, limited_by) in cases {
+            assert_eq!(
+                super::allocate(&limits, &[estimate], &stream),
+                [Allocation {
+                    layers: if limited_by.is_some() { 2 } else { 3 },
+                    limited_by,
+                }]
+            );
         }
     }
 

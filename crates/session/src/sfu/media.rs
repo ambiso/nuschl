@@ -12,6 +12,7 @@ use nuschl_ipc::rtc::{
     self, Command, Description, Event, LegRole, Reply, SFU_PUBLISH_LEG as PUBLISH,
     SFU_SUBSCRIBE_LEG as SUBSCRIBE, Track, Worker,
 };
+use nuschl_protocol::sfu::VideoLimit;
 use nuschl_stream_quality::{QualityRequest, Throttle};
 use std::{
     collections::{HashMap, HashSet},
@@ -60,6 +61,12 @@ pub enum MediaEvent {
         height: u16,
         fps: u8,
         bitrate: u64,
+        limit: Option<VideoLimit>,
+    },
+    VideoLimit {
+        publisher: u64,
+        purpose: Purpose,
+        limit: VideoLimit,
     },
     SourceKeyframeRequired {
         purpose: Purpose,
@@ -99,6 +106,7 @@ struct EncoderCaps {
     height: u16,
     fps: u8,
     bitrate: u64,
+    limit: Option<VideoLimit>,
 }
 
 type SourceCaps = [Option<EncoderCaps>; 2];
@@ -330,6 +338,7 @@ impl Media {
                         height,
                         fps,
                         bitrate,
+                        limit,
                     }) = caps
                         && Some(revision) == self.sources.borrow().tracks[index]
                     {
@@ -338,6 +347,7 @@ impl Media {
                             height,
                             fps,
                             bitrate,
+                            limit,
                         }));
                     }
                 }
@@ -974,7 +984,7 @@ async fn run(
                         retreat |= result.is_err();
                     }
                 }
-                ServerMessage::Quality { source: mid, max_height, max_fps, max_bitrate, .. }
+                ServerMessage::Quality { source: mid, max_height, max_fps, max_bitrate, limit, .. }
                     if (16..=2160).contains(&max_height) && (1..=120).contains(&max_fps) && (64_000..=50_000_000).contains(&max_bitrate) => {
                     if let Some(track) = publish_tracks.iter().find(|track| track.mid == mid)
                         && let Ok(index) = video_index(track.purpose)
@@ -982,8 +992,15 @@ async fn run(
                     {
                         desired[index] = Some(max_bitrate);
                         output.limits.send_modify(|limits| limits[index] = Some(EncoderCaps {
-                            revision, height: max_height, fps: max_fps, bitrate: max_bitrate,
+                            revision, height: max_height, fps: max_fps, bitrate: max_bitrate, limit,
                         }));
+                    }
+                }
+                ServerMessage::VideoLimit { mid, peer: publisher, limit } => {
+                    if let Some(track) = subscribed.iter().find(|track| {
+                        track.mid == mid && track.publisher == Some(publisher) && video_kind(track.purpose).is_some()
+                    }) && !output.call(MediaEvent::VideoLimit { publisher, purpose: track.purpose, limit }).await {
+                        return Ok(());
                     }
                 }
                 ServerMessage::Codec { codec: changed } if changed != connection.welcome.codec => return Err(Error::Protocol("native call codec changed")),

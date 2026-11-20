@@ -20,7 +20,7 @@ let
   socket = "${socketDirectory}/relay.sock";
   # The site with this host's install link.
   site =
-    if cfg.installUrl == defaultInstallUrl then
+    if cfg.installUrl == defaultInstallUrl && cfg.callHost == "stream.nuschl.eu" then
       cfg.package
     else
       pkgs.runCommand "nuschl-web-site-configured" { } ''
@@ -29,6 +29,10 @@ let
         for page in "$out"/*.html; do
           substituteInPlace "$page" --replace-quiet ${lib.escapeShellArg defaultInstallUrl} ${lib.escapeShellArg cfg.installUrl}
         done
+        ${lib.optionalString (cfg.callHost != "stream.nuschl.eu") ''
+          substituteInPlace "$out/app/index.html" --replace-fail \
+            'content="stream.nuschl.eu"' ${lib.escapeShellArg ''content="${cfg.callHost}"''}
+        ''}
       '';
   # Android App Links (Digital Asset Links) and iOS Universal Links: the apps
   # open /join/ links themselves. Empty lists by default.
@@ -61,23 +65,28 @@ let
   # No tracking, no third parties: everything comes from this origin. The
   # relay is the only connection the web client makes ('self', with ws: and
   # wss: for older browsers that do not count them as 'self').
-  contentSecurityPolicy = lib.concatStringsSep "; " [
-    "default-src 'none'"
-    "script-src 'self' 'wasm-unsafe-eval'"
-    "style-src 'self'"
-    "img-src 'self' data: blob:"
-    "font-src 'self'"
-    # A call's silent media element, for the phone's media notification (docs/browser-audio.md).
-    "media-src blob:"
-    "connect-src 'self' ${if https then "wss" else "ws"}://${cfg.hostName}"
-    "worker-src 'self'"
-    "manifest-src 'self'"
-    "base-uri 'none'"
-    "form-action 'none'"
-    "frame-ancestors 'none'"
-  ];
-  headers = ''
-    add_header Content-Security-Policy "${contentSecurityPolicy}" always;
+  contentSecurityPolicy =
+    calls:
+    lib.concatStringsSep "; " [
+      "default-src 'none'"
+      "script-src 'self' 'wasm-unsafe-eval'"
+      "style-src 'self'"
+      "img-src 'self' data: blob:"
+      "font-src 'self'"
+      # A call's silent media element, for the phone's media notification (docs/browser-audio.md).
+      "media-src blob:"
+      (
+        "connect-src 'self' ${if https then "wss" else "ws"}://${cfg.hostName}"
+        + lib.optionalString calls " wss://${cfg.callHost}/sfu https://${cfg.callHost}/sfu/lease"
+      )
+      "worker-src 'self'"
+      "manifest-src 'self'"
+      "base-uri 'none'"
+      "form-action 'none'"
+      "frame-ancestors 'none'"
+    ];
+  headers = calls: ''
+    add_header Content-Security-Policy "${contentSecurityPolicy calls}" always;
     add_header Referrer-Policy no-referrer always;
     add_header X-Content-Type-Options nosniff always;
     add_header X-DNS-Prefetch-Control off always;
@@ -85,7 +94,9 @@ let
     # With COOP, makes the page cross-origin isolated: voice shares memory
     # between its codec worker and audio worklets (docs/browser-audio.md).
     add_header Cross-Origin-Embedder-Policy require-corp always;
-    add_header Permissions-Policy "camera=(), geolocation=(), microphone=(self)" always;
+    add_header Permissions-Policy "camera=${if calls then "(self)" else "()"}, display-capture=${
+      if calls then "(self)" else "()"
+    }, geolocation=(), microphone=(self)" always;
   '';
   # Refused to the relay by the kernel as well as by its own checks (docs/web.md).
   refusedNetworks = [
@@ -136,6 +147,12 @@ in
       type = lib.types.str;
       default = defaultInstallUrl;
       description = "Where \"Get Nuschl\" leads.";
+    };
+    callHost = lib.mkOption {
+      type = lib.types.strMatching "[a-z0-9.-]{1,253}(:[1-9][0-9]{0,4})?";
+      default = "stream.nuschl.eu";
+      example = "stream.example.org";
+      description = "The HTTPS call host for the app's camera and screen sharing, with an optional port.";
     };
     appLinks = {
       android = lib.mkOption {
@@ -239,9 +256,10 @@ in
       virtualHosts.${cfg.hostName} = {
         inherit (cfg) enableACME forceSSL;
         root = site;
-        extraConfig = headers;
+        extraConfig = headers false;
         locations = {
           "/".tryFiles = "$uri $uri/ /index.html";
+          "/app/".extraConfig = headers true;
           # The token in the path opens the landing page; no access log keeps it.
           "/join/" = {
             tryFiles = "/join.html =404";

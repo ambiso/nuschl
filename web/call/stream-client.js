@@ -16,16 +16,16 @@ const policy = globalThis.trustedTypes?.createPolicy("nuschl-stream-worker", {
 export class StreamClient {
   #pending = new Map();
   #next = 0;
+  #closed = false;
 
   /** `onfatal` runs once when the worker ends. */
-  constructor(onfatal = () => {}) {
-    this.worker = new Worker(policy ? policy.createScriptURL(WORKER) : WORKER, { type: "module" });
+  constructor(onfatal = () => {}, create = () =>
+    new Worker(policy ? policy.createScriptURL(WORKER) : WORKER, { type: "module" })) {
+    this.worker = create();
     const fail = () => {
-      for (const { reject } of this.#pending.values()) reject("worker ended");
-      this.#pending.clear();
-      this.worker.terminate();
+      if (this.#closed) return;
+      this.close();
       onfatal();
-      onfatal = () => {};
     };
     this.worker.addEventListener("message", ({ data }) => {
       if ("fatal" in data) return fail();
@@ -40,8 +40,17 @@ export class StreamClient {
 
   /** The reply to `request` (`{kind, …}`); rejects with the worker's error. */
   request(request) {
+    if (this.#closed) return Promise.reject(new Error("Stream worker ended"));
     const id = ++this.#next;
     this.worker.postMessage({ id, request: JSON.stringify({ v: 1, ...request }) });
     return new Promise((resolve, reject) => this.#pending.set(id, { resolve, reject }));
+  }
+
+  close() {
+    if (this.#closed) return;
+    this.#closed = true;
+    for (const { reject } of this.#pending.values()) reject(new Error("Stream worker ended"));
+    this.#pending.clear();
+    this.worker.terminate();
   }
 }

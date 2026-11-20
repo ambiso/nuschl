@@ -54,6 +54,7 @@ pub struct Connect<'a> {
 pub struct Connection {
     welcome: Welcome,
     socket: Socket,
+    video_limits: bool,
     scope: CallScope,
     policy: PeerPolicy,
     pending_offer: Option<ServerMessage>,
@@ -192,9 +193,13 @@ impl Connection {
         else {
             return Err(Error::Protocol("invalid room metadata"));
         };
-        let (socket, welcome) = timeout(HANDSHAKE, async {
+        let (socket, welcome, video_limits) = timeout(HANDSHAKE, async {
             let mut socket = open(options.host, roots).await?;
-            let ServerMessage::Hello { nonce } = read(&mut socket).await? else {
+            let ServerMessage::Hello {
+                nonce,
+                video_limits,
+            } = read(&mut socket).await?
+            else {
                 return Err(Error::Protocol("expected a challenge"));
             };
             let nonce = sfu::from_hex(&nonce).ok_or(Error::Protocol("invalid challenge"))?;
@@ -218,6 +223,7 @@ impl Connection {
                         host_key: hex::encode(keys.host_key),
                     }),
                     codecs: options.codecs.to_vec(),
+                    video_limits,
                 },
             )
             .await?;
@@ -234,7 +240,7 @@ impl Connection {
                         })
                         && options.codecs.contains(&welcome.codec) =>
                 {
-                    Ok((socket, welcome))
+                    Ok((socket, welcome, video_limits))
                 }
                 ServerMessage::Error { reason }
                     if reason.len() <= 32
@@ -250,6 +256,7 @@ impl Connection {
         Ok(Self {
             welcome,
             socket,
+            video_limits,
             scope,
             policy: options.policy,
             pending_offer: None,
@@ -264,7 +271,17 @@ impl Connection {
         if let Some(offer) = self.pending_offer.take() {
             return Ok(offer);
         }
-        read(&mut self.socket).await
+        let mut message = read(&mut self.socket).await?;
+        if !self.video_limits {
+            match &mut message {
+                ServerMessage::Quality { limit, .. } => *limit = None,
+                ServerMessage::VideoLimit { .. } => {
+                    return Err(Error::Protocol("unexpected video limit report"));
+                }
+                _ => {}
+            }
+        }
+        Ok(message)
     }
 
     /// Keep control signaling current while the owner chooses a video source.

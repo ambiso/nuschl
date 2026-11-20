@@ -114,7 +114,7 @@ onmessage = async ({ data }) => {
       catch { fail("Local history is unavailable. Messages will be shown but cannot be saved."); }
       if (data.connect_saved === true) client.connect_saved();
       setInterval(() => { if (client.tick(performance.now())) wake(); }, 250);
-      postMessage({ kind: "ready", capabilities:["remove_server","dismiss_notice", "dismiss_welcome","connect_with_password","voice","stop_audio", "edit_server", "server_order"] });
+      postMessage({ kind: "ready", capabilities:["remove_server","dismiss_notice", "dismiss_welcome","connect_with_password","voice","stop_audio", "edit_server", "server_order", "video_call"] });
     } else {
       if (!client || !methods.has(data.method) || !Array.isArray(data.args) || data.args.length > 6) throw new Error("Unsupported browser command.");
       const call=projectedAction(data.method,data.args);

@@ -37,7 +37,7 @@
   },
   "web": {
     "targets": ["wasm32-unknown-unknown"],
-    "packages": ["nuschl-client-wasm", "nuschl-audio-wasm", "nuschl-content-wasm"],
+    "packages": ["nuschl-client-wasm", "nuschl-audio-wasm", "nuschl-content-wasm", "nuschl-stream-wasm"],
     "features": [],
     "components": ["rust-standard-library", "mumble-protocol", "syntect-default-assets", "emoji-assets", "web-runtime-assets"]
   },

@@ -37,6 +37,25 @@ const location = (href) => {
 };
 const request = (worker, body) => JSON.parse(worker.handle(JSON.stringify({ v: 1, ...body }), Date.now()));
 
+test("creating a browser call returns only the guest invitation, with host admission in the worker", () => {
+  const worker = new StreamWorker();
+  const opened = request(worker, { kind: "create", host, allow_direct: false });
+  assert.equal(opened.creator, true);
+  const link = new URL(opened.invitation);
+  assert.equal(link.host, host);
+  assert.equal(link.pathname, "/call");
+  assert.deepEqual([...new URLSearchParams(link.hash.slice(1)).keys()], ["v", "k", "h"]);
+  const joined = request(worker, { kind: "admit", nonce: "0".repeat(64) });
+  assert.ok(joined.create.host_key);
+  assert.ok(joined.host_proof);
+  const guest = new StreamWorker();
+  assert.equal(request(guest, { kind: "open", host, link: opened.invitation }).creator, false);
+  const guestAdmission = request(guest, { kind: "admit", nonce: "0".repeat(64) });
+  assert.equal(guestAdmission.create, null);
+  assert.equal(guestAdmission.host_proof, null);
+  assert.equal(request(worker, { kind: "admit", nonce: "0".repeat(64) }).create.host_key, joined.create.host_key);
+});
+
 test("audio capture requires a browser tab and excludes call tabs", () => {
   const capture = (displaySurface, handle) => ({
     getSettings: () => ({ displaySurface }),
@@ -205,6 +224,32 @@ test("an explicit receive tier applies before layout and survives a tile resize"
   assert.equal(sent.length, 1);
 });
 
+test("negotiated video limits follow only the accepted video track", async () => {
+  const call = new Call({ request: async () => ({ proof: "proof" }) }, { codecs: ["av1"] });
+  call.opened = { room: "room", verifier: "verifier" };
+  const messages = [];
+  call.send = (message) => messages.push(message);
+  const hello = { type: "hello", nonce: "01".repeat(32) };
+  await call.receive(parse(JSON.stringify(hello)));
+  assert.equal(messages[0].video_limits, undefined);
+  const track = { peer: 4, kind: "video" };
+  call.tracks.set("1", track);
+  const report = { type: "video_limit", mid: "1", peer: 4, limit: "sfu_host" };
+  await call.receive(parse(JSON.stringify(report)));
+  assert.equal(track.limit, undefined);
+  await call.receive(parse(JSON.stringify({ ...hello, video_limits: true })));
+  assert.equal(messages[1].video_limits, true);
+  await call.receive(parse(JSON.stringify({ ...report, peer: 7 })));
+  assert.equal(track.limit, undefined);
+  await call.receive(parse(JSON.stringify(report)));
+  assert.equal(track.limit, "sfu_host");
+  await call.receive(parse(JSON.stringify({ ...report, limit: "within_target" })));
+  assert.equal(track.limit, "within_target");
+  for (const invalid of [{ peer: 0 }, { mid: "x".repeat(17) }, { limit: "unknown" }]) {
+    assert.throws(() => parse(JSON.stringify({ ...report, ...invalid })), /malformed video_limit/);
+  }
+});
+
 test("publisher quality applies bounded encoder limits to the matching MID", async () => {
   const request = "0100000000000000040100";
   const quality = { type: "quality", request, source: "3", max_height: 720, max_fps: 15, max_bitrate: 800_000 };
@@ -243,11 +288,18 @@ test("publisher quality applies bounded encoder limits to the matching MID", asy
 test("ultrawide publisher stats distinguish capture, verified caps and encoded resolution", () => {
   const capture = { width: 3440, height: 1440 };
   const target = TIERS.screen[2];
-  const encoded = { frameWidth: 2580, frameHeight: 1080, qualityLimitationReason: "bandwidth" };
-  assert.deepEqual(publisherMeasurements(capture, target, TIERS.screen[3], 1, encoded),
-    ["3440 × 1440", "1440p60", "2160p60 · 15.0 Mb/s", "3440 × 1440", "2580 × 1080", "Bandwidth"]);
-  assert.deepEqual(publisherMeasurements(capture, target, TIERS.screen[1], 1440 / 1080),
-    ["3440 × 1440", "1440p60", "1080p30 · 3.0 Mb/s", "2580 × 1080", "—", "Unavailable"]);
+  const previous = { id: "screen", timestamp: 1000, bytesSent: 0 };
+  const encoded = {
+    id: "screen", timestamp: 2000, bytesSent: 250_000, framesPerSecond: 30,
+    frameWidth: 2580, frameHeight: 1080, qualityLimitationReason: "bandwidth",
+  };
+  assert.deepEqual(publisherMeasurements(capture, target, { cap: TIERS.screen[3], scale: 1 }, encoded, previous),
+    ["3440 × 1440", "1440p60", "2160p60 · 15.0 Mb/s", "3440 × 1440", "2580 × 1080", "30.0 fps", "2.0 Mb/s", "Sender upload"]);
+  assert.deepEqual(publisherMeasurements(capture, target, { cap: TIERS.screen[1], scale: 1440 / 1080, reason: "traffic_budget" }),
+    ["3440 × 1440", "1440p60", "1080p30 · 3.0 Mb/s", "2580 × 1080", "—", "—", "—", "SFU traffic budget pacing"]);
+  const idle = { ...encoded, frameWidth: 3440, frameHeight: 1440, framesPerSecond: 0, bytesSent: 0, qualityLimitationReason: "none" };
+  assert.deepEqual(publisherMeasurements(capture, target, { scale: 1 }, idle, previous).slice(-2),
+    ["0.0 kb/s", "Within selected quality"]);
 });
 
 test("support: encoded transforms and AV1 or VP9, AV1 first", () => {

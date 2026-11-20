@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 
+import { videoLimitLabel } from "./signal.js";
+
 const INTERVAL_MS = 1000;
 const MAX_SAMPLE_SPAN_MS = 5 * INTERVAL_MS;
 
@@ -61,35 +63,54 @@ function bitrateText(value) {
 }
 
 function displayReceiver(target, rates = {}, status = "") {
-  const { video, requested } = target;
+  const { video, requested, limit } = target;
   const { videoWidth: width, videoHeight: height } = video;
-  const request = requested();
-  const belowTarget = request && dimension(width) && dimension(height) && Math.min(width, height) < request[0];
+  const reported = limit();
   display(target, [dimensions(width, height), number(rates.decoded, "fps"), number(rates.presented, "fps"),
-    bitrateText(rates.bitrate), number(rates.jitterBufferMs, "ms"), tier(request)], status ||
-      (belowTarget ? "Received below target. The limiting setting is unavailable here." : ""));
+    bitrateText(rates.bitrate), number(rates.jitterBufferMs, "ms"), tier(requested()),
+    reported === "within_target" ? "SFU within selected quality" : videoLimitLabel(reported)], status);
 }
 
 const limitations = new Map([
-  ["none", "No adaptation reported"],
-  ["cpu", "CPU"],
-  ["bandwidth", "Bandwidth"],
-  ["other", "Other"],
+  ["cpu", "Sender CPU"],
+  ["bandwidth", "Sender upload"],
+  ["other", "Sender encoder"],
 ]);
 
-export function publisherMeasurements({ width, height }, requested, cap, scale, sample) {
+export function publisherMeasurements({ width, height, frameRate }, requested, { cap, reason, scale }, sample, previous) {
   const planned = Number.isFinite(scale) && scale >= 1
     ? dimensions(Math.floor(width / scale), Math.floor(height / scale)) : "—";
-  const limit = cap ? `${tier(cap)} · ${bitrateText(cap[2])}` : "—";
-  return [dimensions(width, height), tier(requested), limit, planned,
-    dimensions(sample?.frameWidth, sample?.frameHeight),
-    limitations.get(sample?.qualityLimitationReason) ?? "Unavailable"];
+  const ceiling = cap ? `${tier(cap)} · ${bitrateText(cap[2])}` : "—";
+  const span = sample?.timestamp - previous?.timestamp;
+  const bytes = sample?.id === previous?.id ? delta(previous?.bytesSent, sample?.bytesSent) : undefined;
+  const bitrate = bytes !== undefined && span > 0 && span <= MAX_SAMPLE_SPAN_MS ? 8000 * bytes / span : undefined;
+  let active = limitations.get(sample?.qualityLimitationReason);
+  if (!active) {
+    if (cap?.some((value, index) => value < requested[index])) {
+      active = reason ? videoLimitLabel(reason) : "Server encoder ceiling · reason unavailable";
+    } else if (Math.min(width, height) + 2 < requested[0]) {
+      active = "Capture resolution";
+    } else if (Number.isFinite(frameRate) && frameRate + 1 < requested[1]) {
+      active = "Capture frame rate";
+    } else {
+      active = sample?.qualityLimitationReason === "none" ? "Within selected quality" : "Unavailable";
+    }
+  }
+  return [dimensions(width, height), tier(requested), ceiling, planned,
+    dimensions(sample?.frameWidth, sample?.frameHeight), number(sample?.framesPerSecond, "fps"),
+    bitrateText(bitrate), active];
 }
 
 function displayPublisher(target, sender, sample, status = "") {
   const { source, requested } = target;
   const scale = sender?.getParameters().encodings?.[0]?.scaleResolutionDownBy;
-  display(target, publisherMeasurements(source.track.getSettings(), requested(), source.remoteCap, scale, sample), status);
+  const onSfu = sender === source.transceiver.sender;
+  const cap = onSfu ? source.remoteCap : undefined;
+  const reason = onSfu ? source.remoteLimit : undefined;
+  const previous = target.sampleSender === sender ? target.previous : undefined;
+  display(target, publisherMeasurements(source.track.getSettings(), requested(), { cap, reason, scale }, sample, previous), status);
+  target.previous = sample;
+  target.sampleSender = sender;
 }
 
 /** One stats disclosure and one browser read at a time, even across track changes. */

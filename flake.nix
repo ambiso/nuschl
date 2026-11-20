@@ -1136,6 +1136,7 @@
               inherit pkgs;
               relay = crates.project.workspaceMembers."nuschl-web-relay".build;
               module = self.nixosModules.web;
+              streamModule = self.nixosModules.stream;
             };
             # The screen-share TURN relay and stream host under their modules,
             # with a fake SFU peer (`nix build .#checks.x86_64-linux.vm-turn-stream`).

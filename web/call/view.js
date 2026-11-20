@@ -46,9 +46,11 @@ export class View {
   sentTiers = new WeakMap();
   sizes = new Map();
 
-  constructor(document, call) {
+  constructor(root, call, retry = () => this.document.defaultView.location.reload()) {
+    const document = root.ownerDocument ?? root;
     this.document = document;
     this.call = call;
+    this.retry = retry;
     this.stats = new VideoStats(document);
     this.observer = new document.defaultView.ResizeObserver((entries) => {
       for (const { target, contentRect, devicePixelContentBoxSize } of entries) {
@@ -58,14 +60,15 @@ export class View {
         this.sizes.get(target)?.resize(pixels);
       }
     });
-    const $ = (id) => document.getElementById(id);
+    const $ = (id) => root.querySelector(`#${id}`);
     this.nodes = {
       status: $("status"), stage: $("stage"), large: $("large"), grid: $("grid"), empty: $("empty"),
       audio: $("shared-audio"),
       roster: $("roster"), count: $("count"), controls: $("controls"), host: $("host-actions"),
       ending: $("ending"), main: $("call"),
     };
-    call.addEventListener("change", () => this.render());
+    this.changed = () => this.render();
+    call.addEventListener("change", this.changed);
     this.render();
   }
 
@@ -77,20 +80,25 @@ export class View {
   showEnding(reason) {
     const [title, detail] = endings[reason] ?? ["Disconnected", ""];
     const { ending, main } = this.nodes;
+    this.close();
+    main.hidden = true;
+    const actions = [];
+    if (this.retry && (rejoin.has(reason) || !(reason in endings))) {
+      const button = element(this.document, "button", { type: "button" }, "Rejoin");
+      button.addEventListener("click", this.retry);
+      actions.push(button);
+    }
+    ending.replaceChildren(element(this.document, "h1", {}, title), ...(detail ? [element(this.document, "p", {}, detail)] : []), ...actions);
+    ending.hidden = false;
+  }
+
+  close() {
+    this.call.removeEventListener("change", this.changed);
     this.stats.close();
     this.observer.disconnect();
     this.sharedAudio(new Map());
     for (const size of this.sizes.values()) size.cancel();
     this.sizes.clear();
-    main.hidden = true;
-    const actions = [];
-    if (rejoin.has(reason) || !(reason in endings)) {
-      const button = element(this.document, "button", { type: "button" }, "Rejoin");
-      button.addEventListener("click", () => this.document.defaultView.location.reload());
-      actions.push(button);
-    }
-    ending.replaceChildren(element(this.document, "h1", {}, title), ...(detail ? [element(this.document, "p", {}, detail)] : []), ...actions);
-    ending.hidden = false;
   }
 
   render() {
@@ -143,7 +151,7 @@ export class View {
     const people = [[call.self, call.role], ...[...call.peers].sort(([a], [b]) => a - b)].filter(([id]) => id !== null);
     count.textContent = String(people.length);
     roster.replaceChildren(...people.map(([id, role]) => this.person(id, role)));
-    host.hidden = call.role !== "host";
+    if (host) host.hidden = call.role !== "host";
   }
 
   sharedAudio(tracks) {
@@ -197,8 +205,8 @@ export class View {
     const list = element(doc, "dl");
     const jitter = { title: "Average time a frame spent in the receiver’s jitter buffer" };
     const names = track.own
-      ? ["Capture resolution", "Send target", "Call server limit", "Encoder size ceiling", "Encoded resolution", "Browser adaptation"]
-      : ["Resolution", "Decoded frame rate", "Presented frame rate", "Receive bitrate", "Jitter buffer delay", "Receive target"];
+      ? ["Capture resolution", "Send target", "Call server limit", "Encoder size ceiling", "Encoded resolution", "Encoded FPS", "Send bitrate", "Active limit"]
+      : ["Resolution", "Decoded frame rate", "Presented frame rate", "Receive bitrate", "Jitter buffer delay", "Receive target", "Active limit"];
     const values = names.map(name => {
       const value = element(doc, "dd", {}, "—");
       list.append(element(doc, "dt", name === "Jitter buffer delay" ? jitter : {}, name), value);
@@ -212,6 +220,12 @@ export class View {
     details.append(message, list);
     const target = { details, video, message, values, ...(quality ? {
       receiver: track.receiver, requested: quality.requested,
+      limit: () => {
+        const current = this.call.tracks.get(mid);
+        if (current?.receiver === track.receiver && current.peer === track.peer && current.source === track.source) {
+          return current.limit;
+        }
+      },
     } : {
       source: track.source,
       sender: () => this.call.direct.sender(track.source.transceiver.sender),

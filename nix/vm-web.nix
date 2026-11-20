@@ -10,15 +10,30 @@
   pkgs,
   relay,
   module,
+  streamModule,
 }:
+let
+  mediaPort = 40010;
+  certificate =
+    pkgs.runCommand "web-video-test-certificate" { nativeBuildInputs = [ pkgs.openssl ]; }
+      ''
+        mkdir "$out"
+        openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 3650 \
+          -subj /CN=stream.test -addext subjectAltName=DNS:stream.test \
+          -keyout "$out/key.pem" -out "$out/cert.pem" 2>/dev/null
+      '';
+in
 pkgs.testers.runNixOSTest {
   name = "nuschl-web";
   globalTimeout = 1800;
   nodes = {
     web =
-      { ... }:
+      { nodes, ... }:
       {
-        imports = [ module ];
+        imports = [
+          module
+          streamModule
+        ];
         services.nuschl-web = {
           enable = true;
           hostName = "web";
@@ -31,6 +46,7 @@ pkgs.testers.runNixOSTest {
             settings.client_opens_per_minute = 20;
           };
           installUrl = "https://example.org/get-nuschl";
+          callHost = "stream.test";
           appLinks = {
             android = [
               {
@@ -41,7 +57,25 @@ pkgs.testers.runNixOSTest {
             apple = [ "ABCDE12345.org.nuschl.Nuschl" ];
           };
         };
-        networking.firewall.allowedTCPPorts = [ 80 ];
+        services.nuschl-stream = {
+          enable = true;
+          hostName = "stream.test";
+          enableACME = false;
+          sfu = {
+            enable = true;
+            port = mediaPort;
+            addresses = [ nodes.web.networking.primaryIPAddress ];
+            openFirewall = true;
+          };
+        };
+        services.nginx.virtualHosts."stream.test" = {
+          sslCertificate = "${certificate}/cert.pem";
+          sslCertificateKey = "${certificate}/key.pem";
+        };
+        networking.firewall.allowedTCPPorts = [
+          80
+          443
+        ];
       };
     murmur =
       { ... }:
@@ -65,7 +99,7 @@ pkgs.testers.runNixOSTest {
         };
       };
     client =
-      { ... }:
+      { nodes, ... }:
       {
         environment.systemPackages = [
           relay
@@ -79,6 +113,7 @@ pkgs.testers.runNixOSTest {
         };
         fonts.packages = [ pkgs.dejavu_fonts ];
         virtualisation.memorySize = 2048;
+        networking.hosts.${nodes.web.networking.primaryIPAddress} = [ "stream.test" ];
       };
   };
   testScript = ''
@@ -89,6 +124,7 @@ pkgs.testers.runNixOSTest {
     web.wait_for_unit("nuschl-web-relay.service")
     web.wait_for_file("/run/nuschl-web-relay/relay.sock")
     web.wait_for_unit("nginx.service")
+    web.wait_for_unit("nuschl-stream-sfu.service")
     web.wait_for_open_port(80)
     murmur.wait_for_unit("murmur.service")
     # Channels for the web app's tests, added to the database Murmur created.
@@ -113,6 +149,10 @@ pkgs.testers.runNixOSTest {
     assert "Content-Security-Policy" in headers and "no-referrer" in headers, headers
     assert "X-DNS-Prefetch-Control: off" in headers, headers
     assert "Cross-Origin-Embedder-Policy: require-corp" in headers, headers
+    assert "camera=()" in headers and "display-capture=()" in headers, headers
+    app_headers = client.succeed("curl -sfI http://web/app/")
+    assert "camera=(self)" in app_headers and "display-capture=(self)" in app_headers, app_headers
+    assert "wss://stream.test/sfu https://stream.test/sfu/lease" in app_headers, app_headers
     client.succeed("curl -sf http://web/.well-known/assetlinks.json | jq -e '.[0].target.package_name == \"org.nuschl.android\"'")
     client.succeed("curl -sfI http://web/.well-known/assetlinks.json | grep -qi 'content-type: application/json'")
     client.succeed("curl -sf http://web/.well-known/apple-app-site-association | jq -e '.applinks.details[0].appIDs[0] == \"ABCDE12345.org.nuschl.Nuschl\"'")
@@ -168,5 +208,8 @@ pkgs.testers.runNixOSTest {
 
     # The packaged app: Ctrl+K switches channels, Ctrl+F finds a sent message.
     client.succeed("node ${../tests/web_shortcuts.browser.mjs} http://web/app/ murmur 64738")
+
+    # Both synthetic video sources cross WebRTC/SFrame and the call card uses Murmur.
+    client.succeed("node ${../tests/web_video_call.browser.mjs} http://web/app/ murmur 64738")
   '';
 }

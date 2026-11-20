@@ -1775,6 +1775,12 @@ mod tests {
             "Auto (1080p)"
         );
         video.encoder = Some(stats::Encoder {
+            requested: CaptureLimits {
+                height: 1440,
+                fps: 60,
+                bitrate: 8_000_000,
+            },
+            limit: "Within selected quality",
             target: CaptureLimits {
                 height: 1440,
                 fps: 60,

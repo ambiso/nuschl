@@ -233,7 +233,7 @@ async fn next(from_sfu: &mut mpsc::UnboundedReceiver<Value>) -> Value {
 /// Joins with the admit proof, the host proof and the room's keys as asked,
 /// decoding AV1 and VP9; returns the peer and the SFU's first answer.
 async fn join(url: &str, admit: &[u8; 32], host: bool, create: bool) -> (Peer, Value) {
-    join_decoding(url, admit, host, create, &["av1", "vp9"]).await
+    join_decoding(url, admit, host, create, &["av1", "vp9"], false).await
 }
 
 async fn join_decoding(
@@ -242,6 +242,7 @@ async fn join_decoding(
     host: bool,
     create: bool,
     codecs: &[&str],
+    video_limits: bool,
 ) -> (Peer, Value) {
     let (to_sfu, mut from_sfu) = connect(url).await;
     let hello = next(&mut from_sfu).await;
@@ -254,6 +255,10 @@ async fn join_decoding(
         "proof": prove(admit, b"nuschl/stream/v2 sfu admit", &nonce),
         "codecs": codecs,
     });
+    if video_limits {
+        assert_eq!(hello["video_limits"], true);
+        message["video_limits"] = true.into();
+    }
     if host {
         message["host_proof"] = prove(&HOST, b"nuschl/stream/v2 sfu host", &nonce).into();
     }
@@ -507,6 +512,42 @@ fn assert_forwarded(receiver: &Peer, publisher: &Peer, codec: Codec) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn video_limit_is_source_scoped_and_can_clear_on_a_quiet_source() {
+    use nuschl_stream_quality::DecodeCapacity;
+
+    let sfu = start("");
+    let url = &sfu.url;
+    let (mut host, _) = join(url, &ADMIT, true, true).await;
+    let (mut receiver, _) = join_decoding(url, &ADMIT, false, false, &["av1"], true).await;
+    let (mut legacy, _) = join(url, &ADMIT, false, false).await;
+    host.start_publishing(Codec::Av1);
+    host.expect("quality").await;
+    let report = receiver.expect("video_limit").await;
+    let mid = report["mid"].as_str().expect("mid");
+    assert_eq!(receiver.tracks[mid], host.id);
+    assert_eq!(report["peer"], host.id);
+    assert_eq!(report["limit"], "within_target");
+    assert!(receiver.received.is_empty());
+    for (camera, expected) in [(0, "receiver_decode"), (3, "within_target")] {
+        let decode = DecodeCapacity { camera, screen: 3 };
+        receiver.send(json!({"type": "capacity", "decode": hex::encode(decode.to_bytes())}));
+        let report = receiver.expect("video_limit").await;
+        assert_eq!(
+            report,
+            json!({"type": "video_limit", "mid": mid, "peer": host.id, "limit": expected})
+        );
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    legacy.step();
+    assert!(
+        !legacy
+            .messages
+            .iter()
+            .any(|message| message["type"] == "video_limit")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forwards_media_and_key_messages_unchanged() {
     let sfu = start("");
     let url = sfu.url.as_str();
@@ -606,12 +647,12 @@ async fn forwards_media_and_key_messages_unchanged() {
 
     // A peer without AV1 switches the call to VP9 and back when it leaves; a
     // peer without VP9 cannot join then.
-    let (vp9, welcome) = join_decoding(url, &ADMIT, false, false, &["vp9"]).await;
+    let (vp9, welcome) = join_decoding(url, &ADMIT, false, false, &["vp9"], false).await;
     assert_eq!(welcome["codec"], "vp9");
     assert_eq!(bob.expect("codec").await["codec"], "vp9");
-    let (_, refused) = join_decoding(url, &ADMIT, false, false, &["av1"]).await;
+    let (_, refused) = join_decoding(url, &ADMIT, false, false, &["av1"], false).await;
     assert_eq!(refused, json!({"type": "error", "reason": "codec"}));
-    let (_, refused) = join_decoding(url, &ADMIT, false, false, &[]).await;
+    let (_, refused) = join_decoding(url, &ADMIT, false, false, &[], false).await;
     assert_eq!(refused["reason"], "join");
     let vp9_id = vp9.id;
     drop(vp9);
