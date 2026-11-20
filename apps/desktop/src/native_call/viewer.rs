@@ -1,185 +1,202 @@
 // SPDX-License-Identifier: EUPL-1.2
-//! Select an incoming source and decode only the featured video.
+//! Decode at most two selected remote feeds, independently of publication.
 
-use super::{Display, Selection, stats, text, video_kind};
-use crate::{
-    dialogs::{Tone, named_button},
-    layout,
-    state::Desktop,
+use super::{
+    Display, Feed, Latest, Selection, Stream, TILES,
+    gallery::{REMOTE_SOURCES, REMOTE_TILES},
+    stats, text,
 };
-use gpui_kit::{prelude::*, *};
-use nuschl_client::native::sfu::{Media, MediaEvent, Purpose, VideoKind};
-use nuschl_ipc::video::{CaptureLimits, DecodeError, Decoder, Source};
+use nuschl_client::native::sfu::{Media, MediaEvent, VideoKind};
+use nuschl_ipc::video::{CaptureLimits, DecodeError, Decoder};
 use nuschl_protocol::sfu::VideoLimit;
-use std::{path::PathBuf, time::Instant};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use tokio::{
+    sync::{mpsc, watch},
+    task::JoinHandle,
+};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Track {
-    publisher: u64,
-    purpose: Purpose,
+struct Encoded {
+    stream: Stream,
+    contiguous: bool,
+    keyframe: bool,
+    data: Vec<u8>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct Sources {
-    camera: Option<u64>,
-    screen: Option<u64>,
+pub(super) struct Decoded {
+    stream: Stream,
+    result: Result<Option<(u16, u16)>, DecodeError>,
+    elapsed: Duration,
 }
 
-impl Sources {
-    pub(super) fn available(self) -> (bool, bool) {
-        (self.camera.is_some(), self.screen.is_some())
-    }
-
-    pub(super) fn kind(self, preferred: Option<Purpose>) -> Option<VideoKind> {
-        self.current(preferred)
-            .and_then(|track| capture_source(track.purpose))
-            .map(video_kind)
-    }
-
-    fn set(&mut self, purpose: Purpose, publisher: Option<u64>) -> bool {
-        let slot = match purpose {
-            Purpose::Camera => &mut self.camera,
-            Purpose::ScreenVideo => &mut self.screen,
-            _ => return false,
-        };
-        std::mem::replace(slot, publisher) != publisher
-    }
-
-    fn get(self, purpose: Purpose) -> Option<Track> {
-        let publisher = match purpose {
-            Purpose::Camera => self.camera?,
-            Purpose::ScreenVideo => self.screen?,
-            _ => return None,
-        };
-        Some(Track { publisher, purpose })
-    }
-
-    fn current(self, preferred: Option<Purpose>) -> Option<Track> {
-        preferred
-            .and_then(|purpose| self.get(purpose))
-            .or_else(|| self.get(Purpose::ScreenVideo))
-            .or_else(|| self.get(Purpose::Camera))
-    }
-}
-
-pub(super) fn controls(
-    camera_available: bool,
-    screen_available: bool,
-    preferred: Option<Purpose>,
-    generation: u64,
-    cx: &mut Context<Desktop>,
-) -> Option<AnyElement> {
-    if !(camera_available && screen_available) {
-        return None;
-    }
-    let current = preferred.unwrap_or(Purpose::ScreenVideo);
-    Some(
-        layout::actions()
-            .id("native-call-view")
-            .role(Role::Group)
-            .aria_label("Video source")
-            .w_auto()
-            .max_w_full()
-            .children(
-                [
-                    (
-                        Purpose::Camera,
-                        "native-view-camera",
-                        "View camera",
-                        "Viewing camera",
-                    ),
-                    (
-                        Purpose::ScreenVideo,
-                        "native-view-screen",
-                        "View screen",
-                        "Viewing screen",
-                    ),
-                ]
-                .into_iter()
-                .map(|(purpose, id, label, selected)| {
-                    let active = current == purpose;
-                    named_button(
-                        id,
-                        label,
-                        if active { selected } else { label },
-                        if active {
-                            Tone::Primary
-                        } else {
-                            Tone::Secondary
-                        },
-                        move |this, _, cx| {
-                            if this.native_call_generation == generation
-                                && let Some(call) = &this.native_call
-                                && !call.minimized
-                                && call.quality.send_if_modified(|selection| {
-                                    selection.view.replace(purpose) != Some(purpose)
-                                })
-                            {
-                                cx.notify();
-                            }
-                        },
-                        cx,
-                    )
-                }),
-            )
-            .into_any_element(),
-    )
-}
-
-pub(super) struct Viewer {
-    executable: PathBuf,
-    sources: Sources,
-    current: Option<Track>,
-    decoder: Option<Decoder>,
+struct Lane {
+    target: watch::Sender<Option<Stream>>,
+    input: mpsc::Sender<Encoded>,
+    task: JoinHandle<()>,
+    lost: bool,
+    failed: bool,
+    last_keyframe: Option<Instant>,
     stats: stats::Stats,
-    camera_limit: Option<VideoLimit>,
-    screen_limit: Option<VideoLimit>,
 }
 
-impl Viewer {
-    pub(super) fn new(executable: PathBuf, relay_only: bool) -> Self {
+impl Lane {
+    fn new(
+        executable: PathBuf,
+        latest: Arc<Latest>,
+        output: mpsc::Sender<Decoded>,
+        relay_only: bool,
+    ) -> Self {
+        let (target, selection) = watch::channel(None);
+        let (input, frames) = mpsc::channel(1);
+        let task = tokio::spawn(decode(executable, selection, frames, latest, output));
         Self {
-            executable,
-            sources: Sources::default(),
-            current: None,
-            decoder: None,
-            camera_limit: None,
-            screen_limit: None,
+            target,
+            input,
+            task,
+            lost: false,
+            failed: false,
+            last_keyframe: None,
             stats: stats::Stats::new(relay_only, Instant::now()),
         }
     }
 
-    pub(super) async fn handle_event(
-        &mut self,
-        media: &Media,
-        display: &Display<'_>,
-        event: MediaEvent,
-    ) -> Result<(), String> {
-        let changed = match event {
+    fn stream(&self) -> Option<Stream> {
+        *self.target.borrow()
+    }
+
+    fn select(&mut self, stream: Option<Stream>, limit: Option<VideoLimit>) {
+        self.target.send_replace(stream);
+        self.lost = true;
+        self.failed = false;
+        self.last_keyframe = None;
+        self.stats.clear(Instant::now());
+        self.stats.limit(limit);
+    }
+
+    fn request_keyframe(&mut self, media: &Media, stream: Stream) -> Result<(), String> {
+        let now = Instant::now();
+        if self
+            .last_keyframe
+            .is_none_or(|last| now.duration_since(last) >= Duration::from_millis(500))
+        {
+            media
+                .request_keyframe(stream.feed.purpose())
+                .map_err(text)?;
+            self.last_keyframe = Some(now);
+        }
+        Ok(())
+    }
+
+    fn receive(&mut self, media: &Media, mut encoded: Encoded) -> Result<(), String> {
+        self.stats.encoded(encoded.data.len());
+        if self.failed {
+            return Ok(());
+        }
+        encoded.contiguous &= !self.lost;
+        let stream = encoded.stream;
+        self.lost =
+            (!encoded.keyframe && !encoded.contiguous) || self.input.try_send(encoded).is_err();
+        if self.lost {
+            self.request_keyframe(media, stream)?;
+        }
+        Ok(())
+    }
+}
+
+pub(super) struct Viewer {
+    sources: [Option<Stream>; REMOTE_SOURCES],
+    limits: [Option<VideoLimit>; REMOTE_SOURCES],
+    serial: u64,
+    lanes: [Lane; REMOTE_TILES],
+    tiles: [Option<Stream>; TILES],
+    selection: Selection,
+    pub(super) decoded: mpsc::Receiver<Decoded>,
+}
+
+impl Viewer {
+    pub(super) fn new(executable: PathBuf, latest: Arc<Latest>, relay_only: bool) -> Self {
+        let (output, decoded) = mpsc::channel(REMOTE_TILES);
+        let lanes = std::array::from_fn(|_| {
+            Lane::new(
+                executable.clone(),
+                latest.clone(),
+                output.clone(),
+                relay_only,
+            )
+        });
+        Self {
+            sources: [None; REMOTE_SOURCES],
+            limits: [None; REMOTE_SOURCES],
+            serial: 0,
+            lanes,
+            tiles: [None; TILES],
+            selection: Selection::default(),
+            decoded,
+        }
+    }
+
+    pub(super) fn sources(&self) -> [Option<Stream>; REMOTE_SOURCES] {
+        self.sources
+    }
+
+    fn position(&self, feed: Feed) -> Option<usize> {
+        self.sources
+            .iter()
+            .position(|slot| slot.is_some_and(|stream| stream.feed == feed))
+    }
+
+    pub(super) fn handle(&mut self, media: &Media, event: MediaEvent) -> Result<(), String> {
+        match event {
             MediaEvent::SourceAvailable { publisher, purpose } => {
-                let changed = self.sources.set(purpose, Some(publisher));
-                if changed {
-                    self.limit(purpose, None);
+                if let Some(feed) = Feed::remote(publisher, purpose)
+                    && self.position(feed).is_none()
+                    && let Some(slot) = self.sources.iter_mut().find(|slot| slot.is_none())
+                {
+                    self.serial = self
+                        .serial
+                        .checked_add(1)
+                        .ok_or("Video source limit reached")?;
+                    *slot = Some(Stream {
+                        feed,
+                        serial: self.serial,
+                        preview: true,
+                    });
                 }
-                changed
             }
-            MediaEvent::SourceEnded { purpose } => {
-                self.limit(purpose, None);
-                self.sources.set(purpose, None)
+            MediaEvent::SourceEnded { purpose, .. } => {
+                // The original native transport offers one subscription per purpose.
+                for (source, limit) in self.sources.iter_mut().zip(&mut self.limits) {
+                    if source.is_some_and(|stream| stream.feed.purpose() == purpose) {
+                        *source = None;
+                        *limit = None;
+                    }
+                }
             }
             MediaEvent::VideoLimit {
                 publisher,
                 purpose,
                 limit,
             } => {
-                if self.sources.get(purpose) == Some(Track { publisher, purpose }) {
-                    self.limit(purpose, Some(limit));
+                if let Some(feed) = Feed::remote(publisher, purpose)
+                    && let Some(index) = self.position(feed)
+                {
+                    self.limits[index] = Some(limit);
+                    if let Some(lane) = self
+                        .lanes
+                        .iter_mut()
+                        .find(|lane| lane.stream() == self.sources[index])
+                    {
+                        lane.stats.limit(Some(limit));
+                    }
                 }
-                return Ok(());
             }
             MediaEvent::Direct { active } => {
-                self.stats.direct(active);
-                return Ok(());
+                for lane in &mut self.lanes {
+                    lane.stats.direct(active);
+                }
             }
             MediaEvent::Frame {
                 publisher,
@@ -189,189 +206,206 @@ impl Viewer {
                 data,
                 ..
             } => {
-                let track = Some(Track { publisher, purpose });
-                if self.current == track
-                    && let Some(source) = capture_source(purpose)
+                if let Some(feed) = Feed::remote(publisher, purpose)
+                    && let Some((lane, stream)) = self.lanes.iter_mut().find_map(|lane| {
+                        let stream = lane.stream().filter(|stream| stream.feed == feed)?;
+                        Some((lane, stream))
+                    })
                 {
-                    let decoder = match &mut self.decoder {
-                        Some(decoder) => decoder,
-                        None => self
-                            .decoder
-                            .insert(Decoder::start(self.executable.clone(), source).map_err(text)?),
-                    };
-                    if !contiguous {
-                        decoder.reset();
-                        if !key_frame {
-                            media.request_keyframe(purpose).map_err(text)?;
-                        }
-                    }
-                    self.stats.encoded(data.len());
-                    let started = Instant::now();
-                    let decoded = decoder.decode(key_frame, data).await;
-                    if self.sources.current(display.quality.borrow().view) != track {
-                        return Ok(());
-                    }
-                    match decoded {
-                        Ok(Some(frame)) => {
-                            self.stats
-                                .frame(frame.width, frame.height, Some(started.elapsed()));
-                            display.updates.frame(frame);
-                        }
-                        Ok(None) => {}
-                        Err(DecodeError::Io(_) | DecodeError::Timeout | DecodeError::Busy) => {
-                            display.updates.status("Waiting for a fresh video frame");
-                            media.request_keyframe(purpose).map_err(text)?;
-                        }
-                        Err(error) => return Err(text(error)),
-                    }
+                    lane.receive(
+                        media,
+                        Encoded {
+                            stream,
+                            contiguous,
+                            keyframe: key_frame,
+                            data,
+                        },
+                    )?;
                 }
-                return Ok(());
             }
-            _ => return Ok(()),
-        };
-        if !changed {
-            return Ok(());
+            _ => {}
         }
-        {
-            let mut update = display
-                .updates
-                .update
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            update.viewer_sources = self.sources;
-        }
-        display.updates.ready.notify_one();
-        let selection = *display.quality.borrow();
-        self.selection_changed(media, display, selection).await
+        Ok(())
     }
 
-    pub(super) async fn selection_changed(
+    pub(super) fn layout(
         &mut self,
         media: &Media,
-        display: &Display<'_>,
+        tiles: [Option<Stream>; TILES],
         selection: Selection,
     ) -> Result<(), String> {
-        let current = self.sources.current(selection.view);
-        if let Some(track) = current
-            && let Some(source) = capture_source(track.purpose)
-        {
-            // Screen shares need readable text even in the inline stage.
-            let pixels = if track.purpose == Purpose::ScreenVideo {
-                selection.pixels.max(1080)
-            } else {
-                selection.pixels
+        if self.tiles == tiles && self.selection == selection {
+            return Ok(());
+        }
+        self.tiles = tiles;
+        self.selection = selection;
+        for lane in &mut self.lanes {
+            if lane
+                .stream()
+                .is_some_and(|current| !tiles.contains(&Some(current)))
+            {
+                lane.select(None, None);
+            }
+        }
+        for stream in tiles.into_iter().flatten() {
+            let feed = stream.feed;
+            let Some(publisher) = feed.publisher else {
+                continue;
             };
-            let _ = media.set_quality(track.publisher, track.purpose, selection.quality, pixels);
-            let kind = video_kind(source);
-            let requested = kind.ladder()[kind.request(selection.quality, pixels)];
-            self.stats.requested(CaptureLimits {
+            let limit = self.position(feed).and_then(|slot| self.limits[slot]);
+            let lane = self
+                .lanes
+                .iter()
+                .position(|lane| lane.stream() == Some(stream))
+                .or_else(|| self.lanes.iter().position(|lane| lane.stream().is_none()))
+                .and_then(|slot| self.lanes.get_mut(slot));
+            let Some(lane) = lane else { continue };
+            if lane.stream() != Some(stream) {
+                lane.select(Some(stream), limit);
+                lane.request_keyframe(media, stream)?;
+            }
+            let preference = selection.preference(feed);
+            let pixels = if feed.kind == VideoKind::Screen {
+                preference.pixels.max(1080)
+            } else {
+                preference.pixels
+            };
+            let _ = media.set_quality(publisher, feed.purpose(), preference.quality, pixels);
+            let requested = feed.kind.ladder()[feed.kind.request(preference.quality, pixels)];
+            lane.stats.requested(CaptureLimits {
                 height: requested.height,
                 fps: requested.fps.into(),
                 bitrate: requested.ceiling as u32,
             });
         }
-        if self.current != current {
-            self.current = current;
-            self.stats.clear(Instant::now());
-            self.stats
-                .limit(current.and_then(|track| match track.purpose {
-                    Purpose::Camera => self.camera_limit,
-                    Purpose::ScreenVideo => self.screen_limit,
-                    _ => None,
-                }));
-            display.updates.stats(None);
-            display
-                .updates
-                .clear(match current.map(|track| track.purpose) {
-                    Some(Purpose::Camera) => "Waiting for camera video",
-                    Some(Purpose::ScreenVideo) => "Waiting for screen video",
-                    _ => "Waiting for video",
-                });
-            if let Some(decoder) = self.decoder.take() {
-                decoder.stop().await.map_err(text)?;
+        Ok(())
+    }
+
+    pub(super) fn complete(
+        &mut self,
+        media: &Media,
+        display: &Display<'_>,
+        decoded: Decoded,
+    ) -> Result<(), String> {
+        let stream = decoded.stream;
+        let Some(lane) = self
+            .lanes
+            .iter_mut()
+            .find(|lane| lane.stream() == Some(stream))
+        else {
+            return Ok(());
+        };
+        match decoded.result {
+            Ok(Some((width, height))) => lane.stats.frame(width, height, Some(decoded.elapsed)),
+            Ok(None) => {}
+            Err(DecodeError::Io(_) | DecodeError::Timeout | DecodeError::Busy) => {
+                lane.lost = true;
+                lane.request_keyframe(media, stream)?;
             }
-            if let Some(track) = current {
-                media.request_keyframe(track.purpose).map_err(text)?;
+            Err(error) => {
+                tracing::warn!(%error, "remote video decoder stopped");
+                lane.failed = true;
+                display.updates.video_unavailable(stream);
             }
         }
         Ok(())
     }
 
-    fn limit(&mut self, purpose: Purpose, limit: Option<VideoLimit>) {
-        match purpose {
-            Purpose::Camera => self.camera_limit = limit,
-            Purpose::ScreenVideo => self.screen_limit = limit,
-            _ => return,
-        }
-        if self.current.is_some_and(|track| track.purpose == purpose) {
-            self.stats.limit(limit);
-        }
-    }
-
-    pub(super) fn report(&mut self, display: &Display<'_>) {
-        if let Some(source) = self.current.and_then(|track| capture_source(track.purpose)) {
-            display.report(video_kind(source), self.stats.sample(Instant::now()), None);
+    pub(super) fn report(&mut self, display: &Display<'_>, selected: Feed) {
+        if let Some((lane, stream)) = self.lanes.iter_mut().find_map(|lane| {
+            let stream = lane.stream().filter(|stream| stream.feed == selected)?;
+            Some((lane, stream))
+        }) {
+            display.report(stream, lane.stats.sample(Instant::now()), None);
         }
     }
 
     pub(super) async fn stop(self) -> Result<(), String> {
-        if let Some(decoder) = self.decoder {
-            decoder.stop().await.map_err(text)?;
+        drop(self.decoded);
+        let tasks = self.lanes.map(
+            |Lane {
+                 target,
+                 input,
+                 task,
+                 ..
+             }| {
+                drop((target, input));
+                task
+            },
+        );
+        let [camera, screen] = tasks;
+        let (camera, screen) = tokio::join!(camera, screen);
+        camera.and(screen).map_err(text)
+    }
+}
+
+async fn decode(
+    executable: PathBuf,
+    mut selected: watch::Receiver<Option<Stream>>,
+    mut frames: mpsc::Receiver<Encoded>,
+    latest: Arc<Latest>,
+    outcome: mpsc::Sender<Decoded>,
+) {
+    let mut active = None;
+    let mut decoder: Option<Decoder> = None;
+    loop {
+        let packet = tokio::select! {
+            changed = selected.changed() => {
+                if changed.is_err() { break; }
+                None
+            },
+            packet = frames.recv() => {
+                let Some(packet) = packet else { break };
+                Some(packet)
+            },
+        };
+        let stream = *selected.borrow_and_update();
+        if active != stream {
+            active = stream;
+            if let Some(previous) = decoder.take() {
+                let _ = previous.stop().await;
+            }
         }
-        Ok(())
-    }
-}
-
-fn capture_source(purpose: Purpose) -> Option<Source> {
-    match purpose {
-        Purpose::Camera => Some(Source::Camera),
-        Purpose::ScreenVideo => Some(Source::Screen),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{Purpose, Sources, Track};
-
-    #[test]
-    fn screen_is_featured_by_default_and_camera_can_be_selected() {
-        let sources = Sources {
-            screen: Some(3),
-            camera: Some(3),
+        let Some(packet) = packet.filter(|packet| Some(packet.stream) == active) else {
+            continue;
         };
-        assert_eq!(
-            sources.current(None),
-            Some(Track {
-                publisher: 3,
-                purpose: Purpose::ScreenVideo
-            })
-        );
-        assert_eq!(
-            sources.current(Some(Purpose::Camera)),
-            Some(Track {
-                publisher: 3,
-                purpose: Purpose::Camera
-            })
-        );
-    }
-
-    #[test]
-    fn a_selected_source_returns_after_falling_back_to_the_other() {
-        let preference = Some(Purpose::Camera);
-        let mut sources = Sources {
-            camera: Some(3),
-            screen: Some(3),
+        if *selected.borrow() != active {
+            continue;
+        }
+        let started = Instant::now();
+        let result = async {
+            let decoder = match &mut decoder {
+                Some(decoder) => decoder,
+                None => decoder.insert(Decoder::start(
+                    executable.clone(),
+                    packet.stream.feed.source(),
+                )?),
+            };
+            if !packet.contiguous {
+                decoder.reset();
+            }
+            decoder
+                .decode(packet.keyframe, packet.data)
+                .await
+                .map(|frame| {
+                    frame.map(|frame| {
+                        let size = (frame.width, frame.height);
+                        latest.frame(packet.stream, frame);
+                        size
+                    })
+                })
+        }
+        .await;
+        let event = Decoded {
+            stream: packet.stream,
+            result,
+            elapsed: started.elapsed(),
         };
-        sources.set(Purpose::Camera, None);
-        assert_eq!(
-            sources.current(preference),
-            sources.get(Purpose::ScreenVideo)
-        );
-        sources.set(Purpose::Camera, Some(3));
-        assert_eq!(sources.current(preference), sources.get(Purpose::Camera));
-        sources.set(Purpose::Camera, None);
-        sources.set(Purpose::ScreenVideo, None);
-        assert_eq!(sources.current(preference), None);
+        if outcome.send(event).await.is_err() {
+            break;
+        }
+    }
+    if let Some(previous) = decoder {
+        let _ = previous.stop().await;
     }
 }

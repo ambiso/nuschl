@@ -45,7 +45,9 @@ pub enum MenuTarget {
     #[cfg(target_os = "linux")]
     VideoStats(u64),
     #[cfg(target_os = "linux")]
-    VideoQuality(u64, nuschl_client::native::sfu::VideoKind),
+    VideoQuality(u64, crate::native_call::Feed),
+    #[cfg(target_os = "linux")]
+    VideoFeeds(u64),
 }
 
 /// Original saved endpoint plus observed connection/target lifetimes. Local
@@ -426,7 +428,9 @@ impl Desktop {
                 | MenuTarget::Message
                 | MenuTarget::AclSource => None,
                 #[cfg(target_os = "linux")]
-                MenuTarget::VideoStats(_) | MenuTarget::VideoQuality(..) => None,
+                MenuTarget::VideoStats(_)
+                | MenuTarget::VideoQuality(..)
+                | MenuTarget::VideoFeeds(_) => None,
             };
             let wanted = channel
                 .into_iter()
@@ -818,14 +822,31 @@ impl Desktop {
             return entries;
         }
         #[cfg(target_os = "linux")]
-        if let MenuTarget::VideoQuality(generation, kind) = menu.target {
+        if let MenuTarget::VideoQuality(generation, feed) = menu.target {
             return self
-                .video_quality_commands(generation, kind)
+                .video_quality_commands(generation, feed)
                 .map(|(quality, label, selected)| {
                     let mut entry = local_item(label, "check", move |this, _, _, cx| {
-                        this.set_video_quality(generation, quality, cx);
+                        this.set_video_quality(generation, feed, quality, cx);
                     })
                     .key(format!("quality:{quality:?}"));
+                    if let Entry::Item { choice, .. } = &mut entry {
+                        *choice = Some(selected);
+                    }
+                    entry
+                })
+                .collect();
+        }
+        #[cfg(target_os = "linux")]
+        if let MenuTarget::VideoFeeds(generation) = menu.target {
+            return self
+                .video_feed_commands(generation)
+                .into_iter()
+                .map(|(feed, label, selected)| {
+                    let mut entry = local_item(label, "check", move |this, _, _, cx| {
+                        this.set_video_feed(generation, feed, cx);
+                    })
+                    .key(format!("feed:{feed:?}"));
                     if let Entry::Item { choice, .. } = &mut entry {
                         *choice = Some(selected);
                     }
@@ -1590,7 +1611,9 @@ impl Desktop {
             }
             MenuTarget::Image | MenuTarget::Message | MenuTarget::AclSource => unreachable!(),
             #[cfg(target_os = "linux")]
-            MenuTarget::VideoStats(_) | MenuTarget::VideoQuality(..) => unreachable!(),
+            MenuTarget::VideoStats(_)
+            | MenuTarget::VideoQuality(..)
+            | MenuTarget::VideoFeeds(_) => unreachable!(),
         }
         entries.retain(|entry| {
             !matches!(
@@ -2061,10 +2084,11 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
     let quality = matches!(menu.target, MenuTarget::VideoQuality(..));
     #[cfg(not(target_os = "linux"))]
     let quality = false;
-    let (label, width) = if quality {
-        ("Video quality", px(224.))
-    } else {
-        ("Context menu", px(320.))
+    let (label, width) = match menu.target {
+        #[cfg(target_os = "linux")]
+        MenuTarget::VideoFeeds(_) => ("Video sources", px(224.)),
+        _ if quality => ("Video quality", px(224.)),
+        _ => ("Context menu", px(320.)),
     };
     let snapshot = Rc::new(menu.clone());
     let rows = entries

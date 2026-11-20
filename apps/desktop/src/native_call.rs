@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 //! Linux calls on the desktop. Capture and decoding use confined video workers.
 
+mod gallery;
 mod publisher;
 mod stage;
 mod stats;
@@ -35,6 +36,9 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::{Notify, mpsc, oneshot, watch};
+
+pub(crate) use gallery::Feed;
+use gallery::{Selection, Sources, Stream, TILES};
 
 const SFU_PORT: u16 = 3479;
 static WORKERS: LazyLock<Option<(PathBuf, PathBuf)>> = LazyLock::new(|| {
@@ -102,15 +106,8 @@ pub struct Start {
     stop: oneshot::Receiver<()>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct Selection {
-    quality: Quality,
-    pixels: u32,
-    view: Option<Purpose>,
-}
-
 struct VideoStats {
-    kind: VideoKind,
+    stream: Stream,
     sample: stats::Snapshot,
     encoder: Option<stats::Encoder>,
 }
@@ -122,9 +119,9 @@ struct Display<'a> {
 }
 
 impl Display<'_> {
-    fn report(&self, kind: VideoKind, sample: stats::Snapshot, encoder: Option<stats::Encoder>) {
+    fn report(&self, stream: Stream, sample: stats::Snapshot, encoder: Option<stats::Encoder>) {
         self.updates.stats(Some(Arc::new(VideoStats {
-            kind,
+            stream,
             sample,
             encoder,
         })));
@@ -133,12 +130,29 @@ impl Display<'_> {
 
 struct Update {
     status: String,
-    frame: Option<DecodedFrame>,
+    tiles: [Tile; TILES],
     stats: Option<Arc<VideoStats>>,
-    local_view: Option<(u64, VideoKind)>,
-    viewer_sources: viewer::Sources,
+    sources: Sources,
     visible: bool,
-    clear: bool,
+}
+
+#[derive(Default)]
+struct Tile {
+    stream: Option<Stream>,
+    frame: Option<DecodedFrame>,
+    failed: bool,
+}
+
+impl Active {
+    fn featured(&self, sources: &Sources, selection: Selection) -> Option<Feed> {
+        sources
+            .featured(selection.view)
+            .map(|stream| stream.feed)
+            .or_else(|| {
+                self.source_pending
+                    .map(|source| Feed::local(video_kind(source)))
+            })
+    }
 }
 
 struct Latest {
@@ -147,6 +161,13 @@ struct Latest {
 }
 
 impl Latest {
+    fn sources(&self) -> Sources {
+        self.update
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .sources
+    }
+
     fn show_video(&self, visible: bool) {
         let mut update = self
             .update
@@ -154,7 +175,9 @@ impl Latest {
             .unwrap_or_else(|error| error.into_inner());
         if std::mem::replace(&mut update.visible, visible) != visible {
             if !visible {
-                update.frame = None;
+                for tile in &mut update.tiles {
+                    tile.frame = None;
+                }
             }
             drop(update);
             self.ready.notify_one();
@@ -171,25 +194,6 @@ impl Latest {
         self.ready.notify_one();
     }
 
-    fn clear(&self, status: impl Into<String>) {
-        let mut update = self
-            .update
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        update.status = status.into();
-        update.frame = None;
-        update.clear = true;
-        drop(update);
-        self.ready.notify_one();
-    }
-
-    fn visible(&self) -> bool {
-        self.update
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .visible
-    }
-
     fn stats(&self, stats: Option<Arc<VideoStats>>) {
         self.update
             .lock()
@@ -198,60 +202,75 @@ impl Latest {
         self.ready.notify_one();
     }
 
-    fn local_view(&self, view: Option<(u64, VideoKind, &'static str)>) {
+    fn layout(&self, sources: Sources, tiles: [Option<Stream>; TILES]) -> bool {
         let mut update = self
             .update
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        update.local_view = view.map(|(id, kind, _)| (id, kind));
-        update.status = view
-            .map_or("Waiting for video", |(_, _, label)| label)
-            .into();
-        update.frame = None;
-        update.stats = None;
-        update.clear = true;
+        let visible = update.visible;
+        if update.sources == sources && update.tiles.each_ref().map(|tile| tile.stream) == tiles {
+            return visible;
+        }
+        update.sources = sources;
+        update.tiles = tiles.map(|stream| {
+            update
+                .tiles
+                .iter_mut()
+                .find(|tile| tile.stream.is_some() && tile.stream == stream)
+                .map(std::mem::take)
+                .unwrap_or(Tile {
+                    stream,
+                    frame: None,
+                    failed: false,
+                })
+        });
         drop(update);
         self.ready.notify_one();
+        visible
     }
 
-    fn without_viewers(&self) {
-        self.update
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .viewer_sources = viewer::Sources::default();
-        self.ready.notify_one();
-    }
-
-    fn local_frame(&self, id: u64, frame: DecodedFrame) {
+    fn frame(&self, stream: Stream, frame: DecodedFrame) {
         let mut update = self
             .update
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if update.local_view.is_some_and(|(current, _)| current == id) && update.visible {
-            update.frame = Some(frame);
+        if update.visible
+            && let Some(tile) = update
+                .tiles
+                .iter_mut()
+                .find(|tile| tile.stream == Some(stream))
+        {
+            tile.frame = Some(frame);
             drop(update);
             self.ready.notify_one();
         }
     }
 
-    fn frame(&self, frame: DecodedFrame) {
+    fn video_unavailable(&self, stream: Stream) {
         let mut update = self
             .update
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        update.status.clear();
-        update.frame = Some(frame);
-        drop(update);
-        self.ready.notify_one();
+        if let Some(tile) = update
+            .tiles
+            .iter_mut()
+            .find(|tile| tile.stream == Some(stream))
+        {
+            tile.failed = true;
+            tile.frame = None;
+            drop(update);
+            self.ready.notify_one();
+        }
     }
 }
 
+type Picture = (Stream, Option<Arc<RenderImage>>, bool);
+
 struct Surface {
     status: String,
-    image: Option<Arc<RenderImage>>,
+    pictures: [Option<Picture>; TILES],
     stats: Option<Arc<VideoStats>>,
-    own_video: Option<VideoKind>,
-    viewer_sources: viewer::Sources,
+    sources: Sources,
     quality: watch::Sender<Selection>,
     _updates: Task<()>,
 }
@@ -260,42 +279,49 @@ impl Surface {
     fn new(
         updates: Arc<Latest>,
         status: &str,
-        own_video: Option<VideoKind>,
         quality: watch::Sender<Selection>,
         cx: &mut Context<Self>,
     ) -> Self {
         let observe = cx.spawn(async move |this, cx| {
             loop {
                 updates.ready.notified().await;
-                let (status, frame, clear, stats, local_view, viewer_sources) = {
+                let (status, tiles, stats, sources, visible) = {
                     let mut update = updates
                         .update
                         .lock()
                         .unwrap_or_else(|error| error.into_inner());
                     (
                         update.status.clone(),
-                        if update.visible {
-                            update.frame.take()
-                        } else {
-                            None
-                        },
-                        std::mem::take(&mut update.clear),
+                        update
+                            .tiles
+                            .each_mut()
+                            .map(|tile| (tile.stream, tile.frame.take(), tile.failed)),
                         update.stats.clone(),
-                        update.local_view,
-                        update.viewer_sources,
+                        update.sources,
+                        update.visible,
                     )
                 };
                 if this
                     .update(cx, |this, cx| {
                         this.status = status;
                         this.stats = stats;
-                        this.own_video = local_view.map(|(_, kind)| kind);
-                        this.viewer_sources = viewer_sources;
-                        if let Some(frame) = frame.and_then(render_frame) {
-                            this.image = Some(frame);
-                        } else if clear {
-                            this.image = None;
-                        }
+                        this.sources = sources;
+                        this.pictures = tiles.map(|(stream, frame, failed)| {
+                            let stream = stream?;
+                            let image = (visible && !failed)
+                                .then(|| {
+                                    frame.and_then(render_frame).or_else(|| {
+                                        this.pictures.iter_mut().find_map(|picture| {
+                                            picture
+                                                .as_mut()
+                                                .filter(|(previous, _, _)| *previous == stream)
+                                                .and_then(|(_, image, _)| image.take())
+                                        })
+                                    })
+                                })
+                                .flatten();
+                            Some((stream, image, failed))
+                        });
                         cx.notify();
                     })
                     .is_err()
@@ -306,97 +332,133 @@ impl Surface {
         });
         Self {
             status: status.into(),
-            image: None,
+            pictures: std::array::from_fn(|_| None),
             stats: None,
-            own_video,
-            viewer_sources: viewer::Sources::default(),
+            sources: Sources::default(),
             quality,
             _updates: observe,
         }
     }
 }
 
+impl Surface {
+    fn tile(
+        &self,
+        stream: Stream,
+        image: Option<Arc<RenderImage>>,
+        failed: bool,
+        gallery: bool,
+        window: &Window,
+    ) -> AnyElement {
+        let label = stream.feed.label();
+        div()
+            .id(format!("call-picture:{}", label))
+            .role(Role::Image)
+            .aria_label(label.clone())
+            .relative()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .overflow_hidden()
+            .when(!window.is_fullscreen() || gallery, |picture| {
+                picture.rounded(px(8.))
+            })
+            .bg(color(BACKDROP))
+            .children(image.is_none().then(|| {
+                div()
+                    .absolute()
+                    .size_full()
+                    .flex()
+                    .justify_center()
+                    .items_center()
+                    .text_sm()
+                    .text_color(color(TEXT_MUTED))
+                    .child(gpui_kit::text!(if failed {
+                        "Video source unavailable"
+                    } else if stream.preview {
+                        "Waiting for video"
+                    } else {
+                        "Local preview unavailable"
+                    }))
+            }))
+            .when_some(image, |tile, image| {
+                let image_size = image.size(0);
+                let preferences = self.quality.clone();
+                let sources = self.sources;
+                tile.child(
+                    img(image)
+                        .absolute()
+                        .size_full()
+                        .object_fit(ObjectFit::Contain),
+                )
+                .when(stream.feed.publisher.is_some(), |tile| {
+                    tile.child(
+                        canvas(
+                            |_, _, _| (),
+                            move |bounds, (), window, _| {
+                                let fitted = ObjectFit::Contain.get_bounds(bounds, image_size);
+                                let height = fitted.size.width.min(fitted.size.height);
+                                let pixels = (f32::from(height) * window.scale_factor()) as u32;
+                                preferences.send_if_modified(|selection| {
+                                    selection.change(stream.feed, &sources, |preference| {
+                                        preference.pixels = pixels
+                                    })
+                                });
+                            },
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
+                })
+            })
+            .when(gallery, |tile| {
+                tile.child(
+                    div()
+                        .absolute()
+                        .bottom_2()
+                        .left_2()
+                        .max_w_full()
+                        .px_1()
+                        .text_xs()
+                        .bg(tint(MAIN, 0xeb))
+                        .child(gpui_kit::text!(label)),
+                )
+            })
+            .into_any_element()
+    }
+}
+
 impl Render for Surface {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         crate::images::collect(window);
-        let fullscreen = window.is_fullscreen();
-        let overlay = fullscreen && self.image.is_some();
-        let status = || {
-            div()
-                .id("native-call-status")
-                .flex_shrink_0()
-                .text_sm()
-                .text_color(color(TEXT_MUTED))
-                .child(gpui_kit::text!(self.status.clone()))
-        };
+        let count = self.pictures.iter().flatten().count();
+        let gallery = count > 1;
         div()
-            .relative()
             .flex()
             .flex_col()
             .flex_1()
-            .gap_1()
             .min_h_0()
             .w_full()
-            .when(self.image.is_none(), |stage| {
-                stage.items_center().justify_center()
-            })
-            .children((!self.status.is_empty() && !overlay).then(&status))
-            .when_some(self.image.clone(), |view, image| {
-                let image_size = image.size(0);
-                let quality = self.quality.clone();
-                view.child(
+            .when(gallery, |stage| stage.gap_1())
+            .when(count == 0, |stage| {
+                stage.items_center().justify_center().child(
                     div()
-                        .id("native-call-picture")
-                        .role(Role::Image)
-                        .aria_label(match self.own_video {
-                            Some(VideoKind::Camera) => "Your camera",
-                            Some(VideoKind::Screen) => "Your screen",
-                            None => "Incoming video",
-                        })
-                        .relative()
-                        .w_full()
-                        .min_h_0()
-                        .flex_1()
-                        .overflow_hidden()
-                        .when(!fullscreen, |picture| picture.rounded(px(8.)))
-                        .bg(color(BACKDROP))
-                        .child(
-                            img(image)
-                                .absolute()
-                                .size_full()
-                                .object_fit(ObjectFit::Contain),
-                        )
-                        .when(self.own_video.is_none(), |picture| {
-                            picture.child(
-                                canvas(
-                                    |_, _, _| (),
-                                    move |bounds, (), window, _| {
-                                        let fitted =
-                                            ObjectFit::Contain.get_bounds(bounds, image_size);
-                                        let shorter_side =
-                                            fitted.size.width.min(fitted.size.height);
-                                        let pixels = (f32::from(shorter_side)
-                                            * window.scale_factor())
-                                            as u32;
-                                        quality.send_if_modified(|selection| {
-                                            std::mem::replace(&mut selection.pixels, pixels)
-                                                != pixels
-                                        });
-                                    },
-                                )
-                                .absolute()
-                                .size_full(),
-                            )
-                        }),
+                        .id("native-call-status")
+                        .text_sm()
+                        .text_color(color(TEXT_MUTED))
+                        .child(gpui_kit::text!(self.status.clone())),
                 )
             })
-            .children((!self.status.is_empty() && overlay).then(|| {
-                status()
-                    .absolute()
-                    .top_2()
-                    .mx_auto()
-                    .px_2()
-                    .bg(tint(MAIN, 0xeb))
+            .children(self.pictures[..count].chunks(2).map(|row| {
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .when(gallery, |row| row.gap_1())
+                    .children(row.iter().flatten().map(|(stream, image, failed)| {
+                        self.tile(*stream, image.clone(), *failed, gallery, window)
+                    }))
             }))
     }
 }
@@ -466,17 +528,14 @@ impl Desktop {
         } else {
             room.clone()
         };
-        let own_video = source.map(video_kind);
         let status = "Joining video call";
         let updates = Arc::new(Latest {
             update: Mutex::new(Update {
                 status: status.into(),
-                frame: None,
+                tiles: std::array::from_fn(|_| Tile::default()),
                 stats: None,
-                local_view: None,
-                viewer_sources: viewer::Sources::default(),
+                sources: Sources::default(),
                 visible: true,
-                clear: false,
             }),
             ready: Notify::new(),
         });
@@ -486,11 +545,7 @@ impl Desktop {
             (request_camera, camera_requests),
             (request_screen, screen_requests),
         ] = std::array::from_fn(|_| mpsc::channel(1));
-        let (selection, quality) = watch::channel(Selection {
-            quality: Quality::Auto,
-            pixels: 0,
-            view: None,
-        });
+        let (selection, quality) = watch::channel(Selection::default());
         let policy = PeerPolicy {
             relay_only: self.settings.relay_only,
         };
@@ -503,8 +558,7 @@ impl Desktop {
             server,
             conversation,
             voice_generation,
-            surface: cx
-                .new(|cx| Surface::new(updates.clone(), status, own_video, selection.clone(), cx)),
+            surface: cx.new(|cx| Surface::new(updates.clone(), status, selection.clone(), cx)),
             quality: selection,
             stats_open: false,
             local_sources: [false; 2],
@@ -858,22 +912,18 @@ pub fn panel(this: &Desktop, window: &mut Window, cx: &mut Context<Desktop>) -> 
     let expanded = toolbar.is_some();
     let generation = this.native_call_generation;
     let surface = call.surface.read(cx);
-    let has_picture = surface.image.is_some();
-    let stats = surface.stats.clone();
-    let owned = surface.own_video.is_some();
+    let has_video_area = surface.sources.iter().next().is_some();
     let selection = *call.quality.borrow();
-    let kind = surface
-        .own_video
-        .or_else(|| surface.viewer_sources.kind(selection.view))
-        .or_else(|| stats.as_ref().map(|stats| stats.kind));
-    let (camera, screen) = surface.viewer_sources.available();
-    let picker = viewer::controls(
-        camera || call.local_sources[publisher::index(Source::Camera)],
-        screen || call.local_sources[publisher::index(Source::Screen)],
-        selection.view,
-        generation,
-        cx,
-    );
+    let stream = surface.sources.featured(selection.view);
+    let featured = call.featured(&surface.sources, selection);
+    let stats = surface
+        .stats
+        .as_ref()
+        .filter(|stats| Some(stats.stream) == stream)
+        .cloned();
+    let owned = featured.is_some_and(|feed| feed.publisher.is_none());
+    let many_sources = surface.sources.iter().nth(1).is_some();
+    let menu_target = this.menu.as_ref().map(|menu| menu.target);
     let actions = layout::actions()
         .id("native-call-toolbar")
         .role(Role::Toolbar)
@@ -894,16 +944,30 @@ pub fn panel(this: &Desktop, window: &mut Window, cx: &mut Context<Desktop>) -> 
                 .on_hover(cx.listener(|this, hovering, _, cx| stage::hover(this, *hovering, cx)))
         })
         .children(source_controls(call, cx))
-        .children(picker)
-        .when_some(kind, |actions, kind| {
-            actions.child(quality_selector(
-                kind,
-                selection.quality,
-                stats.as_deref(),
+        .when(many_sources, |actions| {
+            let target = MenuTarget::VideoFeeds(generation);
+            actions.child(call_dropdown(
+                "native-call-feeds",
+                "Video sources".into(),
                 generation,
-                this.menu
-                    .as_ref()
-                    .is_some_and(|menu| menu.target == MenuTarget::VideoQuality(generation, kind)),
+                target,
+                menu_target == Some(target),
+                cx,
+            ))
+        })
+        .when_some(featured, |actions, feed| {
+            let target = MenuTarget::VideoQuality(generation, feed);
+            let quality = quality_readout(
+                feed.kind,
+                selection.preference(feed).quality,
+                stats.as_deref(),
+            );
+            actions.child(call_dropdown(
+                "native-call-quality",
+                format!("Quality · {quality}").into(),
+                generation,
+                target,
+                menu_target == Some(target),
                 cx,
             ))
         })
@@ -977,7 +1041,7 @@ pub fn panel(this: &Desktop, window: &mut Window, cx: &mut Context<Desktop>) -> 
     } else {
         (notices, None)
     };
-    let show_stats = call.stats_open && (expanded || has_picture);
+    let show_stats = call.stats_open && (expanded || has_video_area);
     Some(
         div()
             .id("native-call")
@@ -998,7 +1062,7 @@ pub fn panel(this: &Desktop, window: &mut Window, cx: &mut Context<Desktop>) -> 
                     .border_b_1()
                     .border_color(color(BORDER))
                     .bg(color(MAIN))
-                    .when(has_picture, |panel| panel.h(relative(0.5)))
+                    .when(has_video_area, |panel| panel.h(relative(0.5)))
             })
             .on_mouse_down(
                 MouseButton::Right,
@@ -1107,16 +1171,18 @@ impl Desktop {
     pub(crate) fn video_quality_commands(
         &self,
         generation: u64,
-        kind: VideoKind,
+        feed: Feed,
     ) -> impl Iterator<Item = (Quality, String, bool)> {
-        let current = self
-            .native_call
-            .as_ref()
-            .filter(|call| self.native_call_generation == generation && !call.minimized)
-            .map(|call| match call.quality.borrow().quality {
-                Quality::Auto => Quality::Auto,
-                Quality::Tier(tier) => Quality::Tier(tier.min(kind.top() as u8)),
-            });
+        let kind = feed.kind;
+        let current = self.call_with_generation(generation).and_then(|call| {
+            let selection = *call.quality.borrow();
+            (call.featured(&call.updates.sources(), selection) == Some(feed)).then(|| {
+                match selection.preference(feed).quality {
+                    Quality::Auto => Quality::Auto,
+                    Quality::Tier(tier) => Quality::Tier(tier.min(kind.top() as u8)),
+                }
+            })
+        });
         std::iter::once(Quality::Auto)
             .chain((0..=kind.top() as u8).map(Quality::Tier))
             .filter_map(move |quality| {
@@ -1127,14 +1193,64 @@ impl Desktop {
     pub(crate) fn set_video_quality(
         &mut self,
         generation: u64,
+        feed: Feed,
         quality: Quality,
         cx: &mut Context<Self>,
     ) {
-        if self.native_call_generation == generation
-            && let Some(call) = self.native_call.as_ref().filter(|call| !call.minimized)
-        {
-            call.quality
-                .send_modify(|selection| selection.quality = quality);
+        if let Some(call) = self.call_with_generation(generation) {
+            let sources = call.updates.sources();
+            call.quality.send_if_modified(|selection| {
+                call.featured(&sources, *selection) == Some(feed)
+                    && selection.change(feed, &sources, |preference| preference.quality = quality)
+            });
+            cx.notify();
+        }
+    }
+
+    fn call_with_generation(&self, generation: u64) -> Option<&Active> {
+        self.native_call
+            .as_ref()
+            .filter(|call| self.native_call_generation == generation && !call.minimized)
+    }
+
+    pub(crate) fn video_feed_commands(&self, generation: u64) -> Vec<(Option<Feed>, String, bool)> {
+        let Some(call) = self.call_with_generation(generation) else {
+            return Vec::new();
+        };
+        let sources = call.updates.sources();
+        let selection = *call.quality.borrow();
+        let featured = sources.featured(selection.view).map(|stream| stream.feed);
+        std::iter::once((None, "Tiled view".into(), selection.tiled))
+            .chain(sources.iter().map(|stream| {
+                let feed = stream.feed;
+                (
+                    Some(feed),
+                    format!("Pin {}", feed.label()),
+                    !selection.tiled && featured == Some(feed),
+                )
+            }))
+            .collect()
+    }
+
+    pub(crate) fn set_video_feed(
+        &mut self,
+        generation: u64,
+        feed: Option<Feed>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(call) = self.call_with_generation(generation) {
+            let sources = call.updates.sources();
+            call.quality.send_if_modified(|selection| {
+                if feed.is_some_and(|feed| !sources.iter().any(|stream| stream.feed == feed)) {
+                    return false;
+                }
+                let previous = *selection;
+                if let Some(feed) = feed {
+                    selection.view = Some(feed);
+                }
+                selection.tiled = feed.is_none();
+                *selection != previous
+            });
             cx.notify();
         }
     }
@@ -1160,19 +1276,16 @@ impl Desktop {
     }
 }
 
-fn quality_selector(
-    kind: VideoKind,
-    selected: Quality,
-    stats: Option<&VideoStats>,
+fn call_dropdown(
+    id: &'static str,
+    label: SharedString,
     generation: u64,
+    target: MenuTarget,
     open: bool,
     cx: &mut Context<Desktop>,
 ) -> AnyElement {
-    let label: SharedString =
-        format!("Quality · {}", quality_readout(kind, selected, stats)).into();
     let anchor = Rc::new(Cell::new(Bounds::default()));
     let position = anchor.clone();
-    let target = MenuTarget::VideoQuality(generation, kind);
     let activate = Rc::new(
         move |this: &mut Desktop, window: &mut Window, cx: &mut Context<Desktop>| {
             if this.menu.as_ref().is_some_and(|menu| menu.target == target) {
@@ -1187,12 +1300,16 @@ fn quality_selector(
     let click = activate.clone();
     let key = activate.clone();
     let control = div()
-        .id("native-call-quality")
+        .id(id)
         .role(Role::Button)
         .aria_label(label.clone())
         .aria_expanded(open)
         .tab_index(0)
-        .w(px(224.))
+        .w(px(if matches!(target, MenuTarget::VideoQuality(..)) {
+            224.
+        } else {
+            148.
+        }))
         .max_w_full()
         .min_w_0()
         .flex_shrink_0()
@@ -1220,7 +1337,7 @@ fn quality_selector(
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .child(text!(label).with_id("native-call-quality-label")),
+                .child(text!(label).with_id("call-dropdown-label")),
         )
         .child(crate::assets::icon("chevron-down", 14., color(TEXT_MUTED)))
         .child(
@@ -1228,16 +1345,12 @@ fn quality_selector(
                 .absolute()
                 .inset_0(),
         );
-    layout::focusable_button(
-        "native-call-quality",
-        control,
-        crate::dialogs::accessible_click(activate, cx),
-    )
+    layout::focusable_button(id, control, crate::dialogs::accessible_click(activate, cx))
 }
 
 fn quality_readout(kind: VideoKind, quality: Quality, stats: Option<&VideoStats>) -> String {
     if quality == Quality::Auto
-        && let Some(stats) = stats.filter(|stats| stats.kind == kind)
+        && let Some(stats) = stats.filter(|stats| stats.stream.feed.kind == kind)
     {
         if let Some(encoder) = stats.encoder {
             return format!("Auto ({}p{})", encoder.target.height, encoder.target.fps);
@@ -1501,7 +1614,11 @@ async fn drive(
         quality,
     };
     let mut publisher = publisher::Publisher::new(policy.relay_only);
-    let mut viewer = viewer::Viewer::new(video_worker.clone(), policy.relay_only);
+    let mut viewer = viewer::Viewer::new(
+        video_worker.clone(),
+        display.updates.clone(),
+        policy.relay_only,
+    );
     let result = tokio::select! {
         biased;
         () = &mut cancel => Ok(Finish::Left),
@@ -1516,8 +1633,7 @@ async fn drive(
         if let Err(error) = result {
             tracing::warn!(%error, "native video stopped while the meeting remains open");
         }
-        display.updates.local_view(None);
-        display.updates.without_viewers();
+        display.updates.layout(Sources::default(), [None; TILES]);
         display
             .updates
             .status("Meeting open · browser guests can use the chat link");
@@ -1618,7 +1734,18 @@ async fn meeting(
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     display.updates.status("Waiting for video");
     loop {
-        publisher.preview(display.updates.visible());
+        let sources = Sources {
+            local: publisher.sources(),
+            remote: viewer.sources(),
+        };
+        let tiles = sources.tiles(selection);
+        let visible = display.updates.layout(sources, tiles);
+        publisher.preview(tiles, visible);
+        viewer.layout(
+            media,
+            if visible { tiles } else { [None; TILES] },
+            selection,
+        )?;
         let can_publish = media.can_publish();
         if allowed != Some(can_publish) {
             changes
@@ -1643,11 +1770,11 @@ async fn meeting(
                     None => return Ok(Finish::MediaEnded),
                 };
                 let retune = matches!(event, MediaEvent::SourceLimits { .. } | MediaEvent::Direct { .. });
-                publisher.event(&event, &display.updates);
+                publisher.event(&event);
                 if retune {
-                    publisher.retune(display, selection, false);
+                    publisher.retune(display, selection, None);
                 }
-                viewer.handle_event(media, display, event).await?;
+                viewer.handle(media, event)?;
                 continue;
             }
             (source, result) = next_grant(&mut picker) => {
@@ -1660,8 +1787,7 @@ async fn meeting(
                     Err(error) => SourceChange::Failed(source, text(error)),
                 };
                 changes.report(change).await?;
-                publisher.focus(selection, &display.updates);
-                publisher.retune(display, selection, false);
+                publisher.retune(display, selection, None);
                 continue;
             }
             action = next_source_action(&mut source_requests, &mut publisher.reopening) => {
@@ -1678,8 +1804,7 @@ async fn meeting(
                             publisher.retire(source);
                             media.set_source(purpose(source), false).map_err(text)?;
                             changes.report(SourceChange::Stopped(source)).await?;
-                            publisher.focus(selection, &display.updates);
-                            publisher.retune(display, selection, false);
+                            publisher.retune(display, selection, None);
                         }
                     }
                     SourceAction::Reopened(attempt, grant) => {
@@ -1694,10 +1819,13 @@ async fn meeting(
                         let worker_started = matches!(change, SourceChange::Active { .. });
                         tracing::info!(target: "nuschl_capture", attempt = attempt.number, worker_started, "screen capture reopen result");
                         changes.report(change).await?;
-                        publisher.focus(selection, &display.updates);
-                        publisher.retune(display, selection, false);
+                        publisher.retune(display, selection, None);
                     }
                 }
+                continue;
+            }
+            Some(decoded) = viewer.decoded.recv() => {
+                viewer.complete(media, display, decoded)?;
                 continue;
             }
             frame = publisher::LocalVideo::next(camera) => (Source::Camera, frame),
@@ -1705,18 +1833,14 @@ async fn meeting(
             _ = publisher.retiring.next(), if !publisher.retiring.is_empty() => continue,
             Ok(()) = display.quality.changed() => {
                 selection = *display.quality.borrow_and_update();
-                if publisher.focus(selection, &display.updates) {
-                    publisher.retune(display, selection, false);
-                } else {
-                    viewer.selection_changed(media, display, selection).await?;
-                }
+                publisher.retune(display, selection, None);
                 continue;
             }
             _ = timer.tick() => {
-                if publisher.focus(selection, &display.updates) {
-                    publisher.retune(display, selection, true);
-                } else {
-                    viewer.report(display);
+                let report = sources.featured(selection.view).map(|stream| stream.feed);
+                publisher.retune(display, selection, report);
+                if let Some(feed) = report {
+                    viewer.report(display, feed);
                 }
                 continue;
             }
@@ -1736,8 +1860,7 @@ async fn meeting(
                     SourceChange::Failed(source, error)
                 };
                 changes.report(change).await?;
-                publisher.focus(selection, &display.updates);
-                publisher.retune(display, selection, false);
+                publisher.retune(display, selection, None);
             }
         }
     }
@@ -1808,7 +1931,11 @@ mod tests {
         let mut measurements = stats::Stats::new(false, now);
         measurements.frame(2580, 1080, None);
         let mut video = VideoStats {
-            kind,
+            stream: super::Stream {
+                feed: super::Feed::local(kind),
+                serial: 1,
+                preview: true,
+            },
             sample: measurements.sample(now + stats::INTERVAL),
             encoder: None,
         };

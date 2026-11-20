@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 //! Each enabled source has its own portal grant, encoder and preview.
 
-use super::{Display, Latest, Quality, Selection, purpose, stats, text, video_kind};
+use super::{
+    Display, Feed, Latest, Quality, Selection, Stream, TILES, purpose, stats, text, video_kind,
+};
 use futures_util::{FutureExt as _, future::BoxFuture, stream::FuturesUnordered};
 use nuschl_client::native::sfu::{Media, MediaEvent, Purpose, VideoKind};
 use nuschl_ipc::video::{
@@ -84,7 +86,6 @@ pub(super) struct Publisher {
     pub slots: [Option<LocalVideo>; 2],
     pub retiring: FuturesUnordered<BoxFuture<'static, ()>>,
     pub reopening: Option<Reopening>,
-    focused: Option<Source>,
     next_preview: u64,
     estimate: Option<u64>,
     direct: bool,
@@ -97,7 +98,6 @@ impl Publisher {
             slots: [None, None],
             retiring: FuturesUnordered::new(),
             reopening: None,
-            focused: None,
             next_preview: 0,
             estimate: None,
             direct: false,
@@ -136,7 +136,8 @@ impl Publisher {
             hardware: None,
             capture_format: None,
         };
-        let applied = encoding.ceiling(selection.quality);
+        let feed = Feed::local(encoding.kind);
+        let applied = encoding.ceiling(selection.preference(feed).quality);
         let (capture, preview) = if attempt.mode == CaptureMode::Hardware {
             (
                 grant
@@ -154,8 +155,13 @@ impl Publisher {
             }
             .map_err(text)?;
             let preview = tokio::spawn(async move {
+                let stream = Stream {
+                    feed,
+                    serial: preview_id,
+                    preview: true,
+                };
                 while let Some(frame) = preview.recv().await {
-                    updates.local_frame(preview_id, frame);
+                    updates.frame(stream, frame);
                 }
             });
             (capture, Some(preview))
@@ -242,40 +248,32 @@ impl Publisher {
         while self.retiring.next().await.is_some() {}
     }
 
-    pub fn focus(&mut self, selection: Selection, updates: &Latest) -> bool {
-        let next = selection
-            .view
-            .and_then(source)
-            .filter(|source| self.active(*source))
-            .or_else(|| {
-                [Source::Screen, Source::Camera]
-                    .into_iter()
-                    .find(|source| self.active(*source))
-            });
-        if next != self.focused {
-            self.focused = next;
-            updates.local_view(next.and_then(|source| {
-                self.slots[index(source)]
-                    .as_ref()
-                    .map(|track| (track.preview_id, video_kind(source), track.label()))
-            }));
-        }
-        next.is_some()
+    pub fn sources(&self) -> [Option<Stream>; 2] {
+        self.slots.each_ref().map(|track| {
+            track.as_ref().map(|track| Stream {
+                feed: Feed::local(track.encoding.kind),
+                serial: track.preview_id,
+                preview: track.preview.is_some(),
+            })
+        })
     }
 
-    pub fn preview(&self, visible: bool) {
+    pub fn preview(&self, tiles: [Option<Stream>; TILES], visible: bool) {
         for source in SOURCES {
             if let Some(track) = &self.slots[index(source)]
                 && track.preview.is_some()
             {
-                track
-                    .capture
-                    .set_preview(visible && self.focused == Some(source));
+                track.capture.set_preview(
+                    visible
+                        && tiles.into_iter().flatten().any(|stream| {
+                            stream.feed.publisher.is_none() && stream.serial == track.preview_id
+                        }),
+                );
             }
         }
     }
 
-    pub fn event(&mut self, event: &MediaEvent, updates: &Latest) {
+    pub fn event(&mut self, event: &MediaEvent) {
         match *event {
             MediaEvent::SourceReady { purpose } => {
                 if let Some(source) = source(purpose)
@@ -283,9 +281,6 @@ impl Publisher {
                 {
                     track.ready = true;
                     track.capture.request_keyframe();
-                    if self.focused == Some(source) {
-                        updates.status(track.label());
-                    }
                 }
             }
             MediaEvent::SourceKeyframeRequired { purpose } => {
@@ -325,7 +320,7 @@ impl Publisher {
         }
     }
 
-    pub fn retune(&mut self, display: &Display<'_>, selection: Selection, report: bool) {
+    pub fn retune(&mut self, display: &Display<'_>, selection: Selection, report: Option<Feed>) {
         let count = self.slots.iter().flatten().count().max(1) as u64;
         // RTC charges packet and SFrame overhead and splits the video budget across enabled sources.
         let share = self
@@ -335,22 +330,26 @@ impl Publisher {
             let Some(track) = self.slots[index(source)].as_mut() else {
                 continue;
             };
+            let feed = Feed::local(track.encoding.kind);
+            let quality = selection.preference(feed).quality;
             track.encoding.bitrate_estimate = share;
-            let next = track.encoding.limits(selection.quality, track.applied);
+            let next = track.encoding.limits(quality, track.applied);
             // Capture closure is reported by Capture::next.
             if next != track.applied && track.capture.set_limits(next).is_ok() {
                 track.applied = next;
             }
-            if report && self.focused == Some(source) {
+            if report == Some(feed) {
                 let sample = track.stats.sample(Instant::now());
                 display.report(
-                    track.encoding.kind,
+                    Stream {
+                        feed,
+                        serial: track.preview_id,
+                        preview: track.preview.is_some(),
+                    },
                     sample,
                     Some(stats::Encoder {
-                        requested: track.encoding.preferred(selection.quality),
-                        limit: track
-                            .encoding
-                            .active_limit(selection.quality, track.applied),
+                        requested: track.encoding.preferred(quality),
+                        limit: track.encoding.active_limit(quality, track.applied),
                         budget_bps: track.encoding.bitrate_estimate,
                         target: track.applied,
                         ceiling: track.encoding.remote,
@@ -418,16 +417,6 @@ pub(super) struct LocalVideo {
 }
 
 impl LocalVideo {
-    fn label(&self) -> &'static str {
-        match (self.encoding.kind, self.ready, self.preview.is_some()) {
-            (VideoKind::Screen, _, false) => "Your screen · local preview off",
-            (VideoKind::Camera, true, _) => "Your camera",
-            (VideoKind::Screen, true, _) => "Your screen",
-            (VideoKind::Camera, false, _) => "Your camera · waiting for a viewer",
-            (VideoKind::Screen, false, _) => "Your screen · waiting for a viewer",
-        }
-    }
-
     pub async fn next(track: &mut Option<Self>) -> Result<VideoFrame, Error> {
         match track {
             Some(track) => track.capture.next().await,
