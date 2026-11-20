@@ -41,7 +41,8 @@ pub enum MenuTarget {
     /// (`Desktop::menu_acl`).
     AclSource,
     VideoStats(u64),
-    VideoQuality(u64, nuschl_client::native::sfu::VideoKind),
+    VideoQuality(u64, crate::native_call::Feed),
+    VideoFeeds(u64),
 }
 
 /// Original saved endpoint plus observed connection/target lifetimes. Local
@@ -420,7 +421,9 @@ impl Desktop {
                 | MenuTarget::Image
                 | MenuTarget::Message
                 | MenuTarget::AclSource => None,
-                MenuTarget::VideoStats(_) | MenuTarget::VideoQuality(..) => None,
+                MenuTarget::VideoStats(_)
+                | MenuTarget::VideoQuality(..)
+                | MenuTarget::VideoFeeds(_) => None,
             };
             let wanted = channel
                 .into_iter()
@@ -810,14 +813,30 @@ impl Desktop {
             }
             return entries;
         }
-        if let MenuTarget::VideoQuality(generation, kind) = menu.target {
+        if let MenuTarget::VideoQuality(generation, feed) = menu.target {
             return self
-                .video_quality_commands(generation, kind)
+                .video_quality_commands(generation, feed)
                 .map(|(quality, label, selected)| {
                     let mut entry = local_item(label, "check", move |this, _, _, cx| {
-                        this.set_video_quality(generation, quality, cx);
+                        this.set_video_quality(generation, feed, quality, cx);
                     })
                     .key(format!("quality:{quality:?}"));
+                    if let Entry::Item { choice, .. } = &mut entry {
+                        *choice = Some(selected);
+                    }
+                    entry
+                })
+                .collect();
+        }
+        if let MenuTarget::VideoFeeds(generation) = menu.target {
+            return self
+                .video_feed_commands(generation)
+                .into_iter()
+                .map(|(feed, label, selected)| {
+                    let mut entry = local_item(label, "check", move |this, _, _, cx| {
+                        this.set_video_feed(generation, feed, cx);
+                    })
+                    .key(format!("feed:{feed:?}"));
                     if let Entry::Item { choice, .. } = &mut entry {
                         *choice = Some(selected);
                     }
@@ -1581,7 +1600,9 @@ impl Desktop {
                 );
             }
             MenuTarget::Image | MenuTarget::Message | MenuTarget::AclSource => unreachable!(),
-            MenuTarget::VideoStats(_) | MenuTarget::VideoQuality(..) => unreachable!(),
+            MenuTarget::VideoStats(_)
+            | MenuTarget::VideoQuality(..)
+            | MenuTarget::VideoFeeds(_) => unreachable!(),
         }
         entries.retain(|entry| {
             !matches!(
@@ -2047,10 +2068,10 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
         return None;
     }
     let quality = matches!(menu.target, MenuTarget::VideoQuality(..));
-    let (label, width) = if quality {
-        ("Video quality", px(224.))
-    } else {
-        ("Context menu", px(320.))
+    let (label, width) = match menu.target {
+        MenuTarget::VideoFeeds(_) => ("Video sources", px(224.)),
+        _ if quality => ("Video quality", px(224.)),
+        _ => ("Context menu", px(320.)),
     };
     let snapshot = Rc::new(menu.clone());
     let rows = entries
@@ -2224,6 +2245,10 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
             }
         })
         .collect::<Vec<_>>();
+    let trigger: Option<Bounds<Pixels>> = match menu.anchor {
+        MenuAnchor::Point(_) => None,
+        MenuAnchor::Above(trigger) => Some(trigger),
+    };
     Some(
         div()
             .id("menu-layer")
@@ -2231,7 +2256,10 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
             .inset_0()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    if trigger.is_some_and(|bounds| bounds.contains(&event.position)) {
+                        return;
+                    }
                     this.menu = None;
                     window.focus(&this.window_focus, cx);
                     cx.notify();
