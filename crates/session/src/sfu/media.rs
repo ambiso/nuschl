@@ -600,6 +600,7 @@ impl Leg {
                 leg: id,
                 local: network.address()?,
                 codec,
+                role,
                 relayed: matches!(&network, Network::Sfu(leg) if leg.is_relayed()),
             },
         )
