@@ -4,8 +4,8 @@
 
 use super::turn::NetworkLeg;
 use super::{
-    Action, ClientMessage, Codec, Connection, Error, Outcome, Quality, ServerMessage, VideoKind,
-    write,
+    Action, ClientMessage, Codec, Connection, Error, HANDSHAKE, Outcome, Quality, ServerMessage,
+    VideoKind, write,
 };
 use nuschl_core::network::Destination;
 use nuschl_ipc::rtc::{self, Command, Description, Event, LegRole, Reply, Track, Worker};
@@ -34,6 +34,8 @@ const SUBSCRIBE: u32 = 2;
 const UDP_BURST: usize = 64;
 const MAX_PENDING_FRAME_AGE: Duration = Duration::from_millis(150);
 const KEYFRAME_INTERVAL: Duration = Duration::from_secs(1);
+// A subscription accepts 48 SDP sections, including its control channel and first source.
+const MAX_SOURCE_CHANGES: u8 = 46;
 
 pub struct MediaOptions {
     /// Path of the installed `nuschl-rtc-worker`.
@@ -73,14 +75,29 @@ pub enum MediaEvent {
     },
 }
 
+enum QueuedEvent {
+    Call(MediaEvent),
+    SendReady(u8),
+}
+
+#[derive(Clone, Copy)]
+struct EncoderCaps {
+    revision: u8,
+    height: u16,
+    fps: u8,
+    bitrate: u64,
+}
+
 enum Input {
     Frame(Video),
+    RequestKeyframe(Purpose),
     #[cfg(test)]
     LoseDirect,
 }
 
 struct Video {
     sequence: u64,
+    revision: u8,
     queued: Instant,
     timestamp: u64,
     key_frame: bool,
@@ -90,11 +107,14 @@ struct Video {
 pub struct Media {
     input: mpsc::Sender<Input>,
     sequence: AtomicU64,
-    quality: watch::Sender<QualityRequests>,
-    events: mpsc::Receiver<Result<MediaEvent, Error>>,
+    preferences: watch::Sender<Preferences>,
+    events: mpsc::Receiver<Result<QueuedEvent, Error>>,
     keyframes: mpsc::Receiver<()>,
+    limits: watch::Receiver<Option<EncoderCaps>>,
+    bandwidth: watch::Receiver<Option<u64>>,
     task: JoinHandle<()>,
     source: Option<Purpose>,
+    source_revision: u8,
 }
 
 impl Media {
@@ -123,6 +143,7 @@ impl Media {
             .wrapping_add(1);
         let frame = Video {
             sequence,
+            revision: self.source_revision,
             queued: Instant::now(),
             timestamp,
             key_frame,
@@ -133,6 +154,25 @@ impl Media {
             Err(mpsc::error::TrySendError::Full(_)) => Ok(false),
             Err(mpsc::error::TrySendError::Closed(_)) => Err(Error::Protocol("media ended")),
         }
+    }
+
+    /// Replace this publisher's camera or screen while keeping the call open.
+    /// The latest request can wait for an outstanding offer or a viewer.
+    /// Submit the first independent frame after the next [`MediaEvent::SendReady`].
+    pub fn switch_source(&mut self, purpose: Purpose) -> Result<(), Error> {
+        if self.source.is_none() || self.source == Some(purpose) || video_kind(purpose).is_none() {
+            return Err(Error::Protocol("invalid replacement video source"));
+        }
+        if self.source_revision == MAX_SOURCE_CHANGES {
+            return Err(Error::Protocol("video source limit reached for this call"));
+        }
+        let revision = self.source_revision + 1;
+        self.preferences
+            .send(Preferences::Source { purpose, revision })
+            .map_err(|_| Error::Protocol("media ended"))?;
+        self.source = Some(purpose);
+        self.source_revision = revision;
+        Ok(())
     }
 
     /// Set the ceiling for a subscribed video source. Auto fits the tile's
@@ -149,7 +189,7 @@ impl Media {
         if self.source.is_some() || publisher == 0 {
             return Err(Error::Protocol("invalid video subscription"));
         }
-        if self.quality.is_closed() {
+        if self.preferences.is_closed() {
             return Err(Error::Protocol("media ended"));
         }
         if quality == Quality::Auto && tile_height == 0 {
@@ -160,7 +200,10 @@ impl Media {
             kind,
             tier: kind.request(quality, tile_height) as u8,
         };
-        self.quality.send_if_modified(|latest| {
+        self.preferences.send_if_modified(|latest| {
+            let Preferences::Quality(latest) = latest else {
+                return false;
+            };
             let slot = &mut latest[quality_index(kind)];
             if *slot == Some(request) {
                 return false;
@@ -171,19 +214,64 @@ impl Media {
         Ok(())
     }
 
+    /// Recover decoding for the active subscription with a fresh keyframe.
+    /// Subsequent requests share the transport's keyframe cooldown.
+    pub fn request_keyframe(&self, purpose: Purpose) -> Result<(), Error> {
+        if self.source.is_some() || video_kind(purpose).is_none() {
+            return Err(Error::Protocol("invalid video subscription"));
+        }
+        match self.input.try_send(Input::RequestKeyframe(purpose)) {
+            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => Ok(()),
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(Error::Protocol("media ended")),
+        }
+    }
+
     #[cfg(test)]
     pub(super) async fn lose_direct(&self) {
         assert!(self.input.send(Input::LoseDirect).await.is_ok());
     }
 
     pub async fn next(&mut self) -> Option<Result<MediaEvent, Error>> {
-        tokio::select! {
-            biased;
-            requested = self.keyframes.recv() => match requested {
-                Some(()) => Some(Ok(MediaEvent::KeyframeRequired)),
-                None => self.events.recv().await,
-            },
-            event = self.events.recv() => event,
+        loop {
+            let event = tokio::select! {
+                biased;
+                requested = self.keyframes.recv() => match requested {
+                    Some(()) => return Some(Ok(MediaEvent::KeyframeRequired)),
+                    None => self.events.recv().await,
+                },
+                event = self.events.recv() => event,
+                changed = self.limits.changed() => {
+                    if changed.is_err() {
+                        self.events.recv().await
+                    } else {
+                        let caps = *self.limits.borrow_and_update();
+                        if let Some(EncoderCaps { revision, height, fps, bitrate }) = caps
+                            && revision == self.source_revision
+                        {
+                            return Some(Ok(MediaEvent::EncoderLimits { height, fps, bitrate }));
+                        }
+                        continue;
+                    }
+                }
+                changed = self.bandwidth.changed() => {
+                    if changed.is_err() {
+                        self.events.recv().await
+                    } else {
+                        if let Some(bitrate) = *self.bandwidth.borrow_and_update() {
+                            return Some(Ok(MediaEvent::BandwidthEstimate { bitrate }));
+                        }
+                        continue;
+                    }
+                }
+            };
+            match event? {
+                Ok(QueuedEvent::Call(event)) => return Some(Ok(event)),
+                Ok(QueuedEvent::SendReady(revision)) if revision == self.source_revision => {
+                    return Some(Ok(MediaEvent::SendReady));
+                }
+                Err(error) => return Some(Err(error)),
+                _ => {}
+            }
         }
     }
 
@@ -240,9 +328,11 @@ impl Connection {
         };
         let source = options.publish;
         let (input, frames) = mpsc::channel(1);
-        let (quality, preferences) = watch::channel([None; 2]);
+        let (preferences, changes) = watch::channel(Preferences::Quality([None; 2]));
         let (output, events) = mpsc::channel(4);
         let (requests, keyframes) = mpsc::channel(1);
+        let (encoder_caps, limits) = watch::channel(None);
+        let (upload_estimate, bandwidth) = watch::channel(None);
         let task = tokio::spawn(async move {
             let mut connection = self;
             let result = run(
@@ -251,13 +341,12 @@ impl Connection {
                 destination,
                 codec,
                 source,
-                Inputs {
-                    frames,
-                    preferences,
-                },
+                Inputs { frames, changes },
                 Output {
                     events: &output,
                     keyframes: &requests,
+                    limits: &encoder_caps,
+                    bandwidth: &upload_estimate,
                 },
             )
             .await;
@@ -270,11 +359,14 @@ impl Connection {
         Ok(Media {
             input,
             sequence: AtomicU64::new(0),
-            quality,
+            preferences,
             events,
             keyframes,
+            limits,
+            bandwidth,
             task,
             source,
+            source_revision: 0,
         })
     }
 }
@@ -345,6 +437,29 @@ impl Leg {
         }
     }
 
+    async fn request_keyframe(
+        &mut self,
+        worker: &mut Worker,
+        purpose: Purpose,
+    ) -> Result<(), Error> {
+        if let Some(gate) = self.video_gate(purpose) {
+            gate.awaiting_key = true;
+            if gate.request() {
+                worker
+                    .exchange(
+                        Command::RequestKeyframe {
+                            leg: self.id,
+                            purpose,
+                        },
+                        Vec::new(),
+                    )
+                    .await?;
+                self.wake = Some(Instant::now());
+            }
+        }
+        Ok(())
+    }
+
     async fn start(
         worker: &mut Worker,
         id: u32,
@@ -412,7 +527,8 @@ async fn receive(leg: Option<&mut Leg>, bytes: &mut [u8]) -> std::io::Result<(us
 
 async fn wake(until: Option<Instant>) {
     match until {
-        Some(until) => sleep_until(until).await,
+        Some(until) if until > Instant::now() => sleep_until(until).await,
+        Some(_) => {}
         None => pending().await,
     }
 }
@@ -438,8 +554,11 @@ struct Pair {
 }
 
 struct Output<'a> {
-    events: &'a mpsc::Sender<Result<MediaEvent, Error>>,
+    events: &'a mpsc::Sender<Result<QueuedEvent, Error>>,
     keyframes: &'a mpsc::Sender<()>,
+    // Feedback updates carry the latest value without holding up media I/O.
+    limits: &'a watch::Sender<Option<EncoderCaps>>,
+    bandwidth: &'a watch::Sender<Option<u64>>,
 }
 
 struct FrameGate {
@@ -512,9 +631,15 @@ fn signaling_id(connection: &Connection, leg: u32) -> [u8; 16] {
 
 type QualityRequests = [Option<QualityRequest>; 2];
 
+#[derive(Clone, Copy)]
+enum Preferences {
+    Quality(QualityRequests),
+    Source { purpose: Purpose, revision: u8 },
+}
+
 struct Inputs {
     frames: mpsc::Receiver<Input>,
-    preferences: watch::Receiver<QualityRequests>,
+    changes: watch::Receiver<Preferences>,
 }
 
 #[derive(Default)]
@@ -578,7 +703,7 @@ async fn run(
     worker: &mut Worker,
     destination: SocketAddr,
     codec: rtc::Codec,
-    source: Option<Purpose>,
+    mut source: Option<Purpose>,
     mut inputs: Inputs,
     output: Output<'_>,
 ) -> Result<(), Error> {
@@ -595,6 +720,8 @@ async fn run(
 
     let mut offered = None;
     let mut publish_mid = None;
+    let mut source_change_deadline = None;
+    let mut pending_source = None;
     let turn = connection
         .welcome
         .turn
@@ -619,32 +746,8 @@ async fn run(
             LegRole::SfuPublish,
         )
         .await?;
-        let mut description = describe(
-            worker,
-            Command::Offer {
-                leg: PUBLISH,
-                id: signaling_id(connection, PUBLISH),
-                purposes: vec![purpose],
-            },
-        )
-        .await?;
-        let sdp = std::mem::take(&mut description.sdp);
-        let [track] = description.tracks.as_slice() else {
-            return Err(Error::Protocol("invalid publish track"));
-        };
-        if track.purpose != purpose || track.publisher.is_some() {
-            return Err(Error::Protocol("invalid publish track"));
-        }
-        publish_mid = Some(track.mid.clone());
-        let screens = match purpose {
-            Purpose::ScreenVideo => vec![track.mid.clone()],
-            _ => Vec::new(),
-        };
-        write(
-            &mut connection.socket,
-            &ClientMessage::Offer { sdp, screens },
-        )
-        .await?;
+        let (mid, description) = offer_publish(connection, worker, purpose, 0).await?;
+        publish_mid = Some(mid);
         offered = Some(description);
         Some(leg)
     } else {
@@ -680,6 +783,7 @@ async fn run(
     let mut sending = false;
     let mut send_gate = FrameGate::new();
     let mut sequence = 0_u64;
+    let mut source_revision = 0;
     loop {
         let attempt = direct.as_ref().and_then(|direct| direct.leg.as_ref());
         let selected = attempt.is_some_and(|attempt| attempt.transport.selected);
@@ -727,7 +831,7 @@ async fn run(
                         if let Some(gate) = subscribe.video_gate(track.purpose) {
                             *gate = FrameGate::new();
                         }
-                        if output.events.send(Ok(MediaEvent::SourceEnded { purpose: track.purpose })).await.is_err() {
+                        if output.events.send(Ok(QueuedEvent::Call(MediaEvent::SourceEnded { purpose: track.purpose }))).await.is_err() {
                             return Ok(());
                         }
                     }
@@ -738,6 +842,7 @@ async fn run(
                     let mut description = offered.take().ok_or(Error::Protocol("unexpected publish answer"))?;
                     description.sdp = sdp;
                     done(worker, Command::AcceptAnswer { leg: PUBLISH, description }).await?;
+                    source_change_deadline = None;
                     if let Some(leg) = &mut publish { leg.wake = Some(Instant::now()); }
                 }
                 ServerMessage::Key { from, data } => {
@@ -775,23 +880,29 @@ async fn run(
                 ServerMessage::Quality { source, max_height, max_fps, max_bitrate, .. }
                     if publish_mid.as_ref() == Some(&source) && (16..=2160).contains(&max_height) && (1..=120).contains(&max_fps) && (64_000..=50_000_000).contains(&max_bitrate) => {
                     desired = Some(max_bitrate);
-                    if output.events.send(Ok(MediaEvent::EncoderLimits { height: max_height, fps: max_fps, bitrate: max_bitrate })).await.is_err() {
-                        return Ok(());
-                    }
+                    output.limits.send_replace(Some(EncoderCaps {
+                        revision: source_revision, height: max_height, fps: max_fps, bitrate: max_bitrate,
+                    }));
                 }
                 ServerMessage::Codec { codec: changed } if changed != connection.welcome.codec => return Err(Error::Protocol("native call codec changed")),
                 ServerMessage::Error { reason } => return Err(Error::Refused(reason.into_owned())),
                 _ => {}
             },
-            changed = inputs.preferences.changed() => {
+            changed = inputs.changes.changed() => {
                 if changed.is_err() {
                     return Ok(());
                 }
-                quality.wanted = *inputs.preferences.borrow_and_update();
+                let update = *inputs.changes.borrow_and_update();
+                match update {
+                    Preferences::Quality(wanted) => quality.wanted = wanted,
+                    Preferences::Source { purpose, revision } => pending_source = Some((purpose, revision)),
+                }
             }
             () = wake(next_quality.map(|(at, _)| at)) => {
                 // A new choice can arrive as the timer expires.
-                quality.wanted = *inputs.preferences.borrow_and_update();
+                if let Preferences::Quality(wanted) = *inputs.changes.borrow_and_update() {
+                    quality.wanted = wanted;
+                }
                 if let Some((at, request)) = quality.next_request(&subscribed)
                     && at <= Instant::now()
                 {
@@ -804,6 +915,16 @@ async fn run(
             input = inputs.frames.recv() => {
                 let frame = match input {
                     Some(Input::Frame(frame)) => frame,
+                    Some(Input::RequestKeyframe(purpose)) => {
+                        if subscribed.iter().any(|track| track.purpose == purpose) {
+                            let active = direct.as_mut()
+                                .and_then(|direct| direct.leg.as_mut())
+                                .filter(|attempt| attempt.transport.selected)
+                                .map_or(&mut subscribe, |attempt| &mut attempt.transport);
+                            active.request_keyframe(worker, purpose).await?;
+                        }
+                        continue;
+                    }
                     #[cfg(test)]
                     Some(Input::LoseDirect) => {
                         if let Some(attempt) = direct.as_mut().and_then(|direct| direct.leg.as_mut())
@@ -820,7 +941,9 @@ async fn run(
                 } else {
                     publish.as_mut()
                 };
-                if let (Some(purpose), Some(active), true) = (source, active, sending) {
+                if frame.revision == source_revision
+                    && let (Some(purpose), Some(active), true) = (source, active, sending)
+                {
                     if frame.sequence != sequence.wrapping_add(1) {
                         send_gate.awaiting_key = true;
                     }
@@ -883,8 +1006,46 @@ async fn run(
                 }
             }
             () = wake(direct_deadline) => retreat = true,
+            () = wake(source_change_deadline) => return Err(Error::Timeout),
         }
-        if !sending && publish.as_ref().is_some_and(|leg| leg.connected) && pair.ready && publishing
+        if offered.is_none()
+            && let Some((purpose, revision)) = pending_source.take()
+        {
+            let leg = publish
+                .as_mut()
+                .ok_or(Error::Protocol("call has no publisher"))?;
+            discovery = None;
+            if let (Some(direct), Some(peer)) = (&mut direct, pair.peer)
+                && direct.leg.is_some()
+                && let Some(id) = direct.close(worker, Some(leg)).await?
+            {
+                direct::send(connection, peer, &Signal::Close { id }).await?;
+                if selected
+                    && output
+                        .events
+                        .send(Ok(QueuedEvent::Call(MediaEvent::Direct { active: false })))
+                        .await
+                        .is_err()
+                {
+                    return Ok(());
+                }
+            }
+            let (mid, description) = offer_publish(connection, worker, purpose, revision).await?;
+            publish_mid = Some(mid);
+            offered = Some(description);
+            source_change_deadline = Some(Instant::now() + HANDSHAKE);
+            leg.wake = Some(Instant::now());
+            source = Some(purpose);
+            source_revision = revision;
+            desired = None;
+            sending = false;
+            send_gate = FrameGate::new();
+        }
+        if !sending
+            && offered.is_none()
+            && publish.as_ref().is_some_and(|leg| leg.connected)
+            && pair.ready
+            && publishing
         {
             // The crypto worker sent the epoch on a separate socket. Wait for
             // the RTC process to install it before admitting frames.
@@ -905,7 +1066,12 @@ async fn run(
             .await
             .map_err(|_| Error::Timeout)??;
             sending = true;
-            if output.events.send(Ok(MediaEvent::SendReady)).await.is_err() {
+            if output
+                .events
+                .send(Ok(QueuedEvent::SendReady(source_revision)))
+                .await
+                .is_err()
+            {
                 return Ok(());
             }
         }
@@ -939,6 +1105,7 @@ async fn run(
                 if was_selected {
                     send_gate = FrameGate::new();
                     if publishing {
+                        output.bandwidth.send_replace(None);
                         let _ = output.keyframes.try_send(());
                     } else {
                         for purpose in [Purpose::Camera, Purpose::ScreenVideo] {
@@ -946,15 +1113,13 @@ async fn run(
                                 && let Some(gate) = subscribe.video_gate(purpose)
                             {
                                 *gate = FrameGate::new();
-                                gate.request();
-                                request_keyframe(worker, SUBSCRIBE, purpose).await?;
-                                subscribe.wake = Some(Instant::now());
+                                subscribe.request_keyframe(worker, purpose).await?;
                             }
                         }
                     }
                     if output
                         .events
-                        .send(Ok(MediaEvent::Direct { active: false }))
+                        .send(Ok(QueuedEvent::Call(MediaEvent::Direct { active: false })))
                         .await
                         .is_err()
                     {
@@ -992,13 +1157,14 @@ async fn run(
                         }
                         continue;
                     }
+                    output.bandwidth.send_replace(None);
                     attempt.transport.selected = true;
                     attempt.transport.wake = Some(Instant::now());
                     send_gate = FrameGate::new();
                     let _ = output.keyframes.try_send(());
                     if output
                         .events
-                        .send(Ok(MediaEvent::Direct { active: true }))
+                        .send(Ok(QueuedEvent::Call(MediaEvent::Direct { active: true })))
                         .await
                         .is_err()
                     {
@@ -1025,6 +1191,44 @@ async fn run(
     }
 }
 
+async fn offer_publish(
+    connection: &mut Connection,
+    worker: &mut Worker,
+    purpose: Purpose,
+    revision: u8,
+) -> Result<(String, Description), Error> {
+    let mut id = signaling_id(connection, PUBLISH);
+    id[15] = revision;
+    let mut description = describe(
+        worker,
+        Command::Offer {
+            leg: PUBLISH,
+            id,
+            purposes: vec![purpose],
+        },
+    )
+    .await?;
+    let [track] = description.tracks.as_slice() else {
+        return Err(Error::Protocol("invalid publish track"));
+    };
+    if track.purpose != purpose || track.publisher.is_some() {
+        return Err(Error::Protocol("invalid publish track"));
+    }
+    let mid = track.mid.clone();
+    let screens = if purpose == Purpose::ScreenVideo {
+        vec![mid.clone()]
+    } else {
+        Vec::new()
+    };
+    let sdp = std::mem::take(&mut description.sdp);
+    write(
+        &mut connection.socket,
+        &ClientMessage::Offer { sdp, screens },
+    )
+    .await?;
+    Ok((mid, description))
+}
+
 async fn drain(
     worker: &mut Worker,
     leg: &mut Leg,
@@ -1044,84 +1248,65 @@ async fn drain(
             Reply::Datagram { destination, .. } => {
                 leg.network.send(&packet.data, destination).await?;
             }
-            Reply::Event { event, .. } => {
-                let event = match event {
-                    Event::Connected => {
-                        leg.connected = true;
+            Reply::Event { event, .. } => match event {
+                Event::Connected => leg.connected = true,
+                Event::Disconnected => {
+                    return Err(Error::Protocol("native media transport disconnected"));
+                }
+                Event::BandwidthEstimate { bitrate } => {
+                    leg.bandwidth = Some((Instant::now(), bitrate));
+                    if sending {
+                        output.bandwidth.send_replace(Some(bitrate));
+                    }
+                }
+                Event::Keyframe { .. } if sending => {
+                    let _ = output.keyframes.try_send(());
+                }
+                Event::Frame {
+                    publisher,
+                    purpose,
+                    timestamp,
+                    contiguous,
+                    key_frame,
+                } if peer == Some(publisher) => {
+                    let upgrading = leg.id > SUBSCRIBE && !leg.selected;
+                    let Some(gate) = leg.video_gate(purpose) else {
                         continue;
-                    }
-                    Event::Disconnected => {
-                        return Err(Error::Protocol("native media transport disconnected"));
-                    }
-                    Event::BandwidthEstimate { bitrate } => {
-                        leg.bandwidth = Some((Instant::now(), bitrate));
-                        if !sending {
-                            continue;
-                        }
-                        MediaEvent::BandwidthEstimate { bitrate }
-                    }
-                    Event::Keyframe { .. } if sending => {
-                        let _ = output.keyframes.try_send(());
-                        continue;
-                    }
-                    Event::Frame {
-                        publisher,
-                        purpose,
-                        timestamp,
-                        contiguous,
-                        key_frame,
-                    } if peer == Some(publisher) => {
-                        let upgrading = leg.id > SUBSCRIBE && !leg.selected;
-                        let Some(gate) = leg.video_gate(purpose) else {
-                            continue;
-                        };
-                        if (key_frame || (contiguous && !gate.awaiting_key))
-                            && output
+                    };
+                    if (key_frame || (contiguous && !gate.awaiting_key))
+                        && output
+                            .events
+                            .try_send(Ok(QueuedEvent::Call(MediaEvent::Frame {
+                                publisher,
+                                purpose,
+                                timestamp,
+                                contiguous: contiguous && !gate.awaiting_key,
+                                key_frame,
+                                data: packet.data,
+                            })))
+                            .is_ok()
+                    {
+                        gate.arrived(key_frame);
+                        if upgrading {
+                            leg.selected = true;
+                            if output
                                 .events
-                                .try_send(Ok(MediaEvent::Frame {
-                                    publisher,
-                                    purpose,
-                                    timestamp,
-                                    contiguous: contiguous && !gate.awaiting_key,
-                                    key_frame,
-                                    data: packet.data,
-                                }))
-                                .is_ok()
-                        {
-                            gate.arrived(key_frame);
-                            if upgrading {
-                                leg.selected = true;
-                                if output
-                                    .events
-                                    .send(Ok(MediaEvent::Direct { active: true }))
-                                    .await
-                                    .is_err()
-                                {
-                                    return Ok(());
-                                }
-                            }
-                        } else {
-                            gate.awaiting_key = true;
-                            if gate.request() {
-                                request_keyframe(worker, leg.id, purpose).await?;
+                                .send(Ok(QueuedEvent::Call(MediaEvent::Direct { active: true })))
+                                .await
+                                .is_err()
+                            {
+                                return Ok(());
                             }
                         }
-                        continue;
+                    } else {
+                        leg.request_keyframe(worker, purpose).await?;
                     }
-                    _ => continue,
-                };
-                let _ = output.events.try_send(Ok(event));
-            }
+                }
+                _ => {}
+            },
             _ => return Err(Error::Protocol("invalid RTC worker output")),
         }
     }
     leg.wake = Some(Instant::now());
-    Ok(())
-}
-
-async fn request_keyframe(worker: &mut Worker, leg: u32, purpose: Purpose) -> Result<(), Error> {
-    worker
-        .exchange(Command::RequestKeyframe { leg, purpose }, Vec::new())
-        .await?;
     Ok(())
 }

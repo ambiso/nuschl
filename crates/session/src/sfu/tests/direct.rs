@@ -3,7 +3,7 @@
 use super::*;
 
 #[tokio::test]
-async fn native_viewer_moves_to_direct_and_recovers_through_the_sfu() {
+async fn native_call_switches_paths_and_sources() {
     let _media = MEDIA_TEST.lock().await;
     nuschl_testkit::sandbox();
     let crypto = fixture("nuschl-crypto-worker");
@@ -39,6 +39,9 @@ async fn native_viewer_moves_to_direct_and_recovers_through_the_sfu() {
         .into_media(make_media(Some(Purpose::Camera)))
         .await
         .unwrap();
+    // The requests coalesce before the media task can negotiate either of them.
+    publisher.switch_source(Purpose::ScreenVideo).unwrap();
+    publisher.switch_source(Purpose::Camera).unwrap();
     let mut viewer = Connection::connect_with_roots(
         CryptoHandle::start(crypto, directory.path().join("viewer")),
         connect(&posted),
@@ -69,6 +72,7 @@ async fn native_viewer_moves_to_direct_and_recovers_through_the_sfu() {
     let mut over_sfu = false;
     let mut sender_direct = false;
     let mut receiver_direct = false;
+    let mut requested_keyframe = false;
     let mut outage = None;
     let mut sender_relayed = false;
     let mut receiver_relayed = false;
@@ -89,6 +93,11 @@ async fn native_viewer_moves_to_direct_and_recovers_through_the_sfu() {
                     MediaEvent::SendReady => ready = true,
                     MediaEvent::Direct { active: true } => sender_direct = true,
                     MediaEvent::Direct { active: false } => sender_relayed = true,
+                    MediaEvent::KeyframeRequired if requested_keyframe && outage.is_none() => {
+                        // Drop packets after the direct leg delivered the viewer's request.
+                        publisher.lose_direct().await;
+                        outage = Some(tokio::time::Instant::now());
+                    }
                     _ => {}
                 },
                 event = viewer.next() => match event.unwrap().unwrap() {
@@ -103,11 +112,9 @@ async fn native_viewer_moves_to_direct_and_recovers_through_the_sfu() {
                             assert!(!contiguous);
                             resumed = true;
                         }
-                        if sender_direct && receiver_direct && outage.is_none() {
-                            // Drop packets at the publisher's broker while the SFU
-                            // and both real media workers continue to run.
-                            publisher.lose_direct().await;
-                            outage = Some(tokio::time::Instant::now());
+                        if sender_direct && receiver_direct && !requested_keyframe {
+                            viewer.request_keyframe(Purpose::Camera).unwrap();
+                            requested_keyframe = true;
                         }
                         if !sender_direct {
                             over_sfu = true;
@@ -122,12 +129,50 @@ async fn native_viewer_moves_to_direct_and_recovers_through_the_sfu() {
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("direct did not deliver; SFU={over_sfu}, sender={sender_direct}, receiver={receiver_direct}"));
+    .unwrap_or_else(|_| panic!("direct recovery did not complete; SFU={over_sfu}, sender={sender_direct}, receiver={receiver_direct}, keyframe request={requested_keyframe}, outage={outage:?}, sender fell back={sender_relayed}, receiver fell back={receiver_relayed}, resumed={resumed}"));
     assert!(over_sfu);
     eprintln!(
         "SFU resumed with both endpoints reporting fallback after {:?}",
         outage.unwrap().elapsed()
     );
+    for (old, new) in [
+        (Purpose::Camera, Purpose::ScreenVideo),
+        (Purpose::ScreenVideo, Purpose::Camera),
+    ] {
+        publisher.switch_source(new).unwrap();
+        let mut ready = false;
+        let mut ended = false;
+        let mut timestamp = 0;
+        timeout(HANDSHAKE, async {
+            loop {
+                tokio::select! {
+                    _ = tick.tick(), if ready => {
+                        timestamp += 2970;
+                        publisher.send_keyframe(timestamp, picture.clone()).unwrap();
+                    }
+                    event = publisher.next() => {
+                        ready |= matches!(event.unwrap().unwrap(), MediaEvent::SendReady);
+                    }
+                    event = viewer.next() => match event.unwrap().unwrap() {
+                        MediaEvent::SourceEnded { purpose } => {
+                            assert_eq!(purpose, old);
+                            ended = true;
+                        }
+                        MediaEvent::Frame { publisher: sender, purpose, key_frame, data, .. } if purpose == new => {
+                            assert!(ended);
+                            assert_eq!(sender, from);
+                            assert!(key_frame);
+                            assert_eq!(data, picture);
+                            break;
+                        }
+                        _ => {}
+                    },
+                }
+            }
+        })
+        .await
+        .expect("fresh frames arrive for the replaced source on the same call");
+    }
     publisher.stop().await.unwrap();
     viewer.stop().await.unwrap();
 }

@@ -177,6 +177,7 @@ enum Signaling {
         pending: SdpPendingOffer,
         description: Description,
         legacy: bool,
+        publish_update: bool,
     },
     Negotiated,
 }
@@ -188,6 +189,7 @@ pub struct Peer {
     reflexive: bool,
     video: VideoCodec,
     subscription: bool,
+    publishing: bool,
     signaling: Signaling,
     tracks: Vec<TrackState>,
     now: Instant,
@@ -299,6 +301,7 @@ impl Peer {
             reflexive: false,
             video,
             subscription: false,
+            publishing: false,
             signaling: Signaling::New,
             tracks: Vec::with_capacity(4),
             now,
@@ -353,12 +356,47 @@ impl Peer {
     }
 
     /// The publish leg sends the caller's tracks to its configured SFU.
+    /// Re-offering a single video track retires its old MID and adds the new source.
     pub fn offer_publish(
         &mut self,
         purposes: &[Purpose],
         id: SignalingId,
     ) -> Result<Description, Error> {
-        self.make_offer(purposes, id, false, Direction::SendOnly)
+        if !self.publishing {
+            let offer = self.make_offer(purposes, id, false, Direction::SendOnly)?;
+            self.publishing = true;
+            return Ok(offer);
+        }
+        if self.closed || !matches!(self.signaling, Signaling::Negotiated) {
+            return Err(Error::SignalingState);
+        }
+        let ([previous], [purpose]) = (self.tracks.as_slice(), purposes) else {
+            return Err(Error::Description);
+        };
+        if previous.purpose.kind() != Kind::Video || purpose.kind() != Kind::Video {
+            return Err(Error::Description);
+        }
+        let mut api = self.rtc.sdp_api();
+        api.stop_media(previous.track.0);
+        let mid = api.add_media(MediaKind::Video, Direction::SendOnly, None, None, None);
+        let (offer, pending) = api.apply().ok_or(Error::SignalingState)?;
+        let description = Description {
+            id,
+            sdp: offer.to_sdp_string(),
+            bindings: vec![TrackBinding {
+                mid: mid.to_string(),
+                purpose: *purpose,
+            }],
+        };
+        signaling::validate_subscription(&description.sdp, &description.bindings)?;
+        self.bind_tracks(&description.bindings);
+        self.signaling = Signaling::Offering {
+            pending,
+            description: description.clone(),
+            legacy: false,
+            publish_update: true,
+        };
+        Ok(description)
     }
 
     fn make_offer(
@@ -405,6 +443,7 @@ impl Peer {
             pending,
             description: description.clone(),
             legacy,
+            publish_update: false,
         };
         Ok(description)
     }
@@ -478,13 +517,19 @@ impl Peer {
         }
         let Signaling::Offering {
             description: offered,
+            publish_update,
             ..
         } = &self.signaling
         else {
             return Err(Error::SignalingState);
         };
-        signaling::validate(description, expected, self.video)?;
-        if offered.id != expected
+        if *publish_update {
+            signaling::validate_subscription(&description.sdp, &description.bindings)?;
+        } else {
+            signaling::validate(description, expected, self.video)?;
+        }
+        if description.id != expected
+            || offered.id != expected
             || offered.bindings.len() != description.bindings.len()
             || !offered
                 .bindings
@@ -840,21 +885,36 @@ impl Peer {
                     }
                     RtcEvent::EgressBitrateEstimate(estimate) => {
                         let rate = match estimate {
-                            str0m::bwe::BweKind::Twcc { estimate, .. }
-                            | str0m::bwe::BweKind::Remb { estimate, .. } => estimate,
+                            str0m::bwe::BweKind::Twcc {
+                                estimate,
+                                can_probe,
+                            } if can_probe || self.call_video_limit.is_none() => {
+                                let rate = estimate.as_u64();
+                                // str0m publishes its configured seed as soon as
+                                // the path supports probing. Report changes from it.
+                                if self.call_video_limit.is_some()
+                                    && self.bandwidth_bps == CALL_INITIAL_BITRATE
+                                    && rate == CALL_INITIAL_BITRATE
+                                {
+                                    continue;
+                                }
+                                rate
+                            }
+                            str0m::bwe::BweKind::Remb { estimate, .. } => estimate.as_u64(),
                             _ => continue,
                         };
-                        self.bandwidth_bps = rate.as_u64();
-                        return Ok(Output::Event(Event::BandwidthEstimate(rate.as_u64())));
+                        self.bandwidth_bps = rate;
+                        return Ok(Output::Event(Event::BandwidthEstimate(rate)));
                     }
                     RtcEvent::KeyframeRequest(request) => {
-                        if self
-                            .purpose(Track(request.mid))
-                            .is_none_or(|p| p.kind() != Kind::Video)
-                        {
-                            return Err(Error::Frame);
+                        let track = Track(request.mid);
+                        match self.purpose(track) {
+                            Some(purpose) if purpose.kind() == Kind::Video => {
+                                return Ok(Output::Event(Event::RequestKeyframe(track)));
+                            }
+                            None if self.publishing => continue,
+                            _ => return Err(Error::Frame),
                         }
-                        return Ok(Output::Event(Event::RequestKeyframe(Track(request.mid))));
                     }
                     _ => {}
                 },

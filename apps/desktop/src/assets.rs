@@ -26,6 +26,8 @@ const ICONS: &[(&str, &[u8])] = icons!(
     "copy",
     "ear",
     "file",
+    "fullscreen",
+    "fullscreen-exit",
     "hang-up",
     "hash",
     "headphones",

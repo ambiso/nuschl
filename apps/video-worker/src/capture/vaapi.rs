@@ -28,7 +28,7 @@ pub fn prepare(source: Source, node: Option<u32>, bitrate: u32) -> Result<gst::P
     let (width, height) = source.max_dimensions();
     let description = format!(
         concat!(
-            "pipewiresrc fd=0 {target} ! ",
+            "pipewiresrc name=capture fd=0 {target} ! ",
             "queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! ",
             "vapostproc name=scale ! capsfilter name=limit ",
             "caps=\"video/x-raw(memory:VAMemory),format=NV12,width=[16,{width}],height=[16,{height}]\" ! ",
@@ -56,29 +56,54 @@ pub fn run(pipeline: gst::Pipeline, source: Source, control: Arc<Control>) -> Re
         .map_err(|_| "invalid video sink")?;
     let encoder = pipeline.by_name("encoder").ok_or("missing video encoder")?;
     let mut scale = Scale::new(&pipeline, &encoder)?;
-    let clock = Instant::now();
     let cadence = Mutex::new(Cadence::default());
     let cadence_control = control.clone();
-    // Drop raw frames before VA scaling and encoding. Rates can change
-    // independently of the PipeWire source's negotiated framerate.
-    let probe = scale
+    // Keep encoder caps changes downstream of the authorized PipeWire link.
+    let reconfigure = scale
         .input
-        .add_probe(gst::PadProbeType::BUFFER, move |_, _| {
+        .add_probe(gst::PadProbeType::EVENT_UPSTREAM, |_, info| {
+            if info
+                .event()
+                .is_some_and(|event| event.type_() == gst::EventType::Reconfigure)
+            {
+                gst::PadProbeReturn::Drop
+            } else {
+                gst::PadProbeReturn::Ok
+            }
+        })
+        .ok_or("could not isolate capture caps")?;
+    let input = pipeline
+        .by_name("capture")
+        .and_then(|element| element.static_pad("src"))
+        .ok_or("missing PipeWire capture output")?;
+    // Bound cadence before the queue. Use worker ingress time so producer
+    // timestamps and the pipeline's clock cannot disagree about frame age.
+    let frames = input
+        .add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
+            let Some(now) = pad
+                .parent_element()
+                .and_then(|element| element.current_running_time())
+            else {
+                return gst::PadProbeReturn::Drop;
+            };
             let limits = cadence_control.limits();
-            if cadence
+            if !cadence
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
-                .accept(clock.elapsed(), limits.fps)
+                .accept(Duration::from_nanos(now.nseconds()), limits.fps)
             {
-                gst::PadProbeReturn::Ok
-            } else {
-                gst::PadProbeReturn::Drop
+                return gst::PadProbeReturn::Drop;
             }
+            if let Some(buffer) = info.buffer_mut() {
+                buffer.make_mut().set_pts(now);
+            }
+            gst::PadProbeReturn::Ok
         })
         .ok_or("could not install the capture cadence limit")?;
     pipeline.set_state(gst::State::Playing)?;
     let result = write_frames(&pipeline, &sink, &encoder, &mut scale, source, &control);
-    scale.input.remove_probe(probe);
+    input.remove_probe(frames);
+    scale.input.remove_probe(reconfigure);
     let _ = pipeline.set_state(gst::State::Null);
     result
 }

@@ -84,6 +84,14 @@ class CallTest(VoiceTest):
     def press(self, app, name):
         self.control(app, name).press()
 
+    def video_stats(self, app, show):
+        self.press(app, "Video options")
+        label = "Video stats" if show else "Hide video stats"
+        eventually(lambda: self.find(app, "menu item", label), f"missing {label!r} menu item").press()
+        eventually(lambda: not self.find(app, "menu", "Context menu"), "video options did not close")
+        eventually(lambda: bool(self.find(app, None, "Video stats")) == show,
+                   f"expected video stats to be {'shown' if show else 'hidden'}")
+
     def invitation(self, app):
         eventually(lambda: self.find(app, None, f"Video call · Andi · {self.call_host}"),
                    "Bea has no call card", timeout=15)
@@ -99,8 +107,17 @@ class CallTest(VoiceTest):
 
     def inline(self, app):
         self.control(app, "Full screen")
-        eventually(lambda: self.find(app, "list", "Messages in #Lobby"),
-                   "inline call displaced chat", timeout=15)
+
+        def regions_are_disjoint():
+            full_screen = self.find(app, "push button", "Full screen")
+            messages = self.find(app, "list", "Messages in #Lobby")
+            if not full_screen or not messages:
+                return False
+            _, call_top, _, call_height = full_screen.extents()
+            _, chat_top, _, chat_height = messages.extents()
+            return call_height > 0 and chat_height > 0 and call_top + call_height <= chat_top
+
+        eventually(regions_are_disjoint, "inline call and chat have overlapping or empty regions", timeout=15)
 
     def run(self):
         self.shell = GnomeSession(self.args.gnome_shell, 1440, 950,
@@ -138,8 +155,9 @@ class CallTest(VoiceTest):
             self.press(andi, "Quality · Auto")
             self.press(andi, "720p30")
             self.control(andi, "Quality · 720p30")
-            self.press(andi, "Hide video stats")
-            self.control(andi, "Video stats")
+            self.control(andi, "Video stats", shown=False)
+            self.video_stats(andi, show=True)
+            self.video_stats(andi, show=False)
             assert self.witness_link()["target"] == {"kind": "channel", "id": 1}
             self.invitation(bea)
             self.control(bea, "Open in browser", shown=False)
@@ -148,6 +166,8 @@ class CallTest(VoiceTest):
             self.inline(bea)
             self.press(bea, "Full screen")
             self.control(bea, "Exit full screen")
+            self.video_stats(bea, show=True)
+            self.video_stats(bea, show=False)
             eventually(lambda: not self.find(bea, "list", "Messages in #Lobby"),
                        "full screen kept the inline chat tree", timeout=15)
             self.press(bea, "Exit full screen")

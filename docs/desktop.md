@@ -203,16 +203,20 @@ call card offers **Join video call** for native playback. The channel also
 receives a link people can open in a browser, including people using Mumble.
 People who enter the channel later receive the card while the call is active.
 
+Use the presenter’s **Share screen** or **Use camera** icon to change what
+you share in the current call. The current source stays live while you choose.
+Sharing starts after you accept the system picker. The panel indicates when
+viewers can see the Nuschl window on the selected monitor.
+
 Choose **Full screen** to focus on video and **Exit full screen** or Escape
 to return to chat. **Minimize call** hides the video while the call continues.
-**Return to call** restores the panel. Sharing a whole monitor asks for
-confirmation before video starts. Viewers can see the Nuschl window whenever
-it is visible on that monitor.
+**Return to call** restores the panel.
 
 **Quality** selects a resolution and frame-rate ceiling. A 1440p tier can
 carry 3440 × 1440 when the capture, encoder and connection support it. Open
-**Video stats** for delivered dimensions, frame rate, encoded payload rate
-and the current route. Viewer Auto fits the video tile.
+**Video options** and choose **Video stats** for delivered dimensions, frame
+rate, encoded payload rate and the current route. Viewer Auto fits the video
+tile.
 
 The native path supports one publisher and one viewer. Two native clients can
 switch to a direct connection when it can carry their video and return to the

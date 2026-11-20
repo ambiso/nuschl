@@ -289,21 +289,30 @@ async fn native_publisher_in_call_page_vm() {
         .into_media(MediaOptions {
             executable: fixture("nuschl-rtc-worker"),
             sfu_port,
-            publish: Some(Purpose::ScreenVideo),
+            publish: Some(Purpose::Camera),
         })
         .await
         .unwrap();
+    media.switch_source(Purpose::ScreenVideo).unwrap();
     fs::write(state.join("peer"), peer.to_string()).unwrap();
 
     let mut tick = tokio::time::interval(Duration::from_millis(34));
     let mut timestamp = 0;
     let mut ready = false;
     let stop = state.join("stop");
+    let switch = state.join("switch");
+    let mut switched = false;
     timeout(Duration::from_secs(180), async {
         loop {
             tokio::select! {
                 _ = tick.tick() => {
                     if stop.exists() { break; }
+                    if ready && !switched && switch.exists() {
+                        media.switch_source(Purpose::Camera).unwrap();
+                        ready = false;
+                        switched = true;
+                        timestamp = 0;
+                    }
                     if ready {
                         timestamp += 3_060;
                         media.send_keyframe(timestamp, red.clone()).unwrap();
@@ -443,7 +452,8 @@ async fn native_video_for_policy(relay_only: bool) {
     let mut decoder = Decoder::start(video.clone(), Source::Screen).unwrap();
     let red = red_keyframe(video.clone()).await;
 
-    timeout(HANDSHAKE, async {
+    let mut phase = "publisher readiness";
+    let playback = timeout(HANDSHAKE, async {
         loop {
             if matches!(
                 alice
@@ -456,6 +466,7 @@ async fn native_video_for_policy(relay_only: bool) {
                 break;
             }
         }
+        phase = "initial keyframe";
         let mut frame = 0u64;
         let mut tick = tokio::time::interval(Duration::from_millis(34));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -485,6 +496,7 @@ async fn native_video_for_policy(relay_only: bool) {
                 .send_frame((frame + 1) * 3_060, false, DELTAS[1].to_vec())
                 .unwrap()
         );
+        phase = "first dependent frame";
         let delta = rendered(&mut bob, publisher, false).await;
         assert_eq!(delta, DELTAS[0]);
         let next = decoder
@@ -512,6 +524,7 @@ async fn native_video_for_policy(relay_only: bool) {
             .await
             .is_err()
         );
+        phase = "keyframe request after a dropped sample";
         loop {
             if matches!(
                 alice
@@ -524,9 +537,12 @@ async fn native_video_for_policy(relay_only: bool) {
                 break;
             }
         }
+        phase = "recovery keyframe";
         frame += 1;
         assert!(alice.send_keyframe(frame * 3_060, KEY.to_vec()).unwrap());
         assert_eq!(rendered(&mut bob, publisher, true).await, KEY);
+        // Start a new capture interval after the intentionally skipped frame.
+        tick.reset();
         tick.tick().await;
         frame += 1;
         assert!(
@@ -534,11 +550,13 @@ async fn native_video_for_policy(relay_only: bool) {
                 .send_frame(frame * 3_060, false, DELTAS[0].to_vec())
                 .unwrap()
         );
+        phase = "dependent frame after recovery";
         assert_eq!(rendered(&mut bob, publisher, false).await, DELTAS[0]);
 
         tick.tick().await;
         frame += 1;
         assert!(alice.send_keyframe(frame * 3_060, red.clone()).unwrap());
+        phase = "second picture";
         let packet = rendered(&mut bob, publisher, true).await;
         assert_eq!(packet, red);
         let decoded = decoder
@@ -557,9 +575,8 @@ async fn native_video_for_policy(relay_only: bool) {
                 .all(|&[b, g, r, a]| b < 45 && g < 45 && r > 200 && a == 255)
         );
     })
-    .await
-    .expect("a native frame crosses the owned SFU");
-    if !relay_only {
+    .await;
+    if playback.is_ok() && !relay_only {
         async fn encoder_limits(publisher: &mut Media, tier: usize) {
             let expected = &VideoKind::Screen.ladder()[tier];
             timeout(HANDSHAKE, async {
@@ -598,6 +615,9 @@ async fn native_video_for_policy(relay_only: bool) {
     alice.stop().await.unwrap();
     nuschl_testkit::none_running(&video, Duration::from_secs(3)).await;
     nuschl_testkit::none_running(&rtc, Duration::from_secs(3)).await;
+    playback.unwrap_or_else(|_| {
+        panic!("native video timed out during {phase}; relay-only={relay_only}")
+    });
 }
 
 async fn relay_datagrams(credentials: &nuschl_protocol::sfu::TurnCredentials) {
