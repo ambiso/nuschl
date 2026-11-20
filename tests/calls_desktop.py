@@ -262,8 +262,12 @@ class CallTest(VoiceTest):
         eventually(regions_are_disjoint, "inline call and chat have overlapping or empty regions", timeout=15)
 
     def fullscreen(self, app, interaction):
+        screenshots = 0
+
         def pixels(name, width, height, x, y):
-            screen = self.shell.screenshot(self.args.output / f"{name}.png")
+            nonlocal screenshots
+            screenshots += 1
+            screen = self.shell.screenshot(self.args.output / f"{name}-{screenshots:02d}.png")
             return subprocess.check_output([
                 "ffmpeg", "-v", "error", "-i", str(screen), "-vf", f"format=rgb24,crop={width}:{height}:{x}:{y}",
                 "-f", "rawvideo", "-frames:v", "1", "pipe:1",
@@ -274,13 +278,20 @@ class CallTest(VoiceTest):
 
         black = bytes(3)
         if interaction == "pointer":
-            status = eventually(lambda: self.find(app, None, "Joining video call"), "inline call status is missing")
-            x, y, width, height = status.extents()
-            left, top = json.loads(self.shell.eval(
-                "const bounds = global.display.focus_window.get_buffer_rect(); JSON.stringify([bounds.x, bounds.y])"))
-            inline = pixels("inline-status", width, height, left + x, top + y)
-            assert any(inline[i:i + 3] == black for i in range(0, len(inline), 3)), "the inline video backdrop was not black"
-            assert any(min(inline[i:i + 3]) >= 192 for i in range(0, len(inline), 3)), "the light-theme status was not legible"
+            def inline_readable():
+                status = self.find(app, None, "Joining video call")
+                if not status:
+                    return False
+                x, y, width, height = status.extents()
+                if width == 0 or height == 0:
+                    return False
+                left, top = json.loads(self.shell.eval(
+                    "const bounds = global.display.focus_window.get_buffer_rect(); JSON.stringify([bounds.x, bounds.y])"))
+                inline = pixels("inline-status", width, height, left + x, top + y)
+                colors = [inline[i:i + 3] for i in range(0, len(inline), 3)]
+                return black in colors and any(min(color) >= 192 for color in colors)
+
+            eventually(inline_readable, "light-theme status did not paint light text on a black backdrop", timeout=3)
 
         self.press(app, "Full screen")
         eventually(window_is_fullscreen, "the compositor did not enter fullscreen")
@@ -288,12 +299,9 @@ class CallTest(VoiceTest):
         eventually(lambda: exit_button.extents()[1] > 800,
                    "fullscreen controls did not reach the display's bottom edge")
         x, y, _, _ = exit_button.extents()
-        screenshots = 0
 
         def toolbar_pixels():
-            nonlocal screenshots
-            screenshots += 1
-            sample = pixels(f"{interaction}-{screenshots:02d}", 1, 21, x + 6, y - 14)
+            sample = pixels(interaction, 1, 21, x + 6, y - 14)
             assert len(sample) == 63
             return sample[:3], sample[-3:]
 
