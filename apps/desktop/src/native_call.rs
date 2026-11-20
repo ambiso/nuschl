@@ -1098,14 +1098,16 @@ fn quality_selector(
         format!("Quality · {}", quality_readout(kind, selected, stats)).into();
     let anchor = Rc::new(Cell::new(Bounds::default()));
     let position = anchor.clone();
+    let target = MenuTarget::VideoQuality(generation, kind);
     let activate = Rc::new(
-        move |this: &mut Desktop, _: &mut Window, cx: &mut Context<Desktop>| {
-            this.open_video_menu(
-                generation,
-                MenuTarget::VideoQuality(generation, kind),
-                MenuAnchor::Above(position.get()),
-                cx,
-            );
+        move |this: &mut Desktop, window: &mut Window, cx: &mut Context<Desktop>| {
+            if this.menu.as_ref().is_some_and(|menu| menu.target == target) {
+                this.menu = None;
+                window.focus(&this.window_focus, cx);
+                cx.notify();
+            } else {
+                this.open_video_menu(generation, target, MenuAnchor::Above(position.get()), cx);
+            }
         },
     );
     let click = activate.clone();

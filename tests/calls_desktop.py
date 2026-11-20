@@ -89,6 +89,13 @@ class CallTest(VoiceTest):
     def press(self, app, name, *, subtree=False):
         self.control(app, name, subtree=subtree).press()
 
+    def click(self, control):
+        x, y, width, height = control.extents()
+        left, top = json.loads(self.shell.eval(
+            "const bounds = global.display.focus_window.get_buffer_rect(); JSON.stringify([bounds.x, bounds.y])"))
+        assert width > 0 and height > 0
+        self.shell.click(left + x + width // 2, top + y + height // 2)
+
     def resize_desktop(self, pid, height):
         lookup = ("const window = global.get_window_actors().map(actor => actor.meta_window)"
                   f".find(window => window.get_pid() === {pid});")
@@ -117,6 +124,17 @@ class CallTest(VoiceTest):
         self.control(app, f"Quality · {selected}")
         eventually(lambda: not self.find(app, "menu", "Video quality"),
                    "video quality dropdown did not close")
+
+    def toggle_quality(self, app):
+        def closed():
+            names = {(role, label) for _, role, label, _ in items(app)}
+            return ("push button", "Quality · Auto") in names and ("menu", "Video quality") not in names
+
+        trigger = self.control(app, "Quality · Auto")
+        self.click(trigger)
+        eventually(lambda: self.find(app, "menu", "Video quality"), "video quality dropdown did not open", timeout=5)
+        self.click(trigger)
+        eventually(closed, "video quality dropdown did not close on a second click", timeout=5)
 
     def video_stats(self, app, show):
         self.press(app, "Video options")
@@ -212,14 +230,11 @@ class CallTest(VoiceTest):
         nodes = items(card, subtree=True)
         title = next(node for node, _, label, _ in nodes if node.path != card.path and label == card.name)
         button = next(node for node, role, label, _ in nodes if role == "push button" and label == "Copy link")
-        x, y, width, height = button.extents()
+        _, y, _, height = button.extents()
         _, title_y, _, title_height = title.extents()
         assert title_y <= y + height // 2 <= title_y + title_height, (
             f"Copy link moved off the title row: button {(y, height)}, title {(title_y, title_height)}")
-        left, top = json.loads(self.shell.eval(
-            "const bounds = global.display.focus_window.get_buffer_rect(); JSON.stringify([bounds.x, bounds.y])"))
-        assert width > 0 and height > 0
-        self.shell.click(left + x + width // 2, top + y + height // 2)
+        self.click(button)
 
         def copied():
             self.shell.eval(f"global._callLink = undefined; {clipboard}.get_text({selection},"
@@ -310,9 +325,10 @@ class CallTest(VoiceTest):
             self.press(andi, "Start camera")
             self.inline(andi)
             self.control(andi, "Open in browser", shown=False)
-            self.video_stats(andi, show=True)
             chat = self.find(andi, "list", "Messages in #Lobby")
             chat_bounds = chat.extents()
+            self.toggle_quality(andi)
+            self.video_stats(andi, show=True)
             self.select_quality(andi, "Auto", "720p30", above=True)
             assert chat.extents() == chat_bounds, "quality choices changed the chat layout"
             self.video_stats(andi, show=False)
