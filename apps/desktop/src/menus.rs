@@ -1986,16 +1986,12 @@ impl RenderOnce for MenuSurface {
             .relative()
             .when(!self.quality, |menu| menu.rounded(px(8.)))
             .bg(if self.quality {
-                tint(BACKDROP, 0xeb)
+                tint(APP, 0xeb)
             } else {
                 color(APP)
             })
             .border_1()
-            .border_color(if self.quality {
-                tint(WHITE, 0x20)
-            } else {
-                color(BORDER_STRONG)
-            })
+            .border_color(color(BORDER_STRONG))
             .shadow_lg()
             .child(
                 crate::layout::scrollable(
@@ -2031,7 +2027,7 @@ impl RenderOnce for MenuSurface {
             .child(crate::layout::scrollbar(
                 "context-menu-scrollbar",
                 &state.scroll,
-                if self.quality { BACKDROP } else { APP },
+                APP,
             ))
             // A handle of its own: focus_trap tracks it, and each
             // focused handle may be tracked once per frame.
@@ -2108,12 +2104,19 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
                 let keyboard_key = key.clone();
                 let origin_menu = snapshot.clone();
                 let key_menu = snapshot.clone();
-                let (foreground, icon_color, highlight) = if quality {
-                    (WHITE, WHITE, tint(WHITE, 0x1a))
+                let foreground = if danger { DANGER_HOVER } else { TEXT };
+                let icon_color = if quality {
+                    TEXT
                 } else if danger {
-                    (DANGER_HOVER, DANGER_HOVER, color(DANGER))
+                    DANGER_HOVER
                 } else {
-                    (TEXT, TEXT_MUTED, color(ACCENT))
+                    TEXT_MUTED
+                };
+                let accent = color(if danger { DANGER } else { ACCENT });
+                let (highlight, highlight_text) = if quality {
+                    (accent.opacity(0.18), color(TEXT))
+                } else {
+                    (accent, color(WHITE))
                 };
                 let control = div()
                     .id(SharedString::from(format!("menu-item:{element_key}")))
@@ -2127,13 +2130,7 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
                     .when_some(choice, |control, selected| {
                         control
                             .aria_toggled(selected.into())
-                            .when(selected, |control| {
-                                control.bg(if quality {
-                                    tint(WHITE, 0x12)
-                                } else {
-                                    color(SELECTED)
-                                })
-                            })
+                            .when(selected, |control| control.bg(color(SELECTED)))
                     })
                     .tab_index(0)
                     .min_w_0()
@@ -2147,8 +2144,8 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
                     .cursor_pointer()
                     .text_sm()
                     .text_color(color(foreground))
-                    .hover(move |style| style.bg(highlight).text_color(color(WHITE)))
-                    .focus(move |style| style.bg(highlight).text_color(color(WHITE)))
+                    .hover(move |style| style.bg(highlight).text_color(highlight_text))
+                    .focus(move |style| style.bg(highlight).text_color(highlight_text))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.activate_menu(&origin_menu, &pointer_key, window, cx);
@@ -2169,7 +2166,7 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
                         icon(name, 15., color(icon_color))
                             .group_hover(
                                 SharedString::from(format!("menu-item:{element_key}")),
-                                |style| style.text_color(color(WHITE)),
+                                move |style| style.text_color(highlight_text),
                             )
                             .into_any_element()
                     })
