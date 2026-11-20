@@ -2060,19 +2060,32 @@ fn conversation_header(
                             cx,
                         )
                     };
+                    let camera = button(
+                        "native-camera",
+                        "video",
+                        "Start camera",
+                        Some(Source::Camera),
+                    );
+                    let screen = button(
+                        "share-screen",
+                        "screen",
+                        "Share screen",
+                        Some(Source::Screen),
+                    );
+                    let target = channel.target.clone();
                     controls
-                        .child(button(
-                            "native-camera",
-                            "video",
-                            "Start camera",
-                            Source::Camera,
+                        .child(styled_button(
+                            "native-meeting",
+                            "Start meeting",
+                            Tone::Secondary,
+                            move |this, _, cx| {
+                                this.start_native_call(index, target.clone(), None, cx);
+                                cx.notify();
+                            },
+                            cx,
                         ))
-                        .child(button(
-                            "share-screen",
-                            "screen",
-                            "Share screen",
-                            Source::Screen,
-                        ))
+                        .child(camera)
+                        .child(screen)
                 },
             );
             controls

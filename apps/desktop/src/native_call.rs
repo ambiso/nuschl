@@ -438,7 +438,7 @@ impl Desktop {
         &mut self,
         index: usize,
         target: TextTarget,
-        source: Source,
+        source: Option<Source>,
         cx: &mut Context<Self>,
     ) {
         if self.native_call.is_some() || !self.native_available(self.call_host()) {
@@ -447,7 +447,7 @@ impl Desktop {
         match self.create_call(index, target.clone()) {
             Ok(link) => {
                 let server = self.client.servers[index].id.clone();
-                self.open_native_call(server, target, &link, Some(source), cx);
+                self.open_native_call(server, target, &link, source, cx);
                 self.announce_call(link);
             }
             Err(error) => self.client.servers[index].set_notice(error),

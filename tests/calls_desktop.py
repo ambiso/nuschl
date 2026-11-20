@@ -149,6 +149,15 @@ class CallTest(VoiceTest):
             self.control(andi, "Start call", shown=False)
             self.control(andi, "Start call in browser", shown=False)
 
+            self.press(andi, "Start meeting")
+            self.inline(andi)
+            assert self.witness_link()["target"] == {"kind": "channel", "id": 1}
+            self.invitation(bea)
+            self.press(andi, "End call")
+            self.control(andi, "Start meeting")
+            self.control(bea, "Join video call", shown=False)
+            self.witness.wait(lambda event: event["kind"] == "text" and "Call ended" in event["body"])
+
             self.press(andi, "Start camera")
             self.inline(andi)
             self.control(andi, "Open in browser", shown=False)
