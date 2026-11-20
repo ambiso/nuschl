@@ -11,7 +11,7 @@ use nuschl_core::network::Destination;
 use nuschl_ipc::rtc::{self, Command, Description, Event, LegRole, Reply, Track, Worker};
 use nuschl_stream_quality::{QualityRequest, Throttle};
 use std::{
-    collections::{HashMap, HashSet, hash_map::Entry},
+    collections::{HashMap, HashSet},
     future::pending,
     net::SocketAddr,
     os::unix::net::UnixStream,
@@ -570,7 +570,7 @@ impl Leg {
     ) -> Result<(), Error> {
         if let Some(gate) = self.video_gates.get_mut(&(publisher, purpose)) {
             gate.awaiting_key = true;
-            if gate.request() {
+            if self.connected && gate.request() {
                 worker
                     .exchange(
                         Command::RequestKeyframe {
@@ -828,7 +828,7 @@ async fn run(
         .iter()
         .map(|peer| peer.id)
         .collect();
-    let mut remote_keys = HashMap::new();
+    let mut remotes = HashSet::new();
     let mut direct_pair = None;
     let mut key_tick = interval(Duration::from_millis(250));
     key_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -905,7 +905,7 @@ async fn run(
                 }
                 ServerMessage::Left { peer } => {
                     peers.retain(|candidate| *candidate != peer);
-                    remote_keys.remove(&peer);
+                    remotes.remove(&peer);
                     connection.signal(Action::Left { peer }).await?;
                     let next = subscribed.iter().filter(|track| track.publisher != Some(peer)).cloned().collect();
                     if !set_subscriptions(&mut subscribe, &mut quality, &mut subscribed, next, &output).await {
@@ -934,9 +934,8 @@ async fn run(
                     let answer = describe(worker, Command::AcceptOffer { leg: SUBSCRIBE, description }).await?;
                     write(&mut connection.socket, &ClientMessage::Answer { sdp: answer.sdp }).await?;
                     for publisher in next.iter().filter_map(|track| track.publisher) {
-                        if let Entry::Vacant(entry) = remote_keys.entry(publisher) {
+                        if remotes.insert(publisher) {
                             connection.signal(Action::Subscribe { peer: publisher }).await?;
-                            entry.insert(false);
                         }
                     }
                     retreat |= attempting_direct && subscribed.iter().any(|track| !next.contains(track));
@@ -957,9 +956,6 @@ async fn run(
                         && let Ok(outcome) = connection.signal(Action::Key { peer: from, data }).await
                     {
                         match outcome {
-                            Outcome::Send { ready: true, .. } => {
-                                if let Some(keyed) = remote_keys.get_mut(&from) { *keyed = true; }
-                            }
                             Outcome::Signal { publisher, data, .. }
                                 if direct_pair == Some((from, publisher))
                                     && let Some(direct) = &mut direct
@@ -1289,7 +1285,15 @@ async fn run(
         let Some((peer, publishing)) = direct_pair else {
             continue;
         };
-        if !publishing && !direct.asked && remote_keys.get(&peer) == Some(&true) {
+        // Verify that the fallback can deliver this publisher's media before
+        // requesting a direct route. A grant can arrive before the sender rotates.
+        if !publishing
+            && !direct.asked
+            && subscribe
+                .video_gates
+                .values()
+                .any(|gate| !gate.awaiting_key)
+        {
             direct.asked = true;
             let _ = direct::send(connection, peer, false, &Signal::Ready).await;
         }

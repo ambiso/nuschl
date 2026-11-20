@@ -333,9 +333,8 @@ async fn native_call_switches_paths_and_sources() {
                     assert_ne!(sender, receiver);
                     assert_eq!(purpose, Purpose::Camera);
                     assert!(key_frame);
-                    if data == pictures[sender] {
-                        seen[receiver][sender] = true;
-                    }
+                    assert_eq!(data, pictures[sender]);
+                    seen[receiver][sender] = true;
                 }
                 MediaEvent::Direct { active: true } => {
                     panic!("a group call selected a direct path")
