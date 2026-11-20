@@ -13,7 +13,6 @@ use nuschl_stream_quality::{QualityRequest, Throttle};
 use std::{
     future::pending,
     net::SocketAddr,
-    os::unix::net::UnixStream,
     path::PathBuf,
     sync::{
         Arc,
@@ -386,7 +385,7 @@ impl Media {
 impl Connection {
     /// Start native encoded video over the configured SFU. Calls use a supplied
     /// publisher or viewer role and keep their signaling connection until stop.
-    pub async fn into_media(self, options: MediaOptions) -> Result<Media, Error> {
+    pub async fn into_media(mut self, options: MediaOptions) -> Result<Media, Error> {
         if self.policy.relay_only && self.welcome.turn.is_none() {
             return Err(Error::Protocol(
                 "native media requires TURN in relay-only mode",
@@ -401,22 +400,7 @@ impl Connection {
         }
         let mut destination = self.socket.get_ref().get_ref().0.peer_addr()?;
         destination.set_port(options.sfu_port);
-        let (epochs, key_receiver) = UnixStream::pair()?;
-        let mut worker = Worker::start(
-            options.executable,
-            self.scope.generation,
-            key_receiver.into(),
-        )
-        .await?;
-        if let Err(error) = self
-            .scope
-            .crypto
-            .attach_media(self.scope.generation, epochs.into())
-            .await
-        {
-            let _ = worker.stop().await;
-            return Err(error.into());
-        }
+        let mut worker = self.scope.start_media(options.executable).await?;
         let codec = match self.welcome.codec {
             Codec::Av1 => rtc::Codec::Av1,
             Codec::Vp9 => rtc::Codec::Vp9,
@@ -1235,7 +1219,7 @@ async fn run(
             && publish.as_ref().is_some_and(|leg| leg.connected)
             && pair.ready
         {
-            // The crypto worker delivers the epoch on a separate private socket.
+            // The crypto worker delivers the epoch on a separate private channel.
             timeout(Duration::from_secs(1), async {
                 loop {
                     if matches!(

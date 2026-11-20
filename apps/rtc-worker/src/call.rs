@@ -11,12 +11,16 @@ use nuschl_rtc::{self as rtc, Output, Peer, SignalingId, TrackBinding, VideoCode
 use nuschl_sframe::{FrameDecryptor, FrameEncryptor, MAX_ENCODINGS, encryptors};
 use std::{
     collections::BTreeMap,
-    io,
-    net::{Shutdown, SocketAddr},
-    os::{fd::AsFd, unix::net::UnixStream},
+    io::{self, Read, Write},
+    net::SocketAddr,
     sync::mpsc::{self, SyncSender},
     thread,
     time::Instant,
+};
+#[cfg(target_os = "linux")]
+use std::{
+    net::Shutdown,
+    os::{fd::AsFd, unix::net::UnixStream},
 };
 
 const MAX_LEGS: usize = 4;
@@ -28,21 +32,48 @@ enum Input {
     End,
 }
 
+#[cfg(target_os = "linux")]
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let keys = UnixStream::from(io::stdin().as_fd().try_clone_to_owned()?);
-    let mut control = UnixStream::from(io::stdout().as_fd().try_clone_to_owned()?);
+    let control = UnixStream::from(io::stdout().as_fd().try_clone_to_owned()?);
+    let commands = control.try_clone()?;
+    let revoke = control.try_clone()?;
+    run_channel(commands, control, keys, move || {
+        let _ = revoke.shutdown(Shutdown::Both);
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "macos")]
+    let keys = {
+        use std::os::fd::AsFd as _;
+        std::fs::File::from(io::stderr().as_fd().try_clone_to_owned()?)
+    };
+    #[cfg(windows)]
+    let keys = {
+        use std::os::windows::io::AsHandle as _;
+        std::fs::File::from(io::stderr().as_handle().try_clone_to_owned()?)
+    };
+    run_channel(io::stdin(), io::stdout(), keys, || {})
+}
+
+fn run_channel(
+    mut commands: impl Read + Send + 'static,
+    mut output: impl Write,
+    mut keys: impl Read + Send + 'static,
+    revoke: impl FnOnce() + Send + 'static,
+) -> Result<(), Box<dyn std::error::Error>> {
     let Some(Packet {
         id,
         kind: Command::Start { generation },
         ..
-    }) = wire::read_request(&mut control)?
+    }) = wire::read_request(&mut commands)?
     else {
         return Err("expected call start".into());
     };
     let mut last_id = id;
     let (send, inbox) = mpsc::sync_channel(1);
-    let mut commands = control.try_clone()?;
-    let revoke = control.try_clone()?;
     let command_events = send.clone();
     thread::Builder::new().spawn(move || {
         input(
@@ -56,17 +87,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             || {},
         )
     })?;
-    let mut keys = keys;
     thread::Builder::new().spawn(move || {
         input(
             send,
             || epoch::read(&mut keys).ok().flatten().map(Input::Key),
-            || {
-                let _ = revoke.shutdown(Shutdown::Both);
-            },
+            revoke,
         )
     })?;
-    reply(&mut control, id, Reply::Done, Vec::new())?;
+    reply(&mut output, id, Reply::Done, Vec::new())?;
     let mut call = Call::new(generation);
     while let Ok(event) = inbox.recv() {
         match event {
@@ -75,7 +103,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let (kind, data) = call
                     .handle(request.kind, request.data)
                     .unwrap_or((Reply::Rejected, Vec::new()));
-                reply(&mut control, last_id, kind, data)?;
+                reply(&mut output, last_id, kind, data)?;
             }
             Input::Key(update) => call.install(update).map_err(|()| "invalid call epoch")?,
             Input::End => return Ok(()),
@@ -96,7 +124,7 @@ fn input(events: SyncSender<Input>, mut next: impl FnMut() -> Option<Input>, end
 }
 
 fn reply(
-    output: &mut UnixStream,
+    output: &mut impl Write,
     id: u64,
     kind: Reply,
     data: Vec<u8>,

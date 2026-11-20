@@ -48,7 +48,7 @@ pub enum Action {
 }
 
 impl Request {
-    pub(super) fn check(&self) -> Result<(), &'static str> {
+    pub fn check(&self) -> Result<(), &'static str> {
         if self.generation == 0 {
             return Err("call generation");
         }

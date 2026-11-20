@@ -35,16 +35,13 @@ pub enum ServiceEvent {
         result: Result<nuschl_ipc::EncodedImage, String>,
     },
     /// Our call's lease `id` is over (`call`).
-    #[cfg(target_os = "linux")]
     CallLeaseEnded {
         id: u64,
     },
-    #[cfg(target_os = "linux")]
     NativeSourceChanged {
         generation: u64,
         change: crate::native_call::SourceChange,
     },
-    #[cfg(target_os = "linux")]
     NativeFinished {
         generation: u64,
         result: Result<crate::native_call::Finish, String>,
@@ -130,7 +127,6 @@ impl Services {
         }
     }
     /// Keep our call's lease (`call::run`).
-    #[cfg(target_os = "linux")]
     pub fn lease(
         &self,
         id: u64,
@@ -142,7 +138,6 @@ impl Services {
         self.handle
             .spawn(crate::call::run(id, url, body, stop, events));
     }
-    #[cfg(target_os = "linux")]
     pub fn native_call(&self, start: crate::native_call::Start) {
         self.handle.spawn(crate::native_call::run(
             start,

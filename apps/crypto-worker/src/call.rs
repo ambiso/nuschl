@@ -7,6 +7,7 @@ use nuschl_ipc::crypto::epoch::{Direction, Update};
 use nuschl_stream::{
     EpochKey, Link, Publisher, PublisherEvent, Subscriber, SubscriberEvent, SubscriberId,
 };
+use std::io::Write;
 #[cfg(target_os = "linux")]
 use std::{
     net::Shutdown,
@@ -19,14 +20,15 @@ use zeroize::Zeroize as _;
 pub(crate) struct Signaling {
     generation: u64,
     call: Option<Call>,
+    #[cfg(any(target_os = "macos", windows))]
+    endpoint: Option<std::fs::File>,
 }
 
 struct Call {
     link: Link,
     relay_only: bool,
     pair: Option<Pair>,
-    #[cfg(target_os = "linux")]
-    media: Option<UnixStream>,
+    media: Option<Box<dyn Write + Send>>,
 }
 
 struct Pair {
@@ -61,12 +63,18 @@ impl Signaling {
                 verifier: *link.room_check(),
             };
             self.generation = generation;
+            #[cfg(any(target_os = "macos", windows))]
+            let media = self
+                .endpoint
+                .take()
+                .map(|pipe| Box::new(pipe) as Box<dyn Write + Send>);
+            #[cfg(not(any(target_os = "macos", windows)))]
+            let media = None;
             self.call = Some(Call {
                 link,
                 relay_only,
                 pair: None,
-                #[cfg(target_os = "linux")]
-                media: None,
+                media,
             });
             outcome
         } else if matches!(action, Action::Close)
@@ -105,7 +113,7 @@ impl Signaling {
         media
             .set_write_timeout(Some(Duration::from_millis(100)))
             .map_err(|_| "cannot bound call media writes")?;
-        call.media = Some(media);
+        call.media = Some(Box::new(media));
         Ok(Reply {
             generation,
             outcome: Outcome::Done,
@@ -183,7 +191,6 @@ impl Call {
     }
 
     fn deliver(&mut self, update: Option<Update>) -> Result<(), String> {
-        #[cfg(target_os = "linux")]
         if let (Some(media), Some(update)) = (&mut self.media, &update)
             && nuschl_ipc::crypto::epoch::write(media, update).is_err()
         {
@@ -208,6 +215,50 @@ impl Call {
             .filter(|pair| pair.peer == peer)
             .ok_or_else(|| "unknown call peer".into())
     }
+}
+
+/// Serve one ephemeral call with a separate inherited write-only epoch pipe.
+#[cfg(any(target_os = "macos", windows))]
+pub fn serve() -> Result<(), Box<dyn std::error::Error>> {
+    use nuschl_ipc::{
+        Envelope, crypto::call::MAX_REPLY_FRAME_BYTES, read_frame_within, write_frame_within,
+    };
+    use std::io;
+    #[cfg(target_os = "macos")]
+    let endpoint = {
+        use std::os::fd::AsFd as _;
+        std::fs::File::from(io::stderr().as_fd().try_clone_to_owned()?)
+    };
+    #[cfg(windows)]
+    let endpoint = {
+        use std::os::windows::io::AsHandle as _;
+        std::fs::File::from(io::stderr().as_handle().try_clone_to_owned()?)
+    };
+    let mut signaling = Signaling {
+        endpoint: Some(endpoint),
+        ..Signaling::default()
+    };
+    let start = std::time::Instant::now();
+    let mut input = io::stdin().lock();
+    let mut output = io::stdout().lock();
+    while let Some(request) = read_frame_within::<Request>(&mut input, MAX_REPLY_FRAME_BYTES)? {
+        request.payload.check()?;
+        let closing = matches!(request.payload.action, Action::Close);
+        if signaling.generation != 0 && matches!(request.payload.action, Action::Open { .. }) {
+            return Err("the call key worker already has a call".into());
+        }
+        let now = u64::try_from(start.elapsed().as_millis())?;
+        let answer = signaling.handle(request.payload, now)?;
+        write_frame_within(
+            &mut output,
+            &Envelope::new(request.request_id, answer),
+            MAX_REPLY_FRAME_BYTES,
+        )?;
+        if closing {
+            break;
+        }
+    }
+    Ok(())
 }
 
 impl Pair {

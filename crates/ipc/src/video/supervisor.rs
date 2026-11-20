@@ -218,6 +218,7 @@ impl Session {
 
     pub(super) fn grow_output_pipe(&self) {
         // Packed video needs more pipe bandwidth. The system may grant less.
+        #[cfg(target_os = "linux")]
         let _ = rustix::pipe::fcntl_setpipe_size(&self.worker.output, 1024 * 1024);
     }
 

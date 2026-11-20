@@ -3,7 +3,7 @@
 
 mod capture;
 mod decode;
-#[cfg(feature = "video-portal")]
+#[cfg(all(target_os = "linux", feature = "video-portal"))]
 pub mod portal;
 mod preview;
 mod supervisor;
@@ -12,10 +12,11 @@ pub use capture::{Capture, VideoFrame};
 pub use decode::{DecodeError, DecodedFrame, Decoder};
 #[doc(hidden)]
 pub use decode::{decode_frame_bytes, decode_packet_limit, source_from_byte, source_to_byte};
+#[cfg(target_os = "linux")]
 #[doc(hidden)]
-pub use preview::{
-    PREVIEW_HEIGHT, PREVIEW_WIDTH, fit_capture_preview, read_capture_start, write_capture_preview,
-};
+pub use preview::read_capture_start;
+#[doc(hidden)]
+pub use preview::{PREVIEW_HEIGHT, PREVIEW_WIDTH, fit_capture_preview, write_capture_preview};
 pub use supervisor::{Encoder, Error, Output};
 
 use std::io;
@@ -52,6 +53,10 @@ pub enum CaptureFailure {
     HardwareResource = 42,
     #[error("The software capture pipeline stopped.")]
     Software = 43,
+    #[error("Video source selection was cancelled.")]
+    Cancelled = 44,
+    #[error("The operating system denied video capture.")]
+    Permission = 45,
 }
 
 impl CaptureFailure {
@@ -61,6 +66,8 @@ impl CaptureFailure {
             Self::HardwareFormat,
             Self::HardwareResource,
             Self::Software,
+            Self::Cancelled,
+            Self::Permission,
         ]
         .into_iter()
         .find(|reason| i32::from(*reason as u8) == code)

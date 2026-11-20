@@ -152,7 +152,7 @@ impl Decoder {
 
 async fn supervise(executable: &Path, source: Source, mut queue: mpsc::Receiver<Request>) {
     let mut session = None;
-    let mut vaapi = true;
+    let mut vaapi = cfg!(target_os = "linux");
     let mut synchronized = false;
     let mut failures = 0;
     let mut healthy_since = Instant::now();

@@ -76,6 +76,17 @@ fn main() -> ExitCode {
     // On Windows, the launch stage starts this worker again in its AppContainer.
     #[cfg(windows)]
     nuschl_sandbox_windows::launch_if_requested();
+    #[cfg(any(target_os = "macos", windows))]
+    if std::env::args_os()
+        .skip(1)
+        .eq([std::ffi::OsStr::new("--call-keys")])
+    {
+        return if nuschl_crypto_worker::serve_call_keys().is_ok() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
+    }
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

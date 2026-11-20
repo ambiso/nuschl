@@ -2,20 +2,36 @@
 
 use super::{Command, Packet, Reply, read_reply, write_request};
 use crate::host::preview_lifecycle::Retirement;
-use nuschl_sandbox::Role;
-use std::{
-    io,
-    os::{fd::OwnedFd, unix::net::UnixStream as Socket},
-    path::PathBuf,
-    process::Stdio,
-    time::Duration,
-};
+use nuschl_sandbox::{Containment, Role};
+#[cfg(target_os = "linux")]
+use std::os::{fd::OwnedFd, unix::net::UnixStream as Socket};
+use std::{io, path::PathBuf, process::Stdio, time::Duration};
 use tokio::{
-    net::UnixStream,
+    io::{AsyncRead, AsyncWrite},
+    process::Child,
     sync::{Semaphore, mpsc, oneshot},
     task::JoinHandle,
     time::timeout,
 };
+
+#[cfg(target_os = "linux")]
+use tokio::net::{
+    UnixStream,
+    unix::{OwnedReadHalf as Reader, OwnedWriteHalf as Writer},
+};
+#[cfg(target_os = "linux")]
+type Epochs = OwnedFd;
+#[cfg(not(target_os = "linux"))]
+use tokio::process::{ChildStdin as Writer, ChildStdout as Reader};
+#[cfg(not(target_os = "linux"))]
+type Epochs = io::PipeReader;
+
+struct Channel {
+    child: Child,
+    reader: Reader,
+    writer: Writer,
+    containment: Containment,
+}
 
 const DEADLINE: Duration = Duration::from_secs(5);
 static WORKERS: Semaphore = Semaphore::const_new(2);
@@ -59,7 +75,7 @@ impl Worker {
     pub async fn start(
         executable: PathBuf,
         generation: u64,
-        epochs: OwnedFd,
+        epochs: Epochs,
     ) -> Result<Self, Error> {
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| Error::Runtime)?;
         let permit = WORKERS.try_acquire().map_err(|_| Error::Busy)?;
@@ -88,30 +104,61 @@ impl Worker {
     }
 }
 
-fn spawn(
-    executable: PathBuf,
-    epochs: OwnedFd,
-) -> Result<(tokio::process::Child, UnixStream), Error> {
+#[cfg(target_os = "linux")]
+async fn spawn(executable: PathBuf, epochs: Epochs) -> Result<Channel, Error> {
     let (supervisor, worker) = Socket::pair()?;
     supervisor.set_nonblocking(true)?;
-    let socket = UnixStream::from_std(supervisor)?;
-    let child = nuschl_sandbox::command(&executable, Role::Rtc)?
+    let (reader, writer) = UnixStream::from_std(supervisor)?.into_split();
+    let mut child = nuschl_sandbox::command(&executable, Role::Rtc)?
         .stdin(Stdio::from(epochs))
         .stdout(Stdio::from(OwnedFd::from(worker)))
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
-    Ok((child, socket))
+    let containment = match nuschl_sandbox::contain(&child) {
+        Ok(containment) => containment,
+        Err(error) => {
+            nuschl_sandbox::reap(&mut child).await;
+            return Err(error.into());
+        }
+    };
+    Ok(Channel {
+        child,
+        reader,
+        writer,
+        containment,
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn spawn(executable: PathBuf, epochs: Epochs) -> Result<Channel, Error> {
+    let nuschl_sandbox::Worker {
+        child,
+        input: writer,
+        output: reader,
+        containment,
+    } = nuschl_sandbox::spawn_call_worker(&executable, Role::Rtc, Stdio::from(epochs)).await?;
+    Ok(Channel {
+        child,
+        reader,
+        writer,
+        containment,
+    })
 }
 
 async fn supervise(
     executable: PathBuf,
     generation: u64,
-    epochs: OwnedFd,
+    epochs: Epochs,
     mut queue: mpsc::Receiver<Request>,
     ready: oneshot::Sender<Result<(), Error>>,
 ) {
-    let (mut child, mut socket) = match spawn(executable, epochs) {
+    let Channel {
+        mut child,
+        mut reader,
+        mut writer,
+        containment,
+    } = match spawn(executable, epochs).await {
         Ok(parts) => parts,
         Err(error) => {
             let _ = ready.send(Err(error));
@@ -119,18 +166,16 @@ async fn supervise(
         }
     };
     let mut retirement = Retirement::new(&mut child);
-    // The role is Linux-only, where containment is established by the launcher's namespaces.
-    let containment = match nuschl_sandbox::contain(&child) {
-        Ok(containment) => containment,
-        Err(error) => {
-            nuschl_sandbox::reap(&mut child).await;
-            let _ = ready.send(Err(error.into()));
-            return;
-        }
-    };
     let start = async {
         retirement.ready().await.map_err(|_| Error::Confinement)?;
-        let response = exchange(&mut socket, 1, Command::Start { generation }, Vec::new()).await?;
+        let response = exchange(
+            &mut reader,
+            &mut writer,
+            1,
+            Command::Start { generation },
+            Vec::new(),
+        )
+        .await?;
         if !matches!(response.kind, Reply::Done) {
             return Err(Error::Protocol);
         }
@@ -148,7 +193,7 @@ async fn supervise(
                 break;
             };
             id = next;
-            let response = exchange(&mut socket, id, kind, data).await;
+            let response = exchange(&mut reader, &mut writer, id, kind, data).await;
             let failed = response.is_err();
             let _ = reply.send(response);
             if failed {
@@ -156,20 +201,22 @@ async fn supervise(
             }
         }
     }
-    drop(socket);
+    drop(writer);
+    drop(reader);
     retirement.retire(&mut child, &containment).await;
 }
 
 async fn exchange(
-    socket: &mut UnixStream,
+    reader: &mut (impl AsyncRead + Unpin),
+    writer: &mut (impl AsyncWrite + Unpin),
     id: u64,
     kind: Command,
     data: Vec<u8>,
 ) -> Result<Packet<Reply>, Error> {
     timeout(DEADLINE, async {
         let request = Packet { id, kind, data };
-        write_request(socket, &request).await?;
-        Ok(read_reply(socket, &request).await?)
+        write_request(writer, &request).await?;
+        Ok(read_reply(reader, &request).await?)
     })
     .await
     .map_err(|_| Error::Timeout)?

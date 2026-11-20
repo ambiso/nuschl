@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-//! Linux calls on the desktop. Capture and decoding use confined video workers.
+//! Desktop calls. Capture and decoding use confined video workers.
 
 mod publisher;
 mod stats;
@@ -22,7 +22,9 @@ use nuschl_client::native::sfu::{
     Connect, Connection, Media, MediaEvent, MediaOptions, Purpose, Quality, VideoKind,
 };
 use nuschl_core::{model::TextTarget, network::PeerPolicy};
-use nuschl_ipc::video::{DecodedFrame, Source, portal};
+#[cfg(target_os = "linux")]
+pub(self) use nuschl_ipc::video::portal::Grant;
+use nuschl_ipc::video::{CaptureFailure, DecodedFrame, Source};
 use nuschl_protocol::sfu::Codec;
 use nuschl_session::{config::ClientSettings, identity::CryptoHandle};
 use std::{
@@ -1473,13 +1475,38 @@ impl SourceChanges<'_> {
     }
 }
 
-type Picker = BoxFuture<'static, (Source, Result<portal::Grant, ashpd::Error>)>;
+#[cfg(not(target_os = "linux"))]
+pub(self) struct Grant(Source);
 
-fn pick_source(source: Source) -> Picker {
-    async move { (source, portal::request(source, None).await) }.boxed()
+#[cfg(not(target_os = "linux"))]
+impl Grant {
+    fn source(&self) -> Source {
+        self.0
+    }
+    fn can_include_app(&self) -> bool {
+        self.0 == Source::Screen
+    }
 }
 
-async fn next_grant(picker: &mut Option<Picker>) -> (Source, Result<portal::Grant, ashpd::Error>) {
+type Picked = (Source, Result<Option<Grant>, String>);
+type Picker = BoxFuture<'static, Picked>;
+
+fn pick_source(source: Source) -> Picker {
+    async move {
+        #[cfg(target_os = "linux")]
+        let result = match nuschl_ipc::video::portal::request(source, None).await {
+            Ok(grant) => Ok(Some(grant)),
+            Err(ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled)) => Ok(None),
+            Err(error) => Err(text(error)),
+        };
+        #[cfg(not(target_os = "linux"))]
+        let result = Ok(Some(Grant(source)));
+        (source, result)
+    }
+    .boxed()
+}
+
+async fn next_grant(picker: &mut Option<Picker>) -> Picked {
     match picker {
         Some(picker) => picker.await,
         None => pending().await,
@@ -1488,7 +1515,7 @@ async fn next_grant(picker: &mut Option<Picker>) -> (Source, Result<portal::Gran
 
 enum SourceAction {
     Request(Option<SourceRequest>),
-    Reopened(publisher::CaptureAttempt, Option<portal::Grant>),
+    Reopened(publisher::CaptureAttempt, Option<Grant>),
 }
 
 async fn next_source_action(
@@ -1506,7 +1533,7 @@ async fn next_source_action(
 fn activate_source(
     media: &mut Media,
     publisher: &mut publisher::Publisher,
-    grant: portal::Grant,
+    grant: Grant,
     worker: &Path,
     selection: Selection,
     updates: &Arc<Latest>,
@@ -1577,11 +1604,11 @@ async fn meeting(
             (source, result) = next_grant(&mut picker) => {
                 picker = None;
                 let change = match result {
-                    Ok(grant) => activate_source(
+                    Ok(Some(grant)) => activate_source(
                         media, publisher, grant, worker, selection, &display.updates, publisher::CaptureAttempt::default(),
                     )?,
-                    Err(ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled)) => SourceChange::Cancelled(source),
-                    Err(error) => SourceChange::Failed(source, text(error)),
+                    Ok(None) => SourceChange::Cancelled(source),
+                    Err(error) => SourceChange::Failed(source, error),
                 };
                 changes.report(change).await?;
                 publisher.focus(selection, &display.updates);
@@ -1649,7 +1676,13 @@ async fn meeting(
             Ok(frame) => publisher.frame(source, frame, media)?,
             Err(error) => {
                 media.set_source(purpose(source), false).map_err(text)?;
-                let change = if publisher.recover(source, media.can_publish(), &error) {
+                let change = if matches!(
+                    error,
+                    nuschl_ipc::video::Error::Capture(CaptureFailure::Cancelled)
+                ) {
+                    publisher.retire(source);
+                    SourceChange::Cancelled(source)
+                } else if publisher.recover(source, media.can_publish(), &error) {
                     SourceChange::ReopeningScreen
                 } else {
                     let error = if source == Source::Screen {

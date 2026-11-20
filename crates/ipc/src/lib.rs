@@ -10,11 +10,11 @@ pub mod murmur;
 pub mod musicbot;
 pub mod preview;
 pub mod preview_fetch;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub mod rtc;
 pub mod server;
 pub mod thumbnail;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub mod video;
 
 use std::io::{self, Read, Write};

@@ -2,12 +2,14 @@
 
 #[cfg(target_os = "linux")]
 mod capture;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "macos", windows))]
+mod capture_native;
+mod capture_pixels;
 mod decode;
 
-#[cfg(target_os = "linux")]
-mod linux {
-    use nuschl_ipc::video::{CaptureFailure, HEADER_BYTES, Header, Kind, Settings};
+mod codec {
+    use nuschl_ipc::video::CaptureFailure;
+    use nuschl_ipc::video::{HEADER_BYTES, Header, Kind, Settings};
     use rav1e::prelude::*;
     use std::io::{self, Read, Write};
 
@@ -17,6 +19,7 @@ mod linux {
             [encode] if encode == "--encode" => {
                 encode_frames(&mut io::stdin().lock(), &mut io::stdout().lock())
             }
+            #[cfg(target_os = "linux")]
             [encode, capture] if encode == "--encode" && capture == "--capture" => {
                 if let Err(error) = super::capture::run() {
                     let reason = error
@@ -28,11 +31,22 @@ mod linux {
                 Ok(())
             }
             [decode] if decode == "--decode" => super::decode::run(false),
+            #[cfg(any(target_os = "macos", windows))]
+            [source] if source == "--camera" || source == "--screen" => {
+                use nuschl_ipc::video::Source;
+                let source = if source == "--camera" {
+                    Source::Camera
+                } else {
+                    Source::Screen
+                };
+                if let Err(reason) = super::capture_native::run(source) {
+                    std::process::exit(i32::from(reason as u8));
+                }
+                Ok(())
+            }
+            #[cfg(target_os = "linux")]
             [decode] if decode == "--decode-vaapi" => super::decode::run(true),
-            _ => Err(
-                "usage: nuschl-video-worker --encode [--capture] | --decode | --decode-vaapi"
-                    .into(),
-            ),
+            _ => Err("invalid video worker role".into()),
         }
     }
 
@@ -130,8 +144,7 @@ mod linux {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(target_os = "linux")]
-    return linux::run();
-    #[cfg(not(target_os = "linux"))]
-    Err("the video worker requires the Linux sandbox".into())
+    #[cfg(windows)]
+    nuschl_sandbox_windows::launch_if_requested();
+    codec::run()
 }

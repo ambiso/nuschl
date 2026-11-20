@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: EUPL-1.2
 
-use super::{CaptureLimits, DecodedFrame, HEADER_BYTES, Header, Kind, Source, invalid};
+use super::DecodedFrame;
+#[cfg(target_os = "linux")]
+use super::{CaptureLimits, HEADER_BYTES, Source};
+use super::{Header, Kind, invalid};
+#[cfg(target_os = "linux")]
 use crate::crypto::descriptor::{connected_stream, receive_first, send_first};
+use std::io::{self, Write};
+#[cfg(target_os = "linux")]
 use std::{
-    io::{self, Read, Write},
+    io::Read,
     os::{fd::OwnedFd, unix::net::UnixStream},
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixStream as AsyncStream,
-};
+use tokio::io::{AsyncRead, AsyncReadExt};
+#[cfg(target_os = "linux")]
+use tokio::{io::AsyncWriteExt, net::UnixStream as AsyncStream};
 
 pub const PREVIEW_WIDTH: u16 = 1280;
 pub const PREVIEW_HEIGHT: u16 = 720;
@@ -34,6 +39,7 @@ pub fn fit_capture_preview(width: u16, height: u16) -> (u16, u16) {
     }
 }
 
+#[cfg(target_os = "linux")]
 const START: Header = Header {
     kind: Kind::CaptureStart,
     key: false,
@@ -41,6 +47,7 @@ const START: Header = Header {
     bytes: CaptureLimits::BYTES as u32,
 };
 
+#[cfg(target_os = "linux")]
 pub(super) async fn send_capture_start(
     socket: &mut AsyncStream,
     limits: CaptureLimits,
@@ -57,6 +64,7 @@ pub(super) async fn send_capture_start(
     socket.write_all(&limits.to_bytes()).await
 }
 
+#[cfg(target_os = "linux")]
 pub fn read_capture_start(
     socket: &mut UnixStream,
     source: Source,
@@ -96,6 +104,7 @@ pub fn write_capture_preview(
     output.write_all(bgra)
 }
 
+#[cfg(target_os = "linux")]
 pub(super) async fn read_capture_preview(
     socket: &mut AsyncStream,
     first: u8,
@@ -104,6 +113,13 @@ pub(super) async fn read_capture_preview(
     header[0] = first;
     socket.read_exact(&mut header[1..]).await?;
     let header = Header::from_bytes(header)?;
+    read_preview_pixels(socket, header).await
+}
+
+pub(super) async fn read_preview_pixels(
+    socket: &mut (impl AsyncRead + Unpin),
+    header: Header,
+) -> io::Result<DecodedFrame> {
     if header.kind != Kind::CapturePreview || header.id != 0 {
         return Err(invalid());
     }
@@ -125,7 +141,7 @@ pub(super) async fn read_capture_preview(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 
