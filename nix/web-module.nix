@@ -29,8 +29,10 @@ let
         for page in "$out"/*.html; do
           substituteInPlace "$page" --replace-quiet ${lib.escapeShellArg defaultInstallUrl} ${lib.escapeShellArg cfg.installUrl}
         done
-        substituteInPlace "$out/app/index.html" --replace-fail \
-          'content="stream.nuschl.eu"' ${lib.escapeShellArg ''content="${cfg.callHost}"''}
+        ${lib.optionalString (cfg.callHost != "stream.nuschl.eu") ''
+          substituteInPlace "$out/app/index.html" --replace-fail \
+            'content="stream.nuschl.eu"' ${lib.escapeShellArg ''content="${cfg.callHost}"''}
+        ''}
       '';
   # Android App Links (Digital Asset Links) and iOS Universal Links: the apps
   # open /join/ links themselves. Empty lists by default.

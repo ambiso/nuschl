@@ -86,6 +86,12 @@
     timeline && (timeline.peer
       ? selected.users.some(user => user.session === timeline.peer.session && user.instance === timeline.peer.instance)
       : ownUser?.channel === timeline.channel));
+  const unmatchedVideoCalls = $derived.by(() => {
+    if (!timeline?.video_calls?.length) return [];
+    const matched = new Set(timeline.messages.filter(message => message.call && !message.call.ended)
+      .map(message => message.call.link));
+    return timeline.video_calls.filter(call => configuredCallLink(call.link, videoHost) && !matched.has(call.link));
+  });
   // Current save availability, then this connection's rows that were not saved.
   const historyHealth = $derived.by(() => {
     const history = selected?.history;
@@ -188,13 +194,14 @@
   $effect(() => {
     const active = video;
     if (!active) return;
+    const hosted = timeline?.hosted_video_call;
     const server = servers.find(item => item.id === active.server);
     const own = server?.users.find(user => user.session === server.own_session);
     if (server?.status !== "connected" || server.generation !== active.generation || own?.channel !== active.channel) {
       closeVideo();
-    } else if (active.creating && active.link && timeline?.hosted_video_call === active.link) {
+    } else if (active.creating && active.link && hosted === active.link) {
       active.announced = true;
-    } else if (active.announced && timeline?.hosted_video_call !== active.link) {
+    } else if (active.announced && hosted !== active.link) {
       closeVideo();
     }
   });
@@ -678,8 +685,7 @@
         {#if timeline?.has_older}<div class="history-start"><button class="text-button" disabled={timeline.loading} onclick={older}>{timeline.loading ? "Loading history…" : "Load older messages"}</button></div>{/if}
         {#if !timeline}<div class="welcome"><div class="welcome-logo"><img src="/nuschl.svg" alt="" width="74" height="74"></div><p class="eyebrow">A LITTLE CLOSER, FROM ANYWHERE</p><h2>Your voice. Your space.</h2><p>Drop into your server, find your people, and pick up the conversation.</p><button class="primary" onclick={addServer}>Add a server</button><small>Compatible with Mumble · history saved in this browser</small></div>
         {:else if !displayedMessages.length}<div class="channel-welcome"><span class="welcome-hash" aria-hidden="true">{currentChannel?.direct ? "@" : "#"}</span><h2>{search ? "No messages found" : `Welcome to ${timeline.name}`}</h2><p>{search ? "Try another word, or load older history." : timeline.loading ? "Loading your conversations…" : "This is the start of the history saved in this browser. Say hello."}</p></div>{/if}
-        {#each (timeline?.video_calls ?? []).filter(call => configuredCallLink(call.link, videoHost) &&
-          !timeline.messages.some(message => message.call?.link === call.link && !message.call.ended)) as call (call.link + call.author)}
+        {#each unmatchedVideoCalls as call (call.sender)}
           <div class="video-invitation"><strong>{call.author} started a video call</strong>
             <button class="control-button" disabled={selected?.status !== "connected"} onclick={() => openVideo(call.link)}>Join call</button></div>
         {/each}

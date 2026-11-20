@@ -393,6 +393,7 @@ pub struct TimelineView {
 }
 #[derive(Serialize)]
 pub struct VideoCallView {
+    pub sender: u32,
     pub link: String,
     pub author: String,
 }
@@ -467,6 +468,7 @@ pub fn timeline(client: &nuschl_client::Client) -> Option<TimelineView> {
             .filter(|call| guest_invitation(&call.link))
             .filter_map(|call| {
                 Some(VideoCallView {
+                    sender: call.sender,
                     link: call.link.clone(),
                     author: server.users.get(&call.sender)?.name.clone(),
                 })

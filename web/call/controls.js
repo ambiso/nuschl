@@ -38,6 +38,7 @@ const callCaptureHandle = "nuschl-call";
 export const canShareAudio = (video) => video?.getSettings().displaySurface === "browser" &&
   typeof video.getCaptureHandle === "function" && video.getCaptureHandle()?.handle !== callCaptureHandle;
 const labels = { camera: ["Start camera", "Stop camera"], screen: ["Share screen", "Stop sharing"] };
+const methods = { camera: "getUserMedia", screen: "getDisplayMedia" };
 const failures = {
   camera: { NotAllowedError: "Camera blocked", NotFoundError: "No camera found" },
   screen: {},
@@ -145,7 +146,9 @@ export class Controls {
       const on = call.sources.has(kind);
       button.textContent = labels[kind][Number(on)];
       button.setAttribute("aria-pressed", String(on));
-      button.disabled = Boolean(call.ended) || this.busy.has(kind) || (!on && !call.canPublish);
+      const supported = typeof this.media?.[methods[kind]] === "function";
+      button.disabled = Boolean(call.ended) || this.busy.has(kind) || (!on && (!call.canPublish || !supported));
+      button.title = supported ? "" : `${kind === "camera" ? "Camera" : "Screen sharing"} unavailable in this browser`;
     }
     const screen = call.sources.get("screen");
     const sharingAudio = call.sources.has("audio");
