@@ -929,7 +929,7 @@ async fn publish_video(
         bitrate_estimate: None,
         software: false,
     };
-    let initial = encoding.limits(display.quality.borrow_and_update().quality);
+    let initial = encoding.ceiling(display.quality.borrow_and_update().quality);
     let mut capture = grant
         .start_with_limits(worker.clone(), initial)
         .map_err(text)?;
@@ -1019,7 +1019,7 @@ impl Encoding {
         }
     }
 
-    fn limits(&self, quality: Quality) -> CaptureLimits {
+    fn ceiling(&self, quality: Quality) -> CaptureLimits {
         let local = self.preferred(quality);
         let initial_bitrate = match self.kind {
             VideoKind::Camera => 2_000_000,
@@ -1032,16 +1032,47 @@ impl Encoding {
         CaptureLimits {
             height: local.height.min(remote.height),
             fps: local.fps.min(remote.fps),
-            bitrate: local
-                .bitrate
-                .min(remote.bitrate)
-                .min(self.bitrate_estimate.unwrap_or(u32::MAX)),
+            bitrate: local.bitrate.min(remote.bitrate),
         }
     }
 
-    fn limit_note(&self, quality: Quality) -> Option<String> {
+    fn limits(&self, quality: Quality, applied: CaptureLimits) -> CaptureLimits {
+        let mut limits = self.ceiling(quality);
+        let Some(upload) = self.bitrate_estimate else {
+            return limits;
+        };
+        let budget = u64::from(limits.bitrate.min(upload));
+        let current = self.kind.tier_of(u32::from(applied.height));
+        let affordable = self.kind.affordable(budget);
+        // Reserve headroom for an upgrade to keep small estimates from repeatedly
+        // changing the capture format.
+        let tier = if affordable > current {
+            current.max(self.kind.affordable(budget * 10 / 13))
+        } else {
+            affordable
+        };
+        let tier = self.kind.ladder()[tier];
+        let base = self.kind.ladder()[0];
+        let recovering = applied.height < base.height && limits.height >= base.height;
+        let floor = if recovering {
+            base.floor * 13 / 10
+        } else {
+            base.floor
+        };
+        let (height, fps) = if self.kind == VideoKind::Screen && budget < floor {
+            (base.height / 2, base.fps / 2)
+        } else {
+            (tier.height, tier.fps)
+        };
+        limits.height = limits.height.min(height);
+        limits.fps = limits.fps.min(u16::from(fps));
+        limits.bitrate = video_rate(budget.min(tier.ceiling));
+        limits
+    }
+
+    fn limit_note(&self, quality: Quality, effective: CaptureLimits) -> Option<String> {
         let local = self.preferred(quality);
-        let effective = self.limits(quality);
+        let ceiling = self.ceiling(quality);
         let mut notes = Vec::new();
         if let Some(remote) = self.remote
             && (remote.height < local.height
@@ -1056,12 +1087,13 @@ impl Encoding {
             ));
         }
         if let Some(estimate) = self.bitrate_estimate
-            && effective.bitrate == estimate
-            && estimate < local.bitrate
+            && estimate < ceiling.bitrate
         {
             notes.push(format!(
-                "Estimated upload allows {:.1} Mb/s.",
+                "Estimated upload allows {:.1} Mb/s. Target video is {}p at up to {} fps.",
                 f64::from(estimate) / 1_000_000.,
+                effective.height,
+                effective.fps,
             ));
         }
         if self.software && effective.fps > 15 {
@@ -1084,6 +1116,8 @@ async fn send_video(
     let mut timer = tokio::time::interval(stats::INTERVAL);
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
+        let mut retune = false;
+        let mut report = false;
         tokio::select! {
             event = media.next() => match call_event(event)? {
                 Some(MediaEvent::SendReady) => { ready = true; capture.request_keyframe(); }
@@ -1094,11 +1128,16 @@ async fn send_video(
                         fps: fps.into(),
                         bitrate: video_rate(bitrate),
                     });
+                    retune = true;
                 }
                 Some(MediaEvent::BandwidthEstimate { bitrate }) => {
                     encoding.bitrate_estimate = Some(video_rate(bitrate.saturating_mul(4) / 5));
                 }
-                Some(MediaEvent::Direct { active }) => display.stats.direct(active),
+                Some(MediaEvent::Direct { active }) => {
+                    display.stats.direct(active);
+                    encoding.bitrate_estimate = None;
+                    retune = true;
+                }
                 Some(_) => {}
                 None => return Ok(()),
             },
@@ -1126,17 +1165,19 @@ async fn send_video(
                     }
                 }
             }
-            _ = timer.tick() => {
-                let quality = display.quality.borrow().quality;
-                display.report(encoding.kind, encoding.limit_note(quality));
-            }
-            Ok(()) = display.quality.changed() => {}
+            _ = timer.tick() => { retune = true; report = true; }
+            Ok(()) = display.quality.changed() => { retune = true; }
         }
-        let quality = display.quality.borrow_and_update().quality;
-        let next = encoding.limits(quality);
-        if next != applied {
-            capture.set_limits(next).map_err(text)?;
-            applied = next;
+        if retune {
+            let quality = display.quality.borrow_and_update().quality;
+            let next = encoding.limits(quality, applied);
+            if next != applied {
+                capture.set_limits(next).map_err(text)?;
+                applied = next;
+            }
+            if report {
+                display.report(encoding.kind, encoding.limit_note(quality, applied));
+            }
         }
     }
 }
@@ -1265,5 +1306,44 @@ fn call_event(
     match event.transpose() {
         Err(nuschl_client::native::sfu::Error::Refused(reason)) if reason == "ended" => Ok(None),
         result => result.map_err(text),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_constrained_screen_reduces_dimensions_and_cadence_then_recovers() {
+        let mut encoding = Encoding {
+            kind: VideoKind::Screen,
+            remote: Some(CaptureLimits {
+                height: 1440,
+                fps: 60,
+                bitrate: 8_000_000,
+            }),
+            bitrate_estimate: None,
+            software: false,
+        };
+        let quality = Quality::Tier(2);
+        let full = encoding.ceiling(quality);
+        assert_eq!((full.height, full.fps, full.bitrate), (1440, 60, 8_000_000));
+        encoding.bitrate_estimate = Some(100_000);
+        let reduced = encoding.limits(quality, full);
+        assert_eq!(
+            (reduced.height, reduced.fps, reduced.bitrate),
+            (360, 7, 100_000)
+        );
+        encoding.bitrate_estimate = Some(450_000);
+        assert_eq!(encoding.limits(quality, reduced).height, 360);
+        encoding.bitrate_estimate = Some(6_000_000);
+        assert_eq!(
+            encoding.limits(quality, reduced),
+            CaptureLimits {
+                height: 1440,
+                fps: 60,
+                bitrate: 6_000_000,
+            }
+        );
     }
 }
