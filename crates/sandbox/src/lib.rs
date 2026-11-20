@@ -7,8 +7,7 @@
 //! - macOS: Seatbelt profiles applied with `sandbox-exec` (`macos`).
 //! - Windows: the worker's own launch stage puts it in an AppContainer and a
 //!   job object (`windows`, [`windows_policy`]). That launch stage is the
-//!   separate `nuschl-sandbox-windows` crate: it is the one first-party crate
-//!   allowed unsafe code, and only the workers link it.
+//!   separate `nuschl-sandbox-windows` crate, which only the workers link.
 //!
 //! Every builder refuses rather than start a worker unconfined. Only trusted
 //! supervisors choose the executable and the role.

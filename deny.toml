@@ -205,7 +205,7 @@ deny = [
     "nuschl-update-worker",
     "nuschl-video-worker",
     "nuschl-rtc-worker",
-  ], reason = "The one first-party crate with unsafe code (Win32 AppContainer launch) runs only as the workers' own launch stage" },
+  ], reason = "Win32 AppContainer launch runs only as the workers' own launch stage" },
   { name = "nuschl-capture-macos", wrappers = ["nuschl-video-worker"], reason = "Apple camera and screen bindings run only in the video capture worker" },
   { name = "nuschl-stream", wrappers = [
     "nuschl",
