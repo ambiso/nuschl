@@ -94,7 +94,14 @@ pub fn run() -> Result<(), Failure> {
         && let Ok(pipeline) =
             vaapi::prepare(source, target, control.limits().bitrate, preview.is_some())
     {
-        return vaapi::run(pipeline, source, control, preview);
+        return vaapi::run(pipeline, source, control, preview).map_err(|error| {
+            use nuschl_ipc::video::CaptureFailure;
+            if error.is::<CaptureFailure>() {
+                error
+            } else {
+                CaptureFailure::Hardware.into()
+            }
+        });
     }
     let remote = io::stdin().as_fd().try_clone_to_owned()?;
     pw::init();

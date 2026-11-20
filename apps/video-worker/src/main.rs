@@ -7,7 +7,7 @@ mod decode;
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use nuschl_ipc::video::{HEADER_BYTES, Header, Kind, Settings};
+    use nuschl_ipc::video::{CaptureFailure, HEADER_BYTES, Header, Kind, Settings};
     use rav1e::prelude::*;
     use std::io::{self, Read, Write};
 
@@ -18,7 +18,14 @@ mod linux {
                 encode_frames(&mut io::stdin().lock(), &mut io::stdout().lock())
             }
             [encode, capture] if encode == "--encode" && capture == "--capture" => {
-                super::capture::run()
+                if let Err(error) = super::capture::run() {
+                    let reason = error
+                        .downcast_ref::<CaptureFailure>()
+                        .copied()
+                        .unwrap_or(CaptureFailure::Software);
+                    std::process::exit(i32::from(reason as u8));
+                }
+                Ok(())
             }
             [decode] if decode == "--decode" => super::decode::run(false),
             [decode] if decode == "--decode-vaapi" => super::decode::run(true),

@@ -5,10 +5,23 @@ use super::{Display, Latest, Quality, Selection, purpose, stats, text, video_kin
 use futures_util::{FutureExt as _, future::BoxFuture, stream::FuturesUnordered};
 use nuschl_client::native::sfu::{Media, MediaEvent, Purpose, VideoKind};
 use nuschl_ipc::video::{Capture, CaptureLimits, Error, Source, VideoFrame, portal};
-use std::{future::pending, path::Path, sync::Arc, time::Instant};
-use tokio::{sync::mpsc, task::JoinHandle};
+use std::{
+    future::pending,
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use tokio::{
+    sync::{mpsc, oneshot},
+    task::JoinHandle,
+    time::{sleep, timeout},
+};
 
 pub(super) const SOURCES: [Source; 2] = [Source::Camera, Source::Screen];
+const REOPEN_DELAYS: [Duration; 2] = [Duration::from_millis(500), Duration::from_secs(2)];
+const REOPEN_TIMEOUT: Duration = Duration::from_secs(5);
+const HEALTHY_CAPTURE: Duration = Duration::from_secs(30);
+pub(super) type Reopening = BoxFuture<'static, (usize, Option<portal::Grant>)>;
 
 pub(super) fn index(source: Source) -> usize {
     match source {
@@ -28,6 +41,7 @@ fn source(purpose: Purpose) -> Option<Source> {
 pub(super) struct Publisher {
     pub slots: [Option<LocalVideo>; 2],
     pub retiring: FuturesUnordered<BoxFuture<'static, ()>>,
+    pub reopening: Option<Reopening>,
     focused: Option<Source>,
     next_preview: u64,
     estimate: Option<u64>,
@@ -40,6 +54,7 @@ impl Publisher {
         Self {
             slots: [None, None],
             retiring: FuturesUnordered::new(),
+            reopening: None,
             focused: None,
             next_preview: 0,
             estimate: None,
@@ -52,14 +67,20 @@ impl Publisher {
         self.slots[index(source)].is_some()
     }
 
+    pub fn enabled(&self, source: Source) -> bool {
+        self.active(source) || source == Source::Screen && self.reopening.is_some()
+    }
+
     pub fn start(
         &mut self,
         grant: portal::Grant,
         worker: &Path,
         selection: Selection,
         updates: Arc<Latest>,
+        attempts: usize,
     ) -> Result<(), String> {
         let source = grant.source();
+        let screen = grant.screen_reopen();
         self.next_preview = self
             .next_preview
             .checked_add(1)
@@ -91,13 +112,59 @@ impl Publisher {
             applied,
             stats,
             ready: false,
+            screen,
+            attempts,
+            recovering_since: None,
         });
         Ok(())
     }
 
     pub fn retire(&mut self, source: Source) {
+        if source == Source::Screen {
+            self.reopening = None;
+        }
         if let Some(track) = self.slots[index(source)].take() {
             self.retiring.push(track.stop().boxed());
+        }
+    }
+
+    pub fn recover(&mut self, source: Source, allowed: bool, error: &Error) -> bool {
+        let Some(mut track) = self.slots[index(source)].take() else {
+            return false;
+        };
+        if allowed
+            && recoverable(error)
+            && let Some(delay) = REOPEN_DELAYS.get(track.attempts).copied()
+            && let Some(grant) = track.screen.take()
+        {
+            let attempt = track.attempts + 1;
+            let (retired, wait) = oneshot::channel();
+            self.retiring.push(
+                async move {
+                    track.stop().await;
+                    let _ = retired.send(());
+                }
+                .boxed(),
+            );
+            self.reopening = Some(
+                async move {
+                    if wait.await.is_err() {
+                        return (attempt, None);
+                    }
+                    sleep(delay).await;
+                    tracing::info!(target: "nuschl_capture", attempt, "reopening screen capture");
+                    let grant = timeout(REOPEN_TIMEOUT, grant.reopen())
+                        .await
+                        .ok()
+                        .and_then(Result::ok);
+                    (attempt, grant)
+                }
+                .boxed(),
+            );
+            true
+        } else {
+            self.retiring.push(track.stop().boxed());
+            false
         }
     }
 
@@ -228,6 +295,19 @@ impl Publisher {
         let Some(track) = &mut self.slots[index(source)] else {
             return Ok(());
         };
+        if track.attempts > 0 {
+            let since = track.recovering_since.get_or_insert_with(|| {
+                tracing::info!(
+                    target: "nuschl_capture",
+                    attempt = track.attempts,
+                    "screen capture resumed"
+                );
+                Instant::now()
+            });
+            if since.elapsed() >= HEALTHY_CAPTURE {
+                track.attempts = 0;
+            }
+        }
         track.encoding.hardware = Some(frame.hardware);
         track.stats.frame(frame.width, frame.height, None);
         if track.ready {
@@ -254,6 +334,9 @@ pub(super) struct LocalVideo {
     applied: CaptureLimits,
     stats: stats::Stats,
     ready: bool,
+    screen: Option<portal::ScreenGrant>,
+    attempts: usize,
+    recovering_since: Option<Instant>,
 }
 
 impl LocalVideo {
@@ -265,12 +348,39 @@ impl LocalVideo {
     }
 
     async fn stop(self) {
+        drop(self.screen);
         if let Err(error) = self.capture.stop().await {
             tracing::debug!(%error, "could not stop capture");
         }
         if let Err(error) = self.preview.await {
             tracing::debug!(%error, "could not stop the local preview");
         }
+    }
+}
+
+pub(super) async fn next_reopen(
+    reopening: &mut Option<Reopening>,
+) -> (usize, Option<portal::Grant>) {
+    match reopening {
+        Some(reopening) => reopening.await,
+        None => pending().await,
+    }
+}
+
+fn recoverable(error: &Error) -> bool {
+    match error {
+        Error::CaptureClosed
+        | Error::Capture(_)
+        | Error::CaptureExit(_)
+        | Error::Timeout
+        | Error::Stopped => true,
+        Error::Io(error) => matches!(
+            error.kind(),
+            std::io::ErrorKind::UnexpectedEof
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::BrokenPipe
+        ),
+        _ => false,
     }
 }
 
@@ -358,7 +468,50 @@ fn video_rate(bitrate: u64) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{CaptureLimits, Encoding, Quality, VideoKind};
+    use super::{
+        CaptureLimits, Encoding, Error, Publisher, Quality, Source, VideoKind, recoverable,
+    };
+    use futures_util::FutureExt as _;
+    use std::{future::pending, io};
+    use tokio::sync::oneshot;
+
+    #[test]
+    fn closed_capture_can_reopen_and_protocol_errors_stop() {
+        assert!(recoverable(&Error::CaptureClosed));
+        assert!(recoverable(&Error::Timeout));
+        assert!(recoverable(
+            &io::Error::from(io::ErrorKind::BrokenPipe).into()
+        ));
+        assert!(!recoverable(&Error::Confinement));
+        assert!(!recoverable(
+            &io::Error::from(io::ErrorKind::InvalidData).into()
+        ));
+    }
+
+    #[test]
+    fn stopping_screen_drops_pending_reopen_and_retains_retirement() {
+        let mut publisher = Publisher::new(false);
+        let (reopening, mut cancelled) = oneshot::channel::<()>();
+        publisher.reopening = Some(
+            async move {
+                let _reopening = reopening;
+                pending().await
+            }
+            .boxed(),
+        );
+        publisher.retiring.push(pending().boxed());
+        assert!(publisher.enabled(Source::Screen));
+        assert!(!publisher.enabled(Source::Camera));
+        publisher.retire(Source::Camera);
+        assert!(publisher.enabled(Source::Screen));
+        publisher.retire(Source::Screen);
+        assert!(!publisher.enabled(Source::Screen));
+        assert!(matches!(
+            cancelled.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        ));
+        assert_eq!(publisher.retiring.len(), 1);
+    }
 
     #[test]
     fn a_constrained_screen_reduces_dimensions_and_cadence_then_recovers() {

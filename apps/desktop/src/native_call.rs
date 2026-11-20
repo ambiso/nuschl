@@ -55,8 +55,9 @@ pub struct Active {
     stats_open: bool,
     local_sources: [bool; 2],
     can_publish: bool,
-    source_requests: mpsc::Sender<SourceRequest>,
+    source_requests: [mpsc::Sender<SourceRequest>; 2],
     source_pending: Option<Source>,
+    reopening_screen: bool,
     updates: Arc<Latest>,
     stop: Option<oneshot::Sender<()>>,
     minimized: bool,
@@ -80,6 +81,7 @@ pub enum SourceChange {
     CanPublish(bool),
     MediaClosed,
     Active { source: Source, monitor: bool },
+    ReopeningScreen,
     Stopped(Source),
     Cancelled(Source),
     Failed(Source, String),
@@ -93,7 +95,7 @@ pub struct Start {
     host: String,
     policy: PeerPolicy,
     source: Option<Source>,
-    source_requests: mpsc::Receiver<SourceRequest>,
+    source_requests: [mpsc::Receiver<SourceRequest>; 2],
     updates: Arc<Latest>,
     quality: watch::Receiver<Selection>,
     stop: oneshot::Receiver<()>,
@@ -470,7 +472,11 @@ impl Desktop {
             ready: Notify::new(),
         });
         let (stop, stopped) = oneshot::channel();
-        let (request_source, source_requests) = mpsc::channel(1);
+        // A camera command leaves the screen's Stop sharing action available.
+        let [
+            (request_camera, camera_requests),
+            (request_screen, screen_requests),
+        ] = std::array::from_fn(|_| mpsc::channel(1));
         let (selection, quality) = watch::channel(Selection {
             quality: Quality::Auto,
             pixels: 0,
@@ -494,8 +500,9 @@ impl Desktop {
             stats_open: false,
             local_sources: [false; 2],
             can_publish: false,
-            source_requests: request_source,
+            source_requests: [request_camera, request_screen],
             source_pending: source,
+            reopening_screen: false,
             updates: updates.clone(),
             stop: Some(stop),
             minimized: false,
@@ -510,7 +517,7 @@ impl Desktop {
             host: link.host().to_owned(),
             policy,
             source,
-            source_requests,
+            source_requests: [camera_requests, screen_requests],
             updates,
             quality,
             stop: stopped,
@@ -662,8 +669,7 @@ impl Desktop {
         if enable && (!call.can_publish || call.source_pending.is_some()) {
             return;
         }
-        if call
-            .source_requests
+        if call.source_requests[publisher::index(source)]
             .try_send(SourceRequest { source, enable })
             .is_ok()
             && enable
@@ -696,6 +702,7 @@ impl Desktop {
                 call.can_publish = false;
                 call.local_sources = [false; 2];
                 call.source_pending = None;
+                call.reopening_screen = false;
                 call.monitor = false;
                 cx.notify();
                 return;
@@ -703,19 +710,30 @@ impl Desktop {
             SourceChange::Active { source, monitor } => {
                 call.local_sources[publisher::index(source)] = true;
                 if source == Source::Screen {
+                    call.reopening_screen = false;
                     call.monitor = monitor;
                 }
                 source
             }
+            SourceChange::ReopeningScreen => {
+                call.reopening_screen = true;
+                Source::Screen
+            }
             SourceChange::Stopped(source) => {
                 call.local_sources[publisher::index(source)] = false;
                 if source == Source::Screen {
+                    call.reopening_screen = false;
                     call.monitor = false;
                 }
                 source
             }
             SourceChange::Cancelled(source) => source,
             SourceChange::Failed(source, error) => {
+                call.local_sources[publisher::index(source)] = false;
+                if source == Source::Screen {
+                    call.reopening_screen = false;
+                    call.monitor = false;
+                }
                 if let Some(server) = self.client.servers.iter_mut().find(|server| {
                     server.id == call.server && server.generation == call.voice_generation
                 }) {
@@ -933,7 +951,13 @@ pub fn panel(this: &Desktop, window: &mut Window, cx: &mut Context<Desktop>) -> 
                     portal_prompt(source),
                 ))
             })
-            .when(call.monitor, |panel| {
+            .when(call.reopening_screen, |panel| {
+                panel.child(layout::text(
+                    "native-call-screen-reopening",
+                    "Reconnecting screen share…",
+                ))
+            })
+            .when(call.monitor && !call.reopening_screen, |panel| {
                 panel.child(layout::text(
                     "native-call-monitor-warning",
                     "Anyone watching can see the Nuschl window while it’s on the shared monitor.",
@@ -1464,13 +1488,53 @@ async fn next_grant(picker: &mut Option<Picker>) -> (Source, Result<portal::Gran
     }
 }
 
+enum SourceAction {
+    Request(Option<SourceRequest>),
+    Reopened(usize, Option<portal::Grant>),
+}
+
+async fn next_source_action(
+    [camera, screen]: &mut [mpsc::Receiver<SourceRequest>; 2],
+    reopening: &mut Option<publisher::Reopening>,
+) -> SourceAction {
+    tokio::select! {
+        biased;
+        request = screen.recv() => SourceAction::Request(request),
+        request = camera.recv() => SourceAction::Request(request),
+        (attempt, grant) = publisher::next_reopen(reopening) => SourceAction::Reopened(attempt, grant),
+    }
+}
+
+fn activate_source(
+    media: &mut Media,
+    publisher: &mut publisher::Publisher,
+    grant: portal::Grant,
+    worker: &Path,
+    selection: Selection,
+    updates: &Arc<Latest>,
+    attempts: usize,
+) -> Result<SourceChange, String> {
+    let source = grant.source();
+    let monitor = grant.can_include_app();
+    if let Err(error) = media.set_source(purpose(source), true) {
+        return Ok(SourceChange::Failed(source, text(error)));
+    }
+    match publisher.start(grant, worker, selection, updates.clone(), attempts) {
+        Ok(()) => Ok(SourceChange::Active { source, monitor }),
+        Err(error) => {
+            media.set_source(purpose(source), false).map_err(text)?;
+            Ok(SourceChange::Failed(source, error))
+        }
+    }
+}
+
 async fn meeting(
     media: &mut Media,
     display: &mut Display<'_>,
     publisher: &mut publisher::Publisher,
     viewer: &mut viewer::Viewer,
     (worker, initial): (&Path, Option<Source>),
-    mut source_requests: mpsc::Receiver<SourceRequest>,
+    mut source_requests: [mpsc::Receiver<SourceRequest>; 2],
 ) -> Result<Finish, String> {
     let changes = display.source_changes;
     let mut selection = *display.quality.borrow_and_update();
@@ -1487,6 +1551,11 @@ async fn meeting(
                 .report(SourceChange::CanPublish(can_publish))
                 .await?;
             allowed = Some(can_publish);
+        }
+        if !can_publish && publisher.reopening.take().is_some() {
+            changes
+                .report(SourceChange::Stopped(Source::Screen))
+                .await?;
         }
         let [camera, screen] = &mut publisher.slots;
         let (source, frame) = tokio::select! {
@@ -1507,45 +1576,54 @@ async fn meeting(
                 viewer.handle_event(media, display, event).await?;
                 continue;
             }
-            request = source_requests.recv() => {
-                let Some(SourceRequest { source, enable }) = request else { return Ok(Finish::Left); };
-                if enable {
-                    if picker.is_none() && !publisher.active(source) && can_publish {
-                        picker = Some(pick_source(source));
-                    } else {
-                        changes.report(SourceChange::Cancelled(source)).await?;
-                    }
-                } else if publisher.active(source) {
-                    publisher.retire(source);
-                    media.set_source(purpose(source), false).map_err(text)?;
-                    changes.report(SourceChange::Stopped(source)).await?;
-                    publisher.focus(selection, &display.updates);
-                    publisher.retune(display, selection, false);
-                }
-                continue;
-            }
             (source, result) = next_grant(&mut picker) => {
                 picker = None;
                 let change = match result {
-                    Ok(grant) => {
-                        let monitor = grant.can_include_app();
-                        match media.set_source(purpose(source), true) {
-                            Ok(()) => match publisher.start(grant, worker, selection, display.updates.clone()) {
-                                Ok(()) => SourceChange::Active { source, monitor },
-                                Err(error) => {
-                                    media.set_source(purpose(source), false).map_err(text)?;
-                                    SourceChange::Failed(source, error)
-                                }
-                            },
-                            Err(error) => SourceChange::Failed(source, text(error)),
-                        }
-                    }
+                    Ok(grant) => activate_source(
+                        media, publisher, grant, worker, selection, &display.updates, 0,
+                    )?,
                     Err(ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled)) => SourceChange::Cancelled(source),
                     Err(error) => SourceChange::Failed(source, text(error)),
                 };
                 changes.report(change).await?;
                 publisher.focus(selection, &display.updates);
                 publisher.retune(display, selection, false);
+                continue;
+            }
+            action = next_source_action(&mut source_requests, &mut publisher.reopening) => {
+                match action {
+                    SourceAction::Request(request) => {
+                        let Some(SourceRequest { source, enable }) = request else { return Ok(Finish::Left); };
+                        if enable {
+                            if picker.is_none() && !publisher.enabled(source) && can_publish {
+                                picker = Some(pick_source(source));
+                            } else {
+                                changes.report(SourceChange::Cancelled(source)).await?;
+                            }
+                        } else if publisher.enabled(source) {
+                            publisher.retire(source);
+                            media.set_source(purpose(source), false).map_err(text)?;
+                            changes.report(SourceChange::Stopped(source)).await?;
+                            publisher.focus(selection, &display.updates);
+                            publisher.retune(display, selection, false);
+                        }
+                    }
+                    SourceAction::Reopened(attempt, grant) => {
+                        publisher.reopening = None;
+                        let change = if !media.can_publish() {
+                            SourceChange::Stopped(Source::Screen)
+                        } else if let Some(grant) = grant {
+                            activate_source(media, publisher, grant, worker, selection, &display.updates, attempt)?
+                        } else {
+                            SourceChange::Failed(Source::Screen, "Choose Share screen to open the source again.".into())
+                        };
+                        let worker_started = matches!(change, SourceChange::Active { .. });
+                        tracing::info!(target: "nuschl_capture", attempt, worker_started, "screen capture reopen result");
+                        changes.report(change).await?;
+                        publisher.focus(selection, &display.updates);
+                        publisher.retune(display, selection, false);
+                    }
+                }
                 continue;
             }
             frame = publisher::LocalVideo::next(camera) => (Source::Camera, frame),
@@ -1572,12 +1650,19 @@ async fn meeting(
         match frame {
             Ok(frame) => publisher.frame(source, frame, media)?,
             Err(error) => {
-                publisher.retire(source);
+                tracing::warn!(target: "nuschl_capture", ?source, %error, "capture stopped");
                 media.set_source(purpose(source), false).map_err(text)?;
-                changes.report(SourceChange::Stopped(source)).await?;
-                changes
-                    .report(SourceChange::Failed(source, text(error)))
-                    .await?;
+                let change = if publisher.recover(source, media.can_publish(), &error) {
+                    SourceChange::ReopeningScreen
+                } else {
+                    let error = if source == Source::Screen {
+                        format!("{error} Choose Share screen to select the source again.")
+                    } else {
+                        text(error)
+                    };
+                    SourceChange::Failed(source, error)
+                };
+                changes.report(change).await?;
                 publisher.focus(selection, &display.updates);
                 publisher.retune(display, selection, false);
             }
@@ -1608,7 +1693,39 @@ fn text(error: impl std::fmt::Display) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Instant, Quality, VideoKind, VideoStats, quality_readout, stats};
+    use super::{
+        Instant, Quality, Source, SourceAction, SourceRequest, VideoKind, VideoStats,
+        next_source_action, quality_readout, stats,
+    };
+    use futures_util::FutureExt as _;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn queued_stop_wins_when_screen_reopen_is_ready() {
+        let [(camera, camera_requests), (screen, screen_requests)] =
+            std::array::from_fn(|_| mpsc::channel(1));
+        camera
+            .try_send(SourceRequest {
+                source: Source::Camera,
+                enable: true,
+            })
+            .unwrap();
+        let mut requests = [camera_requests, screen_requests];
+        screen
+            .try_send(SourceRequest {
+                source: Source::Screen,
+                enable: false,
+            })
+            .unwrap();
+        let mut reopening = Some(async { (1, None) }.boxed());
+        assert!(matches!(
+            next_source_action(&mut requests, &mut reopening).await,
+            SourceAction::Request(Some(SourceRequest {
+                source: Source::Screen,
+                enable: false,
+            }))
+        ));
+    }
     use nuschl_ipc::video::CaptureLimits;
 
     #[test]

@@ -208,7 +208,10 @@ The presenter can enable camera and screen independently in the call toolbar.
 Sharing begins after the system picker grants access. Each source has its own
 stop control. The panel shows a preview and indicates when viewers can see the
 Nuschl window on the selected monitor. With both sources active, **View camera**
-and **View screen** select which picture appears on the stage.
+and **View screen** select which picture appears on the stage. If screen capture
+stops unexpectedly, Nuschl attempts to reconnect to the same approved screen.
+**Stop sharing** cancels recovery. If the portal has closed the sharing session,
+use **Share screen** to grant access again.
 
 Choose **Full screen** to focus on video and **Exit full screen** or Escape
 to return to chat. **Minimize call** hides the video while the call continues.

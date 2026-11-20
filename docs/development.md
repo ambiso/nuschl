@@ -85,7 +85,8 @@ Use `--screen` or `--camera` to request one live frame through the portal.
 The probe prints the frame dimensions and encoded byte count. Nix builds try
 the isolated VA-API pipeline first and fall back to the software worker if
 hardware setup fails before opening the granted connection. Starting again
-after a running PipeWire stream fails requests a fresh portal connection.
+after a running PipeWire screen stream fails opens a new PipeWire connection
+for the existing screen-cast portal session, while screen sharing stays enabled.
 The native capture adapter applies live bitrate targets through its bounded
 socket protocol and coalesces pending targets to the latest value.
 The same capture supplies the local preview on a separate socket with bounded

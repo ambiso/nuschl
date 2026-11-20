@@ -6,35 +6,77 @@ use super::{Capture, CaptureLimits, Source};
 use ashpd::{
     Error, WindowIdentifier,
     desktop::{
-        PersistMode,
+        PersistMode, Session,
         camera::Camera,
         screencast::{CursorMode, Screencast, SelectSourcesOptions, SourceType},
     },
     zbus,
 };
 use futures_util::FutureExt as _;
-use std::{os::fd::OwnedFd, panic::AssertUnwindSafe, path::PathBuf};
+use std::{os::fd::OwnedFd, panic::AssertUnwindSafe, path::PathBuf, sync::Arc};
 
 pub struct Grant {
     remote: OwnedFd,
-    node_id: Option<u32>,
+    target: Target,
+}
+
+enum Target {
+    Camera(zbus::Connection),
+    Screen(ScreenGrant),
+}
+
+/// The portal session and its selected screen source remain tied together
+/// while a call still intends to share that source.
+#[derive(Clone)]
+pub struct ScreenGrant(Arc<ScreenSession>);
+
+struct ScreenSession {
+    portal: Screencast,
+    session: Session<Screencast>,
     connection: zbus::Connection,
-    source: Source,
+    node_id: u32,
     monitor: bool,
+}
+
+impl ScreenGrant {
+    /// Open a new PipeWire connection to the same session and node.
+    pub async fn reopen(&self) -> Result<Grant, Error> {
+        let remote = self
+            .0
+            .portal
+            .open_pipe_wire_remote(&self.0.session, Default::default())
+            .await?;
+        Ok(Grant {
+            remote,
+            target: Target::Screen(self.clone()),
+        })
+    }
 }
 
 impl Grant {
     pub fn source(&self) -> Source {
-        self.source
+        match self.target {
+            Target::Camera(_) => Source::Camera,
+            Target::Screen(_) => Source::Screen,
+        }
     }
 
     /// A monitor or unspecified screen source can include the Nuschl window.
     pub fn can_include_app(&self) -> bool {
-        self.monitor
+        matches!(&self.target, Target::Screen(screen) if screen.0.monitor)
+    }
+
+    /// The screen portal selects one node for this session. The camera
+    /// portal grants access to the available devices as a group.
+    pub fn screen_reopen(&self) -> Option<ScreenGrant> {
+        match &self.target {
+            Target::Screen(screen) => Some(screen.clone()),
+            Target::Camera(_) => None,
+        }
     }
 
     pub fn start(self, executable: PathBuf, bitrate_bps: u32) -> Result<Capture, super::Error> {
-        let limits = CaptureLimits::for_source(self.source, bitrate_bps);
+        let limits = CaptureLimits::for_source(self.source(), bitrate_bps);
         self.start_with_limits(executable, limits)
     }
 
@@ -43,17 +85,7 @@ impl Grant {
         executable: PathBuf,
         limits: CaptureLimits,
     ) -> Result<Capture, super::Error> {
-        let mut capture = Capture::start_inner(
-            executable,
-            self.remote,
-            self.source,
-            self.node_id,
-            true,
-            limits,
-            None,
-        )?;
-        capture.retain_grant(self.connection);
-        Ok(capture)
+        self.start_capture(executable, limits, None)
     }
 
     pub fn start_with_preview(
@@ -62,15 +94,30 @@ impl Grant {
         limits: CaptureLimits,
         preview: tokio::sync::mpsc::Sender<super::DecodedFrame>,
     ) -> Result<Capture, super::Error> {
-        let mut capture = Capture::start_with_preview(
+        self.start_capture(executable, limits, Some(preview))
+    }
+
+    fn start_capture(
+        self,
+        executable: PathBuf,
+        limits: CaptureLimits,
+        preview: Option<tokio::sync::mpsc::Sender<super::DecodedFrame>>,
+    ) -> Result<Capture, super::Error> {
+        let source = self.source();
+        let (connection, node_id) = match self.target {
+            Target::Camera(connection) => (connection, None),
+            Target::Screen(screen) => (screen.0.connection.clone(), Some(screen.0.node_id)),
+        };
+        let mut capture = Capture::start_inner(
             executable,
             self.remote,
-            self.source,
-            self.node_id,
+            source,
+            node_id,
+            true,
             limits,
             preview,
         )?;
-        capture.retain_grant(self.connection);
+        capture.retain_grant(connection);
         Ok(capture)
     }
 }
@@ -81,18 +128,17 @@ pub async fn request(source: Source, parent: Option<&WindowIdentifier>) -> Resul
         // On Flatpak and newer portals the application can already be known.
         let _ = ashpd::register_host_app_with_connection(connection.clone(), app).await;
     }
-    let (remote, node_id, monitor) = match source {
+    match source {
         Source::Camera => {
             let portal = Camera::with_connection(connection.clone()).await?;
             portal
                 .request_access(Default::default())
                 .await?
                 .response()?;
-            (
-                portal.open_pipe_wire_remote(Default::default()).await?,
-                None,
-                false,
-            )
+            Ok(Grant {
+                remote: portal.open_pipe_wire_remote(Default::default()).await?,
+                target: Target::Camera(connection),
+            })
         }
         Source::Screen => {
             let portal = Screencast::with_connection(connection.clone()).await?;
@@ -128,21 +174,15 @@ pub async fn request(source: Source, parent: Option<&WindowIdentifier>) -> Resul
             let [stream] = streams.streams() else {
                 return Err(Error::NoResponse);
             };
-            let remote = portal
-                .open_pipe_wire_remote(&session, Default::default())
-                .await?;
-            (
-                remote,
-                Some(stream.pipe_wire_node_id()),
-                stream.source_type() != Some(SourceType::Window),
-            )
+            ScreenGrant(Arc::new(ScreenSession {
+                portal,
+                session,
+                connection,
+                node_id: stream.pipe_wire_node_id(),
+                monitor: stream.source_type() != Some(SourceType::Window),
+            }))
+            .reopen()
+            .await
         }
-    };
-    Ok(Grant {
-        remote,
-        node_id,
-        connection,
-        source,
-        monitor,
-    })
+    }
 }
