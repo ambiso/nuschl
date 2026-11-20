@@ -201,7 +201,8 @@ in-app room with your camera and screen off. **Start camera** and **Share
 screen** open a room and request capture through the desktop portal. The call
 card offers **Join video call** for native playback. The channel also receives
 a browser link for guests, including people using Mumble. People who enter the
-channel later receive the card while the call is active.
+channel later receive the card while the call is active. In a narrow layout,
+start the meeting and use the call toolbar to choose what to share.
 
 The presenter can enable camera and screen independently in the call toolbar.
 Sharing begins after the system picker grants access. Each source has its own

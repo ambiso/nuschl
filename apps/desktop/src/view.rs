@@ -31,6 +31,7 @@ const CHANNELS_SHEET_LIST: &str = "channels-sheet-list";
 struct PaneLayout {
     sidebar: Option<f32>,
     dense: bool,
+    #[cfg(target_os = "linux")]
     room_for_capture_buttons: bool,
     chrome: Pixels,
     auxiliary: Pixels,
@@ -64,11 +65,14 @@ impl PaneLayout {
             .floor()
             .clamp(1., 10.) as usize;
         let sidebar = navigation_fits.then(|| preferred.min(available));
-        let conversation_width = width - RAIL_WIDTH - sidebar.map_or(0., |w| w + SPLITTER_WIDTH);
         Self {
             sidebar,
             dense,
-            room_for_capture_buttons: conversation_width >= 360.,
+            #[cfg(target_os = "linux")]
+            room_for_capture_buttons: width
+                - RAIL_WIDTH
+                - sidebar.map_or(0., |w| w + SPLITTER_WIDTH)
+                >= 360.,
             chrome: px(chrome),
             auxiliary: px(auxiliary),
             rows,
