@@ -8,6 +8,8 @@ use crate::{
     state::{Desktop, Panel, Status},
     theme::*,
 };
+#[cfg(target_os = "linux")]
+use gpui_kit::base::{Align, Placement, Positioner};
 use gpui_kit::{
     base::{
         FocusTrapElement,
@@ -24,6 +26,9 @@ use std::rc::Rc;
 
 /// Voice target ids registered with the server (1–30 are available).
 pub const WHISPER_TARGET: u32 = 1;
+
+#[cfg(target_os = "linux")]
+const QUALITY_MENU_GAP: Pixels = px(4.);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuTarget {
@@ -225,6 +230,19 @@ impl ActionOrigin {
     }
 }
 
+#[derive(Clone, Copy)]
+pub enum MenuAnchor {
+    Point(Point<Pixels>),
+    #[cfg(target_os = "linux")]
+    Above(Bounds<Pixels>),
+}
+
+impl From<Point<Pixels>> for MenuAnchor {
+    fn from(point: Point<Pixels>) -> Self {
+        Self::Point(point)
+    }
+}
+
 #[derive(Clone)]
 pub struct Menu {
     pub origin: ActionOrigin,
@@ -235,7 +253,7 @@ pub struct Menu {
     pub channel_url: Option<String>,
     pub local_share_url: Option<String>,
     pub target: MenuTarget,
-    pub position: Point<Pixels>,
+    anchor: MenuAnchor,
 }
 
 #[derive(Clone, Debug)]
@@ -426,7 +444,7 @@ impl Desktop {
         self.make_menu(server, target, position);
     }
 
-    pub fn make_menu(&mut self, server: usize, target: MenuTarget, position: Point<Pixels>) {
+    pub fn make_menu(&mut self, server: usize, target: MenuTarget, anchor: impl Into<MenuAnchor>) {
         let Some(view) = self.client.servers.get(server) else {
             return;
         };
@@ -463,7 +481,7 @@ impl Desktop {
             channel_url: None,
             local_share_url: None,
             target,
-            position,
+            anchor: anchor.into(),
         };
         if let MenuTarget::Channel(channel) = target {
             menu.channel_url = self.channel_url(server, channel);
@@ -1914,7 +1932,8 @@ struct MenuSurfaceState {
 #[derive(IntoElement)]
 struct MenuSurface {
     identity: SharedString,
-    position: Point<Pixels>,
+    anchor: MenuAnchor,
+    quality: bool,
     label: &'static str,
     max_width: Pixels,
     rows: Vec<AnyElement>,
@@ -1940,75 +1959,99 @@ impl RenderOnce for MenuSurface {
         let gutter = inset + px(8.);
         let reserve = (gutter + inset) * 2.;
         let width = (viewport.width - reserve).max(px(0.)).min(self.max_width);
-        let height = (viewport.height - reserve).max(px(0.));
+        let height = match self.anchor {
+            MenuAnchor::Point(_) => viewport.height - reserve,
+            #[cfg(target_os = "linux")]
+            MenuAnchor::Above(trigger) => {
+                // On a short viewport the choices scroll within the space
+                // beside the trigger.
+                trigger.top().max(viewport.height - trigger.bottom()) - gutter - QUALITY_MENU_GAP
+            }
+        }
+        .max(px(0.));
         let content_height = (height - px(10.)).max(px(0.));
         // The scrollbar gutter exists only while the actions overflow, so
         // highlighted rows span the menu otherwise. The handle reports the
         // previous layout; a changed overflow lays out once more.
         let overflows = state.scroll.max_offset().y > px(0.);
         let scroll = state.scroll.clone();
-        deferred(
-            anchored()
-                .position(self.position - point(gutter, gutter))
-                .snap_to_window()
+        let content = div()
+            .id("context-menu")
+            .role(Role::Menu)
+            .aria_label(self.label)
+            .occlude()
+            .w(width)
+            .max_h(height)
+            .p_1()
+            .relative()
+            .when(!self.quality, |menu| menu.rounded(px(8.)))
+            .bg(if self.quality {
+                tint(BACKDROP, 0xeb)
+            } else {
+                color(APP)
+            })
+            .border_1()
+            .border_color(if self.quality {
+                tint(WHITE, 0x20)
+            } else {
+                color(BORDER_STRONG)
+            })
+            .shadow_lg()
+            .child(
+                crate::layout::scrollable(
+                    "context-menu-actions",
+                    "Context menu actions",
+                    state.scroll.clone(),
+                )
+                .track_focus(&state.focus)
+                .tab_stop(false)
+                .max_h(content_height)
+                .when(!overflows, |actions| actions.pr(px(0.)))
                 .child(
-                    div().p(gutter).child(
-                        div()
-                            .id("context-menu")
-                            .role(Role::Menu)
-                            .aria_label(self.label)
-                            .occlude()
-                            .w(width)
-                            .max_h(height)
-                            .p_1()
-                            .relative()
-                            .rounded(px(8.))
-                            .bg(color(APP))
-                            .border_1()
-                            .border_color(color(BORDER_STRONG))
-                            .shadow_lg()
-                            .child(
-                                crate::layout::scrollable(
-                                    "context-menu-actions",
-                                    "Context menu actions",
-                                    state.scroll.clone(),
-                                )
-                                .track_focus(&state.focus)
-                                .tab_stop(false)
-                                .max_h(content_height)
-                                .when(!overflows, |actions| actions.pr(px(0.)))
-                                .child(
-                                    canvas(
-                                        move |_, window, _| {
-                                            if (scroll.max_offset().y > px(0.)) != overflows {
-                                                window.request_animation_frame();
-                                            }
-                                        },
-                                        |_, _, _, _| {},
-                                    )
-                                    .absolute()
-                                    .size(px(0.)),
-                                )
-                                .child(
-                                    div()
-                                        .w_full()
-                                        .min_w_0()
-                                        .flex()
-                                        .flex_col()
-                                        .children(self.rows),
-                                ),
-                            )
-                            .child(crate::layout::scrollbar(
-                                "context-menu-scrollbar",
-                                &state.scroll,
-                                APP,
-                            ))
-                            // A handle of its own: focus_trap tracks it, and each
-                            // focused handle may be tracked once per frame.
-                            .focus_trap("context-menu-focus", &state.trap),
-                    ),
+                    canvas(
+                        move |_, window, _| {
+                            if (scroll.max_offset().y > px(0.)) != overflows {
+                                window.request_animation_frame();
+                            }
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size(px(0.)),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .children(self.rows),
                 ),
-        )
+            )
+            .child(crate::layout::scrollbar(
+                "context-menu-scrollbar",
+                &state.scroll,
+                if self.quality { BACKDROP } else { APP },
+            ))
+            // A handle of its own: focus_trap tracks it, and each
+            // focused handle may be tracked once per frame.
+            .focus_trap("context-menu-focus", &state.trap);
+        let popup = match self.anchor {
+            MenuAnchor::Point(position) => anchored()
+                .position(position - point(gutter, gutter))
+                .snap_to_window()
+                .child(div().p(gutter).child(content))
+                .into_any_element(),
+            #[cfg(target_os = "linux")]
+            MenuAnchor::Above(trigger) => Positioner::side(trigger)
+                .placement(Placement::Top)
+                .align(Align::Start)
+                .offset(QUALITY_MENU_GAP)
+                .margin(px(8.))
+                .child(content)
+                .into_any_element(),
+        };
+        deferred(popup)
     }
 }
 
@@ -2065,7 +2108,13 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
                 let keyboard_key = key.clone();
                 let origin_menu = snapshot.clone();
                 let key_menu = snapshot.clone();
-                let foreground = if danger { DANGER_HOVER } else { TEXT };
+                let (foreground, icon_color, highlight) = if quality {
+                    (WHITE, WHITE, tint(WHITE, 0x1a))
+                } else if danger {
+                    (DANGER_HOVER, DANGER_HOVER, color(DANGER))
+                } else {
+                    (TEXT, TEXT_MUTED, color(ACCENT))
+                };
                 let control = div()
                     .id(SharedString::from(format!("menu-item:{element_key}")))
                     .group(SharedString::from(format!("menu-item:{element_key}")))
@@ -2078,30 +2127,28 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
                     .when_some(choice, |control, selected| {
                         control
                             .aria_toggled(selected.into())
-                            .when(selected, |control| control.bg(color(SELECTED)))
+                            .when(selected, |control| {
+                                control.bg(if quality {
+                                    tint(WHITE, 0x12)
+                                } else {
+                                    color(SELECTED)
+                                })
+                            })
                     })
                     .tab_index(0)
                     .min_w_0()
                     .flex_shrink_0()
                     .px_2()
                     .py(px(6.))
-                    .rounded(px(5.))
+                    .when(!quality, |row| row.rounded(px(5.)))
                     .flex()
                     .items_center()
                     .gap_2()
                     .cursor_pointer()
                     .text_sm()
                     .text_color(color(foreground))
-                    .hover(move |style| {
-                        style
-                            .bg(color(if danger { DANGER } else { ACCENT }))
-                            .text_color(color(WHITE))
-                    })
-                    .focus(move |style| {
-                        style
-                            .bg(color(if danger { DANGER } else { ACCENT }))
-                            .text_color(color(WHITE))
-                    })
+                    .hover(move |style| style.bg(highlight).text_color(color(WHITE)))
+                    .focus(move |style| style.bg(highlight).text_color(color(WHITE)))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.activate_menu(&origin_menu, &pointer_key, window, cx);
@@ -2119,16 +2166,12 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
                     .child(if choice == Some(false) {
                         div().w(px(15.)).flex_shrink_0().into_any_element()
                     } else {
-                        icon(
-                            name,
-                            15.,
-                            color(if danger { DANGER_HOVER } else { TEXT_MUTED }),
-                        )
-                        .group_hover(
-                            SharedString::from(format!("menu-item:{element_key}")),
-                            |style| style.text_color(color(WHITE)),
-                        )
-                        .into_any_element()
+                        icon(name, 15., color(icon_color))
+                            .group_hover(
+                                SharedString::from(format!("menu-item:{element_key}")),
+                                |style| style.text_color(color(WHITE)),
+                            )
+                            .into_any_element()
                     })
                     .child(
                         crate::layout::flexible()
@@ -2229,7 +2272,8 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
             }))
             .child(MenuSurface {
                 identity: format!("context-menu:{}", menu.invocation).into(),
-                position: menu.position,
+                anchor: menu.anchor,
+                quality,
                 label,
                 max_width: width,
                 rows,

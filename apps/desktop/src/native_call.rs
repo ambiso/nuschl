@@ -8,12 +8,12 @@ mod viewer;
 use crate::{
     dialogs::{Tone, icon_button, styled_button},
     layout,
-    menus::MenuTarget,
+    menus::{MenuAnchor, MenuTarget},
     services::ServiceEvent,
     state::Desktop,
     theme::{
         ACCENT, BACKDROP, BORDER, DANGER, DANGER_TEXT, ELEVATED, MAIN, SELECTED, SIDEBAR, TEXT,
-        TEXT_MUTED, color,
+        TEXT_MUTED, color, tint,
     },
 };
 use futures_util::{FutureExt as _, StreamExt as _, future::BoxFuture};
@@ -947,7 +947,7 @@ pub fn panel(this: &Desktop, window: &mut Window, cx: &mut Context<Desktop>) -> 
                             .rounded(px(8.))
                             .border_1()
                             .border_color(color(BORDER))
-                            .bg(color(MAIN))
+                            .bg(tint(MAIN, 0xeb))
                             .child(video_stats(stats.as_deref(), owned)),
                         )
                     }),
@@ -962,7 +962,7 @@ impl Desktop {
         &mut self,
         generation: u64,
         target: MenuTarget,
-        position: Point<Pixels>,
+        anchor: impl Into<MenuAnchor>,
         cx: &mut Context<Self>,
     ) {
         let Some(call) = self
@@ -978,7 +978,7 @@ impl Desktop {
             .iter()
             .position(|server| server.id == call.server)
         {
-            self.make_menu(index, target, position);
+            self.make_menu(index, target, anchor);
             cx.notify();
         }
     }
@@ -1049,14 +1049,14 @@ fn quality_selector(
 ) -> AnyElement {
     let label: SharedString =
         format!("Quality · {}", quality_readout(kind, selected, stats)).into();
-    let anchor = Rc::new(Cell::new(point(px(0.), px(0.))));
+    let anchor = Rc::new(Cell::new(Bounds::default()));
     let position = anchor.clone();
     let activate = Rc::new(
         move |this: &mut Desktop, _: &mut Window, cx: &mut Context<Desktop>| {
             this.open_video_menu(
                 generation,
                 MenuTarget::VideoQuality(generation, kind),
-                position.get(),
+                MenuAnchor::Above(position.get()),
                 cx,
             );
         },
@@ -1101,12 +1101,9 @@ fn quality_selector(
         )
         .child(crate::assets::icon("chevron-down", 14., color(TEXT_MUTED)))
         .child(
-            canvas(
-                move |bounds, _, _| anchor.set(bounds.bottom_left() + point(px(0.), px(4.))),
-                |_, _, _, _| {},
-            )
-            .absolute()
-            .inset_0(),
+            canvas(move |bounds, _, _| anchor.set(bounds), |_, _, _, _| {})
+                .absolute()
+                .inset_0(),
         );
     layout::focusable_button(
         "native-call-quality",
@@ -1165,7 +1162,7 @@ fn video_stats(stats: Option<&VideoStats>, owned: bool) -> impl IntoElement {
                         div()
                             .truncate()
                             .text_xs()
-                            .text_color(color(TEXT_MUTED))
+                            .text_color(color(TEXT))
                             .child(Text::new(label.into(), label.into())),
                     )
                     .child(
