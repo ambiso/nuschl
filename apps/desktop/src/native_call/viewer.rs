@@ -8,7 +8,7 @@ use crate::{
     state::Desktop,
 };
 use gpui_kit::{prelude::*, *};
-use nuschl_client::native::sfu::{Media, MediaEvent, Purpose};
+use nuschl_client::native::sfu::{Media, MediaEvent, Purpose, VideoKind};
 use nuschl_ipc::video::{DecodeError, Decoder, Source};
 use std::{path::PathBuf, time::Instant};
 
@@ -27,6 +27,12 @@ pub(super) struct Sources {
 impl Sources {
     pub(super) fn available(self) -> (bool, bool) {
         (self.camera.is_some(), self.screen.is_some())
+    }
+
+    pub(super) fn kind(self, preferred: Option<Purpose>) -> Option<VideoKind> {
+        self.current(preferred)
+            .and_then(|track| capture_source(track.purpose))
+            .map(video_kind)
     }
 
     fn set(&mut self, purpose: Purpose, publisher: Option<u64>) -> bool {

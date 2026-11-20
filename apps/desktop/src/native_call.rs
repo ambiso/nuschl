@@ -773,10 +773,11 @@ pub fn panel(this: &Desktop, window: &mut Window, cx: &mut Context<Desktop>) -> 
     let has_picture = surface.image.is_some();
     let stats = surface.stats.clone();
     let owned = surface.own_video.is_some();
+    let selection = *call.quality.borrow();
     let kind = surface
         .own_video
+        .or_else(|| surface.viewer_sources.kind(selection.view))
         .or_else(|| stats.as_ref().map(|stats| stats.kind));
-    let selection = *call.quality.borrow();
     let quality = selection.quality;
     let (camera, screen) = surface.viewer_sources.available();
     let picker = viewer::controls(
