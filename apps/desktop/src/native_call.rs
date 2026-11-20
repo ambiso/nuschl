@@ -55,7 +55,7 @@ pub struct Active {
     stats_open: bool,
     local_sources: [bool; 2],
     can_publish: bool,
-    source_requests: mpsc::Sender<SourceRequest>,
+    source_requests: [mpsc::Sender<SourceRequest>; 2],
     source_pending: Option<Source>,
     reopening_screen: bool,
     updates: Arc<Latest>,
@@ -95,7 +95,7 @@ pub struct Start {
     host: String,
     policy: PeerPolicy,
     source: Option<Source>,
-    source_requests: mpsc::Receiver<SourceRequest>,
+    source_requests: [mpsc::Receiver<SourceRequest>; 2],
     updates: Arc<Latest>,
     quality: watch::Receiver<Selection>,
     stop: oneshot::Receiver<()>,
@@ -472,7 +472,11 @@ impl Desktop {
             ready: Notify::new(),
         });
         let (stop, stopped) = oneshot::channel();
-        let (request_source, source_requests) = mpsc::channel(1);
+        // A camera command leaves the screen's Stop sharing action available.
+        let [
+            (request_camera, camera_requests),
+            (request_screen, screen_requests),
+        ] = std::array::from_fn(|_| mpsc::channel(1));
         let (selection, quality) = watch::channel(Selection {
             quality: Quality::Auto,
             pixels: 0,
@@ -496,7 +500,7 @@ impl Desktop {
             stats_open: false,
             local_sources: [false; 2],
             can_publish: false,
-            source_requests: request_source,
+            source_requests: [request_camera, request_screen],
             source_pending: source,
             reopening_screen: false,
             updates: updates.clone(),
@@ -513,7 +517,7 @@ impl Desktop {
             host: link.host().to_owned(),
             policy,
             source,
-            source_requests,
+            source_requests: [camera_requests, screen_requests],
             updates,
             quality,
             stop: stopped,
@@ -665,8 +669,7 @@ impl Desktop {
         if enable && (!call.can_publish || call.source_pending.is_some()) {
             return;
         }
-        if call
-            .source_requests
+        if call.source_requests[publisher::index(source)]
             .try_send(SourceRequest { source, enable })
             .is_ok()
             && enable
@@ -1491,12 +1494,13 @@ enum SourceAction {
 }
 
 async fn next_source_action(
-    requests: &mut mpsc::Receiver<SourceRequest>,
+    [camera, screen]: &mut [mpsc::Receiver<SourceRequest>; 2],
     reopening: &mut Option<publisher::Reopening>,
 ) -> SourceAction {
     tokio::select! {
         biased;
-        request = requests.recv() => SourceAction::Request(request),
+        request = screen.recv() => SourceAction::Request(request),
+        request = camera.recv() => SourceAction::Request(request),
         (attempt, grant) = publisher::next_reopen(reopening) => SourceAction::Reopened(attempt, grant),
     }
 }
@@ -1530,7 +1534,7 @@ async fn meeting(
     publisher: &mut publisher::Publisher,
     viewer: &mut viewer::Viewer,
     (worker, initial): (&Path, Option<Source>),
-    mut source_requests: mpsc::Receiver<SourceRequest>,
+    mut source_requests: [mpsc::Receiver<SourceRequest>; 2],
 ) -> Result<Finish, String> {
     let changes = display.source_changes;
     let mut selection = *display.quality.borrow_and_update();
@@ -1698,12 +1702,21 @@ mod tests {
 
     #[tokio::test]
     async fn queued_stop_wins_when_screen_reopen_is_ready() {
-        let (send, mut requests) = mpsc::channel(1);
-        send.try_send(SourceRequest {
-            source: Source::Screen,
-            enable: false,
-        })
-        .unwrap();
+        let [(camera, camera_requests), (screen, screen_requests)] =
+            std::array::from_fn(|_| mpsc::channel(1));
+        camera
+            .try_send(SourceRequest {
+                source: Source::Camera,
+                enable: true,
+            })
+            .unwrap();
+        let mut requests = [camera_requests, screen_requests];
+        screen
+            .try_send(SourceRequest {
+                source: Source::Screen,
+                enable: false,
+            })
+            .unwrap();
         let mut reopening = Some(async { (1, None) }.boxed());
         assert!(matches!(
             next_source_action(&mut requests, &mut reopening).await,
