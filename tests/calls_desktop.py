@@ -119,8 +119,10 @@ class CallTest(VoiceTest):
         selection = "imports.gi.St.ClipboardType.CLIPBOARD"
         self.shell.eval(f"{clipboard}.set_text({selection}, 'call fixture sentinel'); 'ok'")
         x, y, width, height = self.control(app, "Copy link").extents()
+        left, top = json.loads(self.shell.eval(
+            "const bounds = global.display.focus_window.get_buffer_rect(); JSON.stringify([bounds.x, bounds.y])"))
         assert width > 0 and height > 0
-        self.shell.click(x + width // 2, y + height // 2)
+        self.shell.click(left + x + width // 2, top + y + height // 2)
 
         def copied():
             self.shell.eval(f"global._callLink = undefined; {clipboard}.get_text({selection},"
