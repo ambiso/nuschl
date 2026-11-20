@@ -13,18 +13,18 @@
   <link rel="stylesheet" href="/call.css">
   <script type="module" src="/call.js"></script>
 </head>
-<body>
+<body class="standalone-call video-session">
   <div id="call">
     <header>
       <h1>Call</h1>
       <span id="status" role="status">Connecting</span>
     </header>
-    <main id="stage" aria-label="Video">
+    <section id="stage" aria-label="Video">
       <div id="large" hidden></div>
       <div id="grid"></div>
       <div id="shared-audio" hidden></div>
       <p id="empty">No video yet</p>
-    </main>
+    </section>
     <aside aria-labelledby="people">
       <h2 id="people">People <span id="count"></span></h2>
       <ul id="roster"></ul>

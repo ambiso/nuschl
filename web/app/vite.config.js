@@ -3,7 +3,7 @@ import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { bundledRuntimeNotices } from "./build-runtime-notices.js";
 
-const notices = bundledRuntimeNotices();
+const notices = bundledRuntimeNotices({ firstPartyDirectories: ["../call/"] });
 
 // The build lands in dist/, which the web host serves at / (nix/web-module.nix).
 // `npm run dev` proxies /relay to a local relay (nuschl-web-relay on :8090).

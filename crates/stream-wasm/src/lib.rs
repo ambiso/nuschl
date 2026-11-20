@@ -17,6 +17,7 @@
 //! ```text
 //! request                  reply
 //! open {link, host, allow_direct?}   opened {room, verifier, creator}
+//! create {host, allow_direct?}      opened {room, verifier, creator, invitation}
 //! admit {nonce}            admitted {proof, host_proof, create}
 //! publish                  done {send, events}
 //! subscribe {peer}         done
@@ -104,6 +105,11 @@ pub enum Request {
         #[serde(default)]
         allow_direct: bool,
     },
+    Create {
+        host: String,
+        #[serde(default)]
+        allow_direct: bool,
+    },
     Admit {
         nonce: String,
     },
@@ -140,6 +146,8 @@ pub enum Reply {
         room: String,
         verifier: String,
         creator: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        invitation: Option<String>,
     },
     Admitted {
         proof: String,
@@ -244,6 +252,10 @@ impl<R: TryCryptoRng> Worker<R> {
                 host,
                 allow_direct,
             } => self.open(&link, &host, allow_direct)?,
+            Request::Create { host, allow_direct } => {
+                let link = Link::generate(&host, &mut self.rng).map_err(text)?;
+                self.open_link(link, allow_direct, true)?
+            }
             Request::Admit { nonce } => self.admit(&nonce)?,
             Request::Publish {} => self.publish(now)?,
             Request::Subscribe { peer } => self.subscribe(peer, now)?,
@@ -300,14 +312,23 @@ impl<R: TryCryptoRng> Worker<R> {
     }
 
     fn open(&mut self, link: &str, host: &str, allow_direct: bool) -> Result<Reply, String> {
+        self.open_link(Link::parse(link, host).map_err(text)?, allow_direct, false)
+    }
+
+    fn open_link(
+        &mut self,
+        link: Link,
+        allow_direct: bool,
+        creates: bool,
+    ) -> Result<Reply, String> {
         if self.link.is_some() {
             return Err("call link already open".into());
         }
-        let link = Link::parse(link, host).map_err(text)?;
         let reply = Reply::Opened {
             room: hex::encode(link.keys().stream_id()),
             verifier: hex::encode(link.room_check()),
             creator: link.publisher().is_some(),
+            invitation: creates.then(|| link.url()),
         };
         self.link = Some(link);
         self.allow_direct = allow_direct;

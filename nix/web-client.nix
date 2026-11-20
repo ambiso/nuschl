@@ -146,24 +146,28 @@ let
     pname = "nuschl-web-app";
     version = "0.1.0";
     src = lib.cleanSourceWith {
-      src = ../web/app;
+      src = ../web;
       filter =
         path: type:
-        !(builtins.elem (builtins.baseNameOf path) [
+        !(lib.hasSuffix "/app/public/video" (toString path))
+        && !(builtins.elem (builtins.baseNameOf path) [
           "node_modules"
           "dist"
           "sdk"
           "audio-codec"
           "content-codec"
           "emoji"
+          "site"
         ]);
     };
+    sourceRoot = "source/app";
     npmDepsHash = "sha256-h/RXhIxLqP2oHGnePhMKUdhi/NfX10QEAlASEInQpL8=";
     postPatch = ''
-      mkdir -p src/sdk src/audio-codec src/content-codec
+      mkdir -p src/sdk src/audio-codec src/content-codec public/video
       cp ${wasm}/* src/sdk/
       cp ${audioWasm}/* src/audio-codec/
       cp ${contentWasm}/* src/content-codec/
+      cp ../call/stream.worker.js ../call/frames.js ${streamWasm}/*.js ${streamWasm}/*.wasm public/video/
       mkdir -p public/emoji
       cp -R ${emojiAssets}/. public/emoji/
     '';

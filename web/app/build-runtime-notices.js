@@ -12,10 +12,13 @@ const mainCargoDirectories = [
   ["src/sdk/", "nuschl-client-wasm"],
   ["src/audio-codec/", "nuschl-audio-wasm"],
   ["src/content-codec/", "nuschl-content-wasm"],
+  ["public/video/", "nuschl-stream-wasm"],
 ];
 const slash = (value) => value.split(path.sep).join("/");
 
-export function bundledRuntimeNotices({ wasmDirectories = mainCargoDirectories, ancestryNotices = true } = {}) {
+export function bundledRuntimeNotices({
+  wasmDirectories = mainCargoDirectories, ancestryNotices = true, firstPartyDirectories = [],
+} = {}) {
   const cargoDirectories = new Map(wasmDirectories);
   let root;
   let lock;
@@ -97,6 +100,7 @@ export function bundledRuntimeNotices({ wasmDirectories = mainCargoDirectories, 
         if (id === "\0rolldown/runtime.js") { recordPackage(namedOwner("rolldown"), "generated runtime helpers", phase); continue; }
         if (id.startsWith("\0vite/") || id.startsWith("vite/")) { recordPackage(namedOwner("vite"), id.replace(/^\0/, ""), phase); continue; }
         const relative = slash(path.relative(root, id));
+        if (path.isAbsolute(id) && firstPartyDirectories.some(directory => relative.startsWith(directory))) continue;
         if (path.isAbsolute(id) && !relative.startsWith("../") && !relative.startsWith("node_modules/") && relative !== "..") {
           for (const [directory, name] of cargoDirectories) if (relative.startsWith(directory)) cargo.add(name);
           continue;
