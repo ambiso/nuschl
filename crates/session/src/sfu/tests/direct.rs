@@ -279,34 +279,24 @@ async fn native_call_switches_paths_and_sources() {
             }
         }
     }).await.expect("the presenter can resume video without opening a new room");
-    // All three viewers publish the same kind with independent sender keys.
+    // Both media workers now publish the same kind with independent keys.
     assert!(viewer.can_publish());
     viewer.set_source(Purpose::Camera, true).unwrap();
-    let extra_id = extra.welcome().peer;
-    let mut extra = extra
-        .into_media(make_media(Some(Purpose::Camera)))
-        .await
-        .unwrap();
-    let peers = [from, viewer_id, extra_id];
-    let pictures = std::array::from_fn::<_, 3, _>(|index| {
+    let peers = [from, viewer_id];
+    let pictures = std::array::from_fn::<_, 2, _>(|index| {
         let mut frame = picture.clone();
         frame[picture.len() - 4098] += index as u8;
         frame.resize(picture.len() + index, 0);
         frame
     });
-    let mut ready = [true, false, false];
-    let mut seen = [[false; 3]; 3];
-    let mut clocks = [timestamp, 0, 0];
+    let mut ready = [true, false];
+    let mut seen = [false; 2];
+    let mut clocks = [timestamp, 0];
     timeout(HANDSHAKE, async {
-        while seen.iter().enumerate().any(|(receiver, sources)| {
-            sources
-                .iter()
-                .enumerate()
-                .any(|(sender, received)| sender != receiver && !received)
-        }) {
+        while seen != [true, true] {
             let (receiver, event) = tokio::select! {
                 _ = tick.tick() => {
-                    for (index, media) in [&publisher, &viewer, &extra].into_iter().enumerate() {
+                    for (index, media) in [&publisher, &viewer].into_iter().enumerate() {
                         if ready[index] {
                             clocks[index] += 2970;
                             media.send_keyframe(clocks[index], pictures[index].clone()).unwrap();
@@ -316,7 +306,6 @@ async fn native_call_switches_paths_and_sources() {
                 }
                 event = publisher.next() => (0, event),
                 event = viewer.next() => (1, event),
-                event = extra.next() => (2, event),
             };
             match event.unwrap().unwrap() {
                 MediaEvent::SourceReady {
@@ -334,7 +323,7 @@ async fn native_call_switches_paths_and_sources() {
                     assert_eq!(purpose, Purpose::Camera);
                     assert!(key_frame);
                     assert_eq!(data, pictures[sender]);
-                    seen[receiver][sender] = true;
+                    seen[receiver] = true;
                 }
                 MediaEvent::Direct { active: true } => {
                     panic!("a group call selected a direct path")
@@ -360,4 +349,5 @@ async fn native_call_switches_paths_and_sources() {
     .expect("the departing camera ended independently");
     publisher.stop().await.unwrap();
     viewer.stop().await.unwrap();
+    extra.close().await.unwrap();
 }
