@@ -244,7 +244,7 @@ impl Media {
         sources.update(tracks)?;
         if tracks.into_iter().any(|active| active) {
             self.role
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |role| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |role| {
                     (role != RECEIVING).then_some(SENDING)
                 })
                 .map_err(|_| Error::Protocol("another participant is presenting"))?;
@@ -956,7 +956,7 @@ async fn run(
                     if pair.peer.is_none()
                         && let Some(peer) = tracks.iter().find(|track| video_kind(track.purpose).is_some())
                             .and_then(|track| track.publisher)
-                        && role.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |role| {
+                        && role.try_update(Ordering::Relaxed, Ordering::Relaxed, |role| {
                             (role != SENDING).then_some(RECEIVING)
                         }).is_ok()
                     {
