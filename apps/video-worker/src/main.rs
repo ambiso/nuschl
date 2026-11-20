@@ -8,6 +8,7 @@ mod capture_pixels;
 mod decode;
 
 mod codec {
+    #[cfg(target_os = "linux")]
     use nuschl_ipc::video::CaptureFailure;
     use nuschl_ipc::video::{HEADER_BYTES, Header, Kind, Settings};
     use rav1e::prelude::*;
