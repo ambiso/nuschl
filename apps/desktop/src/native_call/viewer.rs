@@ -215,7 +215,7 @@ impl Viewer {
                         Ok(Some(frame)) => {
                             self.stats
                                 .frame(frame.width, frame.height, Some(started.elapsed()));
-                            display.updates.frame(frame, true);
+                            display.updates.frame(frame);
                         }
                         Ok(None) => {}
                         Err(DecodeError::Io(_) | DecodeError::Timeout | DecodeError::Busy) => {

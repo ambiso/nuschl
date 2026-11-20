@@ -2,6 +2,7 @@
 //! Linux calls on the desktop. Capture and decoding use confined video workers.
 
 mod publisher;
+mod stage;
 mod stats;
 mod viewer;
 
@@ -61,7 +62,7 @@ pub struct Active {
     updates: Arc<Latest>,
     stop: Option<oneshot::Sender<()>>,
     minimized: bool,
-    expanded: bool,
+    stage: Option<stage::Controls>,
     monitor: bool,
 }
 
@@ -233,14 +234,12 @@ impl Latest {
         }
     }
 
-    fn frame(&self, frame: DecodedFrame, watching: bool) {
+    fn frame(&self, frame: DecodedFrame) {
         let mut update = self
             .update
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if watching && update.status != "Watching video" {
-            update.status = "Watching video".into();
-        }
+        update.status.clear();
         update.frame = Some(frame);
         drop(update);
         self.ready.notify_one();
@@ -320,7 +319,18 @@ impl Surface {
 impl Render for Surface {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         crate::images::collect(window);
+        let fullscreen = window.is_fullscreen();
+        let overlay = fullscreen && self.image.is_some();
+        let status = || {
+            div()
+                .id("native-call-status")
+                .flex_shrink_0()
+                .text_sm()
+                .text_color(color(TEXT_MUTED))
+                .child(gpui_kit::text!(self.status.clone()))
+        };
         div()
+            .relative()
             .flex()
             .flex_col()
             .flex_1()
@@ -330,14 +340,7 @@ impl Render for Surface {
             .when(self.image.is_none(), |stage| {
                 stage.items_center().justify_center()
             })
-            .child(
-                div()
-                    .id("native-call-status")
-                    .flex_shrink_0()
-                    .text_sm()
-                    .text_color(color(TEXT_MUTED))
-                    .child(gpui_kit::text!(self.status.clone())),
-            )
+            .children((!self.status.is_empty() && !overlay).then(&status))
             .when_some(self.image.clone(), |view, image| {
                 let image_size = image.size(0);
                 let quality = self.quality.clone();
@@ -355,7 +358,7 @@ impl Render for Surface {
                         .min_h_0()
                         .flex_1()
                         .overflow_hidden()
-                        .rounded(px(8.))
+                        .when(!fullscreen, |picture| picture.rounded(px(8.)))
                         .bg(color(BACKDROP))
                         .child(
                             img(image)
@@ -387,6 +390,14 @@ impl Render for Surface {
                         }),
                 )
             })
+            .children((!self.status.is_empty() && overlay).then(|| {
+                status()
+                    .absolute()
+                    .top_2()
+                    .mx_auto()
+                    .px_2()
+                    .bg(tint(MAIN, 0xeb))
+            }))
     }
 }
 
@@ -504,7 +515,7 @@ impl Desktop {
             updates: updates.clone(),
             stop: Some(stop),
             minimized: false,
-            expanded: false,
+            stage: None,
             monitor: false,
         });
         self.services.native_call(Start {
@@ -588,7 +599,7 @@ impl Desktop {
             return;
         }
         let shown = !call.minimized
-            && (call.expanded
+            && (call.stage.is_some()
                 || self.selected_indices().is_some_and(|(index, channel)| {
                     let server = &self.client.servers[index];
                     self.native_call_in(&server.id, &server.channels[channel].target)
@@ -600,14 +611,18 @@ impl Desktop {
         let Some(call) = &mut self.native_call else {
             return;
         };
-        call.expanded = expanded;
         if expanded {
+            call.stage = Some(stage::Controls::new(window, cx));
+            stage::activity(self, cx);
             window.focus(&self.window_focus, cx);
             if !window.is_fullscreen() && self.native_call_fullscreen.is_none() {
                 self.native_call_fullscreen = Some(Instant::now());
                 window.toggle_fullscreen();
             }
         } else {
+            call.stage = None;
+            self.menu = None;
+            window.focus(&self.window_focus, cx);
             self.restore_call_window(window);
         }
         cx.notify();
@@ -791,7 +806,11 @@ pub fn expanded(
     window: &mut Window,
     cx: &mut Context<Desktop>,
 ) -> Option<AnyElement> {
-    if !this.native_call.as_ref().is_some_and(|call| call.expanded) {
+    if !this
+        .native_call
+        .as_ref()
+        .is_some_and(|call| call.stage.is_some())
+    {
         this.restore_call_window(window);
         return None;
     }
@@ -802,9 +821,11 @@ pub fn expanded(
         .flex()
         .flex_col()
         .text_color(color(TEXT))
-        .bg(color(MAIN))
+        .bg(color(BACKDROP))
         .track_focus(&this.window_focus)
+        .on_mouse_move(cx.listener(|this, _, _, cx| stage::activity(this, cx)))
         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+            stage::activity(this, cx);
             if event.keystroke.key == "escape" {
                 this.set_call_expanded(false, window, cx);
                 cx.stop_propagation();
@@ -814,15 +835,27 @@ pub fn expanded(
         .when_some(crate::menus::menu(this, cx), |cover, menu| {
             cover.child(menu)
         });
-    Some(crate::chrome::frame(window, cover.into_any_element()))
+    let cover = cover.into_any_element();
+    if window.is_fullscreen() {
+        window.set_client_inset(px(0.));
+        Some(cover)
+    } else {
+        Some(crate::chrome::frame(window, cover))
+    }
 }
 
 pub fn panel(this: &Desktop, window: &mut Window, cx: &mut Context<Desktop>) -> Option<AnyElement> {
+    let toolbar = this.native_call.as_mut()?.stage.as_mut().map(|controls| {
+        (
+            controls.focus.clone(),
+            controls.opacity(this.menu.is_some(), window, cx),
+        )
+    });
     let call = this.native_call.as_ref()?;
     if call.minimized {
         return None;
     }
-    let expanded = call.expanded;
+    let expanded = toolbar.is_some();
     let generation = this.native_call_generation;
     let surface = call.surface.read(cx);
     let has_picture = surface.image.is_some();
@@ -854,6 +887,12 @@ pub fn panel(this: &Desktop, window: &mut Window, cx: &mut Context<Desktop>) -> 
         .bg(color(SIDEBAR))
         .px_2()
         .py_1()
+        .when_some(toolbar, |actions, (focus, opacity)| {
+            actions
+                .track_focus(&focus)
+                .opacity(opacity)
+                .on_hover(cx.listener(|this, hovering, _, cx| stage::hover(this, *hovering, cx)))
+        })
         .children(source_controls(call, cx))
         .children(picker)
         .when_some(kind, |actions, kind| {
@@ -911,6 +950,34 @@ pub fn panel(this: &Desktop, window: &mut Window, cx: &mut Context<Desktop>) -> 
             cx,
         ))
         .child(stop_button(call, cx));
+    let has_notices = call.source_pending.is_some() || call.reopening_screen || call.monitor;
+    let notices = has_notices.then(|| {
+        div()
+            .when_some(call.source_pending, |notices, source| {
+                notices.child(layout::text(
+                    "native-call-source-pending",
+                    portal_prompt(source),
+                ))
+            })
+            .when(call.reopening_screen, |notices| {
+                notices.child(layout::text(
+                    "native-call-screen-reopening",
+                    "Reconnecting screen share…",
+                ))
+            })
+            .when(call.monitor && !call.reopening_screen, |notices| {
+                notices.child(layout::text(
+                    "native-call-monitor-warning",
+                    "Anyone watching can see the Nuschl window while it’s on the shared monitor.",
+                ))
+            })
+    });
+    let (inline_notices, overlay_notices) = if expanded {
+        (None, notices)
+    } else {
+        (notices, None)
+    };
+    let show_stats = call.stats_open && (expanded || has_picture);
     Some(
         div()
             .id("native-call")
@@ -919,12 +986,18 @@ pub fn panel(this: &Desktop, window: &mut Window, cx: &mut Context<Desktop>) -> 
             .min_w_0()
             .min_h_0()
             .overflow_hidden()
-            .when(expanded, |panel| panel.flex_1().p_3())
+            .when(expanded, |panel| {
+                panel.relative().flex_1().bg(color(BACKDROP))
+            })
             .when(!expanded, |panel| {
                 panel
                     .max_h(relative(0.5))
                     .px_3()
                     .py_2()
+                    .gap_1()
+                    .border_b_1()
+                    .border_color(color(BORDER))
+                    .bg(color(MAIN))
                     .when(has_picture, |panel| panel.h(relative(0.5)))
             })
             .on_mouse_down(
@@ -939,29 +1012,8 @@ pub fn panel(this: &Desktop, window: &mut Window, cx: &mut Context<Desktop>) -> 
                     cx.stop_propagation();
                 }),
             )
-            .gap_1()
-            .border_b_1()
-            .border_color(color(BORDER))
-            .bg(color(MAIN))
-            .when_some(call.source_pending, |panel, source| {
-                panel.child(layout::text(
-                    "native-call-source-pending",
-                    portal_prompt(source),
-                ))
-            })
-            .when(call.reopening_screen, |panel| {
-                panel.child(layout::text(
-                    "native-call-screen-reopening",
-                    "Reconnecting screen share…",
-                ))
-            })
-            .when(call.monitor && !call.reopening_screen, |panel| {
-                panel.child(layout::text(
-                    "native-call-monitor-warning",
-                    "Anyone watching can see the Nuschl window while it’s on the shared monitor.",
-                ))
-            })
-            .when(call.stats_open && !has_picture, |panel| {
+            .children(inline_notices)
+            .when(call.stats_open && !show_stats, |panel| {
                 panel.child(video_stats(stats.as_deref(), owned))
             })
             .child(
@@ -973,7 +1025,7 @@ pub fn panel(this: &Desktop, window: &mut Window, cx: &mut Context<Desktop>) -> 
                     .min_h_0()
                     .overflow_hidden()
                     .child(call.surface.clone())
-                    .when(call.stats_open && has_picture, |stage| {
+                    .when(show_stats, |stage| {
                         let scroll_height = window.viewport_size().height;
                         stage.child(
                             layout::scroll_region(
@@ -999,7 +1051,29 @@ pub fn panel(this: &Desktop, window: &mut Window, cx: &mut Context<Desktop>) -> 
                         )
                     }),
             )
-            .child(actions)
+            .children(overlay_notices.map(|notices| {
+                notices
+                    .absolute()
+                    .top_2()
+                    .left_2()
+                    .max_w_full()
+                    .pr_2()
+                    .bg(tint(MAIN, 0xeb))
+            }))
+            .child(if expanded {
+                div()
+                    .absolute()
+                    .bottom_2()
+                    .left_0()
+                    .right_0()
+                    .px_2()
+                    .flex()
+                    .justify_center()
+                    .child(actions)
+                    .into_any_element()
+            } else {
+                actions.into_any_element()
+            })
             .into_any_element(),
     )
 }
