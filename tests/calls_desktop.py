@@ -12,8 +12,10 @@ Set TMPDIR and NUSCHL_WL_TMP to a short disk-backed scratch path.
         --gnome-shell <gnome-shell> --output <directory>
 """
 import argparse
+import base64
 import hashlib
 import html
+import hmac
 import json
 from pathlib import Path
 import re
@@ -157,6 +159,34 @@ class CallTest(VoiceTest):
         assert "&p=" not in body, body
         return event["target"], link.group()
 
+    def witness_end(self, request):
+        receivers = [[user["session"], user["instance"]] for user in self.witness.users.values()
+                     if user["name"] in {"Andi", "Bea"}]
+        assert len(receivers) == 2
+        self.witness.send(kind="plugin_data", request=request, receivers=receivers,
+                          data_id="nuschl/call", data=[1, 2])
+        event = self.witness.wait(lambda event: event["kind"] == "plugin_data_admission"
+                                  and event["request"] == request)
+        assert event["admitted"], event
+
+    def historical_invitation(self, app, pid):
+        encode = lambda value: base64.urlsafe_b64encode(value).decode().rstrip("=")
+        label = b"nuschl/stream/v2"
+        publisher = bytes(32)
+        extracted = hmac.digest(label, publisher, "sha256")
+        host_key = hmac.digest(extracted, label + b" host\x01", "sha256")
+        check = hashlib.sha256(host_key).digest()
+        old = f"https://{self.call_host}/call#v=1&k={encode(bytes([1]) * 32)}&h={encode(check)}"
+        self.witness.send(kind="text", channel=1, body=f"Call: {old}")
+        card = self.invitation(app, "Witness")
+        self.control(card, "Join video call", shown=False)
+        self.copy_link(card, pid, old)
+
+        creator = f"{old}&p={encode(publisher)}"
+        self.witness.send(kind="text", channel=1, body=f"Call: {creator}")
+        eventually(lambda: (timeline := self.timeline(app)) and self.find(timeline, None, f"Call: {creator}"),
+                   "a creator URL did not remain ordinary chat")
+
     def copy_link(self, card, pid, link):
         # The compositor, its clipboard selection and both clients are private.
         self.shell.eval("global.get_window_actors().map(actor => actor.meta_window)"
@@ -227,6 +257,8 @@ class CallTest(VoiceTest):
             self.control(andi, "Start call", shown=False)
             self.control(andi, "Start call in browser", shown=False)
 
+            self.witness_end(1)
+            self.historical_invitation(bea, bea_pid)
             self.press(andi, "Start meeting")
             self.inline(andi)
             own = self.invitation(andi, "You")
@@ -236,6 +268,7 @@ class CallTest(VoiceTest):
             self.copy_link(self.invitation(bea), bea_pid, link)
             assert not any(link in label for _, _, label, _ in items(self.timeline(bea))), "raw call text is visible"
 
+            self.witness_end(2)
             self.witness.send(kind="text", channel=1, body="Call ended")
             eventually(lambda: (timeline := self.timeline(bea)) and self.find(timeline, None, "Call ended"),
                        "ordinary text was hidden")
