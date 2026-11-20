@@ -37,7 +37,7 @@ AT_SPI_RADIO_MENU_ITEM = "role 45"
 
 
 class CallTest(VoiceTest):
-    def desktop(self, name, registry, known):
+    def desktop(self, name, registry, known, *, channel=1, path="Lobby"):
         profile = self.root / name
         (profile / "config").mkdir(parents=True)
         (profile / "config/servers.json").write_text(json.dumps([{
@@ -59,18 +59,19 @@ class CallTest(VoiceTest):
         env["PATH"] = f"{bin_dir}:{env['PATH']}"
         env.update(NO_PROXY="*", no_proxy="*")
         process = self.spawn([str(self.args.binaries / "nuschl"), "--profile-dir", str(profile),
-                              f"mumble://{name}@127.0.0.1:{self.murmur.port}/Lobby"],
+                              f"mumble://{name}@127.0.0.1:{self.murmur.port}/{path}"],
                              env | {"NUSCHL_AUDIO_BACKEND": "pulse"}, f"desktop-{name}.log")
         app = eventually(lambda: next((node for node in registry.children() if node.name.lower() == "nuschl"
                                        and node.destination not in known), None),
                          f"no accessibility tree for {name}", timeout=45)
         self.witness.wait(lambda event: event["kind"] == "user" and event["user"]["name"] == name
-                          and event["user"]["channel"] == 1, timeout=45)
+                          and event["user"]["channel"] == channel, timeout=45)
         return app, opened, process.pid
 
     @staticmethod
-    def find(app, role, name, prefix=False):
-        return next((node for node, node_role, node_name, _ in items(app) if role in (None, node_role)
+    def find(app, role, name, prefix=False, *, subtree=False):
+        nodes = items(app, subtree=subtree)
+        return next((node for node, node_role, node_name, _ in nodes if role in (None, node_role)
                      and (node_name.startswith(name) if prefix else node_name == name)), None)
 
     def direct(self, app, name):
@@ -78,15 +79,15 @@ class CallTest(VoiceTest):
         eventually(lambda: any(role == "list" and label.startswith("Messages with") and label.endswith(name)
                                for _, role, label, _ in items(app)), f"no conversation with {name}")
 
-    def control(self, app, name, shown=True):
+    def control(self, app, name, shown=True, *, subtree=False):
         def matches():
-            node = self.find(app, "push button", name)
+            node = self.find(app, "push button", name, subtree=subtree)
             return node if shown else node is None
 
         return eventually(matches, f"expected {name!r} to be {'shown' if shown else 'hidden'}", timeout=15)
 
-    def press(self, app, name):
-        self.control(app, name).press()
+    def press(self, app, name, *, subtree=False):
+        self.control(app, name, subtree=subtree).press()
 
     def resize_desktop(self, pid, height):
         lookup = ("const window = global.get_window_actors().map(actor => actor.meta_window)"
@@ -140,18 +141,28 @@ class CallTest(VoiceTest):
         def card():
             timeline = self.timeline(app)
             if timeline:
-                candidate = self.find(timeline, "panel", label)
+                candidate = self.find(timeline, "panel", label, subtree=True)
                 if inline:
-                    return candidate
-                assert candidate is None, "a late invitation was added to chat history"
-                return self.find(app, "panel", label)
+                    if candidate:
+                        cards = [node.path for node, role, name, _ in items(app)
+                                 if role == "panel" and name == label]
+                        if cards == [candidate.path]:
+                            return candidate
+                else:
+                    assert candidate is None, "a late invitation was added to chat history"
+                    return self.find(app, "panel", label)
             return None
 
-        return eventually(card, f"no {status.lower()} card for {sender}", timeout=15)
+        try:
+            return eventually(card, f"no {status.lower()} card for {sender}", timeout=15)
+        except AssertionError:
+            state = [(role, name) for _, role, name, _ in items(app) if role in {"panel", "list item"}]
+            raise AssertionError(f"no {status.lower()} card for {sender}: {state}") from None
 
     def witness_link(self):
         marker = f"https://{self.call_host}/call#"
-        event = self.witness.wait(lambda event: event["kind"] == "text" and marker in event["body"])
+        event = self.witness.wait(lambda event: event["kind"] == "text" and not event["outgoing"]
+                                  and marker in event["body"])
         body = html.unescape(event["body"])
         secret = r"[A-Za-z0-9_-]{43}"
         link = re.search(rf"{re.escape(marker)}v=1&k={secret}&h={secret}(?![A-Za-z0-9_-])", body)
@@ -181,12 +192,12 @@ class CallTest(VoiceTest):
         old = f"https://{self.call_host}/call#v=1&k={encode(bytes([1]) * 32)}&h={encode(check)}"
         self.witness.send(kind="text", channel=1, body=f"Call: {old}")
         card = self.invitation(app, "Witness")
-        self.control(card, "Join video call", shown=False)
+        self.control(card, "Join video call", shown=False, subtree=True)
         self.copy_link(card, pid, old)
 
         creator = f"{old}&p={encode(publisher)}"
         self.witness.send(kind="text", channel=1, body=f"Call: {creator}")
-        eventually(lambda: (timeline := self.timeline(app)) and self.find(timeline, None, f"Call: {creator}"),
+        eventually(lambda: (timeline := self.timeline(app)) and self.find(timeline, None, f"Call: {creator}", subtree=True),
                    "a creator URL did not remain ordinary chat")
 
     def copy_link(self, card, pid, link):
@@ -198,11 +209,13 @@ class CallTest(VoiceTest):
         clipboard = "imports.gi.St.Clipboard.get_default()"
         selection = "imports.gi.St.ClipboardType.CLIPBOARD"
         self.shell.eval(f"{clipboard}.set_text({selection}, 'call fixture sentinel'); 'ok'")
-        x, y, width, height = self.control(card, "Copy link").extents()
-        title = next(node for node, _role, label, _ in items(card)
-                     if node.path != card.path and label == card.name)
+        nodes = items(card, subtree=True)
+        title = next(node for node, _, label, _ in nodes if node.path != card.path and label == card.name)
+        button = next(node for node, role, label, _ in nodes if role == "push button" and label == "Copy link")
+        x, y, width, height = button.extents()
         _, title_y, _, title_height = title.extents()
-        assert title_y <= y + height // 2 <= title_y + title_height, "Copy link moved off the title row"
+        assert title_y <= y + height // 2 <= title_y + title_height, (
+            f"Copy link moved off the title row: button {(y, height)}, title {(title_y, title_height)}")
         left, top = json.loads(self.shell.eval(
             "const bounds = global.display.focus_window.get_buffer_rect(); JSON.stringify([bounds.x, bounds.y])"))
         assert width > 0 and height > 0
@@ -255,6 +268,8 @@ class CallTest(VoiceTest):
             self.witness.send(kind="join", channel=1)
             andi, andi_opened, andi_pid = self.desktop("Andi", registry, set())
             bea, bea_opened, bea_pid = self.desktop("Bea", registry, {andi.destination})
+            cara, _, _ = self.desktop("Cara", registry, {andi.destination, bea.destination},
+                                      channel=2, path="Lobby/Development")
             self.control(andi, "Share screen")
             self.control(andi, "Start call", shown=False)
             self.control(andi, "Start call in browser", shown=False)
@@ -268,20 +283,21 @@ class CallTest(VoiceTest):
             assert target == {"kind": "channel", "id": 1}
             self.copy_link(own, andi_pid, link)
             self.copy_link(self.invitation(bea), bea_pid, link)
-            assert not any(link in label for _, _, label, _ in items(self.timeline(bea))), "raw call text is visible"
+            assert not any(link in label for _, _, label, _ in items(self.timeline(bea), subtree=True)), "raw call text is visible"
 
             self.witness_end(2)
             self.witness.send(kind="text", channel=1, body="Call ended")
-            eventually(lambda: (timeline := self.timeline(bea)) and self.find(timeline, None, "Call ended"),
+            eventually(lambda: (timeline := self.timeline(bea)) and self.find(timeline, None, "Call ended", subtree=True),
                        "ordinary text was hidden")
-            self.control(self.invitation(bea), "Join video call")
+            self.control(self.invitation(bea), "Join video call", subtree=True)
 
-            cara, _, _ = self.desktop("Cara", registry, {andi.destination, bea.destination})
-            self.control(self.invitation(cara, inline=False), "Join video call")
+            eventually(lambda: self.find(cara, "tree item", "Lobby"), "Cara cannot see Lobby").press()
+            self.press(cara, "Join voice")
+            self.control(self.invitation(cara, inline=False), "Join video call", subtree=True)
             self.press(andi, "Minimize call")
             own = self.invitation(andi, "You")
             self.copy_link(own, andi_pid, link)
-            self.press(own, "Return to call")
+            self.press(own, "Return to call", subtree=True)
             self.inline(andi)
             self.press(andi, "End call")
             self.control(andi, "Start meeting")
@@ -290,13 +306,16 @@ class CallTest(VoiceTest):
             self.copy_link(self.invitation(andi, "You", ended=True), andi_pid, link)
             self.invitation(bea, ended=True)
 
+            self.resize_desktop(andi_pid, 880)
             self.press(andi, "Start camera")
             self.inline(andi)
             self.control(andi, "Open in browser", shown=False)
+            self.video_stats(andi, show=True)
             chat = self.find(andi, "list", "Messages in #Lobby")
             chat_bounds = chat.extents()
             self.select_quality(andi, "Auto", "720p30", above=True)
             assert chat.extents() == chat_bounds, "quality choices changed the chat layout"
+            self.video_stats(andi, show=False)
             height = self.resize_desktop(andi_pid, 520)
             settings = self.root / "Andi" / "config/settings.json"
             for _ in range(2):
@@ -327,7 +346,7 @@ class CallTest(VoiceTest):
             self.press(bea, "Minimize call")
             invited = self.invitation(bea)
             self.control(bea, "Full screen", shown=False)
-            self.press(invited, "Return to call")
+            self.press(invited, "Return to call", subtree=True)
             self.inline(bea)
 
             self.press(andi, "End call")
