@@ -40,8 +40,9 @@ pub enum ServiceEvent {
         id: u64,
     },
     #[cfg(target_os = "linux")]
-    NativeMonitorShare {
+    NativeSourceChanged {
         generation: u64,
+        change: crate::native_call::SourceChange,
     },
     #[cfg(target_os = "linux")]
     NativeFinished {

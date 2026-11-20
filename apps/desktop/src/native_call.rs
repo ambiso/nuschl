@@ -10,8 +10,11 @@ use crate::{
     menus::MenuTarget,
     services::ServiceEvent,
     state::Desktop,
-    theme::{BACKDROP, BORDER, DANGER, DANGER_TEXT, MAIN, SIDEBAR, TEXT, TEXT_MUTED, color},
+    theme::{
+        ACCENT, BACKDROP, BORDER, DANGER, DANGER_TEXT, MAIN, SIDEBAR, TEXT, TEXT_MUTED, color, tint,
+    },
 };
+use futures_util::{Stream, StreamExt as _, stream};
 use gpui_kit::{prelude::*, *};
 use nuschl_client::native::sfu::{
     Connect, Connection, Media, MediaEvent, MediaOptions, Purpose, Quality, VideoKind,
@@ -24,6 +27,7 @@ use nuschl_protocol::sfu::Codec;
 use nuschl_session::{config::ClientSettings, identity::CryptoHandle};
 use std::{
     path::PathBuf,
+    pin::Pin,
     sync::{Arc, LazyLock, Mutex},
     time::{Duration, Instant},
 };
@@ -48,6 +52,8 @@ pub struct Active {
     quality_open: bool,
     stats_open: bool,
     own_video: Option<VideoKind>,
+    source_requests: mpsc::Sender<Source>,
+    source_pending: Option<Source>,
     updates: Arc<Latest>,
     stop: Option<oneshot::Sender<()>>,
     minimized: bool,
@@ -60,6 +66,12 @@ pub enum Finish {
     RoomEnded,
 }
 
+pub enum SourceChange {
+    Active { source: Source, monitor: bool },
+    Cancelled,
+    Failed(String),
+}
+
 pub struct Start {
     crypto: CryptoHandle,
     generation: u64,
@@ -67,6 +79,7 @@ pub struct Start {
     host: String,
     policy: PeerPolicy,
     source: Option<Source>,
+    source_requests: mpsc::Receiver<Source>,
     updates: Arc<Latest>,
     quality: watch::Receiver<Selection>,
     stop: oneshot::Receiver<()>,
@@ -247,6 +260,9 @@ impl Render for Surface {
             .gap_1()
             .min_h_0()
             .w_full()
+            .when(self.image.is_none(), |stage| {
+                stage.items_center().justify_center()
+            })
             .child(
                 div()
                     .id("native-call-status")
@@ -359,11 +375,7 @@ impl Desktop {
             room.clone()
         };
         let own_video = source.map(video_kind);
-        let status = match source {
-            Some(Source::Camera) => "Waiting for camera permission",
-            Some(Source::Screen) => "Choose a screen or window",
-            None => "Joining video call",
-        };
+        let status = source.map_or("Joining video call", portal_prompt);
         let updates = Arc::new(Latest {
             update: Mutex::new(Update {
                 status: status.into(),
@@ -375,6 +387,7 @@ impl Desktop {
             ready: Notify::new(),
         });
         let (stop, stopped) = oneshot::channel();
+        let (request_source, source_requests) = mpsc::channel(1);
         let (selection, quality) = watch::channel(Selection {
             quality: Quality::Auto,
             pixels: 0,
@@ -395,7 +408,9 @@ impl Desktop {
             quality: selection,
             quality_open: false,
             stats_open: false,
-            own_video,
+            own_video: None,
+            source_requests: request_source,
+            source_pending: None,
             updates: updates.clone(),
             stop: Some(stop),
             minimized: false,
@@ -409,6 +424,7 @@ impl Desktop {
             host: link.host().to_owned(),
             policy,
             source,
+            source_requests,
             updates,
             quality,
             stop: stopped,
@@ -541,13 +557,54 @@ impl Desktop {
         }
     }
 
-    pub fn native_monitor_share(&mut self, generation: u64) {
-        if generation == self.native_call_generation
-            && let Some(call) = &mut self.native_call
+    fn choose_native_source(&mut self, source: Source, cx: &mut Context<Self>) {
+        if let Some(call) = &mut self.native_call
             && call.stop.is_some()
+            && call.source_pending.is_none()
+            && call
+                .own_video
+                .is_some_and(|kind| kind != video_kind(source))
+            && call.source_requests.try_send(source).is_ok()
         {
-            call.monitor = true;
+            call.source_pending = Some(source);
+            cx.notify();
         }
+    }
+
+    pub fn native_source_changed(
+        &mut self,
+        generation: u64,
+        change: SourceChange,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(call) = self
+            .native_call
+            .as_mut()
+            .filter(|call| generation == self.native_call_generation && call.stop.is_some())
+        else {
+            return;
+        };
+        call.source_pending = None;
+        match change {
+            SourceChange::Active { source, monitor } => {
+                let kind = video_kind(source);
+                call.monitor = monitor;
+                call.own_video = Some(kind);
+                call.surface.update(cx, |surface, cx| {
+                    surface.own_video = Some(kind);
+                    cx.notify();
+                });
+            }
+            SourceChange::Cancelled => {}
+            SourceChange::Failed(error) => {
+                if let Some(server) = self.client.servers.iter_mut().find(|server| {
+                    server.id == call.server && server.generation == call.voice_generation
+                }) {
+                    server.set_notice(format!("Could not switch video source. {error}"));
+                }
+            }
+        }
+        cx.notify();
     }
 
     pub fn native_finished(&mut self, generation: u64, result: Result<Finish, String>) {
@@ -633,10 +690,14 @@ pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
         .aria_label("Video call controls")
         .items_center()
         .justify_center()
+        .w_auto()
+        .max_w_full()
+        .mx_auto()
         .rounded(px(8.))
         .bg(color(SIDEBAR))
         .px_2()
         .py_1()
+        .children(source_controls(call, cx))
         .when_some(kind, |actions, kind| {
             actions.child(styled_button(
                 "native-call-quality",
@@ -715,6 +776,12 @@ pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
             .border_b_1()
             .border_color(color(BORDER))
             .bg(color(MAIN))
+            .when_some(call.source_pending, |panel, source| {
+                panel.child(layout::text(
+                    "native-call-source-pending",
+                    portal_prompt(source),
+                ))
+            })
             .when(call.monitor, |panel| {
                 panel.child(layout::text(
                     "native-call-monitor-warning",
@@ -868,6 +935,64 @@ fn video_kind(source: Source) -> VideoKind {
     }
 }
 
+fn source_controls(call: &Active, cx: &mut Context<Desktop>) -> Vec<AnyElement> {
+    let Some(active) = call.own_video else {
+        return Vec::new();
+    };
+    let choose = call.source_pending.is_none() && call.stop.is_some();
+    [
+        (Source::Camera, "video", "Use camera", "Camera is on"),
+        (Source::Screen, "screen", "Share screen", "Sharing screen"),
+    ]
+    .into_iter()
+    .map(|(source, icon, action, status)| {
+        let enabled = active == video_kind(source);
+        if choose && !enabled {
+            return icon_button(
+                ("native-call-source", icon),
+                icon,
+                action,
+                TEXT,
+                None,
+                move |this, _, cx| this.choose_native_source(source, cx),
+                cx,
+            );
+        }
+        div()
+            .id(("native-call-source", icon))
+            .role(Role::Image)
+            .aria_label(if enabled { status } else { action })
+            .size(px(32.))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.))
+            .when(enabled, |icon| icon.bg(tint(ACCENT, 0x35)))
+            .child(crate::assets::icon(
+                icon,
+                18.,
+                color(if enabled { ACCENT } else { TEXT_MUTED }),
+            ))
+            .into_any_element()
+    })
+    .collect()
+}
+
+fn portal_prompt(source: Source) -> &'static str {
+    match source {
+        Source::Camera => "Waiting for camera permission",
+        Source::Screen => "Choose a screen or window",
+    }
+}
+
+fn purpose(source: Source) -> Purpose {
+    match source {
+        Source::Camera => Purpose::Camera,
+        Source::Screen => Purpose::ScreenVideo,
+    }
+}
+
 fn stop_button(call: &Active, cx: &mut Context<Desktop>) -> impl IntoElement {
     icon_button(
         "native-call-stop",
@@ -945,6 +1070,7 @@ async fn drive(
         host,
         policy,
         source,
+        source_requests,
         updates,
         quality,
         mut stop,
@@ -984,25 +1110,17 @@ async fn drive(
         stats: stats::Stats::new(policy.relay_only, Instant::now()),
     };
     let result = if let Some(grant) = grant {
-        let sharing = async {
-            if grant.can_include_app() {
-                events
-                    .send(ServiceEvent::NativeMonitorShare { generation })
-                    .await
-                    .map_err(text)?;
-            }
-            Ok(())
-        };
-        tokio::select! {
-            biased;
-            () = &mut cancel => Ok(Finish::Left),
-            result = sharing => match result {
-                Ok(()) => publish_video(&mut media, grant, video_worker, &mut display, cancel)
-                    .await
-                    .map(|()| Finish::Left),
-                Err(error) => Err(error),
-            },
-        }
+        publish_video(
+            &mut media,
+            grant,
+            video_worker,
+            &mut display,
+            SourceChanges { generation, events },
+            source_requests,
+            cancel,
+        )
+        .await
+        .map(|()| Finish::Left)
     } else {
         display.updates.status("Waiting for video");
         receive_video(&mut media, video_worker, &mut display, cancel).await
@@ -1011,45 +1129,106 @@ async fn drive(
     result.and_then(|finish| closed.map(|()| finish))
 }
 
+#[derive(Clone, Copy)]
+struct SourceChanges<'a> {
+    generation: u64,
+    events: &'a mpsc::Sender<ServiceEvent>,
+}
+
+impl SourceChanges<'_> {
+    async fn report(self, change: SourceChange) -> Result<(), String> {
+        self.events
+            .send(ServiceEvent::NativeSourceChanged {
+                generation: self.generation,
+                change,
+            })
+            .await
+            .map_err(text)
+    }
+}
+
 async fn publish_video(
     media: &mut Media,
-    grant: portal::Grant,
+    mut grant: portal::Grant,
     worker: PathBuf,
     display: &mut Display,
-    mut cancel: std::pin::Pin<&mut impl Future<Output = ()>>,
+    changes: SourceChanges<'_>,
+    source_requests: mpsc::Receiver<Source>,
+    mut cancel: Pin<&mut impl Future<Output = ()>>,
 ) -> Result<(), String> {
-    let source = grant.source();
-    let encoding = Encoding {
-        kind: video_kind(source),
-        remote: None,
-        bitrate_estimate: None,
-        software: false,
-    };
-    let initial = encoding.ceiling(display.quality.borrow_and_update().quality);
-    let mut capture = grant
-        .start_with_limits(worker.clone(), initial)
-        .map_err(text)?;
-    let updates = display.updates.clone();
-    let mut preview =
-        preview::Preview::start(worker, source, move |frame| updates.frame(frame, false))
-            .map_err(|error| tracing::debug!(%error, "local video preview unavailable"))
-            .ok();
-    display.updates.status(match source {
-        Source::Screen => "Your screen · waiting for a viewer",
-        Source::Camera => "Your camera · waiting for a viewer",
+    let choices = stream::unfold(source_requests, |mut requests| async move {
+        loop {
+            let source = requests.recv().await?;
+            let change = match portal::request(source, None).await {
+                Ok(grant) => return Some((Ok(grant), requests)),
+                Err(ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled)) => {
+                    SourceChange::Cancelled
+                }
+                Err(error) => SourceChange::Failed(text(error)),
+            };
+            if let Err(error) = changes.report(change).await {
+                return Some((Err(error), requests));
+            }
+        }
     });
-    let result = tokio::select! {
-        biased;
-        () = &mut cancel => Ok(()),
-        result = send_video(media, &mut capture, &mut preview, encoding, initial, display) => result,
-    };
-    let closed = capture.stop().await.map_err(text);
-    if let Some(preview) = preview
-        && let Err(error) = preview.stop().await
-    {
-        tracing::debug!(%error, "could not stop the local preview");
+    tokio::pin!(choices);
+    loop {
+        let source = grant.source();
+        let monitor = grant.can_include_app();
+        let encoding = Encoding {
+            kind: video_kind(source),
+            remote: None,
+            bitrate_estimate: None,
+            software: false,
+        };
+        let initial = encoding.ceiling(display.quality.borrow_and_update().quality);
+        let starting = async {
+            changes
+                .report(SourceChange::Active { source, monitor })
+                .await?;
+            grant
+                .start_with_limits(worker.clone(), initial)
+                .map_err(text)
+        };
+        let mut capture = tokio::select! {
+            biased;
+            () = &mut cancel => return Ok(()),
+            capture = starting => capture?,
+        };
+        let updates = display.updates.clone();
+        let mut preview = preview::Preview::start(worker.clone(), source, move |frame| {
+            updates.frame(frame, false)
+        })
+        .map_err(|error| tracing::debug!(%error, "local video preview unavailable"))
+        .ok();
+        let status = match source {
+            Source::Screen => "Your screen · waiting for a viewer",
+            Source::Camera => "Your camera · waiting for a viewer",
+        };
+        display.updates.clear(status);
+        display.updates.stats(None);
+        display.stats.clear(Instant::now());
+
+        let result = tokio::select! {
+            biased;
+            () = &mut cancel => Ok(None),
+            result = send_video(
+                media, &mut capture, &mut preview, encoding, initial, display, choices.as_mut(),
+            ) => result,
+        };
+        let closed = capture.stop().await.map_err(text);
+        if let Some(preview) = preview
+            && let Err(error) = preview.stop().await
+        {
+            tracing::debug!(%error, "could not stop the local preview");
+        }
+        closed?;
+        let Some(next) = result? else {
+            return Ok(());
+        };
+        media.switch_source(purpose(next.source())).map_err(text)?;
+        grant = next;
     }
-    result.and(closed)
 }
 
 async fn prepare(
@@ -1067,10 +1246,7 @@ async fn prepare(
         let Some(source) = source else {
             return Ok::<_, String>(None);
         };
-        updates.status(match source {
-            Source::Camera => "Waiting for camera permission",
-            Source::Screen => "Choose a screen or window",
-        });
+        updates.status(portal_prompt(source));
         portal::request(source, None).await.map(Some).map_err(text)
     };
     tokio::pin!(permission);
@@ -1083,10 +1259,7 @@ async fn prepare(
     };
     let source = grant.as_ref().map(portal::Grant::source);
     updates.status("Joining video call");
-    let publish = source.map(|source| match source {
-        Source::Camera => Purpose::Camera,
-        Source::Screen => Purpose::ScreenVideo,
-    });
+    let publish = source.map(purpose);
     let media = connection
         .into_media(MediaOptions {
             executable,
@@ -1186,7 +1359,7 @@ impl Encoding {
             && estimate < ceiling.bitrate
         {
             notes.push(format!(
-                "Estimated upload allows {:.1} Mb/s. Target video is {}p at up to {} fps.",
+                "Estimated video budget is {:.2} Mb/s. Target video is {}p at up to {} fps.",
                 f64::from(estimate) / 1_000_000.,
                 effective.height,
                 effective.fps,
@@ -1206,7 +1379,8 @@ async fn send_video(
     mut encoding: Encoding,
     mut applied: CaptureLimits,
     display: &mut Display,
-) -> Result<(), String> {
+    mut choices: Pin<&mut impl Stream<Item = Result<portal::Grant, String>>>,
+) -> Result<Option<portal::Grant>, String> {
     let mut ready = false;
     let mut sent = false;
     let mut timer = tokio::time::interval(stats::INTERVAL);
@@ -1215,6 +1389,7 @@ async fn send_video(
         let mut retune = false;
         let mut report = false;
         tokio::select! {
+            Some(choice) = choices.next() => return choice.map(Some),
             event = media.next() => match call_event(event)? {
                 Some(MediaEvent::SendReady) => { ready = true; capture.request_keyframe(); }
                 Some(MediaEvent::KeyframeRequired) => capture.request_keyframe(),
@@ -1227,7 +1402,7 @@ async fn send_video(
                     retune = true;
                 }
                 Some(MediaEvent::BandwidthEstimate { bitrate }) => {
-                    encoding.bitrate_estimate = Some(video_rate(bitrate.saturating_mul(4) / 5));
+                    encoding.bitrate_estimate = Some((bitrate.saturating_mul(4) / 5).min(50_000_000) as u32);
                 }
                 Some(MediaEvent::Direct { active }) => {
                     display.stats.direct(active);
@@ -1235,7 +1410,7 @@ async fn send_video(
                     retune = true;
                 }
                 Some(_) => {}
-                None => return Ok(()),
+                None => return Ok(None),
             },
             frame = capture.next() => {
                 let frame = frame.map_err(text)?;
@@ -1357,6 +1532,9 @@ async fn receive_video(
             };
             if !contiguous {
                 decoder.reset();
+                if !key_frame {
+                    media.request_keyframe(purpose).map_err(text)?;
+                }
             }
             display.stats.encoded(data.len());
             let started = Instant::now();
@@ -1370,6 +1548,7 @@ async fn receive_video(
                 Ok(None) => {}
                 Err(DecodeError::Io(_) | DecodeError::Timeout | DecodeError::Busy) => {
                     display.updates.status("Waiting for a fresh video frame");
+                    media.request_keyframe(purpose).map_err(text)?;
                 }
                 Err(error) => return Err(text(error)),
             }
