@@ -4,7 +4,9 @@ mod color;
 #[cfg(feature = "vaapi")]
 mod vaapi;
 
-use nuschl_ipc::video::{DecodeConfig, HEADER_BYTES, Header, Kind, Source, decode_packet_limit};
+use nuschl_ipc::video::{
+    HEADER_BYTES, Header, Kind, Source, decode_packet_limit, source_from_byte,
+};
 use rav1d::{Decoder, Picture, Rav1dError, Settings};
 use std::io::{self, Read, Write};
 
@@ -22,9 +24,9 @@ pub fn run(accelerated: bool) -> Result<(), Error> {
     if Header::from_bytes(header)? != configure {
         return Err("expected video decoder configuration".into());
     }
-    let mut config = [0];
-    input.read_exact(&mut config)?;
-    let config = DecodeConfig::from_byte(config[0])?;
+    let mut source = [0];
+    input.read_exact(&mut source)?;
+    let source = source_from_byte(source[0])?;
 
     let mut backend = if accelerated {
         #[cfg(feature = "vaapi")]
@@ -36,7 +38,7 @@ pub fn run(accelerated: bool) -> Result<(), Error> {
         #[cfg(not(feature = "vaapi"))]
         None
     } else {
-        Some(Backend::Software(software(config.source)?))
+        Some(Backend::Software(software(source)?))
     };
     let Some(backend) = &mut backend else {
         return reply(&mut output, Header::empty(Kind::Dropped, 0));
@@ -58,7 +60,7 @@ pub fn run(accelerated: bool) -> Result<(), Error> {
         if request.kind != Kind::Decode
             || request.id <= previous
             || request.bytes == 0
-            || request.bytes as usize > decode_packet_limit(config.source, request.key)
+            || request.bytes as usize > decode_packet_limit(source, request.key)
             || (needs_key && !request.key)
         {
             return Err("invalid video decoder request".into());
@@ -79,7 +81,7 @@ pub fn run(accelerated: bool) -> Result<(), Error> {
             output.flush()?;
             Ok(())
         };
-        if !backend.decode(encoded, request.id, config, write)? {
+        if !backend.decode(encoded, request.id, source, write)? {
             reply(&mut output, Header::empty(Kind::Dropped, request.id))?;
         }
     }
@@ -112,13 +114,13 @@ impl Backend {
         &mut self,
         encoded: Vec<u8>,
         id: u64,
-        config: DecodeConfig,
+        source: Source,
         write: impl FnOnce(u16, u16, &[u8]) -> Result<(), Error>,
     ) -> Result<bool, Error> {
         match self {
             Self::Software(decoder) => {
                 if let Some(picture) = software_picture(decoder, encoded, i64::try_from(id)?)? {
-                    let frame = color::to_bgra(&picture, config)?;
+                    let frame = color::to_bgra(&picture, source)?;
                     write(frame.width, frame.height, &frame.bgra)?;
                     Ok(true)
                 } else {
@@ -126,7 +128,7 @@ impl Backend {
                 }
             }
             #[cfg(feature = "vaapi")]
-            Self::Hardware(decoder) => decoder.decode(encoded, id, config, write),
+            Self::Hardware(decoder) => decoder.decode(encoded, id, source, write),
         }
     }
 }

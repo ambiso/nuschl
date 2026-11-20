@@ -3,7 +3,7 @@
 use super::Error;
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app::{AppSink, AppSrc};
-use nuschl_ipc::video::DecodeConfig;
+use nuschl_ipc::video::{Source, decode_frame_bytes};
 use std::time::{Duration, Instant};
 
 const WAIT: Duration = Duration::from_millis(200);
@@ -64,7 +64,7 @@ impl Pipeline {
         &mut self,
         encoded: Vec<u8>,
         id: u64,
-        config: DecodeConfig,
+        source: Source,
         write: impl FnOnce(u16, u16, &[u8]) -> Result<(), Error>,
     ) -> Result<bool, Error> {
         let mut buffer = gst::Buffer::from_mut_slice(encoded);
@@ -91,7 +91,7 @@ impl Pipeline {
                 .ok_or("missing decoded video dimensions")?;
             let width = u16::try_from(format.get::<i32>("width")?)?;
             let height = u16::try_from(format.get::<i32>("height")?)?;
-            let length = config.frame_bytes(width, height)?;
+            let length = decode_frame_bytes(source, width, height)?;
             let pixels = buffer.map_readable()?;
             if pixels.size() != length {
                 return Err("invalid BGRA layout from VA-API".into());

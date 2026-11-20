@@ -52,45 +52,26 @@ pub fn decode_packet_limit(source: Source, keyframe: bool) -> usize {
     if keyframe { key_limit } else { key_limit / 2 }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DecodeConfig {
-    pub source: Source,
-    pub preview: bool,
+pub fn decode_frame_bytes(source: Source, width: u16, height: u16) -> io::Result<usize> {
+    let (long, short) = source.max_dimensions();
+    if width.min(height) == 0 || width.min(height) > short || width.max(height) > long {
+        return Err(invalid());
+    }
+    Ok(usize::from(width) * usize::from(height) * 4)
 }
 
-impl DecodeConfig {
-    pub fn to_byte(self) -> u8 {
-        u8::from(self.source == Source::Screen) | (u8::from(self.preview) << 1)
+pub fn source_to_byte(source: Source) -> u8 {
+    match source {
+        Source::Camera => 0,
+        Source::Screen => 1,
     }
+}
 
-    pub fn from_byte(value: u8) -> io::Result<Self> {
-        if value > 3 {
-            return Err(invalid());
-        }
-        Ok(Self {
-            source: if value & 1 == 0 {
-                Source::Camera
-            } else {
-                Source::Screen
-            },
-            preview: value & 2 != 0,
-        })
-    }
-
-    pub fn max_dimensions(self) -> (u16, u16) {
-        if self.preview {
-            (1280, 720)
-        } else {
-            self.source.max_dimensions()
-        }
-    }
-
-    pub fn frame_bytes(self, width: u16, height: u16) -> io::Result<usize> {
-        let (long, short) = self.max_dimensions();
-        if width.min(height) == 0 || width.min(height) > short || width.max(height) > long {
-            return Err(invalid());
-        }
-        Ok(usize::from(width) * usize::from(height) * 4)
+pub fn source_from_byte(value: u8) -> io::Result<Source> {
+    match value {
+        0 => Ok(Source::Camera),
+        1 => Ok(Source::Screen),
+        _ => Err(invalid()),
     }
 }
 
@@ -113,38 +94,18 @@ pub struct Decoder {
 impl Decoder {
     /// The executable path comes from the installed directory.
     pub fn start(executable: PathBuf, source: Source) -> Result<Self, DecodeError> {
-        Self::configured(
-            executable,
-            DecodeConfig {
-                source,
-                preview: false,
-            },
-        )
-    }
-
-    pub fn start_preview(executable: PathBuf, source: Source) -> Result<Self, DecodeError> {
-        Self::configured(
-            executable,
-            DecodeConfig {
-                source,
-                preview: true,
-            },
-        )
-    }
-
-    fn configured(executable: PathBuf, config: DecodeConfig) -> Result<Self, DecodeError> {
         let permit = SOURCES.try_acquire().map_err(|_| DecodeError::Busy)?;
         let (requests, queue) = mpsc::channel(1);
         let task = tokio::runtime::Handle::try_current()
             .map_err(|_| DecodeError::Runtime)?
             .spawn(async move {
                 let _permit = permit;
-                supervise(&executable, config, queue).await;
+                supervise(&executable, source, queue).await;
             });
         Ok(Self {
             requests,
             task,
-            source: config.source,
+            source,
             reset: false,
         })
     }
@@ -189,9 +150,9 @@ impl Decoder {
     }
 }
 
-async fn supervise(executable: &Path, settings: DecodeConfig, mut queue: mpsc::Receiver<Request>) {
+async fn supervise(executable: &Path, source: Source, mut queue: mpsc::Receiver<Request>) {
     let mut session = None;
-    let mut vaapi = !settings.preview;
+    let mut vaapi = true;
     let mut synchronized = false;
     let mut failures = 0;
     let mut healthy_since = Instant::now();
@@ -208,7 +169,7 @@ async fn supervise(executable: &Path, settings: DecodeConfig, mut queue: mpsc::R
         let decode = async {
             if session.is_none() {
                 healthy_since = Instant::now();
-                configure(executable, settings, &mut vaapi, &mut session).await?;
+                configure(executable, source, &mut vaapi, &mut session).await?;
             }
             let session = session.as_mut().ok_or(DecodeError::Stopped)?;
             let packet = async {
@@ -217,7 +178,7 @@ async fn supervise(executable: &Path, settings: DecodeConfig, mut queue: mpsc::R
                         .write(Header::empty(Kind::ResetDecoder, 0), &[])
                         .await?;
                 }
-                decode_one(session, request.keyframe, &request.data, id, settings).await
+                decode_one(session, request.keyframe, &request.data, id, source).await
             };
             timeout(DEADLINE, packet)
                 .await
@@ -248,7 +209,7 @@ async fn supervise(executable: &Path, settings: DecodeConfig, mut queue: mpsc::R
 
 async fn configure(
     executable: &Path,
-    settings: DecodeConfig,
+    source: Source,
     vaapi: &mut bool,
     active: &mut Option<Session>,
 ) -> Result<(), DecodeError> {
@@ -265,7 +226,7 @@ async fn configure(
                 bytes: 1,
                 ..Header::empty(Kind::Configure, 0)
             };
-            let status = session.exchange(header, &[settings.to_byte()]).await?;
+            let status = session.exchange(header, &[source_to_byte(source)]).await?;
             if status == Header::empty(Kind::Ready, 0) {
                 Ok(true)
             } else if *vaapi && status == Header::empty(Kind::Dropped, 0) {
@@ -292,7 +253,7 @@ async fn decode_one(
     keyframe: bool,
     data: &[u8],
     id: u64,
-    settings: DecodeConfig,
+    source: Source,
 ) -> Result<Option<DecodedFrame>, DecodeError> {
     let request = Header {
         key: keyframe,
@@ -303,7 +264,7 @@ async fn decode_one(
     if reply == Header::empty(Kind::Dropped, id) {
         return Ok(None);
     }
-    let (long, short) = settings.max_dimensions();
+    let (long, short) = source.max_dimensions();
     let max = usize::from(long) * usize::from(short) * 4 + 4;
     if reply.kind != Kind::Decoded || reply.id != id || !(4..=max).contains(&(reply.bytes as usize))
     {
@@ -314,7 +275,7 @@ async fn decode_one(
     let [w_hi, w_lo, h_hi, h_lo] = dimensions;
     let width = u16::from_be_bytes([w_hi, w_lo]);
     let height = u16::from_be_bytes([h_hi, h_lo]);
-    let required = settings.frame_bytes(width, height)?;
+    let required = decode_frame_bytes(source, width, height)?;
     if reply.bytes as usize != 4 + required {
         return Err(invalid().into());
     }
@@ -334,29 +295,13 @@ mod tests {
     fn decode_limits_follow_source_and_accept_portrait() {
         assert_eq!(decode_packet_limit(Source::Camera, true), 256 * 1024);
         assert_eq!(decode_packet_limit(Source::Screen, false), 512 * 1024);
-        let camera = DecodeConfig {
-            source: Source::Camera,
-            preview: false,
-        };
-        let screen = DecodeConfig {
-            source: Source::Screen,
-            preview: false,
-        };
-        assert_eq!(camera.frame_bytes(1080, 1920).ok(), Some(1920 * 1080 * 4));
-        assert!(camera.frame_bytes(1920, 1081).is_err());
-        assert!(screen.frame_bytes(1, u16::MAX).is_err());
-        assert!(screen.frame_bytes(0, 1).is_err());
-        let preview = DecodeConfig {
-            preview: true,
-            ..screen
-        };
         assert_eq!(
-            DecodeConfig::from_byte(preview.to_byte()).ok(),
-            Some(preview)
+            decode_frame_bytes(Source::Camera, 1080, 1920).ok(),
+            Some(1920 * 1080 * 4)
         );
-        assert!(DecodeConfig::from_byte(4).is_err());
-        assert!(preview.frame_bytes(1920, 1080).is_err());
-        assert_eq!(preview.frame_bytes(720, 1280).ok(), Some(1280 * 720 * 4));
+        assert!(decode_frame_bytes(Source::Camera, 1920, 1081).is_err());
+        assert!(decode_frame_bytes(Source::Screen, 1, u16::MAX).is_err());
+        assert!(decode_frame_bytes(Source::Screen, 0, 1).is_err());
     }
 
     #[tokio::test]

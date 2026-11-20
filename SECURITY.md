@@ -254,8 +254,7 @@ and `/sfu`, and caps frames and messages at 256 KiB. Key messages share the SFU'
 **Native call media.** Each Linux RTC worker handles one call. It keeps the
 SFrame counter and replay state for the call and receives only the media epochs
 the call needs. The video workers encode and decode media. The local preview
-uses the granted source's encoded frames and the confined software decoder,
-with BGRA replies bounded to a preview of up to 1280 × 720.
+uses the granted source's encoded frames and the existing confined decoder.
 The SDK applies
 `PeerPolicy` before network setup, then validates the destination and length of
 datagrams it routes. Outside relay-only mode, a direct leg can probe the

@@ -8,9 +8,9 @@ pub mod portal;
 mod supervisor;
 
 pub use capture::{Capture, VideoFrame};
-#[doc(hidden)]
-pub use decode::{DecodeConfig, decode_packet_limit};
 pub use decode::{DecodeError, DecodedFrame, Decoder};
+#[doc(hidden)]
+pub use decode::{decode_frame_bytes, decode_packet_limit, source_from_byte, source_to_byte};
 pub use supervisor::{Encoder, Error, Output};
 
 use std::io;

@@ -1,26 +1,16 @@
 // SPDX-License-Identifier: EUPL-1.2
 
 use super::Error;
-use nuschl_ipc::video::{DecodeConfig, DecodedFrame};
+use nuschl_ipc::video::{DecodedFrame, Source, decode_frame_bytes};
 use rav1d::{
     Picture, PixelLayout, PlanarImageComponent as Component,
     pixel::{MatrixCoefficients, TransferCharacteristic, YUVRange},
 };
 
-pub fn to_bgra(picture: &Picture, config: DecodeConfig) -> Result<DecodedFrame, Error> {
+pub fn to_bgra(picture: &Picture, source: Source) -> Result<DecodedFrame, Error> {
     let width = u16::try_from(picture.width())?;
     let height = u16::try_from(picture.height())?;
-    let length = DecodeConfig {
-        preview: false,
-        ..config
-    }
-    .frame_bytes(width, height)?;
-    let (output_width, output_height, length) = if config.preview {
-        let (width, height) = fit(width, height, config.max_dimensions());
-        (width, height, config.frame_bytes(width, height)?)
-    } else {
-        (width, height, length)
-    };
+    let length = decode_frame_bytes(source, width, height)?;
     let bits = picture
         .bits_per_component()
         .ok_or("invalid video component depth")?
@@ -34,40 +24,23 @@ pub fn to_bgra(picture: &Picture, config: DecodeConfig) -> Result<DecodedFrame, 
 
     let mut bgra = vec![0; length];
     let matrix = Conversion::new(picture, bits)?;
-    let size = (width.into(), height.into());
-    let output_size = (output_width.into(), output_height.into());
     if bits == 8 {
-        write_pixels::<false>(picture, &matrix, size, output_size, &mut bgra)?;
+        write_pixels::<false>(picture, &matrix, width.into(), height.into(), &mut bgra)?;
     } else {
-        write_pixels::<true>(picture, &matrix, size, output_size, &mut bgra)?;
+        write_pixels::<true>(picture, &matrix, width.into(), height.into(), &mut bgra)?;
     }
     Ok(DecodedFrame {
-        width: output_width,
-        height: output_height,
+        width,
+        height,
         bgra,
     })
-}
-
-fn fit(width: u16, height: u16, bounds: (u16, u16)) -> (u16, u16) {
-    let [width, height, max_width, max_height] = [width, height, bounds.0, bounds.1].map(u32::from);
-    if width <= max_width && height <= max_height {
-        return (width as u16, height as u16);
-    }
-    if width * max_height > height * max_width {
-        (max_width as u16, (height * max_width / width).max(1) as u16)
-    } else {
-        (
-            (width * max_height / height).max(1) as u16,
-            max_height as u16,
-        )
-    }
 }
 
 fn write_pixels<const WIDE: bool>(
     picture: &Picture,
     conversion: &Conversion,
-    (width, height): (usize, usize),
-    (output_width, output_height): (usize, usize),
+    width: usize,
+    height: usize,
     output: &mut [u8],
 ) -> Result<(), Error> {
     let layout = picture.pixel_layout();
@@ -82,11 +55,7 @@ fn write_pixels<const WIDE: bool>(
             Plane::new(picture, Component::V),
         ]
     });
-    let columns: Vec<_> = (0..output_width)
-        .map(|x| x * width / output_width)
-        .collect();
-    for (row, output_row) in output.chunks_exact_mut(output_width * 4).enumerate() {
-        let row_index = row * height / output_height;
+    for (row_index, output_row) in (0..height).zip(output.chunks_exact_mut(width * 4)) {
         let y = y.row::<WIDE>(row_index, width)?;
         let row_chroma = if let Some([u, v]) = &chroma {
             let row = row_index >> shift_y;
@@ -98,7 +67,7 @@ fn write_pixels<const WIDE: bool>(
             None
         };
         let (pixels, _) = output_row.as_chunks_mut::<4>();
-        for (&column, pixel) in columns.iter().zip(pixels) {
+        for (column, pixel) in pixels.iter_mut().enumerate() {
             let y = sample::<WIDE>(y, column);
             let neutral = if conversion.identity {
                 y
