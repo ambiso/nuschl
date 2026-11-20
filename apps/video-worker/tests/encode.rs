@@ -315,7 +315,22 @@ context.objects = [
         decode_av1(&updated.av1).len(),
         usize::from(expected.0) * usize::from(expected.1) * 3 / 2,
     );
+    daemon.kill().await.unwrap();
+    if !hardware {
+        let error = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Err(error) = capture.next().await {
+                    break error;
+                }
+            }
+        })
+        .await
+        .expect("the capture reports a closed PipeWire connection");
+        assert!(
+            matches!(error, nuschl_ipc::video::Error::CaptureClosed),
+            "{error}"
+        );
+    }
     capture.stop().await.unwrap();
     nuschl_testkit::none_running(Path::new(WORKER), Duration::from_secs(3)).await;
-    daemon.kill().await.unwrap();
 }

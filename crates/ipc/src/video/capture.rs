@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: EUPL-1.2
 
 use super::{
-    CaptureLimits, DecodedFrame, Error, HEADER_BYTES, Header, Kind, Settings, Source, invalid,
+    CaptureFailure, CaptureLimits, DecodedFrame, Error, HEADER_BYTES, Header, Kind, Settings,
+    Source, invalid,
     preview::{read_capture_preview, send_capture_start},
     supervisor::{DEADLINE, SOURCES},
 };
@@ -16,6 +17,7 @@ use std::{
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _},
     net::UnixStream,
+    process::Child,
     sync::{mpsc, watch},
     task::JoinHandle,
     time::timeout,
@@ -145,7 +147,7 @@ impl Capture {
             )
             .await
             {
-                let _ = sender.try_send(Err(error));
+                let _ = sender.send(Err(error)).await;
             }
         });
         Ok(Self {
@@ -283,11 +285,30 @@ async fn capture(
         }
     }
     .await;
-    if let Err(error) = result {
-        let _ = sender.try_send(Err(error));
-    }
-    retirement.retire(&mut child, &containment).await;
+    let result = match result {
+        Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+            Err(capture_exit(&mut child).await)
+        }
+        result => result,
+    };
+    let report = async {
+        if let Err(error) = result {
+            let _ = sender.send(Err(error)).await;
+        }
+    };
+    tokio::join!(retirement.retire(&mut child, &containment), report);
     Ok(())
+}
+
+async fn capture_exit(child: &mut Child) -> Error {
+    // Bubblewrap reports the worker's exit once its namespace shuts down.
+    match timeout(Duration::from_millis(250), child.wait()).await {
+        Ok(Ok(status)) if !status.success() => status
+            .code()
+            .and_then(CaptureFailure::from_exit)
+            .map_or(Error::CaptureExit(status), Error::Capture),
+        _ => Error::CaptureClosed,
+    }
 }
 
 async fn receive_previews(

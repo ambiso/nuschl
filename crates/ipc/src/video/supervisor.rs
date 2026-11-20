@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 
-use super::{HEADER_BYTES, Header, Kind, Settings, invalid};
+use super::{CaptureFailure, HEADER_BYTES, Header, Kind, Settings, invalid};
 use crate::host::preview_lifecycle::Retirement;
 use nuschl_sandbox::{Role, Worker};
 use std::{io, path::PathBuf, time::Duration};
@@ -29,6 +29,12 @@ pub enum Error {
     Timeout,
     #[error("video encoder has stopped")]
     Stopped,
+    #[error(transparent)]
+    Capture(#[from] CaptureFailure),
+    #[error("The video capture connection closed.")]
+    CaptureClosed,
+    #[error("The video capture worker exited ({0}).")]
+    CaptureExit(std::process::ExitStatus),
     #[error("a Tokio runtime is required to start a video source")]
     Runtime,
 }

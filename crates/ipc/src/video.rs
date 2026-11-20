@@ -39,6 +39,34 @@ impl Source {
     }
 }
 
+/// Fixed capture worker exit codes. The supervisor can report them without
+/// reading diagnostics produced by native libraries.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[repr(u8)]
+pub enum CaptureFailure {
+    #[error("The hardware capture pipeline stopped.")]
+    Hardware = 40,
+    #[error("The hardware capture pipeline could not negotiate a video format.")]
+    HardwareFormat = 41,
+    #[error("A hardware capture resource became unavailable.")]
+    HardwareResource = 42,
+    #[error("The software capture pipeline stopped.")]
+    Software = 43,
+}
+
+impl CaptureFailure {
+    fn from_exit(code: i32) -> Option<Self> {
+        [
+            Self::Hardware,
+            Self::HardwareFormat,
+            Self::HardwareResource,
+            Self::Software,
+        ]
+        .into_iter()
+        .find(|reason| i32::from(*reason as u8) == code)
+    }
+}
+
 /// The sender's current caps. Height limits the shorter side of the source.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CaptureLimits {

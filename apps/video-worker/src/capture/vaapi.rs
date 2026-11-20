@@ -6,7 +6,8 @@ use super::{Cadence, Control, Failure, PREVIEW_FPS};
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app::AppSink;
 use nuschl_ipc::video::{
-    CaptureLimits, Kind, PREVIEW_HEIGHT, PREVIEW_WIDTH, Settings, Source, write_capture_preview,
+    CaptureFailure, CaptureLimits, Kind, PREVIEW_HEIGHT, PREVIEW_WIDTH, Settings, Source,
+    write_capture_preview,
 };
 use std::{
     io,
@@ -392,7 +393,19 @@ fn write_frames(
                 bus.pop_filtered(&[gst::MessageType::Error, gst::MessageType::Eos])
             {
                 return match message.view() {
-                    gst::MessageView::Error(error) => Err(error.error().into()),
+                    gst::MessageView::Error(error) => {
+                        let error = error.error();
+                        let reason = if error.matches(gst::CoreError::Negotiation)
+                            || error.matches(gst::StreamError::Format)
+                        {
+                            CaptureFailure::HardwareFormat
+                        } else if error.kind::<gst::ResourceError>().is_some() {
+                            CaptureFailure::HardwareResource
+                        } else {
+                            CaptureFailure::Hardware
+                        };
+                        Err(reason.into())
+                    }
                     _ => Ok(()),
                 };
             }
