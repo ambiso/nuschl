@@ -149,7 +149,8 @@ let
       src = ../web;
       filter =
         path: type:
-        !(builtins.elem (builtins.baseNameOf path) [
+        !(lib.hasSuffix "/app/public/video" (toString path))
+        && !(builtins.elem (builtins.baseNameOf path) [
           "node_modules"
           "dist"
           "sdk"
