@@ -37,6 +37,25 @@ const location = (href) => {
 };
 const request = (worker, body) => JSON.parse(worker.handle(JSON.stringify({ v: 1, ...body }), Date.now()));
 
+test("creating a browser call returns only the guest invitation, with host admission in the worker", () => {
+  const worker = new StreamWorker();
+  const opened = request(worker, { kind: "create", host, allow_direct: false });
+  assert.equal(opened.creator, true);
+  const link = new URL(opened.invitation);
+  assert.equal(link.host, host);
+  assert.equal(link.pathname, "/call");
+  assert.deepEqual([...new URLSearchParams(link.hash.slice(1)).keys()], ["v", "k", "h"]);
+  const joined = request(worker, { kind: "admit", nonce: "0".repeat(64) });
+  assert.ok(joined.create.host_key);
+  assert.ok(joined.host_proof);
+  const guest = new StreamWorker();
+  assert.equal(request(guest, { kind: "open", host, link: opened.invitation }).creator, false);
+  const guestAdmission = request(guest, { kind: "admit", nonce: "0".repeat(64) });
+  assert.equal(guestAdmission.create, null);
+  assert.equal(guestAdmission.host_proof, null);
+  assert.equal(request(worker, { kind: "admit", nonce: "0".repeat(64) }).create.host_key, joined.create.host_key);
+});
+
 test("audio capture requires a browser tab and excludes call tabs", () => {
   const capture = (displaySurface, handle) => ({
     getSettings: () => ({ displaySurface }),

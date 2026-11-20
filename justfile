@@ -43,6 +43,10 @@ emoji-assets:
 
 # The Svelte client (web/app) with the SDK, into web/app/dist.
 web: wasm-client emoji-assets
+    mkdir -p web/app/src/audio-codec web/app/src/content-codec web/app/public/video
+    audio=$(nix build .#web-audio-wasm --no-link --print-out-paths) && cp "$audio"/* web/app/src/audio-codec/
+    content=$(nix build .#web-content-wasm --no-link --print-out-paths) && cp "$content"/* web/app/src/content-codec/
+    stream=$(nix build .#web-stream-wasm --no-link --print-out-paths) && cp web/call/stream.worker.js web/call/frames.js "$stream"/*.js "$stream"/*.wasm web/app/public/video/
     cd web/app && npm ci --no-audit --no-fund && npm test && npm run build
 
 # The music bot's Svelte UI, served by nuschl-musicbot from this directory.

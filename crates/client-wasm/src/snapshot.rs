@@ -8,7 +8,7 @@ use nuschl_client::{
     model::TextTarget,
     server::{ServerState, Status},
 };
-use nuschl_core::bookmark::ServerBookmark;
+use nuschl_core::{ContentBlock, TextRole, bookmark::ServerBookmark, call};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -387,8 +387,23 @@ pub struct TimelineView {
     pub loading: bool,
     pub has_older: bool,
     pub sending: bool,
+    pub hosted_video_call: Option<String>,
+    pub video_calls: Vec<VideoCallView>,
     pub messages: Vec<MessageView>,
 }
+#[derive(Serialize)]
+pub struct VideoCallView {
+    pub sender: u32,
+    pub link: String,
+    pub author: String,
+}
+
+#[derive(Serialize)]
+pub struct CallInvitation {
+    pub link: String,
+    pub ended: bool,
+}
+
 #[derive(Serialize)]
 pub struct MessageView {
     pub serial: String,
@@ -399,11 +414,36 @@ pub struct MessageView {
     pub at_ms: i64,
     pub outgoing: bool,
     pub status: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call: Option<CallInvitation>,
     pub document: nuschl_core::MessageDocument,
 }
+
+pub(crate) fn guest_invitation(invitation: &str) -> bool {
+    if invitation.len() > call::MAX_LINK {
+        return false;
+    }
+    let Some(host) = call::link_host(invitation) else {
+        return false;
+    };
+    invitation
+        .strip_prefix("https://")
+        .and_then(|rest| rest.strip_prefix(host))
+        .and_then(|rest| rest.strip_prefix("/call#v=1&k="))
+        .and_then(|rest| rest.split_once("&h="))
+        .is_some_and(|(secret, verifier)| {
+            [secret, verifier].iter().all(|part| {
+                part.len() == 43
+                    && part
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            })
+        })
+}
+
 pub fn timeline(client: &nuschl_client::Client) -> Option<TimelineView> {
-    let (server, channel) = client.selected_indices()?;
-    let server = &client.servers[server];
+    let (index, channel) = client.selected_indices()?;
+    let server = &client.servers[index];
     let channel = &server.channels[channel];
     Some(TimelineView {
         content_context: None,
@@ -421,6 +461,19 @@ pub fn timeline(client: &nuschl_client::Client) -> Option<TimelineView> {
         loading: channel.timeline.loading,
         has_older: channel.timeline.next_before.is_some(),
         sending: client.sending(),
+        hosted_video_call: client.own_call().map(|call| call.link.clone()),
+        video_calls: client
+            .calls_in(index, &channel.target)
+            .into_iter()
+            .filter(|call| guest_invitation(&call.link))
+            .filter_map(|call| {
+                Some(VideoCallView {
+                    sender: call.sender,
+                    link: call.link.clone(),
+                    author: server.users.get(&call.sender)?.name.clone(),
+                })
+            })
+            .collect(),
         messages: channel
             .timeline
             .messages
@@ -434,6 +487,27 @@ pub fn timeline(client: &nuschl_client::Client) -> Option<TimelineView> {
                 at_ms: message.observed_at_ms,
                 outgoing: message.outgoing,
                 status: message.status.label(),
+                call: if let (
+                    None,
+                    [
+                        ContentBlock::Text {
+                            text,
+                            role: TextRole::Paragraph,
+                            ..
+                        },
+                    ],
+                ) = (message.deleted, message.document.blocks.as_slice())
+                    && let Some(link) = text
+                        .strip_prefix("Call: ")
+                        .filter(|link| guest_invitation(link))
+                {
+                    Some(CallInvitation {
+                        link: link.to_owned(),
+                        ended: client.call_ended(index, &channel.target, link, message),
+                    })
+                } else {
+                    None
+                },
                 document: message.document.clone(),
             })
             .collect(),

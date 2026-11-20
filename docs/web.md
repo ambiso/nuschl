@@ -326,6 +326,28 @@ codec Worker's module uses SIMD (`simd128`: Chrome 91, Firefox 89, Safari 16.4).
   browser's WebSocket and Web Crypto) through the relay to a loopback Murmur, trusting
   the certificate it is shown.
 
+## Video in the web app
+
+Use the camera icon in your voice channel or an online private conversation to
+start a call. The channel gets a Join card and a link usable from stock Mumble.
+Start camera and Share screen request video capture individually. The panel can
+show both previews and the incoming video while you browse chat. Minimize keeps
+the call active. Leave video stops your capture, and End call closes a room you
+created.
+
+The web app reuses the call page's media controls, WebRTC session and SFrame
+worker. It sends video to the configured SFU. Add `?relay` to the app URL to
+require the SFU's TURN service for media. `services.nuschl-web.callHost`
+selects the HTTPS stream host, defaulting to `stream.nuschl.eu`. Camera and
+display capture permissions apply to the app, and its connection policy admits
+that host's signaling and lease endpoints. The SFU can run on a separate domain.
+The standalone call page also offers browser-tab audio sharing on browsers with
+capture handles.
+
+The web VM runs two Chromium clients against stock Mumble and a private SFU.
+It checks decoded camera and screen video from synthetic sources, a renewed
+call lease, minimizing while browsing chat, and the ended invitation.
+
 ## The call page (`web/call`)
 
 The stream host (`services.nuschl-stream`, `nix/stream-module.nix`) serves the
@@ -363,7 +385,7 @@ with a call link opens it ([desktop](desktop.md#calls)); the creator's link adds
   call codec only; on the SFU's `codec` message every source restarts its
   encoder on a new media section, since the SFU keeps a section's first codec.
   Stop, the browser's own stop and the end of the call end the capture and the
-  source. `/call` alone may ask for camera and display capture
+  source. The stream host grants camera and display capture to `/call`
   (Permissions-Policy). A browser that cannot encode the call codec shows
   "Can't send AV1" (or VP9).
 - **Quality:** The selectors beside the capture buttons set each source's
