@@ -1155,25 +1155,9 @@ async fn publish_video(
     worker: PathBuf,
     display: &mut Display,
     changes: SourceChanges<'_>,
-    source_requests: mpsc::Receiver<Source>,
+    mut source_requests: mpsc::Receiver<Source>,
     mut cancel: Pin<&mut impl Future<Output = ()>>,
 ) -> Result<(), String> {
-    let choices = stream::unfold(source_requests, |mut requests| async move {
-        loop {
-            let source = requests.recv().await?;
-            let change = match portal::request(source, None).await {
-                Ok(grant) => return Some((Ok(grant), requests)),
-                Err(ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled)) => {
-                    SourceChange::Cancelled
-                }
-                Err(error) => SourceChange::Failed(text(error)),
-            };
-            if let Err(error) = changes.report(change).await {
-                return Some((Err(error), requests));
-            }
-        }
-    });
-    tokio::pin!(choices);
     loop {
         let source = grant.source();
         let monitor = grant.can_include_app();
@@ -1211,12 +1195,30 @@ async fn publish_video(
         display.updates.stats(None);
         display.stats.clear(Instant::now());
 
-        let result = tokio::select! {
-            biased;
-            () = &mut cancel => Ok(None),
-            result = send_video(
-                media, &mut capture, &mut preview, encoding, initial, display, choices.as_mut(),
-            ) => result,
+        let result = {
+            let choices = stream::unfold(&mut source_requests, |requests| async move {
+                loop {
+                    let source = requests.recv().await?;
+                    let change = match portal::request(source, None).await {
+                        Ok(grant) => return Some((Ok(grant), requests)),
+                        Err(ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled)) => {
+                            SourceChange::Cancelled
+                        }
+                        Err(error) => SourceChange::Failed(text(error)),
+                    };
+                    if let Err(error) = changes.report(change).await {
+                        return Some((Err(error), requests));
+                    }
+                }
+            });
+            tokio::pin!(choices);
+            tokio::select! {
+                biased;
+                () = &mut cancel => Ok(None),
+                result = send_video(
+                    media, &mut capture, &mut preview, encoding, initial, display, choices.as_mut(),
+                ) => result,
+            }
         };
         let closed = capture.stop().await.map_err(text);
         if let Some(preview) = preview
@@ -1391,7 +1393,7 @@ async fn send_video(
         let mut retune = false;
         let mut report = false;
         tokio::select! {
-            Some(choice) = choices.next() => return choice.map(Some),
+            choice = choices.next() => return choice.transpose(),
             event = media.next() => match call_event(event)? {
                 Some(MediaEvent::SendReady) => { ready = true; capture.request_keyframe(); }
                 Some(MediaEvent::KeyframeRequired) => capture.request_keyframe(),
