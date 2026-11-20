@@ -10,8 +10,8 @@
 //! transport up while no source is forwarded.
 //!
 //! ```text
-//! SFU → peer  hello {nonce}
-//! peer → SFU  join {room, verifier, proof, host_proof?, create?: {admit_key, host_key}, codecs}
+//! SFU → peer  hello {nonce, video_limits?}
+//! peer → SFU  join {room, verifier, proof, host_proof?, create?: {admit_key, host_key}, codecs, video_limits?}
 //! SFU → peer  welcome {peer, role, peers: [{id, role}], codec, turn?: {urls, username, credential}}
 //!             | error {reason}
 //! peer → SFU  offer {sdp, screens?: [mid]} publish connection; screens names
@@ -22,8 +22,9 @@
 //! peer → SFU  key {to, data}               relayed as key {from, data}
 //! peer → SFU  quality {request}            hex QualityRequest, per source, ≤ 1/s
 //! peer → SFU  capacity {decode}            hex DecodeCapacity, ≤ 1/s
-//! SFU → peer  quality {request, source, max_height, max_fps, max_bitrate}
+//! SFU → peer  quality {request, source, max_height, max_fps, max_bitrate, limit?}
 //!                                          encoder limits for the publisher's mid
+//! SFU → peer  video_limit {mid, peer, limit} per-source limit for the receiver
 //! peer → SFU  remove {peer} | end          hosts only
 //! SFU → peer  joined {peer, role} | left {peer}
 //! SFU → peer  codec {codec}
@@ -31,6 +32,9 @@
 //!
 //! A later publish offer that stops or deactivates a mid ends that source:
 //! its tracks leave the subscribers' next offers.
+//! Peers that want video limit reports echo `video_limits: true` when the
+//! server advertises it. The `video_limit` mid belongs to the receiver's
+//! subscribe connection. The `quality` mid belongs to the publish connection.
 //!
 //! **One codec per call** (docs/video-plan.md §6). `codecs` lists the video
 //! codecs the peer decodes in WebRTC, `"av1"` and `"vp9"`, at least one. The
@@ -114,6 +118,8 @@ pub enum ClientMessage {
         #[serde(default)]
         create: Option<Create>,
         codecs: Vec<Codec>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        video_limits: bool,
     },
     Offer {
         sdp: String,
@@ -191,11 +197,29 @@ impl fmt::Debug for Create {
     }
 }
 
+/// The quality constraint picked by the SFU for a publisher or a receiver.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoLimit {
+    WithinTarget,
+    ReceiverQuality,
+    ReceiverDecode,
+    ReceiverBandwidth,
+    SfuHost,
+    SfuRoom,
+    SfuViewer,
+    TrafficBudget,
+    ForwardingBacklog,
+    QualityRecovery,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
     Hello {
         nonce: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        video_limits: bool,
     },
     Welcome(Welcome),
     Joined {
@@ -225,6 +249,13 @@ pub enum ServerMessage {
         max_height: u16,
         max_fps: u8,
         max_bitrate: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<VideoLimit>,
+    },
+    VideoLimit {
+        mid: String,
+        peer: PeerId,
+        limit: VideoLimit,
     },
     Error {
         reason: Cow<'static, str>,
@@ -310,6 +341,7 @@ mod tests {
             max_height: 720,
             max_fps: 15,
             max_bitrate: 800_000,
+            limit: None,
         };
         assert_eq!(
             serde_json::to_value(demand).expect("json"),
@@ -317,6 +349,37 @@ mod tests {
                 "type": "quality", "request": "01", "source": "1",
                 "max_height": 720, "max_fps": 15, "max_bitrate": 800_000,
             })
+        );
+    }
+
+    #[test]
+    fn negotiates_a_bounded_video_limit_report() {
+        let hello: ServerMessage =
+            serde_json::from_str(r#"{"type":"hello","nonce":"00"}"#).expect("hello");
+        assert!(matches!(
+            hello,
+            ServerMessage::Hello {
+                video_limits: false,
+                ..
+            }
+        ));
+        let report = serde_json::json!({
+            "type": "video_limit", "mid": "1", "peer": 2, "limit": "sfu_viewer",
+        });
+        let message: ServerMessage = serde_json::from_value(report.clone()).expect("report");
+        assert!(matches!(
+            message,
+            ServerMessage::VideoLimit {
+                limit: VideoLimit::SfuViewer,
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_value(message).expect("json"), report);
+        assert!(
+            serde_json::from_value::<ServerMessage>(serde_json::json!({
+                "type": "video_limit", "mid": "1", "peer": 2, "limit": "unknown",
+            }))
+            .is_err()
         );
     }
 
@@ -331,6 +394,7 @@ mod tests {
             ClientMessage::Join {
                 host_proof: None,
                 create: Some(_),
+                video_limits: false,
                 ref codecs,
                 ..
             } if codecs == &[Codec::Vp9, Codec::Av1]

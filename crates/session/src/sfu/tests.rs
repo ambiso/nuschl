@@ -606,6 +606,7 @@ async fn native_video_for_policy(relay_only: bool) {
                         height,
                         fps,
                         bitrate,
+                        ..
                     } = publisher.next().await.unwrap().unwrap()
                         && height == expected.height
                     {

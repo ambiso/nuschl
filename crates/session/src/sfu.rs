@@ -146,7 +146,11 @@ impl Connection {
         };
         let (socket, welcome) = timeout(HANDSHAKE, async {
             let mut socket = open(options.host, roots).await?;
-            let ServerMessage::Hello { nonce } = read(&mut socket).await? else {
+            let ServerMessage::Hello {
+                nonce,
+                video_limits,
+            } = read(&mut socket).await?
+            else {
                 return Err(Error::Protocol("expected a challenge"));
             };
             let nonce = sfu::from_hex(&nonce).ok_or(Error::Protocol("invalid challenge"))?;
@@ -170,6 +174,7 @@ impl Connection {
                         host_key: hex::encode(keys.host_key),
                     }),
                     codecs: options.codecs.to_vec(),
+                    video_limits,
                 },
             )
             .await?;

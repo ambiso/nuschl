@@ -85,7 +85,9 @@ export class Call extends EventTarget {
   async receive(message) {
     switch (message?.type) {
       case "hello":
-        this.send(join(this.opened, await this.stream.request({ kind: "admit", nonce: message.nonce }), this.codecs));
+        this.videoLimitReports = message.video_limits === true;
+        this.send(join(this.opened, await this.stream.request({ kind: "admit", nonce: message.nonce }),
+          this.codecs, this.videoLimitReports));
         return;
       case "welcome":
         if (this.relay && !message.turn) return this.end("relay");
@@ -136,6 +138,13 @@ export class Call extends EventTarget {
       case "quality":
         await this.capSource(message);
         return;
+      case "video_limit": {
+        const track = this.tracks.get(message.mid);
+        if (this.videoLimitReports && track?.peer === message.peer && track.kind === "video") {
+          track.limit = message.limit;
+        }
+        return;
+      }
       case "error":
         return this.end(message.reason);
       default:
@@ -279,10 +288,11 @@ export class Call extends EventTarget {
   }
 
   /** Apply the SFU's limits to the encoder for this publish MID. */
-  async capSource({ source: mid, max_height: height, max_fps: fps, max_bitrate: bitrate }) {
+  async capSource({ source: mid, max_height: height, max_fps: fps, max_bitrate: bitrate, limit }) {
     for (const [kind, source] of this.sources) {
       if (source.transceiver.mid !== mid) continue;
       source.remoteCap = [height, fps, bitrate];
+      source.remoteLimit = this.videoLimitReports ? limit : undefined;
       await this.applyCap(kind, source);
       return;
     }
@@ -331,6 +341,7 @@ export class Call extends EventTarget {
       const mode = await scalabilityMode(globalThis, this.codec, kind, source.track.getSettings());
       if (this.sources.get(kind) !== source || this.ended) continue;
       source.transceiver = this.sender(kind, source.track, mode);
+      source.remoteLimit = undefined;
     }
     await this.offer();
   }

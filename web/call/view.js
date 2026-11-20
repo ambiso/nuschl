@@ -197,8 +197,8 @@ export class View {
     const list = element(doc, "dl");
     const jitter = { title: "Average time a frame spent in the receiver’s jitter buffer" };
     const names = track.own
-      ? ["Capture resolution", "Send target", "Call server limit", "Encoder size ceiling", "Encoded resolution", "Browser adaptation"]
-      : ["Resolution", "Decoded frame rate", "Presented frame rate", "Receive bitrate", "Jitter buffer delay", "Receive target"];
+      ? ["Capture resolution", "Send target", "Call server limit", "Encoder size ceiling", "Encoded resolution", "Encoded FPS", "Send bitrate", "Active limit"]
+      : ["Resolution", "Decoded frame rate", "Presented frame rate", "Receive bitrate", "Jitter buffer delay", "Receive target", "Active limit"];
     const values = names.map(name => {
       const value = element(doc, "dd", {}, "—");
       list.append(element(doc, "dt", name === "Jitter buffer delay" ? jitter : {}, name), value);
@@ -212,6 +212,12 @@ export class View {
     details.append(message, list);
     const target = { details, video, message, values, ...(quality ? {
       receiver: track.receiver, requested: quality.requested,
+      limit: () => {
+        const current = this.call.tracks.get(mid);
+        if (current?.receiver === track.receiver && current.peer === track.peer && current.source === track.source) {
+          return current.limit;
+        }
+      },
     } : {
       source: track.source,
       sender: () => this.call.direct.sender(track.source.transceiver.sender),
