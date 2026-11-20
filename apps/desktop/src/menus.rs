@@ -8,7 +8,6 @@ use crate::{
     state::{Desktop, Panel, Status},
     theme::*,
 };
-#[cfg(target_os = "linux")]
 use gpui_kit::base::{Align, Placement, Positioner};
 use gpui_kit::{
     base::{
@@ -27,7 +26,6 @@ use std::rc::Rc;
 /// Voice target ids registered with the server (1–30 are available).
 pub const WHISPER_TARGET: u32 = 1;
 
-#[cfg(target_os = "linux")]
 const QUALITY_MENU_GAP: Pixels = px(4.);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,9 +40,7 @@ pub enum MenuTarget {
     /// An inherited permission in the channel permissions table
     /// (`Desktop::menu_acl`).
     AclSource,
-    #[cfg(target_os = "linux")]
     VideoStats(u64),
-    #[cfg(target_os = "linux")]
     VideoQuality(u64, nuschl_client::native::sfu::VideoKind),
 }
 
@@ -233,7 +229,6 @@ impl ActionOrigin {
 #[derive(Clone, Copy)]
 pub enum MenuAnchor {
     Point(Point<Pixels>),
-    #[cfg(target_os = "linux")]
     Above(Bounds<Pixels>),
 }
 
@@ -425,7 +420,6 @@ impl Desktop {
                 | MenuTarget::Image
                 | MenuTarget::Message
                 | MenuTarget::AclSource => None,
-                #[cfg(target_os = "linux")]
                 MenuTarget::VideoStats(_) | MenuTarget::VideoQuality(..) => None,
             };
             let wanted = channel
@@ -808,7 +802,6 @@ impl Desktop {
 
     fn menu_entries(&self, menu: &Menu) -> Vec<Entry> {
         let mut entries = Vec::new();
-        #[cfg(target_os = "linux")]
         if let MenuTarget::VideoStats(generation) = menu.target {
             if let Some(label) = self.video_stats_command(generation) {
                 entries.push(local_item(label, "info", move |this, _, _, cx| {
@@ -817,7 +810,6 @@ impl Desktop {
             }
             return entries;
         }
-        #[cfg(target_os = "linux")]
         if let MenuTarget::VideoQuality(generation, kind) = menu.target {
             return self
                 .video_quality_commands(generation, kind)
@@ -1589,7 +1581,6 @@ impl Desktop {
                 );
             }
             MenuTarget::Image | MenuTarget::Message | MenuTarget::AclSource => unreachable!(),
-            #[cfg(target_os = "linux")]
             MenuTarget::VideoStats(_) | MenuTarget::VideoQuality(..) => unreachable!(),
         }
         entries.retain(|entry| {
@@ -1961,7 +1952,6 @@ impl RenderOnce for MenuSurface {
         let width = (viewport.width - reserve).max(px(0.)).min(self.max_width);
         let height = match self.anchor {
             MenuAnchor::Point(_) => viewport.height - reserve,
-            #[cfg(target_os = "linux")]
             MenuAnchor::Above(trigger) => {
                 // On a short viewport the choices scroll within the space
                 // beside the trigger.
@@ -2038,7 +2028,6 @@ impl RenderOnce for MenuSurface {
                 .snap_to_window()
                 .child(div().p(gutter).child(content))
                 .into_any_element(),
-            #[cfg(target_os = "linux")]
             MenuAnchor::Above(trigger) => Positioner::side(trigger)
                 .placement(Placement::Top)
                 .align(Align::Start)
@@ -2057,10 +2046,7 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
     if entries.is_empty() {
         return None;
     }
-    #[cfg(target_os = "linux")]
     let quality = matches!(menu.target, MenuTarget::VideoQuality(..));
-    #[cfg(not(target_os = "linux"))]
-    let quality = false;
     let (label, width) = if quality {
         ("Video quality", px(224.))
     } else {
