@@ -226,7 +226,7 @@ pub(super) fn limit_label(limit: VideoLimit) -> &'static str {
         VideoLimit::SfuHost => "SFU host upload cap",
         VideoLimit::SfuRoom => "SFU room cap",
         VideoLimit::SfuViewer => "SFU per-viewer cap",
-        VideoLimit::TrafficBudget => "SFU monthly traffic pacing",
+        VideoLimit::TrafficBudget => "SFU traffic budget pacing",
         VideoLimit::ForwardingBacklog => "SFU send queue",
         VideoLimit::QualityRecovery => "Restoring quality",
     }

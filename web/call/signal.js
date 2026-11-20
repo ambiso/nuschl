@@ -33,7 +33,7 @@ const videoLimits = new Map([
   ["sfu_host", "SFU host upload cap"],
   ["sfu_room", "SFU room cap"],
   ["sfu_viewer", "SFU per-viewer cap"],
-  ["traffic_budget", "SFU monthly traffic pacing"],
+  ["traffic_budget", "SFU traffic budget pacing"],
   ["forwarding_backlog", "SFU send queue"],
   ["quality_recovery", "Restoring quality"],
 ]);
