@@ -175,6 +175,15 @@ async fn native_call_signaling_keeps_keys_in_two_confined_workers() {
             .await
             .is_err()
     );
+    assert!(
+        alice
+            .call_signal(Request {
+                generation: 1,
+                action: key(3, ack.clone())
+            })
+            .await
+            .is_err()
+    );
     assert!(matches!(
         request(&alice, 1, key(2, ack)).await,
         Outcome::Ready { peer: 2 }
@@ -231,6 +240,12 @@ async fn native_call_signaling_keeps_keys_in_two_confined_workers() {
         .is_err()
     );
 
+    request(&bob, 1, Action::Left { peer: 1 }).await;
+    let forgotten = next_epoch(&mut bob_rtc).await.unwrap();
+    assert_eq!(
+        (forgotten.peer, forgotten.direction),
+        (1, epoch::Direction::ForgetReceive)
+    );
     request(&bob, 1, Action::Close).await;
     assert!(next_epoch(&mut bob_rtc).await.is_none());
     request(&alice, 2, open(true, false)).await;

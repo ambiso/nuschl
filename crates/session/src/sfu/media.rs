@@ -437,7 +437,7 @@ impl Connection {
             tracks: VIDEO.map(|purpose| (options.publish == Some(purpose)).then_some(0)),
             revision: 0,
         };
-        let (input, control) = mpsc::channel(1);
+        let (input, control) = mpsc::channel(rtc::MAX_TRACKS);
         let ([camera, screen], frames) = frame_channels();
         let (quality, wanted) = watch::channel(Vec::new());
         let (sources, changes) = watch::channel(initial);
@@ -1212,6 +1212,8 @@ async fn run(
             continue;
         };
         let publishing = source.tracks.iter().any(Option::is_some);
+        // A direct leg replaces one SFU direction. Keep both SFU legs for
+        // duplex calls and whenever a third peer might need the stream.
         let next_pair = match (peers.as_slice(), publishing, subscribed.is_empty()) {
             ([peer], true, true) => Some((*peer, true)),
             ([peer], false, false) => Some((*peer, false)),
