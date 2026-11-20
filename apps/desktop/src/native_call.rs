@@ -1145,38 +1145,63 @@ fn stop_button(call: &Active, cx: &mut Context<Desktop>) -> impl IntoElement {
     )
 }
 
+fn return_actions(call: &Active, cx: &mut Context<Desktop>) -> Div {
+    layout::actions()
+        .items_center()
+        .when(call.monitor, |bar| bar.child("Sharing entire monitor"))
+        .child(styled_button(
+            "native-call-restore",
+            "Return to call",
+            Tone::Secondary,
+            |this, window, cx| this.restore_native_call(window, cx),
+            cx,
+        ))
+        .child(stop_button(call, cx))
+}
+
 pub fn minimized(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
     let call = this.native_call.as_ref()?;
-    if !call.minimized
-        && this.selected_indices().is_some_and(|(index, channel)| {
-            let server = &this.client.servers[index];
-            this.native_call_in(&server.id, &server.channels[channel].target)
-        })
-    {
+    if this.selected_indices().is_some_and(|(index, channel)| {
+        let server = &this.client.servers[index];
+        this.native_call_in(&server.id, &server.channels[channel].target)
+    }) {
         return None;
     }
     Some(
-        div()
+        return_actions(call, cx)
             .id("native-call-minimized")
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap_2()
             .px_3()
             .py_1()
             .border_b_1()
             .border_color(color(BORDER))
-            .when(call.monitor, |bar| bar.child("Sharing entire monitor"))
-            .child(styled_button(
-                "native-call-restore",
-                "Return to call",
-                Tone::Secondary,
-                |this, window, cx| this.restore_native_call(window, cx),
-                cx,
-            ))
-            .child(stop_button(call, cx))
             .into_any_element(),
     )
+}
+
+pub fn minimized_card(
+    this: &Desktop,
+    index: usize,
+    cx: &mut Context<Desktop>,
+) -> Option<AnyElement> {
+    let call = this.native_call.as_ref().filter(|call| call.minimized)?;
+    let host = nuschl_core::call::link_host(&call.room)?;
+    let who = if call.owner {
+        "You"
+    } else {
+        this.client
+            .calls_in(index, &call.conversation)
+            .into_iter()
+            .find(|invite| invite.link == call.room)
+            .and_then(|invite| this.client.servers[index].users.get(&invite.sender))
+            .map_or("", |user| user.name.as_str())
+    };
+    Some(crate::view::banner(
+        "call-card",
+        ACCENT,
+        "video",
+        format!("Video call · {who} · {host}"),
+        Some(return_actions(call, cx).into_any_element()),
+    ))
 }
 
 pub async fn run(
