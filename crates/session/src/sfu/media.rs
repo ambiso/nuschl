@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: EUPL-1.2
-//! Encoded media for a two-person native call. The WSS connection owns
+//! Encoded media for a native call. The WSS connection owns
 //! signaling, and the isolated RTC worker owns ICE, DTLS, SRTP and SFrame.
 
 use super::turn::NetworkLeg;
@@ -8,23 +8,25 @@ use super::{
     VideoKind, write,
 };
 use nuschl_core::network::Destination;
-use nuschl_ipc::rtc::{self, Command, Description, Event, LegRole, Reply, Track, Worker};
+use nuschl_ipc::rtc::{
+    self, Command, Description, Event, LegRole, Reply, SFU_PUBLISH_LEG as PUBLISH,
+    SFU_SUBSCRIBE_LEG as SUBSCRIBE, Track, Worker,
+};
+use nuschl_protocol::sfu::VideoLimit;
 use nuschl_stream_quality::{QualityRequest, Throttle};
 use std::{
+    collections::{HashMap, HashSet},
     future::pending,
     net::SocketAddr,
     os::unix::net::UnixStream,
     path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicU8, AtomicU64, Ordering},
-    },
+    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 use tokio::{
     sync::{mpsc, watch},
     task::JoinHandle,
-    time::{Instant, sleep, sleep_until, timeout},
+    time::{Instant, MissedTickBehavior, interval, sleep, sleep_until, timeout},
 };
 
 mod direct;
@@ -32,17 +34,12 @@ use direct::{Candidates, Direct, Signal};
 
 pub use rtc::Purpose;
 
-const SUBSCRIBE: u32 = 1;
-const PUBLISH: u32 = 2;
 const UDP_BURST: usize = 64;
 const MAX_PENDING_FRAME_AGE: Duration = Duration::from_millis(150);
 const KEYFRAME_INTERVAL: Duration = Duration::from_secs(1);
 // A subscription accepts 48 SDP sections, including its control channel and first source.
 const MAX_SOURCE_CHANGES: u8 = 46;
 const VIDEO: [Purpose; 2] = [Purpose::Camera, Purpose::ScreenVideo];
-const IDLE: u8 = 0;
-const SENDING: u8 = 1;
-const RECEIVING: u8 = 2;
 
 pub struct MediaOptions {
     /// Path of the installed `nuschl-rtc-worker`.
@@ -65,6 +62,12 @@ pub enum MediaEvent {
         height: u16,
         fps: u8,
         bitrate: u64,
+        limit: Option<VideoLimit>,
+    },
+    VideoLimit {
+        publisher: u64,
+        purpose: Purpose,
+        limit: VideoLimit,
     },
     SourceKeyframeRequired {
         purpose: Purpose,
@@ -80,6 +83,7 @@ pub enum MediaEvent {
     },
     /// A negotiated video source was removed while the publisher stayed in the room.
     SourceEnded {
+        publisher: u64,
         purpose: Purpose,
     },
     Frame {
@@ -103,6 +107,7 @@ struct EncoderCaps {
     height: u16,
     fps: u8,
     bitrate: u64,
+    limit: Option<VideoLimit>,
 }
 
 type SourceCaps = [Option<EncoderCaps>; 2];
@@ -138,7 +143,7 @@ impl Sources {
 }
 
 enum Input {
-    RequestKeyframe(Purpose),
+    RequestKeyframe(Option<u64>, Purpose),
     #[cfg(test)]
     LoseDirect,
 }
@@ -158,7 +163,6 @@ pub struct Media {
     sequence: [AtomicU64; 2],
     quality: watch::Sender<QualityRequests>,
     sources: watch::Sender<Sources>,
-    role: Arc<AtomicU8>,
     events: mpsc::Receiver<Result<QueuedEvent, Error>>,
     keyframes: [mpsc::Receiver<()>; 2],
     limits: watch::Receiver<SourceCaps>,
@@ -220,9 +224,9 @@ impl Media {
         }
     }
 
-    /// Native calls keep the first publisher direction for the paired meeting.
+    /// A live call can publish while receiving remote tracks.
     pub fn can_publish(&self) -> bool {
-        self.role.load(Ordering::Relaxed) != RECEIVING
+        !self.sources.is_closed()
     }
 
     /// Change one granted source while keeping the other source and signaling live.
@@ -242,13 +246,6 @@ impl Media {
     fn set_sources(&self, tracks: [bool; 2]) -> Result<(), Error> {
         let mut sources = *self.sources.borrow();
         sources.update(tracks)?;
-        if tracks.into_iter().any(|active| active) {
-            self.role
-                .try_update(Ordering::Relaxed, Ordering::Relaxed, |role| {
-                    (role != RECEIVING).then_some(SENDING)
-                })
-                .map_err(|_| Error::Protocol("another participant is presenting"))?;
-        }
         self.sources
             .send(sources)
             .map_err(|_| Error::Protocol("media ended"))
@@ -280,11 +277,20 @@ impl Media {
             tier: kind.request(quality, tile_height) as u8,
         };
         self.quality.send_if_modified(|latest| {
-            let slot = &mut latest[quality_index(kind)];
-            if *slot == Some(request) {
-                return false;
+            if let Some(slot) = latest
+                .iter_mut()
+                .find(|slot| slot.publisher == publisher && slot.kind == kind)
+            {
+                if *slot == request {
+                    return false;
+                }
+                *slot = request;
+            } else {
+                if latest.len() == rtc::MAX_TRACKS {
+                    latest.remove(0);
+                }
+                latest.push(request);
             }
-            *slot = Some(request);
             true
         });
         Ok(())
@@ -293,10 +299,25 @@ impl Media {
     /// Recover decoding for the active subscription with a fresh keyframe.
     /// Subsequent requests share the transport's keyframe cooldown.
     pub fn request_keyframe(&self, purpose: Purpose) -> Result<(), Error> {
-        if video_kind(purpose).is_none() {
+        self.request_video_keyframe(None, purpose)
+    }
+
+    pub fn request_source_keyframe(&self, publisher: u64, purpose: Purpose) -> Result<(), Error> {
+        self.request_video_keyframe(Some(publisher), purpose)
+    }
+
+    fn request_video_keyframe(
+        &self,
+        publisher: Option<u64>,
+        purpose: Purpose,
+    ) -> Result<(), Error> {
+        if publisher == Some(0) || video_kind(purpose).is_none() {
             return Err(Error::Protocol("invalid video subscription"));
         }
-        match self.input.try_send(Input::RequestKeyframe(purpose)) {
+        match self
+            .input
+            .try_send(Input::RequestKeyframe(publisher, purpose))
+        {
             Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => Ok(()),
             Err(mpsc::error::TrySendError::Closed(_)) => Err(Error::Protocol("media ended")),
         }
@@ -318,6 +339,7 @@ impl Media {
                         height,
                         fps,
                         bitrate,
+                        limit,
                     }) = caps
                         && Some(revision) == self.sources.borrow().tracks[index]
                     {
@@ -326,6 +348,7 @@ impl Media {
                             height,
                             fps,
                             bitrate,
+                            limit,
                         }));
                     }
                 }
@@ -384,8 +407,8 @@ impl Media {
 }
 
 impl Connection {
-    /// Start native encoded video over the configured SFU. Calls use a supplied
-    /// publisher or viewer role and keep their signaling connection until stop.
+    /// Start native encoded video over the configured SFU. Local sources and
+    /// subscriptions share the signaling connection until stop.
     pub async fn into_media(self, options: MediaOptions) -> Result<Media, Error> {
         if self.policy.relay_only && self.welcome.turn.is_none() {
             return Err(Error::Protocol(
@@ -421,19 +444,13 @@ impl Connection {
             Codec::Av1 => rtc::Codec::Av1,
             Codec::Vp9 => rtc::Codec::Vp9,
         };
-        let role = Arc::new(AtomicU8::new(if options.publish.is_some() {
-            SENDING
-        } else {
-            IDLE
-        }));
-        let actor_role = Arc::clone(&role);
         let initial = Sources {
             tracks: VIDEO.map(|purpose| (options.publish == Some(purpose)).then_some(0)),
             revision: 0,
         };
-        let (input, control) = mpsc::channel(1);
+        let (input, control) = mpsc::channel(rtc::MAX_TRACKS);
         let ([camera, screen], frames) = frame_channels();
-        let (quality, wanted) = watch::channel([None; 2]);
+        let (quality, wanted) = watch::channel(Vec::new());
         let (sources, changes) = watch::channel(initial);
         let (output, events) = mpsc::channel(4);
         let (requests, keyframes) = frame_channels();
@@ -446,7 +463,6 @@ impl Connection {
                 &mut worker,
                 destination,
                 codec,
-                &actor_role,
                 Inputs {
                     control,
                     frames,
@@ -473,7 +489,6 @@ impl Connection {
             sequence: Default::default(),
             quality,
             sources,
-            role,
             events,
             keyframes,
             limits,
@@ -537,31 +552,41 @@ struct Leg {
     selected: bool,
     bandwidth: Option<(Instant, u64)>,
     last_packet: Option<Instant>,
-    camera: FrameGate,
-    screen: FrameGate,
+    video_gates: HashMap<(u64, Purpose), FrameGate>,
 }
 
 impl Leg {
-    fn video_gate(&mut self, purpose: Purpose) -> Option<&mut FrameGate> {
-        match purpose {
-            Purpose::Camera => Some(&mut self.camera),
-            Purpose::ScreenVideo => Some(&mut self.screen),
-            _ => None,
+    fn set_video_tracks(&mut self, tracks: &[Track]) {
+        self.video_gates.retain(|&(publisher, purpose), _| {
+            tracks
+                .iter()
+                .any(|track| track.publisher == Some(publisher) && track.purpose == purpose)
+        });
+        for track in tracks {
+            if let Some(publisher) = track.publisher
+                && video_kind(track.purpose).is_some()
+            {
+                self.video_gates
+                    .entry((publisher, track.purpose))
+                    .or_insert_with(FrameGate::new);
+            }
         }
     }
 
     async fn request_keyframe(
         &mut self,
         worker: &mut Worker,
+        publisher: u64,
         purpose: Purpose,
     ) -> Result<(), Error> {
-        if let Some(gate) = self.video_gate(purpose) {
+        if let Some(gate) = self.video_gates.get_mut(&(publisher, purpose)) {
             gate.awaiting_key = true;
-            if gate.request() {
+            if self.connected && gate.request() {
                 worker
                     .exchange(
                         Command::RequestKeyframe {
                             leg: self.id,
+                            publisher,
                             purpose,
                         },
                         Vec::new(),
@@ -599,8 +624,7 @@ impl Leg {
             selected: false,
             bandwidth: None,
             last_packet: None,
-            camera: FrameGate::new(),
-            screen: FrameGate::new(),
+            video_gates: HashMap::new(),
         })
     }
 
@@ -660,11 +684,6 @@ async fn describe(worker: &mut Worker, command: Command) -> Result<Description, 
     }
 }
 
-struct Pair {
-    peer: Option<u64>,
-    ready: bool,
-}
-
 struct Output<'a> {
     events: &'a mpsc::Sender<Result<QueuedEvent, Error>>,
     keyframes: &'a [mpsc::Sender<()>; 2],
@@ -715,35 +734,6 @@ impl FrameGate {
     }
 }
 
-impl Pair {
-    async fn connect(
-        &mut self,
-        connection: &mut Connection,
-        peer: u64,
-        publisher: bool,
-    ) -> Result<(), Error> {
-        if peer == 0 || peer == connection.welcome.peer || self.peer.is_some() {
-            return Err(Error::Protocol("invalid native call peer"));
-        }
-        connection.signal(Action::Pair { peer, publisher }).await?;
-        self.peer = Some(peer);
-        Ok(())
-    }
-
-    async fn key(&mut self, connection: &mut Connection, peer: u64, data: &str) -> Option<Signal> {
-        if self.peer != Some(peer) {
-            return None;
-        }
-        let data = hex::decode(data).ok()?;
-        match connection.signal(Action::Key { peer, data }).await.ok()? {
-            Outcome::Ready { .. } | Outcome::Send { ready: true, .. } => self.ready = true,
-            Outcome::Signal { data, .. } => return serde_json::from_slice(&data).ok(),
-            _ => {}
-        }
-        None
-    }
-}
-
 fn signaling_id(connection: &Connection, leg: u32) -> [u8; 16] {
     let mut id = [0; 16];
     id[..8].copy_from_slice(&connection.scope.generation.to_be_bytes());
@@ -751,7 +741,7 @@ fn signaling_id(connection: &Connection, leg: u32) -> [u8; 16] {
     id
 }
 
-type QualityRequests = [Option<QualityRequest>; 2];
+type QualityRequests = Vec<QualityRequest>;
 
 struct Inputs {
     control: mpsc::Receiver<Input>,
@@ -777,18 +767,17 @@ async fn next_source<T>(channels: &mut [mpsc::Receiver<T>; 2]) -> (usize, Option
 #[derive(Default)]
 struct ReceiveQuality {
     wanted: QualityRequests,
-    sent: QualityRequests,
-    next: [Option<Instant>; 2],
+    sent: HashMap<(u64, VideoKind), (QualityRequest, Instant)>,
 }
 
 impl ReceiveQuality {
     fn next_request(&self, tracks: &[Track]) -> Option<(Instant, QualityRequest)> {
         self.wanted
             .iter()
-            .enumerate()
-            .filter_map(|(i, request)| {
-                let request = (*request)?;
-                if Some(request) == self.sent[i]
+            .filter_map(|&request| {
+                let key = (request.publisher, request.kind);
+                let sent = self.sent.get(&key);
+                if sent.is_some_and(|(previous, _)| *previous == request)
                     || !tracks.iter().any(|track| {
                         track.publisher == Some(request.publisher)
                             && video_kind(track.purpose) == Some(request.kind)
@@ -796,21 +785,21 @@ impl ReceiveQuality {
                 {
                     return None;
                 }
-                Some((self.next[i].unwrap_or_else(Instant::now), request))
+                Some((sent.map_or_else(Instant::now, |(_, at)| *at), request))
             })
             .min_by_key(|(at, _)| *at)
     }
 
     fn sent(&mut self, request: QualityRequest) {
-        let i = quality_index(request.kind);
-        self.sent[i] = Some(request);
         // Give signaling transit jitter the same 100 ms margin as the call page.
-        self.next[i] = Some(Instant::now() + Throttle::INTERVAL + Duration::from_millis(100));
+        let next = Instant::now() + Throttle::INTERVAL + Duration::from_millis(100);
+        self.sent
+            .insert((request.publisher, request.kind), (request, next));
     }
 
-    fn source_ended(&mut self, purpose: Purpose) {
+    fn source_ended(&mut self, publisher: u64, purpose: Purpose) {
         if let Some(kind) = video_kind(purpose) {
-            self.sent[quality_index(kind)] = None;
+            self.sent.remove(&(publisher, kind));
         }
     }
 }
@@ -841,21 +830,19 @@ async fn run(
     worker: &mut Worker,
     destination: SocketAddr,
     codec: rtc::Codec,
-    role: &AtomicU8,
     mut inputs: Inputs,
     output: Output<'_>,
 ) -> Result<(), Error> {
-    let mut pair = Pair {
-        peer: None,
-        ready: false,
-    };
     let mut peers: Vec<_> = connection
         .welcome
         .peers
         .iter()
         .map(|peer| peer.id)
         .collect();
-    let mut other = peers.first().copied();
+    let mut remotes = HashSet::new();
+    let mut direct_pair = None;
+    let mut key_tick = interval(Duration::from_millis(250));
+    key_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut offered: Option<Description> = None;
     let mut publish_tracks = Vec::<Track>::new();
     let mut source_change_deadline = None;
@@ -916,7 +903,6 @@ async fn run(
         let next_quality = quality.next_request(&subscribed);
         let mut retreat = false;
         let mut notify = true;
-        let publishing = role.load(Ordering::Relaxed) == SENDING;
         tokio::select! {
             message = connection.next() => match message? {
                 ServerMessage::Joined { peer, .. } => {
@@ -927,20 +913,18 @@ async fn run(
                         if peers.len() >= 256 { return Err(Error::Protocol("invalid call roster")); }
                         peers.push(peer);
                     }
-                    if other.is_none() {
-                        other = Some(peer);
-                        if publishing { pair.connect(connection, peer, true).await?; }
-                    }
                 }
                 ServerMessage::Left { peer } => {
                     peers.retain(|candidate| *candidate != peer);
-                    if other == Some(peer) {
-                        if pair.peer.is_some() { return Ok(()); }
-                        other = peers.first().copied();
+                    remotes.remove(&peer);
+                    connection.signal(Action::Left { peer }).await?;
+                    let next = subscribed.iter().filter(|track| track.publisher != Some(peer)).cloned().collect();
+                    if !set_subscriptions(&mut subscribe, &mut quality, &mut subscribed, next, &output).await {
+                        return Ok(());
                     }
                 }
                 ServerMessage::Offer { sdp, tracks } => {
-                    if sdp.len() > rtc::MAX_SDP || tracks.len() > 16 { return Err(Error::Protocol("invalid native SFU offer")); }
+                    if sdp.len() > rtc::MAX_SDP || tracks.len() > rtc::MAX_TRACKS { return Err(Error::Protocol("invalid native SFU offer")); }
                     let tracks = tracks.into_iter().map(|track| {
                         let purpose = match track.kind.as_ref() {
                             "camera" => Purpose::Camera,
@@ -953,52 +937,22 @@ async fn run(
                         }
                         Ok(Track { mid: track.mid, purpose, publisher: Some(track.peer) })
                     }).collect::<Result<Vec<_>, _>>()?;
-                    if pair.peer.is_none()
-                        && let Some(peer) = tracks.iter().find(|track| video_kind(track.purpose).is_some())
-                            .and_then(|track| track.publisher)
-                        && role.try_update(Ordering::Relaxed, Ordering::Relaxed, |role| {
-                            (role != SENDING).then_some(RECEIVING)
-                        }).is_ok()
-                    {
-                        pair.connect(connection, peer, false).await?;
-                        other = Some(peer);
-                    }
-                    let selected = if role.load(Ordering::Relaxed) == RECEIVING {
-                        pair.peer
-                    } else {
-                        None
-                    };
-                    let mut seen = [false; 2];
-                    let next = tracks.iter().filter_map(|track| {
-                        let index = video_index(track.purpose).ok()?;
-                        (track.publisher == selected && !std::mem::replace(&mut seen[index], true))
-                            .then(|| track.clone())
-                    }).collect::<Vec<_>>();
+                    let mut seen = HashSet::new();
+                    let next = tracks.iter().filter(|track| {
+                        video_kind(track.purpose).is_some() && seen.insert((track.publisher, track.purpose))
+                    }).cloned().collect::<Vec<_>>();
                     let description = Description { id: signaling_id(connection, SUBSCRIBE), sdp, tracks };
                     let answer = describe(worker, Command::AcceptOffer { leg: SUBSCRIBE, description }).await?;
                     write(&mut connection.socket, &ClientMessage::Answer { sdp: answer.sdp }).await?;
-                    // End old sources after queued frames and before any media from the new offer.
-                    for track in subscribed.iter().filter(|track| !next.contains(track)) {
-                        if video_kind(track.purpose).is_none() || publishing { continue; }
-                        retreat |= attempting_direct;
-                        quality.source_ended(track.purpose);
-                        if let Some(gate) = subscribe.video_gate(track.purpose) {
-                            *gate = FrameGate::new();
-                        }
-                        if output.events.send(Ok(QueuedEvent::Call(MediaEvent::SourceEnded { purpose: track.purpose }))).await.is_err() {
-                            return Ok(());
+                    for publisher in next.iter().filter_map(|track| track.publisher) {
+                        if remotes.insert(publisher) {
+                            connection.signal(Action::Subscribe { peer: publisher }).await?;
                         }
                     }
-                    for track in next.iter().filter(|track| !subscribed.contains(track)) {
-                        if let Some(publisher) = track.publisher
-                            && video_kind(track.purpose).is_some()
-                            && !publishing
-                            && !output.call(MediaEvent::SourceAvailable { publisher, purpose: track.purpose }).await
-                        {
-                            return Ok(());
-                        }
+                    retreat |= attempting_direct && subscribed.iter().any(|track| !next.contains(track));
+                    if !set_subscriptions(&mut subscribe, &mut quality, &mut subscribed, next, &output).await {
+                        return Ok(());
                     }
-                    subscribed = next;
                     subscribe.wake = Some(Instant::now());
                 }
                 ServerMessage::Answer { sdp } => {
@@ -1008,23 +962,29 @@ async fn run(
                     source_change_deadline = None;
                     if let Some(leg) = &mut publish { leg.wake = Some(Instant::now()); }
                 }
-                ServerMessage::Key { from, data } => {
-                    if let Some(signal) = pair.key(connection, from, &data).await
+                ServerMessage::Key { from, data } if peers.contains(&from) => {
+                    if let Ok(data) = hex::decode(data)
+                        && let Ok(Outcome::Signal { publisher, data, .. }) =
+                            connection.signal(Action::Key { peer: from, data }).await
+                        && direct_pair == Some((from, publisher))
                         && let Some(direct) = &mut direct
+                        && let Ok(signal) = serde_json::from_slice(&data)
                     {
                         let result = match signal {
-                            Signal::Ready if publishing => {
+                            Signal::Ready if publisher => {
                                 direct.ready = true;
                                 Ok(())
                             }
                             Signal::Offer { candidates, description }
-                                if !publishing && direct.can_accept() && discovery.is_none() =>
+                                if !publisher && direct.can_accept() && discovery.is_none() =>
                             {
                                 discovery = direct.accept(from, candidates, description, &subscribed);
                                 Ok(())
                             }
-                            Signal::Answer { candidates, description } if publishing => direct.answer(worker, from, candidates, description).await,
-                            Signal::Connected { id } if publishing => {
+                            Signal::Answer { candidates, description } if publisher => {
+                                direct.answer(worker, from, candidates, description).await
+                            }
+                            Signal::Connected { id } if publisher => {
                                 if let Some(attempt) = &mut direct.leg && attempt.id == id {
                                     attempt.confirmed = true;
                                 }
@@ -1040,7 +1000,7 @@ async fn run(
                         retreat |= result.is_err();
                     }
                 }
-                ServerMessage::Quality { source: mid, max_height, max_fps, max_bitrate, .. }
+                ServerMessage::Quality { source: mid, max_height, max_fps, max_bitrate, limit, .. }
                     if (16..=2160).contains(&max_height) && (1..=120).contains(&max_fps) && (64_000..=50_000_000).contains(&max_bitrate) => {
                     if let Some(track) = publish_tracks.iter().find(|track| track.mid == mid)
                         && let Ok(index) = video_index(track.purpose)
@@ -1048,8 +1008,15 @@ async fn run(
                     {
                         desired[index] = Some(max_bitrate);
                         output.limits.send_modify(|limits| limits[index] = Some(EncoderCaps {
-                            revision, height: max_height, fps: max_fps, bitrate: max_bitrate,
+                            revision, height: max_height, fps: max_fps, bitrate: max_bitrate, limit,
                         }));
+                    }
+                }
+                ServerMessage::VideoLimit { mid, peer: publisher, limit } => {
+                    if let Some(track) = subscribed.iter().find(|track| {
+                        track.mid == mid && track.publisher == Some(publisher) && video_kind(track.purpose).is_some()
+                    }) && !output.call(MediaEvent::VideoLimit { publisher, purpose: track.purpose, limit }).await {
+                        return Ok(());
                     }
                 }
                 ServerMessage::Codec { codec: changed } if changed != connection.welcome.codec => return Err(Error::Protocol("native call codec changed")),
@@ -1062,10 +1029,10 @@ async fn run(
             }
             changed = inputs.wanted.changed() => {
                 if changed.is_err() { return Ok(()); }
-                quality.wanted = *inputs.wanted.borrow_and_update();
+                quality.wanted.clone_from(&inputs.wanted.borrow_and_update());
             }
             () = wake(next_quality.map(|(at, _)| at)) => {
-                quality.wanted = *inputs.wanted.borrow_and_update();
+                quality.wanted.clone_from(&inputs.wanted.borrow_and_update());
                 if let Some((at, request)) = quality.next_request(&subscribed)
                     && at <= Instant::now()
                 {
@@ -1076,13 +1043,15 @@ async fn run(
                 }
             }
             input = inputs.control.recv() => match input {
-                Some(Input::RequestKeyframe(purpose)) => {
-                    if subscribed.iter().any(|track| track.purpose == purpose) {
+                Some(Input::RequestKeyframe(publisher, purpose)) => {
+                    if let Some(publisher) = subscribed.iter().find(|track| {
+                        track.purpose == purpose && publisher.is_none_or(|peer| track.publisher == Some(peer))
+                    }).and_then(|track| track.publisher) {
                         let active = direct.as_mut()
                             .and_then(|direct| direct.leg.as_mut())
                             .filter(|attempt| attempt.transport.selected)
                             .map_or(&mut subscribe, |attempt| &mut attempt.transport);
-                        active.request_keyframe(worker, purpose).await?;
+                        active.request_keyframe(worker, publisher, purpose).await?;
                     }
                 }
                 #[cfg(test)]
@@ -1147,10 +1116,10 @@ async fn run(
             }
             result = direct::next_prepared(&mut discovery) => {
                 discovery = None;
-                if let (Some(direct), Some(peer)) = (&mut direct, pair.peer) {
+                if let (Some(direct), Some((peer, publisher))) = (&mut direct, direct_pair) {
                     retreat = match result {
                         Ok(prepared) => match direct.complete(worker, codec, prepared).await {
-                            Ok(signal) => direct::send(connection, peer, &signal).await.is_err(),
+                            Ok(signal) => direct::send(connection, peer, publisher, &signal).await.is_err(),
                             Err(_) => true,
                         },
                         Err(_) => true,
@@ -1158,29 +1127,30 @@ async fn run(
                 }
             }
             () = wake(publish_wake) => {
-                if let Some(leg) = &mut publish { drain(worker, leg, None, !selected, &output).await?; }
+                if let Some(leg) = &mut publish { drain(worker, leg, false, !selected, &output).await?; }
             }
-            () = wake(subscribe_wake) => { drain(worker, &mut subscribe, other.filter(|_| !selected && !publishing), false, &output).await?; }
+            () = wake(subscribe_wake) => { drain(worker, &mut subscribe, !selected, false, &output).await?; }
             () = wake(direct_wake) => {
                 if let Some(attempt) = direct.as_mut().and_then(|direct| direct.leg.as_mut()) {
-                    retreat = drain(worker, &mut attempt.transport, other.filter(|_| !publishing), selected && publishing, &output).await.is_err();
+                    retreat = drain(worker, &mut attempt.transport, direct_pair.is_some_and(|(_, publisher)| !publisher), selected && direct_pair.is_some_and(|(_, publisher)| publisher), &output).await.is_err();
                 }
             }
             () = wake(direct_deadline) => retreat = true,
             () = wake(source_change_deadline) => return Err(Error::Timeout),
+            _ = key_tick.tick(), if publish.is_some() => { connection.signal(Action::Tick).await?; }
             () = std::future::ready(()), if offered.is_none() && pending_source.is_some() => {}
         }
         if offered.is_none()
             && let Some(next) = pending_source.take()
             && source.tracks != next.tracks
         {
-            if pair.peer.is_none()
-                && let Some(peer) = other
-            {
-                pair.connect(connection, peer, true).await?;
-            }
             let update = publish.is_some();
             if publish.is_none() {
+                connection
+                    .signal(Action::Publish {
+                        peer: connection.welcome.peer,
+                    })
+                    .await?;
                 let path = NetworkLeg::open(destination, turn.as_ref()).await?;
                 publish = Some(
                     Leg::start(
@@ -1196,25 +1166,7 @@ async fn run(
             let leg = publish
                 .as_mut()
                 .ok_or(Error::Protocol("call has no publisher"))?;
-            discovery = None;
-            if let (Some(direct), Some(peer)) = (&mut direct, pair.peer)
-                && direct.leg.is_some()
-                && let Some(id) = direct.close(worker, Some(leg)).await?
-            {
-                direct::send(connection, peer, &Signal::Close { id }).await?;
-                if selected {
-                    output.bandwidth.send_replace(None);
-                    for (index, gate) in send_gates.iter_mut().enumerate() {
-                        *gate = FrameGate::new();
-                        if sending[index].is_some() {
-                            output.keyframe(index);
-                        }
-                    }
-                    if !output.call(MediaEvent::Direct { active: false }).await {
-                        return Ok(());
-                    }
-                }
-            }
+            retreat |= attempting_direct;
             let description = offer_publish(connection, worker, source, next, update).await?;
             publish_tracks.clone_from(&description.tracks);
             offered = Some(description);
@@ -1233,7 +1185,6 @@ async fn run(
         if offered.is_none()
             && source.tracks != sending
             && publish.as_ref().is_some_and(|leg| leg.connected)
-            && pair.ready
         {
             // The crypto worker delivers the epoch on a separate private socket.
             timeout(Duration::from_secs(1), async {
@@ -1267,13 +1218,18 @@ async fn run(
             sending = source.tracks;
         }
 
-        let (Some(direct), Some(peer)) = (&mut direct, pair.peer) else {
+        let Some(direct) = &mut direct else {
             continue;
         };
-        if pair.ready && !publishing && !direct.asked {
-            direct.asked = true;
-            let _ = direct::send(connection, peer, &Signal::Ready).await;
-        }
+        let publishing = source.tracks.iter().any(Option::is_some);
+        // A direct leg replaces one SFU direction. Keep both SFU legs for
+        // duplex calls and whenever a third peer might need the stream.
+        let next_pair = match (peers.as_slice(), publishing, subscribed.is_empty()) {
+            ([peer], true, true) => Some((*peer, true)),
+            ([peer], false, false) => Some((*peer, false)),
+            _ => None,
+        };
+        retreat |= next_pair != direct_pair;
         let desired = source
             .tracks
             .iter()
@@ -1297,44 +1253,62 @@ async fn run(
         }
         if retreat {
             discovery = None;
-            let was_selected = direct
-                .leg
-                .as_ref()
-                .is_some_and(|attempt| attempt.transport.selected);
-            if let Some(id) = direct.close(worker, publish.as_mut()).await? {
-                if notify {
-                    let _ = direct::send(connection, peer, &Signal::Close { id }).await;
-                }
-                if was_selected {
-                    if publishing {
-                        output.bandwidth.send_replace(None);
-                        for (index, gate) in send_gates.iter_mut().enumerate() {
-                            *gate = FrameGate::new();
-                            if sending[index].is_some() {
-                                output.keyframe(index);
-                            }
-                        }
-                    } else {
-                        for purpose in [Purpose::Camera, Purpose::ScreenVideo] {
-                            if subscribed.iter().any(|track| track.purpose == purpose)
-                                && let Some(gate) = subscribe.video_gate(purpose)
-                            {
-                                *gate = FrameGate::new();
-                                subscribe.request_keyframe(worker, purpose).await?;
-                            }
-                        }
+            if let Some((peer, sender)) = direct_pair {
+                let was_selected = direct
+                    .leg
+                    .as_ref()
+                    .is_some_and(|leg| leg.transport.selected);
+                if let Some(id) = direct
+                    .close(worker, publish.as_mut().filter(|_| sender))
+                    .await?
+                {
+                    if notify {
+                        let _ = direct::send(connection, peer, sender, &Signal::Close { id }).await;
                     }
-                    if output
-                        .events
-                        .send(Ok(QueuedEvent::Call(MediaEvent::Direct { active: false })))
-                        .await
-                        .is_err()
-                    {
-                        return Ok(());
+                    if was_selected {
+                        if sender {
+                            output.bandwidth.send_replace(None);
+                            for (index, gate) in send_gates.iter_mut().enumerate() {
+                                *gate = FrameGate::new();
+                                if sending[index].is_some() {
+                                    output.keyframe(index);
+                                }
+                            }
+                        } else {
+                            for track in &subscribed {
+                                if let Some(publisher) = track.publisher {
+                                    subscribe
+                                        .request_keyframe(worker, publisher, track.purpose)
+                                        .await?;
+                                }
+                            }
+                        }
+                        if !output.call(MediaEvent::Direct { active: false }).await {
+                            return Ok(());
+                        }
                     }
                 }
             }
+        }
+        if direct_pair != next_pair {
+            direct_pair = next_pair;
+            direct.ready = false;
+            direct.asked = false;
+        }
+        let Some((peer, publishing)) = direct_pair else {
             continue;
+        };
+        // Verify that the fallback can deliver this publisher's media before
+        // requesting a direct route. A grant can arrive before the sender rotates.
+        if !publishing
+            && !direct.asked
+            && subscribe
+                .video_gates
+                .values()
+                .any(|gate| !gate.awaiting_key)
+        {
+            direct.asked = true;
+            let _ = direct::send(connection, peer, false, &Signal::Ready).await;
         }
         match (publishing, publish.as_ref(), desired) {
             (true, Some(publish), Some(desired))
@@ -1361,7 +1335,8 @@ async fn run(
                         Reply::Done,
                     ) {
                         if let Some(id) = direct.close(worker, None).await? {
-                            let _ = direct::send(connection, peer, &Signal::Close { id }).await;
+                            let _ =
+                                direct::send(connection, peer, true, &Signal::Close { id }).await;
                         }
                         continue;
                     }
@@ -1390,9 +1365,14 @@ async fn run(
                     && !attempt.confirmed
                 {
                     attempt.confirmed = true;
-                    if direct::send(connection, peer, &Signal::Connected { id: attempt.id })
-                        .await
-                        .is_err()
+                    if direct::send(
+                        connection,
+                        peer,
+                        false,
+                        &Signal::Connected { id: attempt.id },
+                    )
+                    .await
+                    .is_err()
                     {
                         direct.close(worker, None).await?;
                     }
@@ -1401,6 +1381,45 @@ async fn run(
             _ => {}
         }
     }
+}
+
+async fn set_subscriptions(
+    leg: &mut Leg,
+    quality: &mut ReceiveQuality,
+    current: &mut Vec<Track>,
+    next: Vec<Track>,
+    output: &Output<'_>,
+) -> bool {
+    for track in current.iter().filter(|track| !next.contains(track)) {
+        if let Some(publisher) = track.publisher {
+            leg.video_gates.remove(&(publisher, track.purpose));
+            quality.source_ended(publisher, track.purpose);
+            if !output
+                .call(MediaEvent::SourceEnded {
+                    publisher,
+                    purpose: track.purpose,
+                })
+                .await
+            {
+                return false;
+            }
+        }
+    }
+    for track in next.iter().filter(|track| !current.contains(track)) {
+        if let Some(publisher) = track.publisher
+            && !output
+                .call(MediaEvent::SourceAvailable {
+                    publisher,
+                    purpose: track.purpose,
+                })
+                .await
+        {
+            return false;
+        }
+    }
+    leg.set_video_tracks(&next);
+    *current = next;
+    true
 }
 
 async fn offer_publish(
@@ -1466,7 +1485,7 @@ async fn offer_publish(
 async fn drain(
     worker: &mut Worker,
     leg: &mut Leg,
-    peer: Option<u64>,
+    receiving: bool,
     sending: bool,
     output: &Output<'_>,
 ) -> Result<(), Error> {
@@ -1504,9 +1523,9 @@ async fn drain(
                     timestamp,
                     contiguous,
                     key_frame,
-                } if peer == Some(publisher) => {
-                    let upgrading = leg.id > PUBLISH && !leg.selected;
-                    let Some(gate) = leg.video_gate(purpose) else {
+                } if receiving => {
+                    let upgrading = leg.id >= rtc::FIRST_DIRECT_LEG && !leg.selected;
+                    let Some(gate) = leg.video_gates.get_mut(&(publisher, purpose)) else {
                         continue;
                     };
                     if (key_frame || (contiguous && !gate.awaiting_key))
@@ -1535,7 +1554,7 @@ async fn drain(
                             }
                         }
                     } else {
-                        leg.request_keyframe(worker, purpose).await?;
+                        leg.request_keyframe(worker, publisher, purpose).await?;
                     }
                 }
                 _ => {}

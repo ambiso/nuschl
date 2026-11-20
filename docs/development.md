@@ -256,19 +256,20 @@ microphone-to-speaker latency measurement. Video admission follows the bandwidth
 estimate, reserves room for audio and drops frames rather than accumulating a stale
 queue. The transport test details are in [tests/README.md](../tests/README.md#webrtc-transport-trial).
 
-The native call tests use a loopback TLS terminator, a real SFU and two confined
-crypto workers. On Linux the media tests start a confined RTC worker for each
-participant and send synthetic AV1 through the SFU and through real coturn.
-They check authenticated frame bytes, source identity, the relay address and
-worker shutdown. Run the Nix `nuschl-session-unit` check, which supplies coturn
+The native call tests use a loopback TLS terminator and a real SFU. On Linux
+each participant starts a confined crypto worker and RTC worker. The tests send
+synthetic AV1 through the SFU and through real coturn. They check authenticated
+frame bytes, source identity, simultaneous publishing and receiving, the relay
+address and worker shutdown. Run the Nix `nuschl-session-unit` check, which supplies coturn
 and the crypto worker, RTC worker, video worker and SFU executables.
 The standalone `nuschl-rtc-worker-unit` check exercises SFrame and two UDP legs
 using a synthetic AV1 frame in the worker's confined role.
 
-The Linux SDK media API accepts independent video frames in a two-person
-publisher/viewer call. It uses the authenticated WSS peer address and the SFU's
-configured UDP port, which defaults to 3479. Two native peers can switch to
-a direct route while keeping the SFU leg available. The direct leg tests its
-host address and can obtain a reflexive address from the WSS-advertised UDP
-TURN service with STUN. In relay-only mode, the broker forwards the SFU leg
-through an allocation on that service.
+The native media API accepts local camera and screen frames while it receives
+video from the call's other publishers. A publisher and purpose identify each
+remote video source. Both media directions use the authenticated WSS peer
+address and the SFU's configured UDP port, which defaults to 3479. Two native
+peers with video flowing one way can switch to a direct route and keep the SFU
+leg available. The direct leg tests its host address and can obtain a reflexive
+address from the WSS-advertised UDP TURN service with STUN. In relay-only mode,
+the broker forwards the SFU legs through allocations on that service.

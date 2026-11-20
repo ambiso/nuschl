@@ -23,6 +23,7 @@ fn join(nonce: &Nonce, host: bool, create: bool) -> Join {
         host_proof: host.then(|| prove(&HOST, HOST_LABEL, nonce)),
         create: create.then_some((ADMIT, HOST)),
         decoders: crate::protocol::Decoders::default(),
+        video_limits: false,
     }
 }
 

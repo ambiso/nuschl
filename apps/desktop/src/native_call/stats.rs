@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 
 use nuschl_ipc::video::CaptureLimits;
+use nuschl_protocol::sfu::VideoLimit;
 use std::{
     mem,
     time::{Duration, Instant},
@@ -40,6 +41,8 @@ pub(super) struct Stats {
     resolution: Option<(u16, u16)>,
     window: Interval,
     path: Path,
+    requested: Option<CaptureLimits>,
+    sfu_limit: Option<VideoLimit>,
 }
 
 impl Stats {
@@ -48,6 +51,8 @@ impl Stats {
             since: now,
             resolution: None,
             window: Interval::default(),
+            requested: None,
+            sfu_limit: None,
             path: if relay_only { Path::Turn } else { Path::Sfu },
         }
     }
@@ -72,10 +77,19 @@ impl Stats {
         }
     }
 
+    pub(super) fn requested(&mut self, requested: CaptureLimits) {
+        self.requested = Some(requested);
+    }
+
+    pub(super) fn limit(&mut self, limit: Option<VideoLimit>) {
+        self.sfu_limit = limit;
+    }
+
     pub(super) fn clear(&mut self, now: Instant) {
         self.since = now;
         self.resolution = None;
         self.window = Interval::default();
+        self.sfu_limit = None;
     }
 
     pub(super) fn sample(&mut self, now: Instant) -> Snapshot {
@@ -91,6 +105,8 @@ impl Stats {
             decode_ms: (valid_span && window.decoded > 0)
                 .then(|| 1000. * window.decode_time.as_secs_f64() / f64::from(window.decoded)),
             path: Some(self.path),
+            requested: self.requested,
+            sfu_limit: self.sfu_limit,
         }
     }
 }
@@ -102,11 +118,21 @@ pub(super) struct Snapshot {
     bitrate: Option<f64>,
     decode_ms: Option<f64>,
     path: Option<Path>,
+    requested: Option<CaptureLimits>,
+    sfu_limit: Option<VideoLimit>,
 }
 
 impl Snapshot {
     pub(super) fn height(self) -> Option<u16> {
         self.resolution.map(|(width, height)| width.min(height))
+    }
+
+    fn receiver_limit(self) -> &'static str {
+        match self.path {
+            Some(Path::Direct) => "Direct connection · unavailable",
+            _ if self.sfu_limit == Some(VideoLimit::WithinTarget) => "SFU within selected quality",
+            _ => self.sfu_limit.map_or("Unavailable", limit_label),
+        }
     }
 
     fn rows(self, owned: bool) -> impl Iterator<Item = (&'static str, String)> {
@@ -131,6 +157,8 @@ impl Snapshot {
 
 #[derive(Clone, Copy)]
 pub(super) struct Encoder {
+    pub requested: CaptureLimits,
+    pub limit: &'static str,
     pub budget_bps: Option<u32>,
     pub target: CaptureLimits,
     pub ceiling: Option<CaptureLimits>,
@@ -172,10 +200,36 @@ pub(super) fn rows(
             ),
         ]
     });
+    let sample = sample.unwrap_or_default();
+    let requested = encoder
+        .map(|encoder| encoder.requested)
+        .or(sample.requested);
+    let limit = encoder.map_or_else(|| sample.receiver_limit(), |encoder| encoder.limit);
     sample
-        .unwrap_or_default()
         .rows(owned)
+        .chain([
+            (
+                "Requested quality",
+                requested.map_or_else(unavailable, limits),
+            ),
+            ("Active limit", limit.into()),
+        ])
         .chain(encoder_rows.into_iter().flatten())
+}
+
+pub(super) fn limit_label(limit: VideoLimit) -> &'static str {
+    match limit {
+        VideoLimit::WithinTarget => "Within selected quality",
+        VideoLimit::ReceiverQuality => "Viewer quality selection",
+        VideoLimit::ReceiverDecode => "Viewer decoding capacity",
+        VideoLimit::ReceiverBandwidth => "Viewer connection",
+        VideoLimit::SfuHost => "SFU host upload cap",
+        VideoLimit::SfuRoom => "SFU room cap",
+        VideoLimit::SfuViewer => "SFU per-viewer cap",
+        VideoLimit::TrafficBudget => "SFU traffic budget pacing",
+        VideoLimit::ForwardingBacklog => "SFU send queue",
+        VideoLimit::QualityRecovery => "Restoring quality",
+    }
 }
 
 fn limits(limits: CaptureLimits) -> String {
@@ -231,6 +285,11 @@ mod tests {
         let quiet = stats.sample(at + INTERVAL);
         assert_eq!(quiet.fps, Some(0.));
         assert_eq!(quiet.bitrate, Some(0.));
+        stats.limit(Some(VideoLimit::WithinTarget));
+        assert_eq!(
+            stats.sample(at + INTERVAL * 2).receiver_limit(),
+            "SFU within selected quality"
+        );
     }
 
     #[test]
@@ -290,6 +349,8 @@ mod tests {
             bitrate: 8_000_000,
         };
         let measured = Encoder {
+            requested: limits,
+            limit: "Sender upload",
             budget_bps: Some(122_000),
             target: limits,
             ceiling: Some(limits),
@@ -302,19 +363,25 @@ mod tests {
             true,
         )
         .collect::<Vec<_>>();
-        assert!(empty.iter().all(|(_, value)| value == "—"));
+        assert_eq!(empty[5], ("Active limit", "Unavailable".into()));
+        assert!(
+            empty
+                .iter()
+                .all(|(name, value)| *name == "Active limit" || value == "—")
+        );
         assert!(
             empty
                 .iter()
                 .map(|row| row.0)
                 .eq(populated.iter().map(|row| row.0))
         );
+        assert_eq!(populated[5], ("Active limit", "Sender upload".into()));
         assert_eq!(
-            populated[4],
+            populated[6],
             ("Estimated video budget", "122.0 kb/s".into())
         );
         assert_eq!(
-            populated[5],
+            populated[7],
             ("Encoder target", "1440p60 · 8.00 Mb/s".into())
         );
     }

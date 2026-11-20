@@ -204,6 +204,7 @@ fn join(message: ClientMessage) -> Option<Join> {
         host_proof,
         create,
         codecs,
+        video_limits,
     } = message
     else {
         return None;
@@ -220,6 +221,7 @@ fn join(message: ClientMessage) -> Option<Join> {
             None => None,
         },
         decoders: Decoders::new(&codecs)?,
+        video_limits,
     })
 }
 
@@ -303,6 +305,7 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(
     let nonce = rooms::random::<32>();
     let hello = ServerMessage::Hello {
         nonce: hex::encode(nonce),
+        video_limits: true,
     };
     if socket.send(text(&hello)).await.is_err() {
         return;

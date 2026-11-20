@@ -26,6 +26,8 @@ use tokio::{
 pub struct VideoFrame {
     pub width: u16,
     pub height: u16,
+    /// The negotiated encoding cadence. Quiet sources can emit fewer frames.
+    pub fps: u16,
     /// Microseconds since this capture began, on the worker's monotonic clock.
     pub capture_time_us: u64,
     pub av1: Vec<u8>,
@@ -418,6 +420,7 @@ async fn read_frame(
         Ok(VideoFrame {
             width: settings.width,
             height: settings.height,
+            fps: settings.fps,
             capture_time_us: header.id,
             av1,
             keyframe: header.key,

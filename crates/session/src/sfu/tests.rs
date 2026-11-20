@@ -139,22 +139,22 @@ async fn two_native_peers_admit_and_signal_through_the_sfu_over_wss() {
     assert_eq!(alice.welcome().role, Role::Host);
     assert_eq!(bob.welcome().role, Role::Participant);
 
-    alice
-        .signal(Action::Pair {
-            peer: b,
-            publisher: true,
-        })
-        .await
-        .unwrap();
-    bob.signal(Action::Pair {
-        peer: a,
-        publisher: false,
+    alice.signal(Action::Publish { peer: a }).await.unwrap();
+    bob.signal(Action::Subscribe { peer: a }).await.unwrap();
+    assert!(matches!(next_key(&mut alice).await, Outcome::Done));
+    timeout(HANDSHAKE, async {
+        loop {
+            if matches!(
+                alice.signal(Action::Tick).await.unwrap(),
+                Outcome::KeyBatch { .. }
+            ) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     })
     .await
     .unwrap();
-    assert!(
-        matches!(next_key(&mut alice).await, Outcome::Send { peer, ready: false, .. } if peer == b)
-    );
     assert!(
         matches!(next_key(&mut bob).await, Outcome::Send { peer, ready: true, .. } if peer == a)
     );
@@ -164,12 +164,13 @@ async fn two_native_peers_admit_and_signal_through_the_sfu_over_wss() {
     alice
         .signal(Action::Seal {
             peer: b,
+            publisher: true,
             data: candidate.to_vec(),
         })
         .await
         .unwrap();
     assert!(
-        matches!(next_key(&mut bob).await, Outcome::Signal { peer, data } if peer == a && data == candidate)
+        matches!(next_key(&mut bob).await, Outcome::Signal { peer, publisher: false, data } if peer == a && data == candidate)
     );
     drop(bob);
     retired(&bob_worker, 1).await;
@@ -606,6 +607,7 @@ async fn native_video_for_policy(relay_only: bool) {
                         height,
                         fps,
                         bitrate,
+                        ..
                     } = publisher.next().await.unwrap().unwrap()
                         && height == expected.height
                     {

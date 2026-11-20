@@ -92,11 +92,12 @@ export class Call extends EventTarget {
   async receive(message) {
     switch (message?.type) {
       case "hello": {
+        this.videoLimitReports = message.video_limits === true;
         const admission = await this.stream.request({ kind: "admit", nonce: message.nonce });
         if (this.ownsLease && admission.create) {
           this.leaseBody = JSON.stringify({ stream_id: this.opened.room, host_key: admission.create.host_key });
         }
-        this.send(join(this.opened, admission, this.codecs));
+        this.send(join(this.opened, admission, this.codecs, this.videoLimitReports));
         return;
       }
       case "welcome":
@@ -149,6 +150,13 @@ export class Call extends EventTarget {
       case "quality":
         await this.capSource(message);
         return;
+      case "video_limit": {
+        const track = this.tracks.get(message.mid);
+        if (this.videoLimitReports && track?.peer === message.peer && track.kind === "video") {
+          track.limit = message.limit;
+        }
+        return;
+      }
       case "error":
         return this.end(message.reason);
       default:
@@ -292,10 +300,11 @@ export class Call extends EventTarget {
   }
 
   /** Apply the SFU's limits to the encoder for this publish MID. */
-  async capSource({ source: mid, max_height: height, max_fps: fps, max_bitrate: bitrate }) {
+  async capSource({ source: mid, max_height: height, max_fps: fps, max_bitrate: bitrate, limit }) {
     for (const [kind, source] of this.sources) {
       if (source.transceiver.mid !== mid) continue;
       source.remoteCap = [height, fps, bitrate];
+      source.remoteLimit = this.videoLimitReports ? limit : undefined;
       await this.applyCap(kind, source);
       return;
     }
@@ -344,6 +353,7 @@ export class Call extends EventTarget {
       const mode = await scalabilityMode(globalThis, this.codec, kind, source.track.getSettings());
       if (this.sources.get(kind) !== source || this.ended) continue;
       source.transceiver = this.sender(kind, source.track, mode);
+      source.remoteLimit = undefined;
     }
     await this.offer();
   }

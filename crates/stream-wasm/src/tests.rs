@@ -13,7 +13,8 @@ use nuschl_stream::{MAX_KEY_MESSAGE, REQUEST_LIFETIME_MS};
 use rand_core::{TryCryptoRng, TryRng};
 use serde_json::{Value, json};
 
-use crate::{MAX_REQUEST, REKEY_INTERVAL_MS, Worker};
+use crate::{MAX_REQUEST, Worker};
+use nuschl_stream::REKEY_INTERVAL_MS;
 
 /// xorshift32, one byte per step; the replay's `crypto.getRandomValues` is the same.
 struct TestRng(u32);

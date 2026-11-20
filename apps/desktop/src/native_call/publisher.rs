@@ -131,8 +131,10 @@ impl Publisher {
         let encoding = Encoding {
             kind: video_kind(source),
             remote: None,
+            remote_limit: None,
             bitrate_estimate: None,
             hardware: None,
+            capture_format: None,
         };
         let applied = encoding.ceiling(selection.quality);
         let (capture, preview) = if attempt.mode == CaptureMode::Hardware {
@@ -298,10 +300,12 @@ impl Publisher {
                 height,
                 fps,
                 bitrate,
+                limit,
             } => {
                 if let Some(track) =
                     source(purpose).and_then(|source| self.slots[index(source)].as_mut())
                 {
+                    track.encoding.remote_limit = limit;
                     track.encoding.remote = Some(CaptureLimits {
                         height,
                         fps: fps.into(),
@@ -338,10 +342,15 @@ impl Publisher {
                 track.applied = next;
             }
             if report && self.focused == Some(source) {
+                let sample = track.stats.sample(Instant::now());
                 display.report(
                     track.encoding.kind,
-                    track.stats.sample(Instant::now()),
+                    sample,
                     Some(stats::Encoder {
+                        requested: track.encoding.preferred(selection.quality),
+                        limit: track
+                            .encoding
+                            .active_limit(selection.quality, track.applied),
                         budget_bps: track.encoding.bitrate_estimate,
                         target: track.applied,
                         ceiling: track.encoding.remote,
@@ -377,6 +386,7 @@ impl Publisher {
             }
         }
         track.encoding.hardware = Some(frame.hardware);
+        track.encoding.capture_format = Some((frame.width.min(frame.height), frame.fps));
         track.stats.frame(frame.width, frame.height, None);
         if track.ready {
             let bytes = frame.av1.len();
@@ -467,8 +477,10 @@ fn recoverable(error: &Error) -> bool {
 struct Encoding {
     kind: VideoKind,
     remote: Option<CaptureLimits>,
+    remote_limit: Option<nuschl_protocol::sfu::VideoLimit>,
     bitrate_estimate: Option<u32>,
     hardware: Option<bool>,
+    capture_format: Option<(u16, u16)>,
 }
 
 impl Encoding {
@@ -495,6 +507,35 @@ impl Encoding {
             height: local.height.min(remote.height),
             fps: local.fps.min(remote.fps),
             bitrate: local.bitrate.min(remote.bitrate),
+        }
+    }
+
+    fn active_limit(&self, quality: Quality, applied: CaptureLimits) -> &'static str {
+        let ceiling = self.ceiling(quality);
+        if applied != ceiling
+            && self
+                .bitrate_estimate
+                .is_some_and(|estimate| estimate < ceiling.bitrate)
+        {
+            "Sender upload"
+        } else if ceiling != self.preferred(quality) {
+            match (self.remote, self.remote_limit) {
+                (None, _) => "Initial encoder ceiling",
+                (_, Some(limit)) => stats::limit_label(limit),
+                _ => "Server encoder ceiling · reason unavailable",
+            }
+        } else {
+            match self.capture_format {
+                Some((height, _)) if height.saturating_add(2) < applied.height => {
+                    "Capture resolution"
+                }
+                Some((_, fps)) if fps < applied.fps => match self.hardware {
+                    Some(false) => "Software encoder frame rate",
+                    _ => "Capture frame rate",
+                },
+                Some(_) => "Within selected quality",
+                None => "Unavailable",
+            }
         }
     }
 
@@ -632,18 +673,34 @@ mod tests {
                 fps: 60,
                 bitrate: 8_000_000,
             }),
+            remote_limit: None,
             bitrate_estimate: None,
             hardware: None,
+            capture_format: None,
         };
         let quality = Quality::Tier(2);
         let full = encoding.ceiling(quality);
         assert_eq!((full.height, full.fps, full.bitrate), (1440, 60, 8_000_000));
+        encoding.capture_format = Some((1440, 60));
+        assert_eq!(
+            encoding.active_limit(quality, full),
+            "Within selected quality"
+        );
+        encoding.capture_format = Some((1080, 60));
+        assert_eq!(encoding.active_limit(quality, full), "Capture resolution");
+        encoding.capture_format = Some((1440, 15));
+        encoding.hardware = Some(false);
+        assert_eq!(
+            encoding.active_limit(quality, full),
+            "Software encoder frame rate"
+        );
         encoding.bitrate_estimate = Some(100_000);
         let reduced = encoding.limits(quality, full);
         assert_eq!(
             (reduced.height, reduced.fps, reduced.bitrate),
             (360, 7, 100_000)
         );
+        assert_eq!(encoding.active_limit(quality, reduced), "Sender upload");
         encoding.bitrate_estimate = Some(450_000);
         assert_eq!(encoding.limits(quality, reduced).height, 360);
         encoding.bitrate_estimate = Some(6_000_000);

@@ -57,6 +57,7 @@ pub struct Connect<'a> {
 pub struct Connection {
     welcome: Welcome,
     socket: Socket,
+    video_limits: bool,
     scope: CallScope,
     #[cfg(target_os = "linux")]
     policy: PeerPolicy,
@@ -144,9 +145,13 @@ impl Connection {
         else {
             return Err(Error::Protocol("invalid room metadata"));
         };
-        let (socket, welcome) = timeout(HANDSHAKE, async {
+        let (socket, welcome, video_limits) = timeout(HANDSHAKE, async {
             let mut socket = open(options.host, roots).await?;
-            let ServerMessage::Hello { nonce } = read(&mut socket).await? else {
+            let ServerMessage::Hello {
+                nonce,
+                video_limits,
+            } = read(&mut socket).await?
+            else {
                 return Err(Error::Protocol("expected a challenge"));
             };
             let nonce = sfu::from_hex(&nonce).ok_or(Error::Protocol("invalid challenge"))?;
@@ -170,6 +175,7 @@ impl Connection {
                         host_key: hex::encode(keys.host_key),
                     }),
                     codecs: options.codecs.to_vec(),
+                    video_limits,
                 },
             )
             .await?;
@@ -177,9 +183,16 @@ impl Connection {
                 ServerMessage::Welcome(welcome)
                     if welcome.peer > 0
                         && welcome.peers.len() <= 256
+                        && welcome.peers.iter().enumerate().all(|(index, peer)| {
+                            peer.id != 0
+                                && peer.id != welcome.peer
+                                && welcome.peers[..index]
+                                    .iter()
+                                    .all(|previous| previous.id != peer.id)
+                        })
                         && options.codecs.contains(&welcome.codec) =>
                 {
-                    Ok((socket, welcome))
+                    Ok((socket, welcome, video_limits))
                 }
                 ServerMessage::Error { reason }
                     if reason.len() <= 32
@@ -195,6 +208,7 @@ impl Connection {
         Ok(Self {
             welcome,
             socket,
+            video_limits,
             scope,
             #[cfg(target_os = "linux")]
             policy: options.policy,
@@ -212,7 +226,17 @@ impl Connection {
         if let Some(offer) = self.pending_offer.take() {
             return Ok(offer);
         }
-        read(&mut self.socket).await
+        let mut message = read(&mut self.socket).await?;
+        if !self.video_limits {
+            match &mut message {
+                ServerMessage::Quality { limit, .. } => *limit = None,
+                ServerMessage::VideoLimit { .. } => {
+                    return Err(Error::Protocol("unexpected video limit report"));
+                }
+                _ => {}
+            }
+        }
+        Ok(message)
     }
 
     /// Keep control signaling current while the owner chooses a video source.
@@ -238,28 +262,42 @@ impl Connection {
         Ok(())
     }
 
-    /// Pair with the selected peer, apply its key message, or send direct
-    /// signaling. The worker seals or opens the payload and checks this call's
-    /// generation, peer and relay policy.
+    /// Exchange opaque call envelopes with the configured SFU. The worker
+    /// owns the call generation, independent peer keys and relay policy.
     pub async fn signal(&mut self, action: Action) -> Result<Outcome, Error> {
         if !matches!(
             action,
-            Action::Pair { .. } | Action::Key { .. } | Action::Seal { .. }
+            Action::Publish { .. }
+                | Action::Subscribe { .. }
+                | Action::Left { .. }
+                | Action::Tick
+                | Action::Key { .. }
+                | Action::Seal { .. }
         ) {
             return Err(Error::Protocol("invalid key action"));
         }
         let outcome = self.scope.request(action).await?;
-        if let Outcome::Send { peer, data, .. } = &outcome {
-            write(
-                &mut self.socket,
-                &ClientMessage::Key {
-                    to: *peer,
-                    data: hex::encode(data),
-                },
-            )
-            .await?;
+        match &outcome {
+            Outcome::Send { peer, data, .. } => self.send_key(*peer, data).await?,
+            Outcome::KeyBatch { messages } => {
+                for message in messages {
+                    self.send_key(message.peer, &message.data).await?;
+                }
+            }
+            _ => {}
         }
         Ok(outcome)
+    }
+
+    async fn send_key(&mut self, peer: u64, data: &[u8]) -> Result<(), Error> {
+        write(
+            &mut self.socket,
+            &ClientMessage::Key {
+                to: peer,
+                data: hex::encode(data),
+            },
+        )
+        .await
     }
 
     pub async fn close(mut self) -> Result<(), Error> {

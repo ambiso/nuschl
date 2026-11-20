@@ -57,6 +57,7 @@ async fn native_call_switches_paths_and_sources() {
     )
     .await
     .unwrap();
+    let viewer_id = viewer.welcome().peer;
     viewer.welcome.turn = None;
     let mut viewer = viewer.into_media(make_media(None)).await.unwrap();
 
@@ -152,8 +153,8 @@ async fn native_call_switches_paths_and_sources() {
                         ready |= matches!(event.unwrap().unwrap(), MediaEvent::SourceReady { .. });
                     }
                     event = viewer.next() => match event.unwrap().unwrap() {
-                        MediaEvent::SourceEnded { purpose } => {
-                            assert_eq!(purpose, old);
+                        MediaEvent::SourceEnded { publisher, purpose } => {
+                            assert_eq!((publisher, purpose), (from, old));
                             ended = true;
                         }
                         MediaEvent::Frame { publisher: sender, purpose, key_frame, data, .. } if purpose == new => {
@@ -230,8 +231,8 @@ async fn native_call_switches_paths_and_sources() {
                 }
                 event = publisher.next() => { event.unwrap().unwrap(); }
                 event = viewer.next() => match event.unwrap().unwrap() {
-                    MediaEvent::SourceEnded { purpose } => {
-                        assert_eq!(purpose, Purpose::ScreenVideo);
+                    MediaEvent::SourceEnded { publisher, purpose } => {
+                        assert_eq!((publisher, purpose), (from, Purpose::ScreenVideo));
                         screen_ended = true;
                     }
                     MediaEvent::Frame { purpose: Purpose::Camera, .. } if screen_ended => break,
@@ -246,8 +247,9 @@ async fn native_call_switches_paths_and_sources() {
             if matches!(
                 viewer.next().await.unwrap().unwrap(),
                 MediaEvent::SourceEnded {
+                    publisher,
                     purpose: Purpose::Camera
-                }
+                } if publisher == from
             ) {
                 break;
             }
@@ -277,6 +279,74 @@ async fn native_call_switches_paths_and_sources() {
             }
         }
     }).await.expect("the presenter can resume video without opening a new room");
+    // Both media workers now publish the same kind with independent keys.
+    assert!(viewer.can_publish());
+    viewer.set_source(Purpose::Camera, true).unwrap();
+    let peers = [from, viewer_id];
+    let pictures = std::array::from_fn::<_, 2, _>(|index| {
+        let mut frame = picture.clone();
+        frame[picture.len() - 4098] += index as u8;
+        frame.resize(picture.len() + index, 0);
+        frame
+    });
+    let mut ready = [true, false];
+    let mut seen = [false; 2];
+    let mut clocks = [timestamp, 0];
+    timeout(HANDSHAKE, async {
+        while seen != [true, true] {
+            let (receiver, event) = tokio::select! {
+                _ = tick.tick() => {
+                    for (index, media) in [&publisher, &viewer].into_iter().enumerate() {
+                        if ready[index] {
+                            clocks[index] += 2970;
+                            media.send_keyframe(clocks[index], pictures[index].clone()).unwrap();
+                        }
+                    }
+                    continue;
+                }
+                event = publisher.next() => (0, event),
+                event = viewer.next() => (1, event),
+            };
+            match event.unwrap().unwrap() {
+                MediaEvent::SourceReady {
+                    purpose: Purpose::Camera,
+                } => ready[receiver] = true,
+                MediaEvent::Frame {
+                    publisher,
+                    purpose,
+                    key_frame,
+                    data,
+                    ..
+                } => {
+                    let sender = peers.iter().position(|peer| *peer == publisher).unwrap();
+                    assert_ne!(sender, receiver);
+                    assert_eq!(purpose, Purpose::Camera);
+                    assert!(key_frame);
+                    assert_eq!(data, pictures[sender]);
+                    seen[receiver] = true;
+                }
+                MediaEvent::Direct { active: true } => {
+                    panic!("a group call selected a direct path")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("duplex frames did not reach every viewer: {seen:?}"));
+    viewer.set_source(Purpose::Camera, false).unwrap();
+    timeout(HANDSHAKE, async {
+        loop {
+            if matches!(publisher.next().await.unwrap().unwrap(), MediaEvent::SourceEnded {
+                publisher, purpose: Purpose::Camera,
+            } if publisher == viewer_id)
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the guest camera ended independently");
     publisher.stop().await.unwrap();
     viewer.stop().await.unwrap();
     extra.close().await.unwrap();
