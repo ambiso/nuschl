@@ -2238,6 +2238,11 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
             }
         })
         .collect::<Vec<_>>();
+    let trigger: Option<Bounds<Pixels>> = match menu.anchor {
+        MenuAnchor::Point(_) => None,
+        #[cfg(target_os = "linux")]
+        MenuAnchor::Above(trigger) => Some(trigger),
+    };
     Some(
         div()
             .id("menu-layer")
@@ -2245,7 +2250,10 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
             .inset_0()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    if trigger.is_some_and(|bounds| bounds.contains(&event.position)) {
+                        return;
+                    }
                     this.menu = None;
                     window.focus(&this.window_focus, cx);
                     cx.notify();
