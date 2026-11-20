@@ -66,6 +66,9 @@ def prepare_artifact(artifact, output, *, source, repository, commit, run_id, at
                 "CFBundleVersion": version, "LSMinimumSystemVersion": "14.2"}
     require(all(type(metadata.get(k)) is type(v) and metadata[k] == v for k, v in expected.items()),
             "bundle metadata differs from source version/app policy")
+    require(all(isinstance(metadata.get(k), str) and metadata[k].strip()
+                for k in ("NSCameraUsageDescription", "NSScreenCaptureUsageDescription")),
+            "bundle requires camera and screen usage descriptions")
     for program in PROGRAMS:
         binary = app / "Contents/MacOS" / program
         require(binary.is_file() and not binary.is_symlink() and os.access(binary, os.X_OK),

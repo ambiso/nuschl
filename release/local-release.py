@@ -230,6 +230,9 @@ def check_installs(stage, source):
                 'CFBundleVersion': version, 'LSMinimumSystemVersion': '14.2'}
     require(all(type(plist.get(k)) is type(v) and plist[k] == v for k, v in expected.items()),
             'Mac bundle metadata differs from source policy')
+    require(all(isinstance(plist.get(k), str) and plist[k].strip()
+                for k in ('NSCameraUsageDescription', 'NSScreenCaptureUsageDescription')),
+            'Mac bundle requires camera and screen usage descriptions')
 
 
 def select_product(flake, name):
