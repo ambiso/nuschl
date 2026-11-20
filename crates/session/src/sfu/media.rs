@@ -1016,7 +1016,7 @@ async fn run(
                         }));
                     }
                 }
-                ServerMessage::VideoLimit { mid, peer: publisher, limit } if !publishing => {
+                ServerMessage::VideoLimit { mid, peer: publisher, limit } => {
                     if let Some(track) = subscribed.iter().find(|track| {
                         track.mid == mid && track.publisher == Some(publisher) && video_kind(track.purpose).is_some()
                     }) && !output.call(MediaEvent::VideoLimit { publisher, purpose: track.purpose, limit }).await {
