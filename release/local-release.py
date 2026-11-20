@@ -30,6 +30,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 PROGRAMS = ('nuschl', 'nuschl-content-worker', 'nuschl-crypto-worker', 'nuschl-math-worker',
             'nuschl-media-worker', 'nuschl-storage-worker', 'nuschl-transfer-worker',
+            'nuschl-rtc-worker', 'nuschl-video-worker',
             'nuschl-update-verify-ed25519', 'nuschl-update-verify-mldsa44')
 PRODUCTS = ('windows', 'windows-installer', 'macos-app', 'default', 'server', 'web-relay', 'web-site')
 
@@ -217,9 +218,9 @@ def check_installs(stage, source):
         if suffix:
             require({n + suffix for n in PROGRAMS} <= actual and
                     {n for n in actual if n.endswith('.exe')} == {n + suffix for n in PROGRAMS},
-                    'all nine fixed Windows programs required, no signer/fixture')
+                    'Windows program set differs from release policy')
         else:
-            require(actual == set(PROGRAMS), 'all nine fixed Mac programs required')
+            require(actual == set(PROGRAMS), 'Mac program set differs from release policy')
         notices = root / 'licenses' if suffix else root / 'Contents/Resources/licenses'
         a.verify_notices(notices, policy, platform)
     plist = plistlib.loads((stage / 'install/Nuschl.app/Contents/Info.plist').read_bytes())

@@ -24,6 +24,7 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 PROGRAMS = ("nuschl", "nuschl-content-worker", "nuschl-crypto-worker", "nuschl-math-worker",
             "nuschl-media-worker", "nuschl-storage-worker", "nuschl-transfer-worker",
+            "nuschl-rtc-worker", "nuschl-video-worker",
             "nuschl-update-verify-ed25519", "nuschl-update-verify-mldsa44")
 APPLE_TOOLS = {"/usr/bin/codesign", "/usr/bin/lipo", "/usr/bin/otool"}
 
@@ -58,7 +59,7 @@ def prepare_artifact(artifact, output, *, source, repository, commit, run_id, at
         policy=authority["load"](source / "release/notice-roots.json"))
     app = output / "install/Nuschl.app"
     require({p.name for p in (app / "Contents/MacOS").iterdir()} == set(PROGRAMS),
-            "application must contain all nine programs and no signer/fixture")
+            "application program set differs from release policy")
     metadata = plistlib.loads((app / "Contents/Info.plist").read_bytes())
     expected = {"CFBundleExecutable": "nuschl", "CFBundleIdentifier": "org.nuschl.Nuschl",
                 "CFBundlePackageType": "APPL", "CFBundleShortVersionString": version,
@@ -71,7 +72,7 @@ def prepare_artifact(artifact, output, *, source, repository, commit, run_id, at
                 "program missing, linked or not executable")
     return app, {"source": info, "artifact_name": artifact_name, "bundle_metadata": expected,
                  "archive_sha256": authority["digest"](artifact / "install.tar"),
-                 "notice_scope": "macos-universal", "all_nine_programs": True}
+                 "notice_scope": "macos-universal", "required_programs_present": True}
 
 
 class NativeTools:
