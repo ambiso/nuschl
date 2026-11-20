@@ -868,6 +868,15 @@ pub fn expanded(
         this.restore_call_window(window);
         return None;
     }
+    let menu = crate::menus::menu(this, cx);
+    if menu.is_none() {
+        this.menu = None;
+    }
+    let controls = this.native_call.as_mut()?.stage.as_mut()?;
+    let toolbar = (
+        controls.focus.clone(),
+        controls.opacity(menu.is_some(), window, cx),
+    );
     let cover = div()
         .id("expanded-video-call")
         .relative()
@@ -885,10 +894,8 @@ pub fn expanded(
                 cx.stop_propagation();
             }
         }))
-        .when_some(panel(this, window, cx), |cover, panel| cover.child(panel))
-        .when_some(crate::menus::menu(this, cx), |cover, menu| {
-            cover.child(menu)
-        });
+        .children(panel_with_toolbar(this, window, cx, Some(toolbar)))
+        .children(menu);
     let cover = cover.into_any_element();
     if window.is_fullscreen() {
         window.set_client_inset(px(0.));
@@ -899,12 +906,15 @@ pub fn expanded(
 }
 
 pub fn panel(this: &Desktop, window: &mut Window, cx: &mut Context<Desktop>) -> Option<AnyElement> {
-    let toolbar = this.native_call.as_mut()?.stage.as_mut().map(|controls| {
-        (
-            controls.focus.clone(),
-            controls.opacity(this.menu.is_some(), window, cx),
-        )
-    });
+    panel_with_toolbar(this, window, cx, None)
+}
+
+fn panel_with_toolbar(
+    this: &Desktop,
+    window: &mut Window,
+    cx: &mut Context<Desktop>,
+    toolbar: Option<(FocusHandle, f32)>,
+) -> Option<AnyElement> {
     let call = this.native_call.as_ref()?;
     if call.minimized {
         return None;
