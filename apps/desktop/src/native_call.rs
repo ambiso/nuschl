@@ -44,6 +44,7 @@ static WORKERS: LazyLock<Option<(PathBuf, PathBuf)>> = LazyLock::new(|| {
 
 pub struct Active {
     owner: bool,
+    inviter: Option<(u32, u64)>,
     policy: PeerPolicy,
     room: String,
     server: String,
@@ -416,6 +417,7 @@ impl Desktop {
         conversation: TextTarget,
         link: &nuschl_stream::Link,
         source: Option<Source>,
+        inviter: Option<(u32, u64)>,
         cx: &mut Context<Self>,
     ) {
         if self.native_call.is_some() || !self.native_available(link.host()) {
@@ -434,6 +436,17 @@ impl Desktop {
         let voice_generation = selected.generation;
         let owner = link.publisher().is_some();
         let room = link.url();
+        if owner == inviter.is_some()
+            || inviter.is_some_and(|inviter| {
+                !self
+                    .client
+                    .calls_in(server_index, &conversation)
+                    .iter()
+                    .any(|call| (call.sender, call.sender_instance) == inviter && call.link == room)
+            })
+        {
+            return;
+        }
         let url = if owner {
             let Some(url) = link.creator_url() else {
                 return;
@@ -469,6 +482,7 @@ impl Desktop {
         self.native_call_generation = generation;
         self.native_call = Some(Active {
             owner,
+            inviter,
             policy,
             room,
             server,
@@ -516,7 +530,7 @@ impl Desktop {
         match self.create_call(index, target.clone()) {
             Ok(link) => {
                 let server = self.client.servers[index].id.clone();
-                self.open_native_call(server, target, &link, source, cx);
+                self.open_native_call(server, target, &link, source, None, cx);
                 self.announce_call(link);
             }
             Err(error) => self.client.servers[index].set_notice(error),
@@ -558,7 +572,10 @@ impl Desktop {
                         self.client
                             .calls_in(index, &call.conversation)
                             .iter()
-                            .any(|announced| announced.link == call.room)
+                            .any(|announced| {
+                                Some((announced.sender, announced.sender_instance)) == call.inviter
+                                    && announced.link == call.room
+                            })
                     }
             });
         if !current || (self.settings.relay_only && !call.policy.relay_only) {
@@ -729,15 +746,23 @@ impl Desktop {
             self.end_call();
         }
         if call.stop.is_some()
-            && let Some(server) = self.client.servers.iter_mut().find(|server| {
-                server.id == call.server && server.generation == call.voice_generation
-            })
+            && let Some(index) = self.client.server_index(&call.server)
+            && self.client.servers[index].generation == call.voice_generation
         {
             match result {
-                Err(error) => server.set_notice(format!("Video unavailable. {error}")),
-                Ok(Finish::RoomEnded) if !call.owner => server
-                    .calls
-                    .retain(|card| card.link != call.room || card.target != call.conversation),
+                Err(error) => {
+                    self.client.servers[index].set_notice(format!("Video unavailable. {error}"))
+                }
+                Ok(Finish::RoomEnded) => {
+                    if let Some(inviter) = call.inviter {
+                        self.client.end_received_call(
+                            index,
+                            &call.conversation,
+                            &call.room,
+                            inviter,
+                        );
+                    }
+                }
                 Ok(_) => {}
             }
         }
@@ -1254,31 +1279,37 @@ fn stop_button(call: &Active, cx: &mut Context<Desktop>) -> impl IntoElement {
     )
 }
 
-fn return_actions(call: &Active, cx: &mut Context<Desktop>) -> Div {
-    layout::actions()
-        .items_center()
-        .when(call.monitor, |bar| bar.child("Sharing entire monitor"))
-        .child(styled_button(
-            "native-call-restore",
-            "Return to call",
-            Tone::Secondary,
-            |this, window, cx| this.restore_native_call(window, cx),
-            cx,
-        ))
-        .child(stop_button(call, cx))
+fn return_button(generation: u64, cx: &mut Context<Desktop>) -> AnyElement {
+    styled_button(
+        "native-call-restore",
+        "Return to call",
+        Tone::Secondary,
+        move |this, window, cx| {
+            if this.native_call_generation == generation {
+                this.restore_native_call(window, cx);
+            }
+        },
+        cx,
+    )
 }
 
 pub fn minimized(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
     let call = this.native_call.as_ref()?;
-    if this.selected_indices().is_some_and(|(index, channel)| {
-        let server = &this.client.servers[index];
-        this.native_call_in(&server.id, &server.channels[channel].target)
-    }) {
+    if !call.minimized
+        && this.selected_indices().is_some_and(|(index, channel)| {
+            let server = &this.client.servers[index];
+            this.native_call_in(&server.id, &server.channels[channel].target)
+        })
+    {
         return None;
     }
     Some(
-        return_actions(call, cx)
+        layout::actions()
             .id("native-call-minimized")
+            .items_center()
+            .when(call.monitor, |bar| bar.child("Sharing entire monitor"))
+            .child(return_button(this.native_call_generation, cx))
+            .child(stop_button(call, cx))
             .px_3()
             .py_1()
             .border_b_1()
@@ -1287,25 +1318,24 @@ pub fn minimized(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement
     )
 }
 
-pub fn call_card(this: &Desktop, index: usize, cx: &mut Context<Desktop>) -> Option<AnyElement> {
-    let call = this.native_call.as_ref()?;
-    let link = crate::call::join_link(&call.room)?;
-    let who = if call.owner {
-        "You"
-    } else {
-        this.client
-            .calls_in(index, &call.conversation)
-            .into_iter()
-            .find(|invite| invite.link == call.room)
-            .and_then(|invite| this.client.servers[index].users.get(&invite.sender))
-            .map_or("", |user| user.name.as_str())
-    };
-    let actions = if call.minimized {
-        return_actions(call, cx)
-    } else {
-        layout::actions()
-    };
-    Some(crate::view::video_call_card(who, &link, actions, cx))
+pub fn card_actions(
+    this: &Desktop,
+    server: &crate::state::ServerView,
+    target: &TextTarget,
+    room: &str,
+    inviter: Option<(u32, u64)>,
+    cx: &mut Context<Desktop>,
+) -> Option<Div> {
+    this.native_call.as_ref().filter(|call| {
+        call.minimized
+            && call.stop.is_some()
+            && call.server == server.id
+            && call.voice_generation == server.generation
+            && call.conversation == *target
+            && call.room == room
+            && call.inviter == inviter
+    })?;
+    Some(layout::actions().child(return_button(this.native_call_generation, cx)))
 }
 
 pub async fn run(

@@ -126,9 +126,26 @@ class CallTest(VoiceTest):
             for field in ("Resolution", "Video payload bitrate", "Connection"):
                 eventually(lambda: self.find(app, None, field), f"video stats lack {field!r}")
 
-    def invitation(self, app, sender="Andi"):
-        eventually(lambda: self.find(app, None, f"Video call · {sender} · {self.call_host}"),
-                   f"no call card for {sender}", timeout=15)
+    @staticmethod
+    def timeline(app):
+        return next((node for node, role, label, _ in items(app)
+                     if role == "list" and label.startswith(("Messages in #", "Messages with "))), None)
+
+    def invitation(self, app, sender="Andi", *, ended=False, inline=True):
+        status = "Call ended" if ended else "Video call"
+        label = f"{status} · {sender} · {self.call_host}"
+
+        def card():
+            timeline = self.timeline(app)
+            if timeline:
+                candidate = self.find(timeline, "panel", label)
+                if inline:
+                    return candidate
+                assert candidate is None, "a late invitation was added to chat history"
+                return self.find(app, "panel", label)
+            return None
+
+        return eventually(card, f"no {status.lower()} card for {sender}", timeout=15)
 
     def witness_link(self):
         marker = f"https://{self.call_host}/call#"
@@ -140,7 +157,7 @@ class CallTest(VoiceTest):
         assert "&p=" not in body, body
         return event["target"], link.group()
 
-    def copy_link(self, app, pid, link):
+    def copy_link(self, card, pid, link):
         # The compositor, its clipboard selection and both clients are private.
         self.shell.eval("global.get_window_actors().map(actor => actor.meta_window)"
                         f".find(window => window.get_pid() === {pid}).activate(global.get_current_time()); 'ok'")
@@ -149,7 +166,11 @@ class CallTest(VoiceTest):
         clipboard = "imports.gi.St.Clipboard.get_default()"
         selection = "imports.gi.St.ClipboardType.CLIPBOARD"
         self.shell.eval(f"{clipboard}.set_text({selection}, 'call fixture sentinel'); 'ok'")
-        x, y, width, height = self.control(app, "Copy link").extents()
+        x, y, width, height = self.control(card, "Copy link").extents()
+        title = next(node for node, _role, label, _ in items(card)
+                     if node.path != card.path and label == card.name)
+        _, title_y, _, title_height = title.extents()
+        assert title_y <= y + height // 2 <= title_y + title_height, "Copy link moved off the title row"
         left, top = json.loads(self.shell.eval(
             "const bounds = global.display.focus_window.get_buffer_rect(); JSON.stringify([bounds.x, bounds.y])"))
         assert width > 0 and height > 0
@@ -208,21 +229,31 @@ class CallTest(VoiceTest):
 
             self.press(andi, "Start meeting")
             self.inline(andi)
-            self.invitation(andi, "You")
+            own = self.invitation(andi, "You")
             target, link = self.witness_link()
             assert target == {"kind": "channel", "id": 1}
-            self.copy_link(andi, andi_pid, link)
-            self.invitation(bea)
-            self.copy_link(bea, bea_pid, link)
+            self.copy_link(own, andi_pid, link)
+            self.copy_link(self.invitation(bea), bea_pid, link)
+            assert not any(link in label for _, _, label, _ in items(self.timeline(bea))), "raw call text is visible"
+
+            self.witness.send(kind="text", channel=1, body="Call ended")
+            eventually(lambda: (timeline := self.timeline(bea)) and self.find(timeline, None, "Call ended"),
+                       "ordinary text was hidden")
+            self.control(self.invitation(bea), "Join video call")
+
+            cara, _, _ = self.desktop("Cara", registry, {andi.destination, bea.destination})
+            self.control(self.invitation(cara, inline=False), "Join video call")
             self.press(andi, "Minimize call")
-            self.invitation(andi, "You")
-            self.copy_link(andi, andi_pid, link)
-            self.press(andi, "Return to call")
+            own = self.invitation(andi, "You")
+            self.copy_link(own, andi_pid, link)
+            self.press(own, "Return to call")
             self.inline(andi)
             self.press(andi, "End call")
             self.control(andi, "Start meeting")
             self.control(bea, "Join video call", shown=False)
-            self.witness.wait(lambda event: event["kind"] == "text" and "Call ended" in event["body"])
+            self.control(cara, "Join video call", shown=False)
+            self.copy_link(self.invitation(andi, "You", ended=True), andi_pid, link)
+            self.invitation(bea, ended=True)
 
             self.press(andi, "Start camera")
             self.inline(andi)
@@ -259,16 +290,15 @@ class CallTest(VoiceTest):
             self.press(bea, "Exit full screen")
             self.inline(bea)
             self.press(bea, "Minimize call")
-            self.invitation(bea)
+            invited = self.invitation(bea)
             self.control(bea, "Full screen", shown=False)
-            self.press(bea, "Return to call")
+            self.press(invited, "Return to call")
             self.inline(bea)
 
             self.press(andi, "End call")
             self.control(andi, "Start camera")
             self.control(bea, "Leave video", shown=False)
             self.control(bea, "Join video call", shown=False)
-            self.witness.wait(lambda event: event["kind"] == "text" and "Call ended" in event["body"])
 
             # A direct screen call makes the card available to Bea in the
             # direct conversation. The Mumble witness sees only channel links.
