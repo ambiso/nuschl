@@ -266,10 +266,9 @@ impl Render for Desktop {
             .child(chrome::title_bar(title.into(), window, cx))
             .when_some(update_bar(self, cx), |view, bar| view.child(bar))
             .map(|view| {
-                let view = view.when_some(crate::native_call::minimized(self, cx), |view, bar| {
+                view.when_some(crate::native_call::minimized(self, cx), |view, bar| {
                     view.child(bar)
-                });
-                view
+                })
             })
             .child(body)
             .when(self.channels_open, |view| {
@@ -2034,7 +2033,7 @@ fn conversation_header(
             },
         )
         .map(|controls| {
-            let controls = controls.when(
+            controls.when(
                 connected
                     && match channel.target {
                         TextTarget::Channel(_) => in_this_voice,
@@ -2086,8 +2085,7 @@ fn conversation_header(
                                 ))
                         })
                 },
-            );
-            controls
+            )
         })
         .when(!connected, |controls| {
             controls.child(styled_button(
@@ -2392,13 +2390,12 @@ fn conversation(
         .min_h_0()
         .overflow_hidden()
         .map(|view| {
-            let view = view.when(this.native_call_in(&server.id, &channel.target), |view| {
+            view.when(this.native_call_in(&server.id, &channel.target), |view| {
                 view.when_some(
                     crate::native_call::panel(this, window, cx),
                     |view, panel| view.child(panel),
                 )
-            });
-            view
+            })
         })
         .map(|view| match crate::search::panel(this, cx) {
             Some(panel) => view.child(panel),

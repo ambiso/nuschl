@@ -26,7 +26,7 @@ use nuschl_client::native::sfu::{
 };
 use nuschl_core::{model::TextTarget, network::PeerPolicy};
 #[cfg(target_os = "linux")]
-pub(self) use nuschl_ipc::video::portal::Grant;
+use nuschl_ipc::video::portal::Grant;
 use nuschl_ipc::video::{CaptureFailure, DecodedFrame, Source};
 use nuschl_protocol::sfu::Codec;
 use nuschl_session::{config::ClientSettings, identity::CryptoHandle};
@@ -1683,7 +1683,7 @@ impl SourceChanges<'_> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(self) struct Grant(Source);
+struct Grant(Source);
 
 #[cfg(not(target_os = "linux"))]
 impl Grant {
