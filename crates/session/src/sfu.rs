@@ -255,28 +255,42 @@ impl Connection {
         Ok(())
     }
 
-    /// Pair with the selected peer, apply its key message, or send direct
-    /// signaling. The worker seals or opens the payload and checks this call's
-    /// generation, peer and relay policy.
+    /// Exchange opaque call envelopes with the configured SFU. The worker
+    /// owns the call generation, independent peer keys and relay policy.
     pub async fn signal(&mut self, action: Action) -> Result<Outcome, Error> {
         if !matches!(
             action,
-            Action::Pair { .. } | Action::Key { .. } | Action::Seal { .. }
+            Action::Publish { .. }
+                | Action::Subscribe { .. }
+                | Action::Left { .. }
+                | Action::Tick
+                | Action::Key { .. }
+                | Action::Seal { .. }
         ) {
             return Err(Error::Protocol("invalid key action"));
         }
         let outcome = self.scope.request(action).await?;
-        if let Outcome::Send { peer, data, .. } = &outcome {
-            write(
-                &mut self.socket,
-                &ClientMessage::Key {
-                    to: *peer,
-                    data: hex::encode(data),
-                },
-            )
-            .await?;
+        match &outcome {
+            Outcome::Send { peer, data, .. } => self.send_key(*peer, data).await?,
+            Outcome::KeyBatch { messages } => {
+                for message in messages {
+                    self.send_key(message.peer, &message.data).await?;
+                }
+            }
+            _ => {}
         }
         Ok(outcome)
+    }
+
+    async fn send_key(&mut self, peer: u64, data: &[u8]) -> Result<(), Error> {
+        write(
+            &mut self.socket,
+            &ClientMessage::Key {
+                to: peer,
+                data: hex::encode(data),
+            },
+        )
+        .await
     }
 
     pub async fn close(mut self) -> Result<(), Error> {

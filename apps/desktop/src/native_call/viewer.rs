@@ -78,12 +78,13 @@ impl Lane {
 
     fn request_keyframe(&mut self, media: &Media, stream: Stream) -> Result<(), String> {
         let now = Instant::now();
-        if self
-            .last_keyframe
-            .is_none_or(|last| now.duration_since(last) >= Duration::from_millis(500))
+        if let Some(publisher) = stream.feed.publisher
+            && self
+                .last_keyframe
+                .is_none_or(|last| now.duration_since(last) >= Duration::from_millis(500))
         {
             media
-                .request_keyframe(stream.feed.purpose())
+                .request_source_keyframe(publisher, stream.feed.purpose())
                 .map_err(text)?;
             self.last_keyframe = Some(now);
         }
@@ -166,13 +167,12 @@ impl Viewer {
                     });
                 }
             }
-            MediaEvent::SourceEnded { purpose, .. } => {
-                // The original native transport offers one subscription per purpose.
-                for (source, limit) in self.sources.iter_mut().zip(&mut self.limits) {
-                    if source.is_some_and(|stream| stream.feed.purpose() == purpose) {
-                        *source = None;
-                        *limit = None;
-                    }
+            MediaEvent::SourceEnded { publisher, purpose } => {
+                if let Some(feed) = Feed::remote(publisher, purpose)
+                    && let Some(index) = self.position(feed)
+                {
+                    self.sources[index] = None;
+                    self.limits[index] = None;
                 }
             }
             MediaEvent::VideoLimit {

@@ -11,6 +11,7 @@ const SIZE: usize = 56;
 pub enum Direction {
     Send,
     Receive,
+    ForgetReceive,
 }
 
 pub struct Update {
@@ -46,12 +47,19 @@ pub async fn read_async(input: &mut (impl AsyncRead + Unpin)) -> io::Result<Opti
 }
 
 pub fn write(output: &mut impl Write, update: &Update) -> io::Result<()> {
-    check(update.generation, update.peer, update.epoch)?;
+    check(
+        update.generation,
+        update.peer,
+        update.direction,
+        update.epoch,
+        &update.key,
+    )?;
     let mut bytes = Zeroizing::new([0; SIZE]);
     bytes[..2].copy_from_slice(&crate::PROTOCOL_VERSION.to_be_bytes());
     bytes[2] = match update.direction {
         Direction::Send => 1,
         Direction::Receive => 2,
+        Direction::ForgetReceive => 3,
     };
     bytes[4..12].copy_from_slice(&update.generation.to_be_bytes());
     bytes[12..20].copy_from_slice(&update.peer.to_be_bytes());
@@ -68,18 +76,20 @@ fn decode(bytes: &[u8; SIZE]) -> io::Result<Update> {
     let direction = match bytes[2] {
         1 => Direction::Send,
         2 => Direction::Receive,
+        3 => Direction::ForgetReceive,
         _ => return Err(invalid()),
     };
     let generation = u64::from_be_bytes(field(&bytes[4..12])?);
     let peer = u64::from_be_bytes(field(&bytes[12..20])?);
     let epoch = u32::from_be_bytes(field(&bytes[20..24])?);
-    check(generation, peer, epoch)?;
+    let key = field(&bytes[24..])?;
+    check(generation, peer, direction, epoch, &key)?;
     Ok(Update {
         generation,
         peer,
         direction,
         epoch,
-        key: field(&bytes[24..])?,
+        key,
     })
 }
 
@@ -87,8 +97,18 @@ fn field<const N: usize>(bytes: &[u8]) -> io::Result<[u8; N]> {
     bytes.try_into().map_err(|_| invalid())
 }
 
-fn check(generation: u64, peer: u64, epoch: u32) -> io::Result<()> {
-    if generation == 0 || peer == 0 || epoch == 0 {
+fn check(
+    generation: u64,
+    peer: u64,
+    direction: Direction,
+    epoch: u32,
+    key: &[u8; 32],
+) -> io::Result<()> {
+    let valid = match direction {
+        Direction::ForgetReceive => epoch == 0 && *key == [0; 32],
+        Direction::Send | Direction::Receive => epoch != 0,
+    };
+    if generation == 0 || peer == 0 || !valid {
         return Err(invalid());
     }
     Ok(())
