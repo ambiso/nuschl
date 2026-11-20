@@ -14,8 +14,8 @@ use crate::{
     services::ServiceEvent,
     state::Desktop,
     theme::{
-        ACCENT, BACKDROP, BORDER, DANGER, DANGER_TEXT, ELEVATED, MAIN, SELECTED, SIDEBAR, TEXT,
-        TEXT_MUTED, color, tint,
+        ACCENT, BLACK, BORDER, DANGER, DANGER_TEXT, ELEVATED, MAIN, SELECTED, SIDEBAR, TEXT,
+        TEXT_MUTED, WHITE, color, tint,
     },
 };
 use futures_util::{FutureExt as _, StreamExt as _, future::BoxFuture};
@@ -363,7 +363,7 @@ impl Surface {
             .when(!window.is_fullscreen() || gallery, |picture| {
                 picture.rounded(px(8.))
             })
-            .bg(color(BACKDROP))
+            .bg(color(BLACK))
             .children(image.is_none().then(|| {
                 div()
                     .absolute()
@@ -372,7 +372,7 @@ impl Surface {
                     .justify_center()
                     .items_center()
                     .text_sm()
-                    .text_color(color(TEXT_MUTED))
+                    .text_color(color(WHITE))
                     .child(gpui_kit::text!(if failed {
                         "Video source unavailable"
                     } else if stream.preview {
@@ -439,13 +439,14 @@ impl Render for Surface {
             .flex_1()
             .min_h_0()
             .w_full()
+            .bg(color(BLACK))
             .when(gallery, |stage| stage.gap_1())
             .when(count == 0, |stage| {
                 stage.items_center().justify_center().child(
                     div()
                         .id("native-call-status")
                         .text_sm()
-                        .text_color(color(TEXT_MUTED))
+                        .text_color(color(WHITE))
                         .child(gpui_kit::text!(self.status.clone())),
                 )
             })
@@ -884,7 +885,7 @@ pub fn expanded(
         .flex()
         .flex_col()
         .text_color(color(TEXT))
-        .bg(color(BACKDROP))
+        .bg(color(BLACK))
         .track_focus(&this.window_focus)
         .on_mouse_move(cx.listener(|this, _, _, cx| stage::activity(this, cx)))
         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
@@ -1060,9 +1061,7 @@ fn panel_with_toolbar(
             .min_w_0()
             .min_h_0()
             .overflow_hidden()
-            .when(expanded, |panel| {
-                panel.relative().flex_1().bg(color(BACKDROP))
-            })
+            .when(expanded, |panel| panel.relative().flex_1())
             .when(!expanded, |panel| {
                 panel
                     .max_h(relative(0.5))

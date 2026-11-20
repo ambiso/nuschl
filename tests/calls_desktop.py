@@ -6,7 +6,7 @@ A Mumble-protocol witness checks the public and private chat links. The call
 host listens on loopback and holds TLS admission open, so the test exercises the
 call UI and invitation lifecycle without granting camera or screen capture.
 Set TMPDIR and NUSCHL_WL_TMP to a short disk-backed scratch path.
-Run with --fullscreen to sample the fullscreen controls with ffmpeg.
+Run with --fullscreen to sample the light-theme video surface and controls with ffmpeg.
 
     python3 tests/calls_desktop.py <binaries> --murmur <mumble-server> \
         --at-spi <at-spi2-core> --pulse-bin <pulseaudio>/bin --opus-library <libopus.so> \
@@ -49,6 +49,7 @@ class CallTest(VoiceTest):
         }]))
         (profile / "config/settings.json").write_text(json.dumps({
             "server_icons": False, "call_host": self.call_host,
+            "appearance": {"theme": "light" if self.args.fullscreen else "system"},
         }))
         opened = self.root / f"{name}-opened.txt"
         bin_dir = self.root / f"{name}-bin"
@@ -261,8 +262,25 @@ class CallTest(VoiceTest):
         eventually(regions_are_disjoint, "inline call and chat have overlapping or empty regions", timeout=15)
 
     def fullscreen(self, app, interaction):
+        def pixels(name, width, height, x, y):
+            screen = self.shell.screenshot(self.args.output / f"{name}.png")
+            return subprocess.check_output([
+                "ffmpeg", "-v", "error", "-i", str(screen), "-vf", f"format=rgb24,crop={width}:{height}:{x}:{y}",
+                "-f", "rawvideo", "-frames:v", "1", "pipe:1",
+            ], timeout=10)
+
         def window_is_fullscreen():
             return self.shell.eval("global.display.focus_window.is_fullscreen()") == "true"
+
+        black = bytes(3)
+        if interaction == "pointer":
+            status = eventually(lambda: self.find(app, None, "Joining video call"), "inline call status is missing")
+            x, y, width, height = status.extents()
+            left, top = json.loads(self.shell.eval(
+                "const bounds = global.display.focus_window.get_buffer_rect(); JSON.stringify([bounds.x, bounds.y])"))
+            inline = pixels("inline-status", width, height, left + x, top + y)
+            assert black in inline, "the inline video backdrop was not black"
+            assert any(min(inline[i:i + 3]) >= 192 for i in range(0, len(inline), 3)), "the light-theme status was not legible"
 
         self.press(app, "Full screen")
         eventually(window_is_fullscreen, "the compositor did not enter fullscreen")
@@ -272,21 +290,21 @@ class CallTest(VoiceTest):
         x, y, _, _ = exit_button.extents()
         screenshots = 0
 
-        def toolbar_visible():
+        def toolbar_pixels():
             nonlocal screenshots
             screenshots += 1
-            screen = self.shell.screenshot(self.args.output / f"{interaction}-{screenshots:02d}.png")
-            pixels = subprocess.check_output([
-                "ffmpeg", "-v", "error", "-i", str(screen), "-vf", f"format=rgb24,crop=1:21:{x + 6}:{y - 14}",
-                "-f", "rawvideo", "-frames:v", "1", "pipe:1",
-            ], timeout=10)
-            assert len(pixels) == 63
-            return pixels[:3] != pixels[-3:]
+            sample = pixels(f"{interaction}-{screenshots:02d}", 1, 21, x + 6, y - 14)
+            assert len(sample) == 63
+            return sample[:3], sample[-3:]
+
+        def toolbar_visible():
+            backdrop, toolbar = toolbar_pixels()
+            return backdrop == black and toolbar != black
 
         self.shell.move(40, 40)
-        eventually(toolbar_visible, "fullscreen controls did not paint at entry", timeout=3)
+        eventually(toolbar_visible, "fullscreen controls did not paint over a black background", timeout=3)
         if interaction != "menu":
-            eventually(lambda: not toolbar_visible(), "fullscreen controls did not fade", timeout=6)
+            eventually(lambda: toolbar_pixels() == (black, black), "fullscreen controls did not fade", timeout=6)
             assert exit_button.name == "Exit full screen"
         if interaction == "pointer":
             self.shell.move(80, 40)
