@@ -365,12 +365,14 @@ async fn native_video_for_policy(relay_only: bool) {
         frame: &mut u64,
         expected: &[u8],
     ) -> Vec<u8> {
-        let mut tick = tokio::time::interval(FRAME_INTERVAL);
+        let mut tick = tokio::time::interval(Duration::from_millis(250));
+        let mut latest = None;
         loop {
             tokio::select! {
                 biased;
-                data = rendered(viewer, publisher, true) => {
-                    if data == expected {
+                (timestamp, data) = rendered(viewer, publisher, true) => {
+                    // The next delta uses the latest submitted reference.
+                    if Some(timestamp) == latest && data == expected {
                         return data;
                     }
                 }
@@ -379,19 +381,22 @@ async fn native_video_for_policy(relay_only: bool) {
                 }
                 _ = tick.tick() => {
                     *frame += 1;
-                    sender.send_keyframe(*frame * 3_060, expected.to_vec()).unwrap();
+                    let timestamp = *frame * 3_060;
+                    latest = sender.send_keyframe(timestamp, expected.to_vec()).unwrap()
+                        .then_some(timestamp);
                     tick.reset();
                 }
             }
         }
     }
 
-    async fn rendered(media: &mut Media, publisher: u64, key: bool) -> Vec<u8> {
+    async fn rendered(media: &mut Media, publisher: u64, key: bool) -> (u64, Vec<u8>) {
         loop {
             if let MediaEvent::Frame {
                 publisher: sender,
                 purpose,
                 key_frame,
+                timestamp,
                 data,
                 ..
             } = media
@@ -403,7 +408,7 @@ async fn native_video_for_policy(relay_only: bool) {
                 assert_eq!(sender, publisher);
                 assert_eq!(purpose, Purpose::ScreenVideo);
                 if key_frame == key {
-                    return data;
+                    return (timestamp, data);
                 }
             }
         }
@@ -524,7 +529,7 @@ async fn native_video_for_policy(relay_only: bool) {
                 .unwrap()
         );
         phase = "first dependent frame";
-        let delta = rendered(&mut bob, publisher, false).await;
+        let (_, delta) = rendered(&mut bob, publisher, false).await;
         assert_eq!(delta, DELTAS[0]);
         let next = decoder
             .decode(false, delta)
@@ -574,7 +579,7 @@ async fn native_video_for_policy(relay_only: bool) {
                 .unwrap()
         );
         phase = "dependent frame after recovery";
-        assert_eq!(rendered(&mut bob, publisher, false).await, DELTAS[0]);
+        assert_eq!(rendered(&mut bob, publisher, false).await.1, DELTAS[0]);
 
         tokio::time::sleep(FRAME_INTERVAL).await;
         phase = "second picture";
