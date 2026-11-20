@@ -80,6 +80,7 @@ function desiredRate(call, sources) {
     if (!Number.isFinite(rate) || rate <= 0) return 0;
     if (kind === "screen" && call.screenRate) {
       const source = call.sources.get(kind);
+      if (source?.transceiver.sender !== local.sender) return 0;
       const [height] = publishTier(kind, source.tier);
       const remoteHeight = source.remoteCap?.[0] ?? height;
       // Route selection uses the selected tier's bitrate baseline.
