@@ -107,7 +107,7 @@ struct Selection {
 struct VideoStats {
     kind: VideoKind,
     sample: stats::Snapshot,
-    limits: Option<String>,
+    encoder: Option<stats::Encoder>,
 }
 
 struct Display<'a> {
@@ -117,11 +117,11 @@ struct Display<'a> {
 }
 
 impl Display<'_> {
-    fn report(&self, kind: VideoKind, sample: stats::Snapshot, limits: Option<String>) {
+    fn report(&self, kind: VideoKind, sample: stats::Snapshot, encoder: Option<stats::Encoder>) {
         self.updates.stats(Some(Arc::new(VideoStats {
             kind,
             sample,
-            limits,
+            encoder,
         })));
     }
 }
@@ -755,14 +755,14 @@ pub fn expanded(
                 cx.stop_propagation();
             }
         }))
-        .when_some(panel(this, cx), |cover, panel| cover.child(panel))
+        .when_some(panel(this, window, cx), |cover, panel| cover.child(panel))
         .when_some(crate::menus::menu(this, cx), |cover, menu| {
             cover.child(menu)
         });
     Some(crate::chrome::frame(window, cover.into_any_element()))
 }
 
-pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
+pub fn panel(this: &Desktop, window: &mut Window, cx: &mut Context<Desktop>) -> Option<AnyElement> {
     let call = this.native_call.as_ref()?;
     if call.minimized {
         return None;
@@ -773,10 +773,11 @@ pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
     let has_picture = surface.image.is_some();
     let stats = surface.stats.clone();
     let owned = surface.own_video.is_some();
+    let selection = *call.quality.borrow();
     let kind = surface
         .own_video
+        .or_else(|| surface.viewer_sources.kind(selection.view))
         .or_else(|| stats.as_ref().map(|stats| stats.kind));
-    let selection = *call.quality.borrow();
     let quality = selection.quality;
     let (camera, screen) = surface.viewer_sources.available();
     let picker = viewer::controls(
@@ -894,10 +895,44 @@ pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
             .when_some(kind.filter(|_| call.quality_open), |panel, kind| {
                 panel.child(quality_choices(kind, quality, cx))
             })
-            .when(call.stats_open, |panel| {
-                panel.child(video_stats(stats.as_deref(), owned, quality))
+            .when(call.stats_open && !has_picture, |panel| {
+                panel.child(video_stats(stats.as_deref(), owned))
             })
-            .child(call.surface.clone())
+            .child(
+                div()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .child(call.surface.clone())
+                    .when(call.stats_open && has_picture, |stage| {
+                        let scroll_height = window.viewport_size().height;
+                        stage.child(
+                            layout::scroll_region(
+                                "native-call-metrics-scroll",
+                                "Video metrics",
+                                scroll_height,
+                                window,
+                                cx,
+                            )
+                            .absolute()
+                            .top_0()
+                            .right_0()
+                            .w(px(352.))
+                            .max_w_full()
+                            .max_h_full()
+                            .pl_2()
+                            .py_2()
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color(BORDER))
+                            .bg(color(MAIN))
+                            .child(video_stats(stats.as_deref(), owned)),
+                        )
+                    }),
+            )
             .child(actions)
             .into_any_element(),
     )
@@ -992,39 +1027,43 @@ fn quality_choices(
     )
 }
 
-fn video_stats(stats: Option<&VideoStats>, owned: bool, quality: Quality) -> impl IntoElement {
-    let body = div()
+fn video_stats(stats: Option<&VideoStats>, owned: bool) -> impl IntoElement {
+    div()
         .id("native-call-video-stats")
         .role(Role::Group)
         .aria_label("Video stats")
         .flex()
-        .flex_col()
-        .gap_1()
-        .text_sm()
-        .text_color(color(TEXT_MUTED));
-    let Some(stats) = stats else {
-        return body.child("Waiting for video stats");
-    };
-    let below_selected = matches!(quality, Quality::Tier(_))
-        && stats.sample.resolution().is_some_and(|(width, height)| {
-            width.min(height) < stats.kind.ladder()[stats.kind.request(quality, 0)].height
-        });
-    body.child(
-        div().flex().flex_wrap().gap_3().children(
-            stats
-                .sample
-                .rows(owned)
-                .map(|(label, value)| div().child(format!("{label} {value}"))),
-        ),
-    )
-    .when_some(stats.limits.as_ref(), |body, limits| {
-        body.child(limits.clone())
-    })
-    .when(below_selected, |body| {
-        body.child(
-            "The selected tier is a ceiling. Source and connection limits can reduce resolution.",
+        .flex_wrap()
+        .gap_x_2()
+        .gap_y_1()
+        .min_w_0()
+        .children(
+            stats::rows(
+                stats.map(|stats| stats.sample),
+                stats.and_then(|stats| stats.encoder),
+                owned,
+            )
+            .map(|(label, value)| {
+                div()
+                    .w(px(156.))
+                    .max_w_full()
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_xs()
+                            .text_color(color(TEXT_MUTED))
+                            .child(Text::new(label.into(), label.into())),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_sm()
+                            .child(Text::new((label, 1_usize).into(), value.into())),
+                    )
+            }),
         )
-    })
 }
 
 fn video_kind(source: Source) -> VideoKind {
@@ -1106,38 +1145,63 @@ fn stop_button(call: &Active, cx: &mut Context<Desktop>) -> impl IntoElement {
     )
 }
 
+fn return_actions(call: &Active, cx: &mut Context<Desktop>) -> Div {
+    layout::actions()
+        .items_center()
+        .when(call.monitor, |bar| bar.child("Sharing entire monitor"))
+        .child(styled_button(
+            "native-call-restore",
+            "Return to call",
+            Tone::Secondary,
+            |this, window, cx| this.restore_native_call(window, cx),
+            cx,
+        ))
+        .child(stop_button(call, cx))
+}
+
 pub fn minimized(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
     let call = this.native_call.as_ref()?;
-    if !call.minimized
-        && this.selected_indices().is_some_and(|(index, channel)| {
-            let server = &this.client.servers[index];
-            this.native_call_in(&server.id, &server.channels[channel].target)
-        })
-    {
+    if this.selected_indices().is_some_and(|(index, channel)| {
+        let server = &this.client.servers[index];
+        this.native_call_in(&server.id, &server.channels[channel].target)
+    }) {
         return None;
     }
     Some(
-        div()
+        return_actions(call, cx)
             .id("native-call-minimized")
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap_2()
             .px_3()
             .py_1()
             .border_b_1()
             .border_color(color(BORDER))
-            .when(call.monitor, |bar| bar.child("Sharing entire monitor"))
-            .child(styled_button(
-                "native-call-restore",
-                "Return to call",
-                Tone::Secondary,
-                |this, window, cx| this.restore_native_call(window, cx),
-                cx,
-            ))
-            .child(stop_button(call, cx))
             .into_any_element(),
     )
+}
+
+pub fn minimized_card(
+    this: &Desktop,
+    index: usize,
+    cx: &mut Context<Desktop>,
+) -> Option<AnyElement> {
+    let call = this.native_call.as_ref().filter(|call| call.minimized)?;
+    let host = nuschl_core::call::link_host(&call.room)?;
+    let who = if call.owner {
+        "You"
+    } else {
+        this.client
+            .calls_in(index, &call.conversation)
+            .into_iter()
+            .find(|invite| invite.link == call.room)
+            .and_then(|invite| this.client.servers[index].users.get(&invite.sender))
+            .map_or("", |user| user.name.as_str())
+    };
+    Some(crate::view::banner(
+        "call-card",
+        ACCENT,
+        "video",
+        format!("Video call · {who} · {host}"),
+        Some(return_actions(call, cx).into_any_element()),
+    ))
 }
 
 pub async fn run(

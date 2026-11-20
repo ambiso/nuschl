@@ -68,7 +68,7 @@ impl Publisher {
             kind: video_kind(source),
             remote: None,
             bitrate_estimate: None,
-            software: false,
+            hardware: None,
         };
         let applied = encoding.ceiling(selection.quality);
         let capture = grant
@@ -199,7 +199,12 @@ impl Publisher {
                 display.report(
                     track.encoding.kind,
                     track.stats.sample(Instant::now()),
-                    track.encoding.limit_note(selection.quality, track.applied),
+                    Some(stats::Encoder {
+                        budget_bps: track.encoding.bitrate_estimate,
+                        target: track.applied,
+                        ceiling: track.encoding.remote,
+                        hardware: track.encoding.hardware,
+                    }),
                 );
             }
         }
@@ -215,7 +220,7 @@ impl Publisher {
         let Some(track) = &mut self.slots[index(source)] else {
             return Ok(());
         };
-        track.encoding.software = !frame.hardware;
+        track.encoding.hardware = Some(frame.hardware);
         track.stats.frame(frame.width, frame.height, None);
         if let Some(preview) = &mut track.preview {
             preview.offer(&frame, visible && self.focused == Some(source));
@@ -279,7 +284,7 @@ struct Encoding {
     kind: VideoKind,
     remote: Option<CaptureLimits>,
     bitrate_estimate: Option<u32>,
-    software: bool,
+    hardware: Option<bool>,
 }
 
 impl Encoding {
@@ -342,38 +347,6 @@ impl Encoding {
         limits.bitrate = video_rate(budget.min(tier.ceiling));
         limits
     }
-
-    fn limit_note(&self, quality: Quality, effective: CaptureLimits) -> Option<String> {
-        let local = self.preferred(quality);
-        let ceiling = self.ceiling(quality);
-        let mut notes = Vec::new();
-        if let Some(remote) = self.remote
-            && (remote.height < local.height
-                || remote.fps < local.fps
-                || remote.bitrate < local.bitrate)
-        {
-            notes.push(format!(
-                "The call server allows up to {}p{} at {:.1} Mb/s.",
-                remote.height,
-                remote.fps,
-                f64::from(remote.bitrate) / 1_000_000.,
-            ));
-        }
-        if let Some(estimate) = self.bitrate_estimate
-            && estimate < ceiling.bitrate
-        {
-            notes.push(format!(
-                "Estimated video budget is {:.2} Mb/s. Target video is {}p at up to {} fps.",
-                f64::from(estimate) / 1_000_000.,
-                effective.height,
-                effective.fps,
-            ));
-        }
-        if self.software && effective.fps > 15 {
-            notes.push("Software encoding runs at up to 15 fps.".into());
-        }
-        (!notes.is_empty()).then(|| notes.join(" "))
-    }
 }
 
 fn video_rate(bitrate: u64) -> u32 {
@@ -394,7 +367,7 @@ mod tests {
                 bitrate: 8_000_000,
             }),
             bitrate_estimate: None,
-            software: false,
+            hardware: None,
         };
         let quality = Quality::Tier(2);
         let full = encoding.ceiling(quality);

@@ -2396,9 +2396,10 @@ fn conversation(
         .map(|view| {
             #[cfg(target_os = "linux")]
             let view = view.when(this.native_call_in(&server.id, &channel.target), |view| {
-                view.when_some(crate::native_call::panel(this, cx), |view, panel| {
-                    view.child(panel)
-                })
+                view.when_some(
+                    crate::native_call::panel(this, window, cx),
+                    |view, panel| view.child(panel),
+                )
             });
             view
         })
@@ -3342,7 +3343,7 @@ fn call_card(
     let server = &this.client.servers[index];
     #[cfg(target_os = "linux")]
     if this.native_call_in(&server.id, target) {
-        return None;
+        return crate::native_call::minimized_card(this, index, cx);
     }
     let own = this
         .client

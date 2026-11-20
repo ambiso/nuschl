@@ -91,10 +91,13 @@ class CallTest(VoiceTest):
         eventually(lambda: not self.find(app, "menu", "Context menu"), "video options did not close")
         eventually(lambda: bool(self.find(app, None, "Video stats")) == show,
                    f"expected video stats to be {'shown' if show else 'hidden'}")
+        if show:
+            for field in ("Resolution", "Video payload bitrate", "Connection"):
+                eventually(lambda: self.find(app, None, field), f"video stats lack {field!r}")
 
-    def invitation(self, app):
-        eventually(lambda: self.find(app, None, f"Video call · Andi · {self.call_host}"),
-                   "Bea has no call card", timeout=15)
+    def invitation(self, app, sender="Andi"):
+        eventually(lambda: self.find(app, None, f"Video call · {sender} · {self.call_host}"),
+                   f"no call card for {sender}", timeout=15)
 
     def witness_link(self):
         marker = f"https://{self.call_host}/call#"
@@ -153,6 +156,10 @@ class CallTest(VoiceTest):
             self.inline(andi)
             assert self.witness_link()["target"] == {"kind": "channel", "id": 1}
             self.invitation(bea)
+            self.press(andi, "Minimize call")
+            self.invitation(andi, "You")
+            self.press(andi, "Return to call")
+            self.inline(andi)
             self.press(andi, "End call")
             self.control(andi, "Start meeting")
             self.control(bea, "Join video call", shown=False)
@@ -182,7 +189,7 @@ class CallTest(VoiceTest):
             self.press(bea, "Exit full screen")
             self.inline(bea)
             self.press(bea, "Minimize call")
-            self.control(bea, "Return to call")
+            self.invitation(bea)
             self.control(bea, "Full screen", shown=False)
             self.press(bea, "Return to call")
             self.inline(bea)

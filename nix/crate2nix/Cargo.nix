@@ -40757,7 +40757,12 @@ rec {
         crateName = "str0m";
         version = "0.25.0";
         edition = "2024";
-        sha256 = "13z58xdqm0hc9ywvqs3jrslw41zzz7wi48wikssqng037i2pwz1m";
+        workspace_member = null;
+        src = pkgs.fetchgit {
+          url = "https://github.com/ambiso/str0m";
+          rev = "f9a5d0f40730a46e89d081e75940c6937ac63ca6";
+          sha256 = "0mhrfh801ma3ppdcf9wzppgid2sza5998jc2pgz40cfr56cm3lim";
+        };
         authors = [
           "Martin Algesten <martin@algesten.se>"
           "Hugo Tunius <h@tunius.se>"

@@ -56,8 +56,8 @@ pub fn run(pipeline: gst::Pipeline, source: Source, control: Arc<Control>) -> Re
         .map_err(|_| "invalid video sink")?;
     let encoder = pipeline.by_name("encoder").ok_or("missing video encoder")?;
     let mut scale = Scale::new(&pipeline, &encoder)?;
-    let cadence = Mutex::new(Cadence::default());
-    let cadence_control = control.clone();
+    let timing = Mutex::new(Timing::default());
+    let timing_control = control.clone();
     // Keep encoder caps changes downstream of the authorized PipeWire link.
     let reconfigure = scale
         .input
@@ -76,29 +76,11 @@ pub fn run(pipeline: gst::Pipeline, source: Source, control: Arc<Control>) -> Re
         .by_name("capture")
         .and_then(|element| element.static_pad("src"))
         .ok_or("missing PipeWire capture output")?;
-    // Bound cadence before the queue. Use worker ingress time so producer
-    // timestamps and the pipeline's clock cannot disagree about frame age.
     let frames = input
-        .add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
-            let Some(now) = pad
-                .parent_element()
-                .and_then(|element| element.current_running_time())
-            else {
-                return gst::PadProbeReturn::Drop;
-            };
-            let limits = cadence_control.limits();
-            if !cadence
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .accept(Duration::from_nanos(now.nseconds()), limits.fps)
-            {
-                return gst::PadProbeReturn::Drop;
-            }
-            if let Some(buffer) = info.buffer_mut() {
-                buffer.make_mut().set_pts(now);
-            }
-            gst::PadProbeReturn::Ok
-        })
+        .add_probe(
+            gst::PadProbeType::BUFFER | gst::PadProbeType::EVENT_DOWNSTREAM,
+            move |pad, info| timing_probe(pad, info, &timing, timing_control.limits().fps),
+        )
         .ok_or("could not install the capture cadence limit")?;
     pipeline.set_state(gst::State::Playing)?;
     let result = write_frames(&pipeline, &sink, &encoder, &mut scale, source, &control);
@@ -106,6 +88,88 @@ pub fn run(pipeline: gst::Pipeline, source: Source, control: Arc<Control>) -> Re
     scale.input.remove_probe(reconfigure);
     let _ = pipeline.set_state(gst::State::Null);
     result
+}
+
+#[derive(Default)]
+struct Timing {
+    cadence: Cadence,
+    source_caps: Option<gst::Caps>,
+    applied_fps: u16,
+    our_event: Option<gst::Seqnum>,
+}
+
+fn timing_probe(
+    pad: &gst::Pad,
+    info: &mut gst::PadProbeInfo<'_>,
+    timing: &Mutex<Timing>,
+    fps: u16,
+) -> gst::PadProbeReturn {
+    let lock = || timing.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(event) = info.event_mut() {
+        let mut timing = lock();
+        // Keep the producer's original caps across our downstream updates.
+        if timing.our_event != Some(event.seqnum())
+            && let gst::EventView::Caps(input) = event.view()
+        {
+            let source = input.caps().to_owned();
+            let caps = cadence_caps(&source, fps);
+            *event = gst::event::Caps::builder(&caps)
+                .seqnum(event.seqnum())
+                .build();
+            timing.source_caps = Some(source);
+            timing.applied_fps = fps;
+        }
+        return gst::PadProbeReturn::Ok;
+    }
+    // Use worker ingress time for frame age and pace the stream before the queue.
+    let Some(now) = pad
+        .parent_element()
+        .and_then(|element| element.current_running_time())
+    else {
+        return gst::PadProbeReturn::Drop;
+    };
+    let mut state = lock();
+    if !state
+        .cadence
+        .accept(Duration::from_nanos(now.nseconds()), fps)
+    {
+        return gst::PadProbeReturn::Drop;
+    }
+    if state.applied_fps != fps
+        && let Some(source) = &state.source_caps
+    {
+        let caps = cadence_caps(source, fps);
+        let event = gst::event::Caps::new(&caps);
+        state.our_event = Some(event.seqnum());
+        // A downstream CAPS event reenters the probe before the next buffer.
+        drop(state);
+        let applied = pad.push_event(event);
+        let mut state = lock();
+        state.our_event = None;
+        if !applied {
+            return gst::PadProbeReturn::Drop;
+        }
+        state.applied_fps = fps;
+    }
+    if let Some(buffer) = info.buffer_mut() {
+        buffer.make_mut().set_pts(now);
+    }
+    gst::PadProbeReturn::Ok
+}
+
+fn cadence_caps(source: &gst::Caps, fps: u16) -> gst::Caps {
+    let mut caps = source.clone();
+    if let Some(format) = caps.make_mut().structure_mut(0) {
+        // VA rate control allocates bits per frame using the negotiated cadence.
+        let limit = gst::Fraction::new(i32::from(fps), 1);
+        let rate = format
+            .get::<gst::Fraction>("framerate")
+            .ok()
+            .filter(|rate| rate.numer() > 0)
+            .map_or(limit, |actual| actual.min(limit));
+        format.set("framerate", rate);
+    }
+    caps
 }
 
 struct Scale {
@@ -296,4 +360,24 @@ fn force_keyframe(encoder: &gst::Element) -> Result<(), Failure> {
     // The first request can race the pipeline's transition to Playing.
     source.send_event(event);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encoder_caps_follow_the_lower_of_capture_cadence_and_native_framerate() -> Result<(), Failure>
+    {
+        gst::init()?;
+        let source =
+            "video/x-raw(memory:DMABuf),format=DMA_DRM,width=3440,height=1440,framerate=60000/1001"
+                .parse::<gst::Caps>()?;
+        let reduced =
+            "video/x-raw(memory:DMABuf),format=DMA_DRM,width=3440,height=1440,framerate=15/1"
+                .parse::<gst::Caps>()?;
+        assert_eq!(cadence_caps(&source, 15), reduced);
+        assert_eq!(cadence_caps(&source, 60), source);
+        Ok(())
+    }
 }
