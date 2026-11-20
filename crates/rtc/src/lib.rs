@@ -377,7 +377,10 @@ impl Peer {
             return Err(Error::SignalingState);
         }
         if purposes.len() > 4
-            || purposes.iter().enumerate().any(|(i, p)| purposes[..i].contains(p))
+            || purposes
+                .iter()
+                .enumerate()
+                .any(|(i, p)| purposes[..i].contains(p))
             || restart.iter().any(|p| !purposes.contains(p))
         {
             return Err(Error::Description);
@@ -615,6 +618,14 @@ impl Peer {
             .map(|t| t.track)
     }
 
+    pub fn track_by_mid(&self, mid: &str) -> Option<Track> {
+        let track = Track(Mid::from(mid));
+        self.tracks
+            .iter()
+            .any(|state| state.track == track)
+            .then_some(track)
+    }
+
     pub fn purpose(&self, track: Track) -> Option<Purpose> {
         self.tracks
             .iter()
@@ -628,9 +639,10 @@ impl Peer {
             .iter()
             .map(|b| {
                 let track = Track(Mid::from(b.mid.as_str()));
-                if let Some(index) = previous.iter().position(|old| {
-                    old.track == track && old.purpose == b.purpose
-                }) {
+                if let Some(index) = previous
+                    .iter()
+                    .position(|old| old.track == track && old.purpose == b.purpose)
+                {
                     return previous.swap_remove(index);
                 }
                 TrackState {

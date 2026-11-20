@@ -264,7 +264,10 @@ impl Call {
                 let id = SignalingId::new(id).map_err(|_| ())?;
                 let video = [Purpose::Camera, Purpose::ScreenVideo];
                 let before = video.map(|purpose| live.peer.track_for(to_purpose(purpose)));
-                let description = live.peer.update_publish(&purposes, &restart, id).map_err(|_| ())?;
+                let description = live
+                    .peer
+                    .update_publish(&purposes, &restart, id)
+                    .map_err(|_| ())?;
                 for (purpose, previous) in video.into_iter().zip(before) {
                     if live.peer.track_for(to_purpose(purpose)) != previous {
                         self.keyframe[usize::from(encoding(purpose))] = false;
@@ -332,16 +335,13 @@ impl Call {
             }
             Command::RequestKeyframe { leg, purpose } => {
                 let live = self.legs.get_mut(&leg).ok_or(())?;
-                if live
+                let (publisher, _) = self.receiving.as_ref().ok_or(())?;
+                let incoming = live
                     .from
                     .iter()
-                    .filter(|track| track.purpose == purpose)
-                    .count()
-                    != 1
-                {
-                    return Err(());
-                }
-                let track = live.peer.track_for(to_purpose(purpose)).ok_or(())?;
+                    .find(|track| track.purpose == purpose && track.publisher == Some(*publisher))
+                    .ok_or(())?;
+                let track = live.peer.track_by_mid(&incoming.mid).ok_or(())?;
                 live.peer.request_keyframe(track).map_err(|_| ())?;
                 Reply::Done
             }

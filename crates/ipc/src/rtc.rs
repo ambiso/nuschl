@@ -168,8 +168,16 @@ impl Command {
             Self::Offer { leg, id, purposes } => {
                 *leg != 0 && *id != [0; 16] && (1..=4).contains(&purposes.len())
             }
-            Self::UpdatePublish { leg, id, purposes, restart } => {
-                *leg != 0 && *id != [0; 16] && purposes.len() <= 4 && restart.len() <= 4
+            Self::UpdatePublish {
+                leg,
+                id,
+                purposes,
+                restart,
+            } => {
+                *leg != 0
+                    && *id != [0; 16]
+                    && purposes.len() <= 4
+                    && restart.len() <= 4
                     && restart.iter().all(|purpose| purposes.contains(purpose))
             }
             Self::AcceptOffer { leg, description } | Self::AcceptAnswer { leg, description } => {
@@ -247,11 +255,12 @@ impl Reply {
                 | Self::Event { leg: answered, .. },
             ) => leg == answered,
             (
-                Command::Offer { .. } | Command::UpdatePublish { .. } | Command::AcceptOffer { .. } | Command::Poll { .. },
+                Command::Offer { .. }
+                | Command::UpdatePublish { .. }
+                | Command::AcceptOffer { .. }
+                | Command::Poll { .. },
                 _,
-            ) => {
-                false
-            }
+            ) => false,
             (_, Self::Done) => true,
             _ => false,
         }

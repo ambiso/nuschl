@@ -319,7 +319,7 @@ async fn native_publisher_in_call_page_vm() {
                     }
                 }
                 event = media.next() => {
-                    ready |= matches!(event.expect("publisher remains live").expect("RTC publisher"), MediaEvent::SendReady);
+                    ready |= matches!(event.expect("publisher remains live").expect("RTC publisher"), MediaEvent::SourceReady { .. });
                 }
             }
         }
@@ -461,7 +461,7 @@ async fn native_video_for_policy(relay_only: bool) {
                     .await
                     .expect("publisher remains live")
                     .expect("RTC publisher"),
-                MediaEvent::SendReady
+                MediaEvent::SourceReady { .. }
             ) {
                 break;
             }
@@ -532,7 +532,7 @@ async fn native_video_for_policy(relay_only: bool) {
                     .await
                     .expect("publisher remains live")
                     .expect("RTC publisher"),
-                MediaEvent::KeyframeRequired
+                MediaEvent::SourceKeyframeRequired { .. }
             ) {
                 break;
             }
@@ -581,7 +581,8 @@ async fn native_video_for_policy(relay_only: bool) {
             let expected = &VideoKind::Screen.ladder()[tier];
             timeout(HANDSHAKE, async {
                 loop {
-                    if let MediaEvent::EncoderLimits {
+                    if let MediaEvent::SourceLimits {
+                        purpose: Purpose::ScreenVideo,
                         height,
                         fps,
                         bitrate,
