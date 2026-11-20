@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 //! Select an incoming source and decode only the featured video.
 
-use super::{Display, Selection, VideoStats, stats, text, video_kind};
+use super::{Display, Selection, stats, text, video_kind};
 use crate::{
     dialogs::{Tone, named_button},
     layout,
@@ -10,7 +10,7 @@ use crate::{
 use gpui_kit::{prelude::*, *};
 use nuschl_client::native::sfu::{Media, MediaEvent, Purpose};
 use nuschl_ipc::video::{DecodeError, Decoder, Source};
-use std::{path::PathBuf, sync::Arc, time::Instant};
+use std::{path::PathBuf, time::Instant};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Track {
@@ -27,10 +27,6 @@ pub(super) struct Sources {
 impl Sources {
     pub(super) fn available(self) -> (bool, bool) {
         (self.camera.is_some(), self.screen.is_some())
-    }
-
-    pub(super) fn is_empty(self) -> bool {
-        self.camera.is_none() && self.screen.is_none()
     }
 
     fn set(&mut self, purpose: Purpose, publisher: Option<u64>) -> bool {
@@ -143,14 +139,10 @@ impl Viewer {
         }
     }
 
-    pub(super) fn sources(&self) -> Sources {
-        self.sources
-    }
-
     pub(super) async fn handle_event(
         &mut self,
         media: &Media,
-        display: &mut Display<'_>,
+        display: &Display<'_>,
         event: MediaEvent,
     ) -> Result<(), String> {
         let changed = match event {
@@ -229,7 +221,7 @@ impl Viewer {
     pub(super) async fn selection_changed(
         &mut self,
         media: &Media,
-        display: &mut Display<'_>,
+        display: &Display<'_>,
         selection: Selection,
     ) -> Result<(), String> {
         let current = self.sources.current(selection.view);
@@ -262,13 +254,9 @@ impl Viewer {
         Ok(())
     }
 
-    pub(super) fn report(&mut self, display: &mut Display<'_>) {
+    pub(super) fn report(&mut self, display: &Display<'_>) {
         if let Some(source) = self.current.and_then(|track| capture_source(track.purpose)) {
-            display.updates.stats(Some(Arc::new(VideoStats {
-                kind: video_kind(source),
-                sample: self.stats.sample(Instant::now()),
-                limits: None,
-            })));
+            display.report(video_kind(source), self.stats.sample(Instant::now()), None);
         }
     }
 
