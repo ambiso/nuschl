@@ -2961,11 +2961,7 @@ fn entry_label(
             let mut text = if let Some(link) = invitation_url(message).and_then(guest_link)
                 && let Some(index) = this.client.server_index(&server.id)
             {
-                let who = if message.outgoing {
-                    "You"
-                } else {
-                    name.as_ref()
-                };
+                let who = if message.outgoing { "You" } else { name };
                 let ended = this
                     .client
                     .call_ended(index, &channel.target, &link.url(), message);

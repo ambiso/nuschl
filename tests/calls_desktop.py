@@ -170,7 +170,9 @@ class CallTest(VoiceTest):
         assert event["admitted"], event
 
     def historical_invitation(self, app, pid):
-        encode = lambda value: base64.urlsafe_b64encode(value).decode().rstrip("=")
+        def encode(value):
+            return base64.urlsafe_b64encode(value).decode().rstrip("=")
+
         label = b"nuschl/stream/v2"
         publisher = bytes(32)
         extracted = hmac.digest(label, publisher, "sha256")
