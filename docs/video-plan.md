@@ -375,8 +375,8 @@ Owner rule (2026-11-18):
   exit, and Nuschl shows its own indicator.
 - **Screen:** every share needs a fresh picker and shows a banner; window
   sharing is preselected. The browser shows a monitor-share warning. The native
-  client asks for confirmation before sharing a whole monitor and keeps chat
-  visible alongside the preview. Sharing stops on Stop, disconnect, channel
+  client starts capture after the system picker and shows the monitor-share
+  warning alongside the preview. Sharing stops on Stop, disconnect, channel
   change, a portal or track end and app exit.
 - **Phase 1 lease.** For a page it opened, Nuschl keeps a control connection
   to the SFU and renews that page's publisher lease (about 10 s); any stop

@@ -52,7 +52,6 @@ pub struct Active {
     minimized: bool,
     expanded: bool,
     monitor: bool,
-    confirm_monitor: Option<oneshot::Sender<()>>,
 }
 
 pub enum Finish {
@@ -378,7 +377,6 @@ impl Desktop {
             minimized: false,
             expanded: false,
             monitor: false,
-            confirm_monitor: None,
         });
         self.services.native_call(Start {
             crypto: self.driver.call_crypto(),
@@ -523,14 +521,12 @@ impl Desktop {
         }
     }
 
-    pub fn confirm_monitor_share(&mut self, generation: u64, ready: oneshot::Sender<()>) {
+    pub fn native_monitor_share(&mut self, generation: u64) {
         if generation == self.native_call_generation
             && let Some(call) = &mut self.native_call
             && call.stop.is_some()
         {
-            call.minimized = false;
-            call.updates.show_video(true);
-            call.confirm_monitor = Some(ready);
+            call.monitor = true;
         }
     }
 
@@ -608,23 +604,6 @@ pub fn panel(this: &Desktop, window: &Window, cx: &mut Context<Desktop>) -> Opti
         .send_if_modified(|selection| std::mem::replace(&mut selection.pixels, pixels) != pixels);
     let quality = call.quality.borrow().quality;
     let actions = layout::actions()
-        .when(call.confirm_monitor.is_some(), |actions| {
-            actions.child(styled_button(
-                "native-call-confirm-monitor",
-                "Share entire monitor",
-                Tone::Primary,
-                |this, _, cx| {
-                    if let Some(call) = &mut this.native_call
-                        && let Some(ready) = call.confirm_monitor.take()
-                    {
-                        let _ = ready.send(());
-                        call.monitor = true;
-                        cx.notify();
-                    }
-                },
-                cx,
-            ))
-        })
         .child(styled_button(
             "native-call-expand",
             if expanded {
@@ -691,7 +670,7 @@ pub fn panel(this: &Desktop, window: &Window, cx: &mut Context<Desktop>) -> Opti
             .border_color(color(BORDER))
             .bg(color(MAIN))
             .child(actions)
-            .when(call.confirm_monitor.is_some() || call.monitor, |panel| {
+            .when(call.monitor, |panel| {
                 panel.child(div().text_sm().child(
                     "Anyone watching can see the Nuschl window while it’s on the shared monitor.",
                 ))
@@ -909,17 +888,25 @@ async fn drive(
         stats: stats::Stats::new(policy.relay_only, Instant::now()),
     };
     let result = if let Some(grant) = grant {
-        publish_video(
-            &mut media,
-            grant,
-            video_worker,
-            &mut display,
-            generation,
-            events,
-            cancel,
-        )
-        .await
-        .map(|()| Finish::Left)
+        let sharing = async {
+            if grant.can_include_app() {
+                events
+                    .send(ServiceEvent::NativeMonitorShare { generation })
+                    .await
+                    .map_err(text)?;
+            }
+            Ok(())
+        };
+        tokio::select! {
+            biased;
+            () = &mut cancel => Ok(Finish::Left),
+            result = sharing => match result {
+                Ok(()) => publish_video(&mut media, grant, video_worker, &mut display, cancel)
+                    .await
+                    .map(|()| Finish::Left),
+                Err(error) => Err(error),
+            },
+        }
     } else {
         display.updates.status("Waiting for video");
         receive_video(&mut media, video_worker, &mut display, cancel).await
@@ -933,25 +920,8 @@ async fn publish_video(
     grant: portal::Grant,
     worker: PathBuf,
     display: &mut Display,
-    generation: u64,
-    events: &mpsc::Sender<ServiceEvent>,
     mut cancel: std::pin::Pin<&mut impl Future<Output = ()>>,
 ) -> Result<(), String> {
-    if grant.requires_curtain() {
-        let confirm = async {
-            let (ready, confirmed) = oneshot::channel();
-            events
-                .send(ServiceEvent::ConfirmMonitorShare { generation, ready })
-                .await
-                .map_err(text)?;
-            confirmed.await.map_err(text)
-        };
-        tokio::select! {
-            biased;
-            () = &mut cancel => return Ok(()),
-            result = confirm => result?,
-        }
-    }
     let source = grant.source();
     let encoding = Encoding {
         kind: video_kind(source),

@@ -28,8 +28,8 @@ impl Grant {
         self.source
     }
 
-    /// A whole monitor or an unspecified screen source requires the privacy curtain.
-    pub fn requires_curtain(&self) -> bool {
+    /// A monitor or unspecified screen source can include the Nuschl window.
+    pub fn can_include_app(&self) -> bool {
         self.monitor
     }
 

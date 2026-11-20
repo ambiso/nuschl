@@ -40,9 +40,8 @@ pub enum ServiceEvent {
         id: u64,
     },
     #[cfg(target_os = "linux")]
-    ConfirmMonitorShare {
+    NativeMonitorShare {
         generation: u64,
-        ready: tokio::sync::oneshot::Sender<()>,
     },
     #[cfg(target_os = "linux")]
     NativeFinished {

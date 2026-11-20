@@ -2723,8 +2723,8 @@ impl Desktop {
             #[cfg(target_os = "linux")]
             ServiceEvent::CallLeaseEnded { id } => self.call_lease_ended(id),
             #[cfg(target_os = "linux")]
-            ServiceEvent::ConfirmMonitorShare { generation, ready } => {
-                self.confirm_monitor_share(generation, ready);
+            ServiceEvent::NativeMonitorShare { generation } => {
+                self.native_monitor_share(generation)
             }
             #[cfg(target_os = "linux")]
             ServiceEvent::NativeFinished { generation, result } => {
