@@ -334,19 +334,19 @@ async fn native_call_switches_paths_and_sources() {
     })
     .await
     .unwrap_or_else(|_| panic!("duplex frames did not reach every viewer: {seen:?}"));
-    extra.stop().await.unwrap();
+    viewer.set_source(Purpose::Camera, false).unwrap();
     timeout(HANDSHAKE, async {
         loop {
-            if matches!(viewer.next().await.unwrap().unwrap(), MediaEvent::SourceEnded {
+            if matches!(publisher.next().await.unwrap().unwrap(), MediaEvent::SourceEnded {
                 publisher, purpose: Purpose::Camera,
-            } if publisher == extra_id)
+            } if publisher == viewer_id)
             {
                 break;
             }
         }
     })
     .await
-    .expect("the departing camera ended independently");
+    .expect("the guest camera ended independently");
     publisher.stop().await.unwrap();
     viewer.stop().await.unwrap();
     extra.close().await.unwrap();
