@@ -23,13 +23,29 @@ const object = (fields) => (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value) &&
   Object.entries(fields).every(([name, check]) => check(value[name]));
 const nullable = (check) => (value) => value === null || check(value);
+const optional = (check) => (value) => value === undefined || check(value);
+
+const videoLimits = new Map([
+  ["within_target", "Within selected quality"],
+  ["receiver_quality", "Viewer quality selection"],
+  ["receiver_decode", "Viewer decoding capacity"],
+  ["receiver_bandwidth", "Viewer connection"],
+  ["sfu_host", "SFU host upload cap"],
+  ["sfu_room", "SFU room cap"],
+  ["sfu_viewer", "SFU per-viewer cap"],
+  ["traffic_budget", "SFU monthly traffic pacing"],
+  ["forwarding_backlog", "SFU send queue"],
+  ["quality_recovery", "Restoring quality"],
+]);
+
+export const videoLimitLabel = (limit) => videoLimits.get(limit) ?? "Unavailable";
 
 const role = oneOf("host", "participant");
 const codec = oneOf("av1", "vp9");
 const sdp = text(MAX_MESSAGE);
 const mid = text(16);
 const messages = {
-  hello: { nonce: hex(64, 64) },
+  hello: { nonce: hex(64, 64), video_limits: optional((value) => typeof value === "boolean") },
   welcome: {
     peer: id,
     role,
@@ -43,7 +59,11 @@ const messages = {
   offer: { sdp, tracks: list(MAX_TRACKS, object({ mid, peer: id, source: mid, kind: oneOf("camera", "screen", "audio") })) },
   answer: { sdp },
   key: { from: id, data: hex(2, MAX_KEY) },
-  quality: { request: hex(22, 22), source: mid, max_height: limit(2160), max_fps: limit(60), max_bitrate: limit(15_000_000) },
+  quality: {
+    request: hex(22, 22), source: mid, max_height: limit(2160), max_fps: limit(60), max_bitrate: limit(15_000_000),
+    limit: optional((value) => videoLimits.has(value)),
+  },
+  video_limit: { mid, peer: (value) => id(value) && value > 0, limit: (value) => videoLimits.has(value) },
   error: { reason: text(64) },
 };
 
@@ -89,7 +109,7 @@ export function linkOf(location) {
 
 /** The SFU `join` from the stream worker's `opened` and `admitted` replies and the
  * codecs this browser decodes. */
-export function join(opened, admitted, codecs) {
+export function join(opened, admitted, codecs, videoLimitReports = false) {
   return {
     type: "join",
     room: opened.room,
@@ -98,5 +118,6 @@ export function join(opened, admitted, codecs) {
     host_proof: admitted.host_proof,
     create: admitted.create,
     codecs,
+    ...(videoLimitReports ? { video_limits: true } : {}),
   };
 }

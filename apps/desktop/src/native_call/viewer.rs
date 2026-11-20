@@ -9,7 +9,8 @@ use crate::{
 };
 use gpui_kit::{prelude::*, *};
 use nuschl_client::native::sfu::{Media, MediaEvent, Purpose, VideoKind};
-use nuschl_ipc::video::{DecodeError, Decoder, Source};
+use nuschl_ipc::video::{CaptureLimits, DecodeError, Decoder, Source};
+use nuschl_protocol::sfu::VideoLimit;
 use std::{path::PathBuf, time::Instant};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,6 +132,8 @@ pub(super) struct Viewer {
     current: Option<Track>,
     decoder: Option<Decoder>,
     stats: stats::Stats,
+    camera_limit: Option<VideoLimit>,
+    screen_limit: Option<VideoLimit>,
 }
 
 impl Viewer {
@@ -140,6 +143,8 @@ impl Viewer {
             sources: Sources::default(),
             current: None,
             decoder: None,
+            camera_limit: None,
+            screen_limit: None,
             stats: stats::Stats::new(relay_only, Instant::now()),
         }
     }
@@ -152,9 +157,26 @@ impl Viewer {
     ) -> Result<(), String> {
         let changed = match event {
             MediaEvent::SourceAvailable { publisher, purpose } => {
-                self.sources.set(purpose, Some(publisher))
+                let changed = self.sources.set(purpose, Some(publisher));
+                if changed {
+                    self.limit(purpose, None);
+                }
+                changed
             }
-            MediaEvent::SourceEnded { purpose } => self.sources.set(purpose, None),
+            MediaEvent::SourceEnded { purpose } => {
+                self.limit(purpose, None);
+                self.sources.set(purpose, None)
+            }
+            MediaEvent::VideoLimit {
+                publisher,
+                purpose,
+                limit,
+            } => {
+                if self.sources.get(purpose) == Some(Track { publisher, purpose }) {
+                    self.limit(purpose, Some(limit));
+                }
+                return Ok(());
+            }
             MediaEvent::Direct { active } => {
                 self.stats.direct(active);
                 return Ok(());
@@ -230,7 +252,9 @@ impl Viewer {
         selection: Selection,
     ) -> Result<(), String> {
         let current = self.sources.current(selection.view);
-        if let Some(track) = current {
+        if let Some(track) = current
+            && let Some(source) = capture_source(track.purpose)
+        {
             // Screen shares need readable text even in the inline stage.
             let pixels = if track.purpose == Purpose::ScreenVideo {
                 selection.pixels.max(1080)
@@ -238,10 +262,23 @@ impl Viewer {
                 selection.pixels
             };
             let _ = media.set_quality(track.publisher, track.purpose, selection.quality, pixels);
+            let kind = video_kind(source);
+            let requested = kind.ladder()[kind.request(selection.quality, pixels)];
+            self.stats.requested(CaptureLimits {
+                height: requested.height,
+                fps: requested.fps.into(),
+                bitrate: requested.ceiling as u32,
+            });
         }
         if self.current != current {
             self.current = current;
             self.stats.clear(Instant::now());
+            self.stats
+                .limit(current.and_then(|track| match track.purpose {
+                    Purpose::Camera => self.camera_limit,
+                    Purpose::ScreenVideo => self.screen_limit,
+                    _ => None,
+                }));
             display.updates.stats(None);
             display
                 .updates
@@ -258,6 +295,17 @@ impl Viewer {
             }
         }
         Ok(())
+    }
+
+    fn limit(&mut self, purpose: Purpose, limit: Option<VideoLimit>) {
+        match purpose {
+            Purpose::Camera => self.camera_limit = limit,
+            Purpose::ScreenVideo => self.screen_limit = limit,
+            _ => return,
+        }
+        if self.current.is_some_and(|track| track.purpose == purpose) {
+            self.stats.limit(limit);
+        }
     }
 
     pub(super) fn report(&mut self, display: &Display<'_>) {
