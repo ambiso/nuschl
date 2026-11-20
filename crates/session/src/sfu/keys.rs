@@ -55,11 +55,18 @@ impl Keys {
                         write_frame_within(&mut data, &request, MAX_REPLY_FRAME_BYTES)
                             .map_err(io::Error::from)?;
                         worker.input.write_all(&data).await?;
-                        let reply =
-                            read_frame_async::<Reply>(&mut worker.output, MAX_REPLY_FRAME_BYTES)
-                                .await
-                                .map_err(io::Error::from)?;
-                        if reply.request_id != id || !reply.payload.matches(&request.payload) {
+                        let reply = read_frame_async::<Option<Reply>>(
+                            &mut worker.output,
+                            MAX_REPLY_FRAME_BYTES,
+                        )
+                        .await
+                        .map_err(io::Error::from)?;
+                        if reply.request_id != id
+                            || reply
+                                .payload
+                                .as_ref()
+                                .is_some_and(|reply| !reply.matches(&request.payload))
+                        {
                             return Err(Error::Protocol("invalid call key reply"));
                         }
                         Ok(reply.payload)
@@ -67,7 +74,9 @@ impl Keys {
                     .await
                     .unwrap_or(Err(Error::Timeout));
                     let failed = result.is_err();
-                    let _ = answer.send(result);
+                    let _ = answer.send(result.and_then(|reply| {
+                        reply.ok_or(Error::Protocol("the call key worker rejected the request"))
+                    }));
                     if failed {
                         break;
                     }

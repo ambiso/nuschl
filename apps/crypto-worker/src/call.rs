@@ -238,7 +238,6 @@ pub fn serve() -> Result<(), Box<dyn std::error::Error>> {
         endpoint: Some(endpoint),
         ..Signaling::default()
     };
-    let start = std::time::Instant::now();
     let mut input = io::stdin().lock();
     let mut output = io::stdout().lock();
     while let Some(request) = read_frame_within::<Request>(&mut input, MAX_REPLY_FRAME_BYTES)? {
@@ -247,14 +246,16 @@ pub fn serve() -> Result<(), Box<dyn std::error::Error>> {
         if signaling.generation != 0 && matches!(request.payload.action, Action::Open { .. }) {
             return Err("the call key worker already has a call".into());
         }
-        let now = u64::try_from(start.elapsed().as_millis())?;
-        let answer = signaling.handle(request.payload, now)?;
+        let answer = signaling
+            .handle(request.payload, crate::worker::now_ms())
+            .ok();
+        let close = closing && answer.is_some();
         write_frame_within(
             &mut output,
             &Envelope::new(request.request_id, answer),
             MAX_REPLY_FRAME_BYTES,
         )?;
-        if closing {
+        if close {
             break;
         }
     }
