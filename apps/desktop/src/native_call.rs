@@ -683,7 +683,7 @@ pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
     let surface = call.surface.read(cx);
     let has_picture = surface.image.is_some();
     let stats = surface.stats.clone();
-    let kind = call
+    let kind = surface
         .own_video
         .or_else(|| stats.as_ref().map(|stats| stats.kind));
     let quality = call.quality.borrow().quality;
@@ -944,15 +944,27 @@ fn source_controls(call: &Active, cx: &mut Context<Desktop>) -> Vec<AnyElement> 
     };
     let choose = call.source_pending.is_none() && call.stop.is_some();
     [
-        (Source::Camera, "video", "Use camera", "Camera is on"),
-        (Source::Screen, "screen", "Share screen", "Sharing screen"),
+        (
+            Source::Camera,
+            "native-call-camera",
+            "video",
+            "Use camera",
+            "Camera is on",
+        ),
+        (
+            Source::Screen,
+            "native-call-screen",
+            "screen",
+            "Share screen",
+            "Sharing screen",
+        ),
     ]
     .into_iter()
-    .map(|(source, icon, action, status)| {
+    .map(|(source, id, icon, action, status)| {
         let enabled = active == video_kind(source);
         if choose && !enabled {
             return icon_button(
-                ("native-call-source", icon),
+                id,
                 icon,
                 action,
                 TEXT,
@@ -962,7 +974,7 @@ fn source_controls(call: &Active, cx: &mut Context<Desktop>) -> Vec<AnyElement> 
             );
         }
         div()
-            .id(("native-call-source", icon))
+            .id(id)
             .role(Role::Image)
             .aria_label(if enabled { status } else { action })
             .size(px(32.))
