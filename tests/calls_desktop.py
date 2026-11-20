@@ -31,6 +31,8 @@ from local_murmur import Murmur, eventually, free_port  # noqa: E402
 from mumble_client import Client  # noqa: E402
 from voice_servers import VoiceTest  # noqa: E402
 
+AT_SPI_RADIO_MENU_ITEM = "role 45"
+
 
 class CallTest(VoiceTest):
     def desktop(self, name, registry, known):
@@ -196,9 +198,17 @@ class CallTest(VoiceTest):
             self.press(andi, "Start camera")
             self.inline(andi)
             self.control(andi, "Open in browser", shown=False)
+            chat = self.find(andi, "list", "Messages in #Lobby")
+            chat_bounds = chat.extents()
             self.press(andi, "Quality · Auto")
-            self.press(andi, "720p30")
+            quality = eventually(lambda: self.find(andi, "menu", "Video quality"),
+                                 "video quality dropdown did not open")
+            assert chat.extents() == chat_bounds, "quality choices changed the chat layout"
+            eventually(lambda: self.find(quality, AT_SPI_RADIO_MENU_ITEM, "720p30"),
+                       "720p30 radio menu item missing").press()
             self.control(andi, "Quality · 720p30")
+            eventually(lambda: not self.find(andi, "menu", "Video quality"),
+                       "video quality dropdown did not close")
             self.control(andi, "Video stats", shown=False)
             self.video_stats(andi, show=True)
             self.video_stats(andi, show=False)
