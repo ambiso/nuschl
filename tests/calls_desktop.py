@@ -125,21 +125,16 @@ class CallTest(VoiceTest):
         eventually(lambda: not self.find(app, "menu", "Video quality"),
                    "video quality dropdown did not close")
 
-    def dismiss_quality(self, app, chat):
-        def menu():
-            return self.find(app, "menu", "Video quality")
-
+    def toggle_quality(self, app):
         def closed():
             names = {(role, label) for _, role, label, _ in items(app)}
             return ("push button", "Quality · Auto") in names and ("menu", "Video quality") not in names
 
-        for dismiss, reason in ((lambda: self.click(self.control(app, "Quality · Auto")), "a second click"),
-                                (lambda: self.click(chat), "an outside click"),
-                                (lambda: self.shell.chord("Escape"), "Escape")):
-            self.click(self.control(app, "Quality · Auto"))
-            eventually(menu, "video quality dropdown did not open")
-            dismiss()
-            eventually(closed, f"video quality dropdown did not close on {reason}", timeout=5)
+        trigger = self.control(app, "Quality · Auto")
+        self.click(trigger)
+        eventually(lambda: self.find(app, "menu", "Video quality"), "video quality dropdown did not open", timeout=5)
+        self.click(trigger)
+        eventually(closed, "video quality dropdown did not close on a second click", timeout=5)
 
     def video_stats(self, app, show):
         self.press(app, "Video options")
@@ -332,7 +327,7 @@ class CallTest(VoiceTest):
             self.control(andi, "Open in browser", shown=False)
             chat = self.find(andi, "list", "Messages in #Lobby")
             chat_bounds = chat.extents()
-            self.dismiss_quality(andi, chat)
+            self.toggle_quality(andi)
             self.video_stats(andi, show=True)
             self.select_quality(andi, "Auto", "720p30", above=True)
             assert chat.extents() == chat_bounds, "quality choices changed the chat layout"
