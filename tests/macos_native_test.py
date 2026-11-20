@@ -79,7 +79,7 @@ class ActualArchive(unittest.TestCase):
 
     def test_real_full_archive_and_source_notice_bytes_prepare_without_native_claim(self):
         app, report = self.prepare()
-        self.assertEqual(len(list((app / "Contents/MacOS").iterdir())), 9)
+        self.assertEqual({path.name for path in (app / "Contents/MacOS").iterdir()}, set(module.PROGRAMS))
         self.assertEqual(report["notice_scope"], "macos-universal")
         self.assertNotIn("native_apple_static_verified", json.dumps(report))
 
