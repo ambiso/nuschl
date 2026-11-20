@@ -6,6 +6,7 @@ A Mumble-protocol witness checks the public and private chat links. The call
 host listens on loopback and holds TLS admission open, so the test exercises the
 call UI and invitation lifecycle without granting camera or screen capture.
 Set TMPDIR and NUSCHL_WL_TMP to a short disk-backed scratch path.
+The fullscreen checks sample the compositor's screenshots with ffmpeg.
 
     python3 tests/calls_desktop.py <binaries> --murmur <mumble-server> \
         --at-spi <at-spi2-core> --pulse-bin <pulseaudio>/bin --opus-library <libopus.so> \
@@ -22,8 +23,10 @@ import re
 import shlex
 import socket
 import ssl
+import subprocess
 import sys
 import tempfile
+import time
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -257,6 +260,48 @@ class CallTest(VoiceTest):
 
         eventually(regions_are_disjoint, "inline call and chat have overlapping or empty regions", timeout=15)
 
+    def fullscreen(self, app):
+        def window_is_fullscreen():
+            return self.shell.eval("global.display.focus_window.is_fullscreen()") == "true"
+
+        self.press(app, "Full screen")
+        eventually(window_is_fullscreen, "the compositor did not enter fullscreen")
+        exit_button = self.control(app, "Exit full screen")
+        x, y, _, _ = exit_button.extents()
+        screenshots = 0
+
+        def toolbar_color():
+            nonlocal screenshots
+            screenshots += 1
+            screen = self.shell.screenshot(self.args.output / f"fullscreen-{screenshots:02d}.png")
+            return subprocess.check_output([
+                "ffmpeg", "-v", "error", "-i", str(screen), "-vf", f"format=rgb24,crop=1:1:{x + 6}:{y + 6}",
+                "-f", "rawvideo", "-frames:v", "1", "pipe:1",
+            ], timeout=10)
+
+        self.shell.move(40, 40)
+        shown = toolbar_color()
+        eventually(lambda: toolbar_color() != shown, "fullscreen controls did not fade", timeout=6)
+        self.shell.move(80, 40)
+        eventually(lambda: toolbar_color() == shown, "pointer motion did not reveal fullscreen controls", timeout=3)
+        time.sleep(3.3)
+        hidden = toolbar_color()
+        assert hidden != shown and exit_button.name == "Exit full screen"
+        self.shell.key("Tab")
+        eventually(lambda: exit_button.focused, "Tab did not reach the fullscreen controls", timeout=3)
+        time.sleep(3.3)
+        assert toolbar_color() != hidden, "the focused controls faded"
+        self.press(app, "Video options")
+        eventually(lambda: self.find(app, "menu", "Context menu"), "fullscreen video menu did not open")
+        time.sleep(3.3)
+        assert toolbar_color() != hidden, "the controls faded while the menu was open"
+        self.shell.key("Escape")
+        eventually(lambda: not self.find(app, "menu", "Context menu"), "Escape did not close the fullscreen menu")
+        assert window_is_fullscreen()
+        self.shell.key("Escape")
+        eventually(lambda: not window_is_fullscreen(), "Escape did not exit fullscreen")
+        self.inline(app)
+
     def run(self):
         self.shell = GnomeSession(self.args.gnome_shell, 1440, 950,
                                   log=(self.args.output / "shell.log").open("w"))
@@ -293,6 +338,7 @@ class CallTest(VoiceTest):
             self.historical_invitation(bea, bea_pid)
             self.press(andi, "Start meeting")
             self.inline(andi)
+            self.fullscreen(andi)
             own = self.invitation(andi, "You")
             target, link = self.witness_link()
             assert target == {"kind": "channel", "id": 1}
