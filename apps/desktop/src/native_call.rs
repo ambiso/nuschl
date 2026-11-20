@@ -437,7 +437,7 @@ impl Desktop {
             room.clone()
         };
         let own_video = source.map(video_kind);
-        let status = source.map_or("Joining video call", portal_prompt);
+        let status = "Joining video call";
         let updates = Arc::new(Latest {
             update: Mutex::new(Update {
                 status: status.into(),
@@ -1281,9 +1281,7 @@ async fn meeting(
     let mut allowed = None;
     let mut timer = tokio::time::interval(stats::INTERVAL);
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    if initial.is_none() {
-        display.updates.status("Waiting for video");
-    }
+    display.updates.status("Waiting for video");
     loop {
         let can_publish = media.can_publish();
         if allowed != Some(can_publish) {
