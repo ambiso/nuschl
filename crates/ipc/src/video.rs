@@ -5,12 +5,17 @@ mod capture;
 mod decode;
 #[cfg(feature = "video-portal")]
 pub mod portal;
+mod preview;
 mod supervisor;
 
 pub use capture::{Capture, VideoFrame};
 pub use decode::{DecodeError, DecodedFrame, Decoder};
 #[doc(hidden)]
 pub use decode::{decode_frame_bytes, decode_packet_limit, source_from_byte, source_to_byte};
+#[doc(hidden)]
+pub use preview::{
+    PREVIEW_HEIGHT, PREVIEW_WIDTH, fit_capture_preview, read_capture_start, write_capture_preview,
+};
 pub use supervisor::{Encoder, Error, Output};
 
 use std::io;
@@ -189,6 +194,8 @@ pub enum Kind {
     CaptureKeyframe = 20,
     CaptureStart,
     SetCaptureLimits,
+    SetCapturePreview,
+    CapturePreview,
 }
 
 /// Each reply carries the ID from its request.
@@ -247,6 +254,8 @@ impl Header {
             20 => Kind::CaptureKeyframe,
             21 => Kind::CaptureStart,
             22 => Kind::SetCaptureLimits,
+            23 => Kind::SetCapturePreview,
+            24 => Kind::CapturePreview,
             _ => return Err(invalid()),
         };
         let key = flags == KEY;

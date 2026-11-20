@@ -39,6 +39,8 @@ pub enum MenuTarget {
     AclSource,
     #[cfg(target_os = "linux")]
     VideoStats(u64),
+    #[cfg(target_os = "linux")]
+    VideoQuality(u64, nuschl_client::native::sfu::VideoKind),
 }
 
 /// Original saved endpoint plus observed connection/target lifetimes. Local
@@ -289,6 +291,7 @@ enum Entry {
         label: String,
         icon: &'static str,
         danger: bool,
+        choice: Option<bool>,
         action: Action,
     },
     Volume {
@@ -332,6 +335,7 @@ fn item(
         label,
         icon,
         danger: false,
+        choice: None,
         action: Rc::new(action),
     }
 }
@@ -350,6 +354,7 @@ fn danger(
         label,
         icon,
         danger: true,
+        choice: None,
         action: Rc::new(action),
     }
 }
@@ -403,7 +408,7 @@ impl Desktop {
                 | MenuTarget::Message
                 | MenuTarget::AclSource => None,
                 #[cfg(target_os = "linux")]
-                MenuTarget::VideoStats(_) => None,
+                MenuTarget::VideoStats(_) | MenuTarget::VideoQuality(..) => None,
             };
             let wanted = channel
                 .into_iter()
@@ -793,6 +798,22 @@ impl Desktop {
                 }));
             }
             return entries;
+        }
+        #[cfg(target_os = "linux")]
+        if let MenuTarget::VideoQuality(generation, kind) = menu.target {
+            return self
+                .video_quality_commands(generation, kind)
+                .map(|(quality, label, selected)| {
+                    let mut entry = local_item(label, "check", move |this, _, _, cx| {
+                        this.set_video_quality(generation, quality, cx);
+                    })
+                    .key(format!("quality:{quality:?}"));
+                    if let Entry::Item { choice, .. } = &mut entry {
+                        *choice = Some(selected);
+                    }
+                    entry
+                })
+                .collect();
         }
         if menu.target == MenuTarget::AclSource {
             for (number, (jump, label)) in self.menu_acl.iter().enumerate() {
@@ -1551,7 +1572,7 @@ impl Desktop {
             }
             MenuTarget::Image | MenuTarget::Message | MenuTarget::AclSource => unreachable!(),
             #[cfg(target_os = "linux")]
-            MenuTarget::VideoStats(_) => unreachable!(),
+            MenuTarget::VideoStats(_) | MenuTarget::VideoQuality(..) => unreachable!(),
         }
         entries.retain(|entry| {
             !matches!(
@@ -1894,6 +1915,8 @@ struct MenuSurfaceState {
 struct MenuSurface {
     identity: SharedString,
     position: Point<Pixels>,
+    label: &'static str,
+    max_width: Pixels,
     rows: Vec<AnyElement>,
 }
 
@@ -1916,7 +1939,7 @@ impl RenderOnce for MenuSurface {
         let inset = window.client_inset().unwrap_or(px(0.));
         let gutter = inset + px(8.);
         let reserve = (gutter + inset) * 2.;
-        let width = (viewport.width - reserve).max(px(0.)).min(px(320.));
+        let width = (viewport.width - reserve).max(px(0.)).min(self.max_width);
         let height = (viewport.height - reserve).max(px(0.));
         let content_height = (height - px(10.)).max(px(0.));
         // The scrollbar gutter exists only while the actions overflow, so
@@ -1933,7 +1956,7 @@ impl RenderOnce for MenuSurface {
                         div()
                             .id("context-menu")
                             .role(Role::Menu)
-                            .aria_label("Context menu")
+                            .aria_label(self.label)
                             .occlude()
                             .w(width)
                             .max_h(height)
@@ -1995,6 +2018,15 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
     if entries.is_empty() {
         return None;
     }
+    #[cfg(target_os = "linux")]
+    let quality = matches!(menu.target, MenuTarget::VideoQuality(..));
+    #[cfg(not(target_os = "linux"))]
+    let quality = false;
+    let (label, width) = if quality {
+        ("Video quality", px(224.))
+    } else {
+        ("Context menu", px(320.))
+    };
     let snapshot = Rc::new(menu.clone());
     let rows = entries
         .into_iter()
@@ -2024,6 +2056,7 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
                 label,
                 icon: name,
                 danger,
+                choice,
                 action,
             } => {
                 let _ = action;
@@ -2036,8 +2069,17 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
                 let control = div()
                     .id(SharedString::from(format!("menu-item:{element_key}")))
                     .group(SharedString::from(format!("menu-item:{element_key}")))
-                    .role(Role::MenuItem)
+                    .role(if choice.is_some() {
+                        Role::MenuItemRadio
+                    } else {
+                        Role::MenuItem
+                    })
                     .aria_label(label.clone())
+                    .when_some(choice, |control, selected| {
+                        control
+                            .aria_toggled(selected.into())
+                            .when(selected, |control| control.bg(color(SELECTED)))
+                    })
                     .tab_index(0)
                     .min_w_0()
                     .flex_shrink_0()
@@ -2074,7 +2116,9 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
                             cx.stop_propagation();
                         }
                     }))
-                    .child(
+                    .child(if choice == Some(false) {
+                        div().w(px(15.)).flex_shrink_0().into_any_element()
+                    } else {
                         icon(
                             name,
                             15.,
@@ -2083,8 +2127,9 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
                         .group_hover(
                             SharedString::from(format!("menu-item:{element_key}")),
                             |style| style.text_color(color(WHITE)),
-                        ),
-                    )
+                        )
+                        .into_any_element()
+                    })
                     .child(
                         crate::layout::flexible()
                             .whitespace_normal()
@@ -2185,6 +2230,8 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
             .child(MenuSurface {
                 identity: format!("context-menu:{}", menu.invocation).into(),
                 position: menu.position,
+                label,
+                max_width: width,
                 rows,
             })
             .into_any_element(),

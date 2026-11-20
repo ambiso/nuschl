@@ -88,6 +88,8 @@ hardware setup fails before opening the granted connection. Starting again
 after a running PipeWire stream fails requests a fresh portal connection.
 The native capture adapter applies live bitrate targets through its bounded
 socket protocol and coalesces pending targets to the latest value.
+The same capture supplies the local preview on a separate socket with bounded
+frames. The preview scales to fit 1280 × 720 and pauses when hidden.
 The VA-API path emits keyframes and interframes. The software path encodes
 independent frames at up to 15 fps. The capture integration test opens one
 connection to a private PipeWire daemon with a synthetic video node. The local

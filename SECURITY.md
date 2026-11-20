@@ -82,7 +82,7 @@ add only:
 | transfer | network and resolver files; the offered file, read-only | 1 GiB |
 | music-bot codec, Linux only | none | 1 GiB |
 | video encode, Linux only | none | 1 GiB, 120 s CPU over its life, 5 s wall time per exchange |
-| video capture, Linux only | one portal-granted PipeWire connection inherited as standard input, a private inherited socket for AV1 and versioned bitrate commands, read-only system PipeWire configuration, one optional DRM render device with read-only sysfs metadata and the hardware codec's driver libraries | 1 GiB, 1 h CPU over its life, 15 s to first frame, 5 s to read a started frame |
+| video capture, Linux only | one portal-granted PipeWire connection inherited as standard input, a private socket for AV1 and versioned control, an optional connected Unix socket for local BGRA preview pixels, read-only system PipeWire configuration, one optional DRM render device with read-only sysfs metadata and the hardware codec's driver libraries | 1 GiB, 1 h CPU over its life, 15 s to first AV1 frame, 5 s to read a started frame, preview bounds of 1280 × 720 |
 | video decode, Linux only | bounded encoded AV1 input and BGRA output pipes, one optional DRM render device with read-only sysfs metadata and the hardware codec's driver libraries | 1 GiB, 1 h CPU over its life, bounded exchange deadline |
 | RTC, Linux only | private IPC sockets for call media, UDP datagrams and media epoch updates | 1 GiB, 1 h CPU over its life |
 
@@ -253,8 +253,10 @@ and `/sfu`, and caps frames and messages at 256 KiB. Key messages share the SFU'
 
 **Native call media.** Each Linux RTC worker handles one call. It keeps the
 SFrame counter and replay state for the call and receives only the media epochs
-the call needs. The video workers encode and decode media. The local preview
-uses the granted source's encoded frames and the existing confined decoder.
+the call needs. The video workers encode and decode media. The capture worker
+scales frames from the same portal grant into a bounded local preview. Preview
+pixels have a dedicated socket to the desktop, which validates the version,
+dimensions and length before allocation.
 The SDK applies
 `PeerPolicy` before network setup, then validates the destination and length of
 datagrams it routes. Outside relay-only mode, a direct leg can probe the

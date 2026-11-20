@@ -3332,8 +3332,7 @@ fn conversation_notices(
     layout::notices(window, cx, notices)
 }
 
-/// The call in conversation `target`: ours, with the creator's actions, or
-/// the one someone announced, with Join.
+/// The call in conversation `target` with the actions for its current state.
 fn call_card(
     this: &Desktop,
     index: usize,
@@ -3343,14 +3342,14 @@ fn call_card(
     let server = &this.client.servers[index];
     #[cfg(target_os = "linux")]
     if this.native_call_in(&server.id, target) {
-        return crate::native_call::minimized_card(this, index, cx);
+        return crate::native_call::call_card(this, index, cx);
     }
     let own = this
         .client
         .own_call()
         .filter(|call| call.server == server.id && call.target == *target)
         .and(this.call.as_ref());
-    let (who, link, actions) = if let Some(call) = own {
+    if let Some(call) = own {
         let actions = layout::actions().child(styled_button(
             "call-end",
             "End call",
@@ -3361,43 +3360,60 @@ fn call_card(
             },
             cx,
         ));
-        ("You".to_owned(), call.link.host().to_owned(), actions)
-    } else {
-        let call = *this.client.calls_in(index, target).first()?;
-        let link = crate::call::join_link(&call.link)?;
-        let actions = layout::actions();
-        #[cfg(target_os = "linux")]
-        let actions = actions.when(
-            this.native_call.is_none() && this.native_available(link.host()),
-            |actions| {
-                let url = link.url();
-                let server = server.id.clone();
-                let target = target.clone();
-                actions.child(styled_button(
-                    "call-watch-here",
-                    "Join video call",
-                    Tone::Primary,
-                    move |this, _, cx| {
-                        if let Some(link) = crate::call::join_link(&url) {
-                            this.open_native_call(server.clone(), target.clone(), &link, None, cx);
-                            cx.notify();
-                        }
-                    },
-                    cx,
-                ))
-            },
-        );
-        let who = server.users.get(&call.sender).map(|user| user.name.clone());
-        (who.unwrap_or_default(), link.host().to_owned(), actions)
-    };
-    let text = format!("Video call · {who} · {link}");
-    Some(banner(
+        return Some(video_call_card("You", &call.link, actions, cx));
+    }
+    let call = *this.client.calls_in(index, target).first()?;
+    let link = crate::call::join_link(&call.link)?;
+    let actions = layout::actions();
+    #[cfg(target_os = "linux")]
+    let actions = actions.when(
+        this.native_call.is_none() && this.native_available(link.host()),
+        |actions| {
+            let url = link.url();
+            let server = server.id.clone();
+            let target = target.clone();
+            actions.child(styled_button(
+                "call-watch-here",
+                "Join video call",
+                Tone::Primary,
+                move |this, _, cx| {
+                    if let Some(link) = crate::call::join_link(&url) {
+                        this.open_native_call(server.clone(), target.clone(), &link, None, cx);
+                        cx.notify();
+                    }
+                },
+                cx,
+            ))
+        },
+    );
+    let who = server
+        .users
+        .get(&call.sender)
+        .map_or("", |user| user.name.as_str());
+    Some(video_call_card(who, &link, actions, cx))
+}
+
+pub(crate) fn video_call_card(
+    who: &str,
+    link: &nuschl_stream::Link,
+    actions: Div,
+    cx: &mut Context<Desktop>,
+) -> AnyElement {
+    let url = link.url();
+    let actions = actions.child(styled_button(
+        "call-copy-link",
+        "Copy link",
+        Tone::Secondary,
+        move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(url.clone())),
+        cx,
+    ));
+    banner(
         "call-card",
         ACCENT,
         "video",
-        text,
+        format!("Video call · {who} · {}", link.host()),
         Some(actions.into_any_element()),
-    ))
+    )
 }
 
 fn message_row(

@@ -199,10 +199,11 @@ without text.
 On Linux with the video and RTC workers installed, **Start meeting** opens an
 in-app room with your camera and screen off. **Start camera** and **Share
 screen** open a room and request capture through the desktop portal. The call
-card offers **Join video call** for native playback. The channel also receives
-a browser link for guests, including people using Mumble. People who enter the
-channel later receive the card while the call is active. In a narrow layout,
-start the meeting and use the call toolbar to choose what to share.
+card appears as soon as the meeting starts. It offers **Join video call** for
+native playback and **Copy link** for inviting someone through the browser.
+The channel also receives the guest link for people using Mumble. People who
+enter the channel later receive the card while the call is active. In a narrow
+layout, start the meeting and use the call toolbar to choose what to share.
 
 The presenter can enable camera and screen independently in the call toolbar.
 Sharing begins after the system picker grants access. Each source has its own
@@ -215,12 +216,14 @@ to return to chat. **Minimize call** hides the video while the call continues.
 **Return to call** restores the panel from the call's chat card or the
 return strip in other conversations.
 
-**Quality** selects a resolution and frame-rate ceiling. A 1440p tier can
-carry 3440 × 1440 when the capture, encoder and connection support it. Open
-**Video options** and choose **Video stats** for delivered dimensions, frame
-rate, encoded payload rate and the current route. Presenters also see the
-server ceiling, estimated budget and encoder target for the selected source.
-The stats overlay leaves the video size unchanged. Viewer Auto fits the video tile and requests at
+The **Quality** dropdown selects a resolution and frame-rate ceiling. With
+**Auto**, presenters see the current encoder target and viewers see the
+received resolution. A 1440p tier can carry 3440 × 1440 when the capture,
+encoder and connection support it. Open **Video options** and choose
+**Video stats** for delivered dimensions, frame rate, encoded payload rate
+and the current route. Presenters also see the server ceiling, estimated
+budget and encoder target for the selected source. The stats overlay leaves
+the video size unchanged. Viewer Auto fits the video tile and requests at
 least the 1080p tier for screen shares to keep text readable.
 
 Native media uses one encrypted peer pair per desktop. Two native clients can

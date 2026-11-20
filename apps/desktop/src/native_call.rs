@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 //! Linux calls on the desktop. Capture and decoding use confined video workers.
 
-mod preview;
 mod publisher;
 mod stats;
 mod viewer;
@@ -13,7 +12,8 @@ use crate::{
     services::ServiceEvent,
     state::Desktop,
     theme::{
-        ACCENT, BACKDROP, BORDER, DANGER, DANGER_TEXT, MAIN, SIDEBAR, TEXT, TEXT_MUTED, color,
+        ACCENT, BACKDROP, BORDER, DANGER, DANGER_TEXT, ELEVATED, MAIN, SELECTED, SIDEBAR, TEXT,
+        TEXT_MUTED, color,
     },
 };
 use futures_util::{FutureExt as _, StreamExt as _, future::BoxFuture};
@@ -26,8 +26,10 @@ use nuschl_ipc::video::{DecodedFrame, Source, portal};
 use nuschl_protocol::sfu::Codec;
 use nuschl_session::{config::ClientSettings, identity::CryptoHandle};
 use std::{
+    cell::Cell,
     future::pending,
     path::{Path, PathBuf},
+    rc::Rc,
     sync::{Arc, LazyLock, Mutex},
     time::{Duration, Instant},
 };
@@ -49,7 +51,6 @@ pub struct Active {
     voice_generation: u64,
     surface: Entity<Surface>,
     quality: watch::Sender<Selection>,
-    quality_open: bool,
     stats_open: bool,
     local_sources: [bool; 2],
     can_publish: bool,
@@ -143,11 +144,17 @@ struct Latest {
 
 impl Latest {
     fn show_video(&self, visible: bool) {
-        self.update
+        let mut update = self
+            .update
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .visible = visible;
-        self.ready.notify_one();
+            .unwrap_or_else(|error| error.into_inner());
+        if std::mem::replace(&mut update.visible, visible) != visible {
+            if !visible {
+                update.frame = None;
+            }
+            drop(update);
+            self.ready.notify_one();
+        }
     }
 
     fn status(&self, status: impl Into<String>) {
@@ -470,7 +477,6 @@ impl Desktop {
             surface: cx
                 .new(|cx| Surface::new(updates.clone(), status, own_video, selection.clone(), cx)),
             quality: selection,
-            quality_open: false,
             stats_open: false,
             local_sources: [false; 2],
             can_publish: false,
@@ -557,7 +563,15 @@ impl Desktop {
             });
         if !current || (self.settings.relay_only && !call.policy.relay_only) {
             self.stop_native();
+            return;
         }
+        let shown = !call.minimized
+            && (call.expanded
+                || self.selected_indices().is_some_and(|(index, channel)| {
+                    let server = &self.client.servers[index];
+                    self.native_call_in(&server.id, &server.channels[channel].target)
+                }));
+        call.updates.show_video(shown);
     }
 
     fn set_call_expanded(&mut self, expanded: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -778,7 +792,6 @@ pub fn panel(this: &Desktop, window: &mut Window, cx: &mut Context<Desktop>) -> 
         .own_video
         .or_else(|| surface.viewer_sources.kind(selection.view))
         .or_else(|| stats.as_ref().map(|stats| stats.kind));
-    let quality = selection.quality;
     let (camera, screen) = surface.viewer_sources.available();
     let picker = viewer::controls(
         camera || call.local_sources[publisher::index(Source::Camera)],
@@ -803,17 +816,14 @@ pub fn panel(this: &Desktop, window: &mut Window, cx: &mut Context<Desktop>) -> 
         .children(source_controls(call, cx))
         .children(picker)
         .when_some(kind, |actions, kind| {
-            actions.child(styled_button(
-                "native-call-quality",
-                format!("Quality · {}", quality_label(kind, quality)),
-                Tone::Secondary,
-                |this, _, cx| {
-                    if let Some(call) = &mut this.native_call {
-                        call.quality_open = !call.quality_open;
-                        call.stats_open = false;
-                        cx.notify();
-                    }
-                },
+            actions.child(quality_selector(
+                kind,
+                selection.quality,
+                stats.as_deref(),
+                generation,
+                this.menu
+                    .as_ref()
+                    .is_some_and(|menu| menu.target == MenuTarget::VideoQuality(generation, kind)),
                 cx,
             ))
         })
@@ -849,7 +859,14 @@ pub fn panel(this: &Desktop, window: &mut Window, cx: &mut Context<Desktop>) -> 
             "Video options",
             TEXT,
             None,
-            move |this, window, cx| this.open_video_menu(generation, window.mouse_position(), cx),
+            move |this, window, cx| {
+                this.open_video_menu(
+                    generation,
+                    MenuTarget::VideoStats(generation),
+                    window.mouse_position(),
+                    cx,
+                )
+            },
             cx,
         ))
         .child(stop_button(call, cx));
@@ -872,7 +889,12 @@ pub fn panel(this: &Desktop, window: &mut Window, cx: &mut Context<Desktop>) -> 
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                    this.open_video_menu(generation, event.position, cx);
+                    this.open_video_menu(
+                        generation,
+                        MenuTarget::VideoStats(generation),
+                        event.position,
+                        cx,
+                    );
                     cx.stop_propagation();
                 }),
             )
@@ -891,9 +913,6 @@ pub fn panel(this: &Desktop, window: &mut Window, cx: &mut Context<Desktop>) -> 
                     "native-call-monitor-warning",
                     "Anyone watching can see the Nuschl window while it’s on the shared monitor.",
                 ))
-            })
-            .when_some(kind.filter(|_| call.quality_open), |panel, kind| {
-                panel.child(quality_choices(kind, quality, cx))
             })
             .when(call.stats_open && !has_picture, |panel| {
                 panel.child(video_stats(stats.as_deref(), owned))
@@ -942,6 +961,7 @@ impl Desktop {
     fn open_video_menu(
         &mut self,
         generation: u64,
+        target: MenuTarget,
         position: Point<Pixels>,
         cx: &mut Context<Self>,
     ) {
@@ -958,7 +978,42 @@ impl Desktop {
             .iter()
             .position(|server| server.id == call.server)
         {
-            self.make_menu(index, MenuTarget::VideoStats(generation), position);
+            self.make_menu(index, target, position);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn video_quality_commands(
+        &self,
+        generation: u64,
+        kind: VideoKind,
+    ) -> impl Iterator<Item = (Quality, String, bool)> {
+        let current = self
+            .native_call
+            .as_ref()
+            .filter(|call| self.native_call_generation == generation && !call.minimized)
+            .map(|call| match call.quality.borrow().quality {
+                Quality::Auto => Quality::Auto,
+                Quality::Tier(tier) => Quality::Tier(tier.min(kind.top() as u8)),
+            });
+        std::iter::once(Quality::Auto)
+            .chain((0..=kind.top() as u8).map(Quality::Tier))
+            .filter_map(move |quality| {
+                current.map(|current| (quality, quality_label(kind, quality), current == quality))
+            })
+    }
+
+    pub(crate) fn set_video_quality(
+        &mut self,
+        generation: u64,
+        quality: Quality,
+        cx: &mut Context<Self>,
+    ) {
+        if self.native_call_generation == generation
+            && let Some(call) = self.native_call.as_ref().filter(|call| !call.minimized)
+        {
+            call.quality
+                .send_modify(|selection| selection.quality = quality);
             cx.notify();
         }
     }
@@ -979,10 +1034,99 @@ impl Desktop {
             && let Some(call) = &mut self.native_call
         {
             call.stats_open = !call.stats_open;
-            call.quality_open = false;
             cx.notify();
         }
     }
+}
+
+fn quality_selector(
+    kind: VideoKind,
+    selected: Quality,
+    stats: Option<&VideoStats>,
+    generation: u64,
+    open: bool,
+    cx: &mut Context<Desktop>,
+) -> AnyElement {
+    let label: SharedString =
+        format!("Quality · {}", quality_readout(kind, selected, stats)).into();
+    let anchor = Rc::new(Cell::new(point(px(0.), px(0.))));
+    let position = anchor.clone();
+    let activate = Rc::new(
+        move |this: &mut Desktop, _: &mut Window, cx: &mut Context<Desktop>| {
+            this.open_video_menu(
+                generation,
+                MenuTarget::VideoQuality(generation, kind),
+                position.get(),
+                cx,
+            );
+        },
+    );
+    let click = activate.clone();
+    let key = activate.clone();
+    let control = div()
+        .id("native-call-quality")
+        .role(Role::Button)
+        .aria_label(label.clone())
+        .aria_expanded(open)
+        .tab_index(0)
+        .w(px(224.))
+        .max_w_full()
+        .min_w_0()
+        .flex_shrink_0()
+        .px_3()
+        .py(px(6.))
+        .rounded(px(6.))
+        .flex()
+        .items_center()
+        .gap_2()
+        .bg(color(if open { SELECTED } else { ELEVATED }))
+        .hover(|style| style.bg(color(SELECTED)))
+        .cursor_pointer()
+        .text_sm()
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(color(TEXT))
+        .on_click(cx.listener(move |this, _, window, cx| click(this, window, cx)))
+        .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space" | "down") {
+                key(this, window, cx);
+                cx.stop_propagation();
+            }
+        }))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .child(text!(label).with_id("native-call-quality-label")),
+        )
+        .child(crate::assets::icon("chevron-down", 14., color(TEXT_MUTED)))
+        .child(
+            canvas(
+                move |bounds, _, _| anchor.set(bounds.bottom_left() + point(px(0.), px(4.))),
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .inset_0(),
+        );
+    layout::focusable_button(
+        "native-call-quality",
+        control,
+        crate::dialogs::accessible_click(activate, cx),
+    )
+}
+
+fn quality_readout(kind: VideoKind, quality: Quality, stats: Option<&VideoStats>) -> String {
+    if quality == Quality::Auto
+        && let Some(stats) = stats.filter(|stats| stats.kind == kind)
+    {
+        if let Some(encoder) = stats.encoder {
+            return format!("Auto ({}p{})", encoder.target.height, encoder.target.fps);
+        }
+        if let Some(height) = stats.sample.height() {
+            return format!("Auto ({height}p)");
+        }
+    }
+    quality_label(kind, quality)
 }
 
 fn quality_label(kind: VideoKind, quality: Quality) -> String {
@@ -993,38 +1137,6 @@ fn quality_label(kind: VideoKind, quality: Quality) -> String {
             format!("{}p{}", tier.height, tier.fps)
         }
     }
-}
-
-fn quality_choices(
-    kind: VideoKind,
-    selected: Quality,
-    cx: &mut Context<Desktop>,
-) -> impl IntoElement {
-    layout::actions().children(
-        std::iter::once(Quality::Auto)
-            .chain((0..=kind.top() as u8).map(Quality::Tier))
-            .enumerate()
-            .map(|(index, quality)| {
-                styled_button(
-                    ("native-video-quality", index),
-                    quality_label(kind, quality),
-                    if quality == selected {
-                        Tone::Primary
-                    } else {
-                        Tone::Secondary
-                    },
-                    move |this, _, cx| {
-                        if let Some(call) = &mut this.native_call {
-                            call.quality
-                                .send_modify(|selection| selection.quality = quality);
-                            call.quality_open = false;
-                            cx.notify();
-                        }
-                    },
-                    cx,
-                )
-            }),
-    )
 }
 
 fn video_stats(stats: Option<&VideoStats>, owned: bool) -> impl IntoElement {
@@ -1178,13 +1290,9 @@ pub fn minimized(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement
     )
 }
 
-pub fn minimized_card(
-    this: &Desktop,
-    index: usize,
-    cx: &mut Context<Desktop>,
-) -> Option<AnyElement> {
-    let call = this.native_call.as_ref().filter(|call| call.minimized)?;
-    let host = nuschl_core::call::link_host(&call.room)?;
+pub fn call_card(this: &Desktop, index: usize, cx: &mut Context<Desktop>) -> Option<AnyElement> {
+    let call = this.native_call.as_ref()?;
+    let link = crate::call::join_link(&call.room)?;
     let who = if call.owner {
         "You"
     } else {
@@ -1195,13 +1303,12 @@ pub fn minimized_card(
             .and_then(|invite| this.client.servers[index].users.get(&invite.sender))
             .map_or("", |user| user.name.as_str())
     };
-    Some(crate::view::banner(
-        "call-card",
-        ACCENT,
-        "video",
-        format!("Video call · {who} · {host}"),
-        Some(return_actions(call, cx).into_any_element()),
-    ))
+    let actions = if call.minimized {
+        return_actions(call, cx)
+    } else {
+        layout::actions()
+    };
+    Some(crate::view::video_call_card(who, &link, actions, cx))
 }
 
 pub async fn run(
@@ -1346,6 +1453,7 @@ async fn meeting(
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     display.updates.status("Waiting for video");
     loop {
+        publisher.preview(display.updates.visible());
         let can_publish = media.can_publish();
         if allowed != Some(can_publish) {
             changes
@@ -1435,7 +1543,7 @@ async fn meeting(
             }
         };
         match frame {
-            Ok(frame) => publisher.frame(source, frame, media, display.updates.visible())?,
+            Ok(frame) => publisher.frame(source, frame, media)?,
             Err(error) => {
                 publisher.retire(source);
                 media.set_source(purpose(source), false).map_err(text)?;
@@ -1469,4 +1577,42 @@ async fn prepare(crypto: CryptoHandle, options: Connect<'_>) -> Result<(Media, P
 
 fn text(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Instant, Quality, VideoKind, VideoStats, quality_readout, stats};
+    use nuschl_ipc::video::CaptureLimits;
+
+    #[test]
+    fn auto_quality_shows_the_current_encoder_target_or_received_resolution() {
+        let now = Instant::now();
+        let kind = VideoKind::Screen;
+        let mut measurements = stats::Stats::new(false, now);
+        measurements.frame(2580, 1080, None);
+        let mut video = VideoStats {
+            kind,
+            sample: measurements.sample(now + stats::INTERVAL),
+            encoder: None,
+        };
+        assert_eq!(quality_readout(kind, Quality::Auto, None), "Auto");
+        assert_eq!(
+            quality_readout(kind, Quality::Auto, Some(&video)),
+            "Auto (1080p)"
+        );
+        video.encoder = Some(stats::Encoder {
+            target: CaptureLimits {
+                height: 1440,
+                fps: 60,
+                bitrate: 8_000_000,
+            },
+            budget_bps: None,
+            ceiling: None,
+            hardware: None,
+        });
+        assert_eq!(
+            quality_readout(kind, Quality::Auto, Some(&video)),
+            "Auto (1440p60)"
+        );
+    }
 }

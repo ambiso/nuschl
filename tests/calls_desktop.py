@@ -31,6 +31,8 @@ from local_murmur import Murmur, eventually, free_port  # noqa: E402
 from mumble_client import Client  # noqa: E402
 from voice_servers import VoiceTest  # noqa: E402
 
+AT_SPI_RADIO_MENU_ITEM = "role 45"
+
 
 class CallTest(VoiceTest):
     def desktop(self, name, registry, known):
@@ -54,15 +56,15 @@ class CallTest(VoiceTest):
         env.pop("BROWSER", None)
         env["PATH"] = f"{bin_dir}:{env['PATH']}"
         env.update(NO_PROXY="*", no_proxy="*")
-        self.spawn([str(self.args.binaries / "nuschl"), "--profile-dir", str(profile),
-                    f"mumble://{name}@127.0.0.1:{self.murmur.port}/Lobby"],
-                   env | {"NUSCHL_AUDIO_BACKEND": "pulse"}, f"desktop-{name}.log")
+        process = self.spawn([str(self.args.binaries / "nuschl"), "--profile-dir", str(profile),
+                              f"mumble://{name}@127.0.0.1:{self.murmur.port}/Lobby"],
+                             env | {"NUSCHL_AUDIO_BACKEND": "pulse"}, f"desktop-{name}.log")
         app = eventually(lambda: next((node for node in registry.children() if node.name.lower() == "nuschl"
                                        and node.destination not in known), None),
                          f"no accessibility tree for {name}", timeout=45)
         self.witness.wait(lambda event: event["kind"] == "user" and event["user"]["name"] == name
                           and event["user"]["channel"] == 1, timeout=45)
-        return app, opened
+        return app, opened, process.pid
 
     @staticmethod
     def find(app, role, name, prefix=False):
@@ -104,9 +106,32 @@ class CallTest(VoiceTest):
         event = self.witness.wait(lambda event: event["kind"] == "text" and marker in event["body"])
         body = html.unescape(event["body"])
         secret = r"[A-Za-z0-9_-]{43}"
-        assert re.search(rf"{re.escape(marker)}v=1&k={secret}&h={secret}(?![A-Za-z0-9_-])", body), body
+        link = re.search(rf"{re.escape(marker)}v=1&k={secret}&h={secret}(?![A-Za-z0-9_-])", body)
+        assert link, body
         assert "&p=" not in body, body
-        return event
+        return event["target"], link.group()
+
+    def copy_link(self, app, pid, link):
+        # The compositor, its clipboard selection and both clients are private.
+        self.shell.eval("global.get_window_actors().map(actor => actor.meta_window)"
+                        f".find(window => window.get_pid() === {pid}).activate(global.get_current_time()); 'ok'")
+        eventually(lambda: self.shell.eval(f"global.display.focus_window?.get_pid() === {pid}") == "true",
+                   "the call window did not get focus")
+        clipboard = "imports.gi.St.Clipboard.get_default()"
+        selection = "imports.gi.St.ClipboardType.CLIPBOARD"
+        self.shell.eval(f"{clipboard}.set_text({selection}, 'call fixture sentinel'); 'ok'")
+        x, y, width, height = self.control(app, "Copy link").extents()
+        left, top = json.loads(self.shell.eval(
+            "const bounds = global.display.focus_window.get_buffer_rect(); JSON.stringify([bounds.x, bounds.y])"))
+        assert width > 0 and height > 0
+        self.shell.click(left + x + width // 2, top + y + height // 2)
+
+        def copied():
+            self.shell.eval(f"global._callLink = undefined; {clipboard}.get_text({selection},"
+                            " (_clipboard, text) => { global._callLink = text; }); 'ok'")
+            return self.shell.eval(f"global._callLink === {json.dumps(link)}") == "true"
+
+        eventually(copied, "the private clipboard did not receive the exact guest link", timeout=10)
 
     def inline(self, app):
         self.control(app, "Full screen")
@@ -146,18 +171,23 @@ class CallTest(VoiceTest):
             self.witness = self.peers["Witness"] = Client(self.args.binaries, "127.0.0.1", self.murmur.port,
                                                           self.pin, "Witness", self.root / "witness")
             self.witness.send(kind="join", channel=1)
-            andi, andi_opened = self.desktop("Andi", registry, set())
-            bea, bea_opened = self.desktop("Bea", registry, {andi.destination})
+            andi, andi_opened, andi_pid = self.desktop("Andi", registry, set())
+            bea, bea_opened, bea_pid = self.desktop("Bea", registry, {andi.destination})
             self.control(andi, "Share screen")
             self.control(andi, "Start call", shown=False)
             self.control(andi, "Start call in browser", shown=False)
 
             self.press(andi, "Start meeting")
             self.inline(andi)
-            assert self.witness_link()["target"] == {"kind": "channel", "id": 1}
+            self.invitation(andi, "You")
+            target, link = self.witness_link()
+            assert target == {"kind": "channel", "id": 1}
+            self.copy_link(andi, andi_pid, link)
             self.invitation(bea)
+            self.copy_link(bea, bea_pid, link)
             self.press(andi, "Minimize call")
             self.invitation(andi, "You")
+            self.copy_link(andi, andi_pid, link)
             self.press(andi, "Return to call")
             self.inline(andi)
             self.press(andi, "End call")
@@ -168,13 +198,21 @@ class CallTest(VoiceTest):
             self.press(andi, "Start camera")
             self.inline(andi)
             self.control(andi, "Open in browser", shown=False)
+            chat = self.find(andi, "list", "Messages in #Lobby")
+            chat_bounds = chat.extents()
             self.press(andi, "Quality · Auto")
-            self.press(andi, "720p30")
+            quality = eventually(lambda: self.find(andi, "menu", "Video quality"),
+                                 "video quality dropdown did not open")
+            assert chat.extents() == chat_bounds, "quality choices changed the chat layout"
+            eventually(lambda: self.find(quality, AT_SPI_RADIO_MENU_ITEM, "720p30"),
+                       "720p30 radio menu item missing").press()
             self.control(andi, "Quality · 720p30")
+            eventually(lambda: not self.find(andi, "menu", "Video quality"),
+                       "video quality dropdown did not close")
             self.control(andi, "Video stats", shown=False)
             self.video_stats(andi, show=True)
             self.video_stats(andi, show=False)
-            assert self.witness_link()["target"] == {"kind": "channel", "id": 1}
+            assert self.witness_link()[0] == {"kind": "channel", "id": 1}
             self.invitation(bea)
             self.control(bea, "Open in browser", shown=False)
 
@@ -205,6 +243,7 @@ class CallTest(VoiceTest):
             self.direct(andi, "Bea")
             self.direct(bea, "Andi")
             self.press(andi, "Share screen")
+            self.invitation(andi, "You")
             self.invitation(bea)
             self.press(bea, "Join video call")
             self.press(bea, "Leave video")
@@ -217,7 +256,7 @@ class CallTest(VoiceTest):
             self.direct(andi, "Witness")
             self.press(andi, "Share screen")
             andi_session = next(user["session"] for user in self.witness.users.values() if user["name"] == "Andi")
-            assert self.witness_link()["target"] == {"kind": "direct", "id": andi_session}
+            assert self.witness_link()[0] == {"kind": "direct", "id": andi_session}
             self.press(andi, "End call")
 
             assert not andi_opened.exists() and not bea_opened.exists(), "a call launched the browser"

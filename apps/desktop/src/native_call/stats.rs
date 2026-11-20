@@ -105,6 +105,10 @@ pub(super) struct Snapshot {
 }
 
 impl Snapshot {
+    pub(super) fn height(self) -> Option<u16> {
+        self.resolution.map(|(width, height)| width.min(height))
+    }
+
     fn rows(self, owned: bool) -> impl Iterator<Item = (&'static str, String)> {
         let resolution = self
             .resolution
