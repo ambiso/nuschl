@@ -289,21 +289,30 @@ async fn native_publisher_in_call_page_vm() {
         .into_media(MediaOptions {
             executable: fixture("nuschl-rtc-worker"),
             sfu_port,
-            publish: Some(Purpose::ScreenVideo),
+            publish: Some(Purpose::Camera),
         })
         .await
         .unwrap();
+    media.switch_source(Purpose::ScreenVideo).unwrap();
     fs::write(state.join("peer"), peer.to_string()).unwrap();
 
     let mut tick = tokio::time::interval(Duration::from_millis(34));
     let mut timestamp = 0;
     let mut ready = false;
     let stop = state.join("stop");
+    let switch = state.join("switch");
+    let mut switched = false;
     timeout(Duration::from_secs(180), async {
         loop {
             tokio::select! {
                 _ = tick.tick() => {
                     if stop.exists() { break; }
+                    if ready && !switched && switch.exists() {
+                        media.switch_source(Purpose::Camera).unwrap();
+                        ready = false;
+                        switched = true;
+                        timestamp = 0;
+                    }
                     if ready {
                         timestamp += 3_060;
                         media.send_keyframe(timestamp, red.clone()).unwrap();

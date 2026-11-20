@@ -252,6 +252,8 @@ def native_video(viewer):
                 raise AssertionError(f"native publisher did not join: {log.read_text()}")
             viewer.get(f"{ORIGIN}/call{posted}")
             showing(viewer, {(int(peer), True): ((255, 0, 0), True)}, "native screen decoded in Chromium")
+            (state / "switch").touch()
+            showing(viewer, {(int(peer), False): ((255, 0, 0), None)}, "native camera replaced screen in Chromium")
         finally:
             (state / "stop").touch()
             try:
