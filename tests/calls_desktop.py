@@ -107,8 +107,17 @@ class CallTest(VoiceTest):
 
     def inline(self, app):
         self.control(app, "Full screen")
-        eventually(lambda: self.find(app, "list", "Messages in #Lobby"),
-                   "inline call displaced chat", timeout=15)
+
+        def regions_are_disjoint():
+            full_screen = self.find(app, "push button", "Full screen")
+            messages = self.find(app, "list", "Messages in #Lobby")
+            if not full_screen or not messages:
+                return False
+            _, call_top, _, call_height = full_screen.extents()
+            _, chat_top, _, chat_height = messages.extents()
+            return call_height > 0 and chat_height > 0 and call_top + call_height <= chat_top
+
+        eventually(regions_are_disjoint, "inline call and chat have overlapping or empty regions", timeout=15)
 
     def run(self):
         self.shell = GnomeSession(self.args.gnome_shell, 1440, 950,
