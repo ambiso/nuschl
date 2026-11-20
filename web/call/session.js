@@ -222,6 +222,7 @@ export class Call extends EventTarget {
   async publishTrack(kind, track, tier) {
     const audio = kind === "audio";
     if (audio !== (track.kind === "audio") || (audio && !this.sources.has("screen"))) return track.stop();
+    if (audio && !sendCodecs(globalThis, "opus", "audio").length) throw new Error("Opus unavailable");
     const mode = audio ? undefined : await scalabilityMode(globalThis, this.codec, kind, track.getSettings());
     if (this.ended || this.sources.has(kind) || track.readyState === "ended") return track.stop();
     if (this.publisher && !audio) await this.direct.resetPublisher();

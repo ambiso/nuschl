@@ -416,6 +416,9 @@ try:
           const stream = document.querySelector('{selector}').srcObject;
           window.toneSource = window.toneContext.createMediaStreamSource(stream);
           window.toneSource.connect(window.toneAnalyser);
+          const silent = window.toneContext.createGain();
+          silent.gain.value = 0;
+          window.toneAnalyser.connect(silent).connect(window.toneContext.destination);
         """)
         wait(driver, """
           const data = new Float32Array(window.toneAnalyser.frequencyBinCount);
@@ -424,6 +427,7 @@ try:
           const hertz = peak * window.toneContext.sampleRate / window.toneAnalyser.fftSize;
           return Math.abs(hertz - 660) < 25 && data[peak] > -45;
         """, "decrypted tab audio tone", timeout=15)
+        print(f"{driver.name}: received the encrypted tab audio tone", flush=True)
         driver.execute_script("window.toneContext.close()")
 
     user.save_screenshot(str(OUT / "publishing.png"))
