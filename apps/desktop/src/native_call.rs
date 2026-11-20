@@ -1427,7 +1427,8 @@ async fn send_video(
                     retune = true;
                 }
                 Some(MediaEvent::BandwidthEstimate { bitrate }) => {
-                    encoding.bitrate_estimate = Some((bitrate.saturating_mul(4) / 5).min(50_000_000) as u32);
+                    // RTC admits 80% of the estimate, including packet and SFrame overhead.
+                    encoding.bitrate_estimate = Some((bitrate.saturating_mul(72) / 100).min(50_000_000) as u32);
                 }
                 Some(MediaEvent::Direct { active }) => {
                     display.stats.direct(active);
