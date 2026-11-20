@@ -1126,39 +1126,6 @@ fn quality_label(kind: VideoKind, quality: Quality) -> String {
     }
 }
 
-#[cfg(test)]
-#[test]
-fn auto_quality_shows_the_current_encoder_target_or_received_resolution() {
-    let now = Instant::now();
-    let kind = VideoKind::Screen;
-    let mut measurements = stats::Stats::new(false, now);
-    measurements.frame(2580, 1080, None);
-    let mut video = VideoStats {
-        kind,
-        sample: measurements.sample(now + stats::INTERVAL),
-        encoder: None,
-    };
-    assert_eq!(quality_readout(kind, Quality::Auto, None), "Auto");
-    assert_eq!(
-        quality_readout(kind, Quality::Auto, Some(&video)),
-        "Auto (1080p)"
-    );
-    video.encoder = Some(stats::Encoder {
-        target: nuschl_ipc::video::CaptureLimits {
-            height: 1440,
-            fps: 60,
-            bitrate: 8_000_000,
-        },
-        budget_bps: None,
-        ceiling: None,
-        hardware: None,
-    });
-    assert_eq!(
-        quality_readout(kind, Quality::Auto, Some(&video)),
-        "Auto (1440p60)"
-    );
-}
-
 fn video_stats(stats: Option<&VideoStats>, owned: bool) -> impl IntoElement {
     div()
         .id("native-call-video-stats")
@@ -1596,4 +1563,42 @@ async fn prepare(crypto: CryptoHandle, options: Connect<'_>) -> Result<(Media, P
 
 fn text(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Instant, Quality, VideoKind, VideoStats, quality_readout, stats};
+    use nuschl_ipc::video::CaptureLimits;
+
+    #[test]
+    fn auto_quality_shows_the_current_encoder_target_or_received_resolution() {
+        let now = Instant::now();
+        let kind = VideoKind::Screen;
+        let mut measurements = stats::Stats::new(false, now);
+        measurements.frame(2580, 1080, None);
+        let mut video = VideoStats {
+            kind,
+            sample: measurements.sample(now + stats::INTERVAL),
+            encoder: None,
+        };
+        assert_eq!(quality_readout(kind, Quality::Auto, None), "Auto");
+        assert_eq!(
+            quality_readout(kind, Quality::Auto, Some(&video)),
+            "Auto (1080p)"
+        );
+        video.encoder = Some(stats::Encoder {
+            target: CaptureLimits {
+                height: 1440,
+                fps: 60,
+                bitrate: 8_000_000,
+            },
+            budget_bps: None,
+            ceiling: None,
+            hardware: None,
+        });
+        assert_eq!(
+            quality_readout(kind, Quality::Auto, Some(&video)),
+            "Auto (1440p60)"
+        );
+    }
 }
