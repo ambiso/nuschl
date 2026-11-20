@@ -188,15 +188,17 @@ impl Viewer {
                     }
                     self.stats.encoded(data.len());
                     let started = Instant::now();
-                    match decoder.decode(key_frame, data).await {
-                        Ok(Some(frame))
-                            if self.sources.current(display.quality.borrow().view) == track =>
-                        {
+                    let decoded = decoder.decode(key_frame, data).await;
+                    if self.sources.current(display.quality.borrow().view) != track {
+                        return Ok(());
+                    }
+                    match decoded {
+                        Ok(Some(frame)) => {
                             self.stats
                                 .frame(frame.width, frame.height, Some(started.elapsed()));
                             display.updates.frame(frame, true);
                         }
-                        Ok(_) => {}
+                        Ok(None) => {}
                         Err(DecodeError::Io(_) | DecodeError::Timeout | DecodeError::Busy) => {
                             display.updates.status("Waiting for a fresh video frame");
                             media.request_keyframe(purpose).map_err(text)?;
