@@ -4,8 +4,8 @@
 
 use super::turn::NetworkLeg;
 use super::{
-    Action, ClientMessage, Codec, Connection, Error, Outcome, Quality, ServerMessage, VideoKind,
-    write,
+    Action, ClientMessage, Codec, Connection, Error, HANDSHAKE, Outcome, Quality, ServerMessage,
+    VideoKind, write,
 };
 use nuschl_core::network::Destination;
 use nuschl_ipc::rtc::{self, Command, Description, Event, LegRole, Reply, Track, Worker};
@@ -34,6 +34,8 @@ const SUBSCRIBE: u32 = 2;
 const UDP_BURST: usize = 64;
 const MAX_PENDING_FRAME_AGE: Duration = Duration::from_millis(150);
 const KEYFRAME_INTERVAL: Duration = Duration::from_secs(1);
+// A subscription accepts 48 SDP sections, including its control channel and first source.
+const MAX_SOURCE_CHANGES: u8 = 46;
 
 pub struct MediaOptions {
     /// Path of the installed `nuschl-rtc-worker`.
@@ -82,6 +84,7 @@ enum Input {
 
 struct Video {
     sequence: u64,
+    revision: u8,
     queued: Instant,
     timestamp: u64,
     key_frame: bool,
@@ -91,11 +94,13 @@ struct Video {
 pub struct Media {
     input: mpsc::Sender<Input>,
     sequence: AtomicU64,
-    quality: watch::Sender<QualityRequests>,
+    preferences: watch::Sender<Preferences>,
     events: mpsc::Receiver<Result<MediaEvent, Error>>,
     keyframes: mpsc::Receiver<()>,
     task: JoinHandle<()>,
     source: Option<Purpose>,
+    source_revision: u8,
+    send_ready: bool,
 }
 
 impl Media {
@@ -124,6 +129,7 @@ impl Media {
             .wrapping_add(1);
         let frame = Video {
             sequence,
+            revision: self.source_revision,
             queued: Instant::now(),
             timestamp,
             key_frame,
@@ -134,6 +140,25 @@ impl Media {
             Err(mpsc::error::TrySendError::Full(_)) => Ok(false),
             Err(mpsc::error::TrySendError::Closed(_)) => Err(Error::Protocol("media ended")),
         }
+    }
+
+    /// Replace this publisher's camera or screen while keeping the call open.
+    /// Submit the first independent frame after the next [`MediaEvent::SendReady`].
+    pub fn switch_source(&mut self, purpose: Purpose) -> Result<(), Error> {
+        if !self.send_ready || self.source == Some(purpose) || video_kind(purpose).is_none() {
+            return Err(Error::Protocol("invalid replacement video source"));
+        }
+        if self.source_revision == MAX_SOURCE_CHANGES {
+            return Err(Error::Protocol("video source limit reached for this call"));
+        }
+        let revision = self.source_revision + 1;
+        self.preferences
+            .send(Preferences::Source { purpose, revision })
+            .map_err(|_| Error::Protocol("media ended"))?;
+        self.source = Some(purpose);
+        self.source_revision = revision;
+        self.send_ready = false;
+        Ok(())
     }
 
     /// Set the ceiling for a subscribed video source. Auto fits the tile's
@@ -150,7 +175,7 @@ impl Media {
         if self.source.is_some() || publisher == 0 {
             return Err(Error::Protocol("invalid video subscription"));
         }
-        if self.quality.is_closed() {
+        if self.preferences.is_closed() {
             return Err(Error::Protocol("media ended"));
         }
         if quality == Quality::Auto && tile_height == 0 {
@@ -161,7 +186,10 @@ impl Media {
             kind,
             tier: kind.request(quality, tile_height) as u8,
         };
-        self.quality.send_if_modified(|latest| {
+        self.preferences.send_if_modified(|latest| {
+            let Preferences::Quality(latest) = latest else {
+                return false;
+            };
             let slot = &mut latest[quality_index(kind)];
             if *slot == Some(request) {
                 return false;
@@ -190,14 +218,18 @@ impl Media {
     }
 
     pub async fn next(&mut self) -> Option<Result<MediaEvent, Error>> {
-        tokio::select! {
+        let event = tokio::select! {
             biased;
             requested = self.keyframes.recv() => match requested {
                 Some(()) => Some(Ok(MediaEvent::KeyframeRequired)),
                 None => self.events.recv().await,
             },
             event = self.events.recv() => event,
+        };
+        if matches!(&event, Some(Ok(MediaEvent::SendReady))) {
+            self.send_ready = true;
         }
+        event
     }
 
     pub async fn stop(self) -> Result<(), Error> {
@@ -253,7 +285,7 @@ impl Connection {
         };
         let source = options.publish;
         let (input, frames) = mpsc::channel(1);
-        let (quality, preferences) = watch::channel([None; 2]);
+        let (preferences, changes) = watch::channel(Preferences::Quality([None; 2]));
         let (output, events) = mpsc::channel(4);
         let (requests, keyframes) = mpsc::channel(1);
         let task = tokio::spawn(async move {
@@ -264,10 +296,7 @@ impl Connection {
                 destination,
                 codec,
                 source,
-                Inputs {
-                    frames,
-                    preferences,
-                },
+                Inputs { frames, changes },
                 Output {
                     events: &output,
                     keyframes: &requests,
@@ -283,11 +312,13 @@ impl Connection {
         Ok(Media {
             input,
             sequence: AtomicU64::new(0),
-            quality,
+            preferences,
             events,
             keyframes,
             task,
             source,
+            source_revision: 0,
+            send_ready: false,
         })
     }
 }
@@ -549,9 +580,15 @@ fn signaling_id(connection: &Connection, leg: u32) -> [u8; 16] {
 
 type QualityRequests = [Option<QualityRequest>; 2];
 
+#[derive(Clone, Copy)]
+enum Preferences {
+    Quality(QualityRequests),
+    Source { purpose: Purpose, revision: u8 },
+}
+
 struct Inputs {
     frames: mpsc::Receiver<Input>,
-    preferences: watch::Receiver<QualityRequests>,
+    changes: watch::Receiver<Preferences>,
 }
 
 #[derive(Default)]
@@ -615,7 +652,7 @@ async fn run(
     worker: &mut Worker,
     destination: SocketAddr,
     codec: rtc::Codec,
-    source: Option<Purpose>,
+    mut source: Option<Purpose>,
     mut inputs: Inputs,
     output: Output<'_>,
 ) -> Result<(), Error> {
@@ -632,6 +669,7 @@ async fn run(
 
     let mut offered = None;
     let mut publish_mid = None;
+    let mut source_change_deadline = None;
     let turn = connection
         .welcome
         .turn
@@ -656,32 +694,8 @@ async fn run(
             LegRole::SfuPublish,
         )
         .await?;
-        let mut description = describe(
-            worker,
-            Command::Offer {
-                leg: PUBLISH,
-                id: signaling_id(connection, PUBLISH),
-                purposes: vec![purpose],
-            },
-        )
-        .await?;
-        let sdp = std::mem::take(&mut description.sdp);
-        let [track] = description.tracks.as_slice() else {
-            return Err(Error::Protocol("invalid publish track"));
-        };
-        if track.purpose != purpose || track.publisher.is_some() {
-            return Err(Error::Protocol("invalid publish track"));
-        }
-        publish_mid = Some(track.mid.clone());
-        let screens = match purpose {
-            Purpose::ScreenVideo => vec![track.mid.clone()],
-            _ => Vec::new(),
-        };
-        write(
-            &mut connection.socket,
-            &ClientMessage::Offer { sdp, screens },
-        )
-        .await?;
+        let (mid, description) = offer_publish(connection, worker, purpose, 0).await?;
+        publish_mid = Some(mid);
         offered = Some(description);
         Some(leg)
     } else {
@@ -717,6 +731,7 @@ async fn run(
     let mut sending = false;
     let mut send_gate = FrameGate::new();
     let mut sequence = 0_u64;
+    let mut source_revision = 0;
     loop {
         let attempt = direct.as_ref().and_then(|direct| direct.leg.as_ref());
         let selected = attempt.is_some_and(|attempt| attempt.transport.selected);
@@ -775,6 +790,7 @@ async fn run(
                     let mut description = offered.take().ok_or(Error::Protocol("unexpected publish answer"))?;
                     description.sdp = sdp;
                     done(worker, Command::AcceptAnswer { leg: PUBLISH, description }).await?;
+                    source_change_deadline = None;
                     if let Some(leg) = &mut publish { leg.wake = Some(Instant::now()); }
                 }
                 ServerMessage::Key { from, data } => {
@@ -820,15 +836,42 @@ async fn run(
                 ServerMessage::Error { reason } => return Err(Error::Refused(reason.into_owned())),
                 _ => {}
             },
-            changed = inputs.preferences.changed() => {
+            changed = inputs.changes.changed() => {
                 if changed.is_err() {
                     return Ok(());
                 }
-                quality.wanted = *inputs.preferences.borrow_and_update();
+                let update = *inputs.changes.borrow_and_update();
+                match update {
+                    Preferences::Quality(wanted) => quality.wanted = wanted,
+                    Preferences::Source { purpose, revision } => {
+                        let leg = publish.as_mut().ok_or(Error::Protocol("call has no publisher"))?;
+                        discovery = None;
+                        if let (Some(direct), Some(peer)) = (&mut direct, pair.peer)
+                            && let Some(id) = direct.close(worker, Some(leg)).await?
+                        {
+                            direct::send(connection, peer, &Signal::Close { id }).await?;
+                            if selected && output.events.send(Ok(MediaEvent::Direct { active: false })).await.is_err() {
+                                return Ok(());
+                            }
+                        }
+                        let (mid, description) = offer_publish(connection, worker, purpose, revision).await?;
+                        publish_mid = Some(mid);
+                        offered = Some(description);
+                        source_change_deadline = Some(Instant::now() + HANDSHAKE);
+                        leg.wake = Some(Instant::now());
+                        source = Some(purpose);
+                        source_revision = revision;
+                        desired = None;
+                        sending = false;
+                        send_gate = FrameGate::new();
+                    }
+                }
             }
             () = wake(next_quality.map(|(at, _)| at)) => {
                 // A new choice can arrive as the timer expires.
-                quality.wanted = *inputs.preferences.borrow_and_update();
+                if let Preferences::Quality(wanted) = *inputs.changes.borrow_and_update() {
+                    quality.wanted = wanted;
+                }
                 if let Some((at, request)) = quality.next_request(&subscribed)
                     && at <= Instant::now()
                 {
@@ -867,7 +910,9 @@ async fn run(
                 } else {
                     publish.as_mut()
                 };
-                if let (Some(purpose), Some(active), true) = (source, active, sending) {
+                if frame.revision == source_revision
+                    && let (Some(purpose), Some(active), true) = (source, active, sending)
+                {
                     if frame.sequence != sequence.wrapping_add(1) {
                         send_gate.awaiting_key = true;
                     }
@@ -930,8 +975,13 @@ async fn run(
                 }
             }
             () = wake(direct_deadline) => retreat = true,
+            () = wake(source_change_deadline) => return Err(Error::Timeout),
         }
-        if !sending && publish.as_ref().is_some_and(|leg| leg.connected) && pair.ready && publishing
+        if !sending
+            && offered.is_none()
+            && publish.as_ref().is_some_and(|leg| leg.connected)
+            && pair.ready
+            && publishing
         {
             // The crypto worker sent the epoch on a separate socket. Wait for
             // the RTC process to install it before admitting frames.
@@ -1068,6 +1118,44 @@ async fn run(
             _ => {}
         }
     }
+}
+
+async fn offer_publish(
+    connection: &mut Connection,
+    worker: &mut Worker,
+    purpose: Purpose,
+    revision: u8,
+) -> Result<(String, Description), Error> {
+    let mut id = signaling_id(connection, PUBLISH);
+    id[15] = revision;
+    let mut description = describe(
+        worker,
+        Command::Offer {
+            leg: PUBLISH,
+            id,
+            purposes: vec![purpose],
+        },
+    )
+    .await?;
+    let [track] = description.tracks.as_slice() else {
+        return Err(Error::Protocol("invalid publish track"));
+    };
+    if track.purpose != purpose || track.publisher.is_some() {
+        return Err(Error::Protocol("invalid publish track"));
+    }
+    let mid = track.mid.clone();
+    let screens = if purpose == Purpose::ScreenVideo {
+        vec![mid.clone()]
+    } else {
+        Vec::new()
+    };
+    let sdp = std::mem::take(&mut description.sdp);
+    write(
+        &mut connection.socket,
+        &ClientMessage::Offer { sdp, screens },
+    )
+    .await?;
+    Ok((mid, description))
 }
 
 async fn drain(

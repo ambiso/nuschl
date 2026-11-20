@@ -3,7 +3,7 @@
 use super::*;
 
 #[tokio::test]
-async fn native_viewer_moves_to_direct_and_recovers_through_the_sfu() {
+async fn native_call_switches_paths_and_sources() {
     let _media = MEDIA_TEST.lock().await;
     nuschl_testkit::sandbox();
     let crypto = fixture("nuschl-crypto-worker");
@@ -128,6 +128,44 @@ async fn native_viewer_moves_to_direct_and_recovers_through_the_sfu() {
         "SFU resumed with both endpoints reporting fallback after {:?}",
         outage.unwrap().elapsed()
     );
+    for (old, new) in [
+        (Purpose::Camera, Purpose::ScreenVideo),
+        (Purpose::ScreenVideo, Purpose::Camera),
+    ] {
+        publisher.switch_source(new).unwrap();
+        let mut ready = false;
+        let mut ended = false;
+        let mut timestamp = 0;
+        timeout(HANDSHAKE, async {
+            loop {
+                tokio::select! {
+                    _ = tick.tick(), if ready => {
+                        timestamp += 2970;
+                        publisher.send_keyframe(timestamp, picture.clone()).unwrap();
+                    }
+                    event = publisher.next() => {
+                        ready |= matches!(event.unwrap().unwrap(), MediaEvent::SendReady);
+                    }
+                    event = viewer.next() => match event.unwrap().unwrap() {
+                        MediaEvent::SourceEnded { purpose } => {
+                            assert_eq!(purpose, old);
+                            ended = true;
+                        }
+                        MediaEvent::Frame { publisher: sender, purpose, key_frame, data, .. } if purpose == new => {
+                            assert!(ended);
+                            assert_eq!(sender, from);
+                            assert!(key_frame);
+                            assert_eq!(data, picture);
+                            break;
+                        }
+                        _ => {}
+                    },
+                }
+            }
+        })
+        .await
+        .expect("fresh frames arrive for the replaced source on the same call");
+    }
     publisher.stop().await.unwrap();
     viewer.stop().await.unwrap();
 }

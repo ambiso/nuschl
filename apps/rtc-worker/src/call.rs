@@ -241,6 +241,9 @@ impl Call {
                     LegRole::SfuSubscribe => return Err(()),
                 }
                 .map_err(|_| ())?;
+                if live.role == LegRole::SfuPublish {
+                    self.keyframe = [false; MAX_ENCODINGS as usize];
+                }
                 Reply::Description {
                     leg,
                     description: from_description(description),
