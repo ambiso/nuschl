@@ -36,9 +36,10 @@ async fn native_call_switches_paths_and_sources() {
     // The host path uses only loopback sockets. The STUN test owns its server.
     publisher.welcome.turn = None;
     let mut publisher = publisher
-        .into_media(make_media(Some(Purpose::Camera)))
+        .into_media(make_media(Some(Purpose::ScreenVideo)))
         .await
         .unwrap();
+    publisher.switch_source(Purpose::Camera).unwrap();
     let mut viewer = Connection::connect_with_roots(
         CryptoHandle::start(crypto, directory.path().join("viewer")),
         connect(&posted),
@@ -69,6 +70,7 @@ async fn native_call_switches_paths_and_sources() {
     let mut over_sfu = false;
     let mut sender_direct = false;
     let mut receiver_direct = false;
+    let mut requested_keyframe = false;
     let mut outage = None;
     let mut sender_relayed = false;
     let mut receiver_relayed = false;
@@ -89,6 +91,11 @@ async fn native_call_switches_paths_and_sources() {
                     MediaEvent::SendReady => ready = true,
                     MediaEvent::Direct { active: true } => sender_direct = true,
                     MediaEvent::Direct { active: false } => sender_relayed = true,
+                    MediaEvent::KeyframeRequired if requested_keyframe && outage.is_none() => {
+                        // Drop packets after the direct leg delivered the viewer's request.
+                        publisher.lose_direct().await;
+                        outage = Some(tokio::time::Instant::now());
+                    }
                     _ => {}
                 },
                 event = viewer.next() => match event.unwrap().unwrap() {
@@ -103,11 +110,9 @@ async fn native_call_switches_paths_and_sources() {
                             assert!(!contiguous);
                             resumed = true;
                         }
-                        if sender_direct && receiver_direct && outage.is_none() {
-                            // Drop packets at the publisher's broker while the SFU
-                            // and both real media workers continue to run.
-                            publisher.lose_direct().await;
-                            outage = Some(tokio::time::Instant::now());
+                        if sender_direct && receiver_direct && !requested_keyframe {
+                            viewer.request_keyframe(Purpose::Camera).unwrap();
+                            requested_keyframe = true;
                         }
                         if !sender_direct {
                             over_sfu = true;
@@ -122,7 +127,7 @@ async fn native_call_switches_paths_and_sources() {
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("direct did not deliver; SFU={over_sfu}, sender={sender_direct}, receiver={receiver_direct}"));
+    .unwrap_or_else(|_| panic!("direct recovery did not complete; SFU={over_sfu}, sender={sender_direct}, receiver={receiver_direct}, keyframe request={requested_keyframe}, outage={outage:?}"));
     assert!(over_sfu);
     eprintln!(
         "SFU resumed with both endpoints reporting fallback after {:?}",

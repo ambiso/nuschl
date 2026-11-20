@@ -373,10 +373,7 @@ impl Peer {
         let ([previous], [purpose]) = (self.tracks.as_slice(), purposes) else {
             return Err(Error::Description);
         };
-        if previous.purpose.kind() != Kind::Video
-            || purpose.kind() != Kind::Video
-            || previous.purpose == *purpose
-        {
+        if previous.purpose.kind() != Kind::Video || purpose.kind() != Kind::Video {
             return Err(Error::Description);
         }
         let mut api = self.rtc.sdp_api();
