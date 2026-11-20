@@ -196,9 +196,11 @@ without text.
 
 ## Calls
 
-On Linux with the video and RTC workers installed, **Start meeting** opens an
-in-app room with your camera and screen off. **Start camera** and **Share
-screen** open a room and request capture through the desktop portal. The chat
+With the video and RTC workers installed, **Start meeting** opens an in-app
+room with your camera and screen off. **Start camera** and **Share screen** open
+a room and request system consent. Linux uses the desktop portal, Windows uses
+Media Foundation and Windows Graphics Capture, and macOS uses AVFoundation and
+ScreenCaptureKit. The chat
 shows the invitation as a call card with **Join video call** and **Copy link**.
 People using Mumble see the guest link in chat. People who enter the channel
 later receive the active call card. In a narrow layout, start the meeting and
@@ -208,12 +210,14 @@ The presenter can enable camera and screen independently in the call toolbar.
 Sharing begins after the system picker grants access. Each source has its own
 stop control. The panel shows a preview and indicates when viewers can see the
 Nuschl window on the selected monitor. With both sources active, **View camera**
-and **View screen** select which picture appears on the stage. If screen capture
-stops unexpectedly, Nuschl attempts to reconnect to the same approved screen.
+and **View screen** select which picture appears on the stage. On Linux, Nuschl
+attempts to reconnect to the same approved screen if capture stops unexpectedly.
 After a hardware capture failure, the first retry keeps hardware encoding with
 local preview off. A further hardware failure switches to software capture.
 **Stop sharing** cancels recovery. If the portal has closed the sharing session,
-use **Share screen** to grant access again.
+use **Share screen** to grant access again. On Windows and macOS, use **Share
+screen** to choose the source after a capture worker exits. The software
+encoder on those systems currently runs at up to 720p and 15 fps.
 
 Choose **Full screen** to focus on video and **Exit full screen** or Escape
 to return to chat. **Minimize call** hides the video while the call continues.
