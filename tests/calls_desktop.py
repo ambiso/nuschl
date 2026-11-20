@@ -129,14 +129,17 @@ class CallTest(VoiceTest):
         def menu():
             return self.find(app, "menu", "Video quality")
 
+        def closed():
+            names = {(role, label) for _, role, label, _ in items(app)}
+            return ("push button", "Quality · Auto") in names and ("menu", "Video quality") not in names
+
         for dismiss, reason in ((lambda: self.click(self.control(app, "Quality · Auto")), "a second click"),
                                 (lambda: self.click(chat), "an outside click"),
                                 (lambda: self.shell.chord("Escape"), "Escape")):
             self.click(self.control(app, "Quality · Auto"))
             eventually(menu, "video quality dropdown did not open")
             dismiss()
-            eventually(lambda: not menu(), f"video quality dropdown did not close on {reason}")
-            self.control(app, "Quality · Auto")
+            eventually(closed, f"video quality dropdown did not close on {reason}", timeout=5)
 
     def video_stats(self, app, show):
         self.press(app, "Video options")
@@ -327,10 +330,10 @@ class CallTest(VoiceTest):
             self.press(andi, "Start camera")
             self.inline(andi)
             self.control(andi, "Open in browser", shown=False)
-            self.video_stats(andi, show=True)
             chat = self.find(andi, "list", "Messages in #Lobby")
             chat_bounds = chat.extents()
             self.dismiss_quality(andi, chat)
+            self.video_stats(andi, show=True)
             self.select_quality(andi, "Auto", "720p30", above=True)
             assert chat.extents() == chat_bounds, "quality choices changed the chat layout"
             self.video_stats(andi, show=False)
