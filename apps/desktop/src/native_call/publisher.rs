@@ -143,6 +143,7 @@ impl Publisher {
             kind: video_kind(source),
             remote: None,
             remote_limit: None,
+            direct: self.direct,
             bitrate_estimate: None,
             hardware: None,
             capture_format: None,
@@ -341,6 +342,7 @@ impl Publisher {
                 self.direct = active;
                 self.estimate = None;
                 for track in self.slots.iter_mut().flatten() {
+                    track.encoding.direct = active;
                     track.stats.direct(active);
                 }
             }
@@ -380,7 +382,7 @@ impl Publisher {
                         limit: track.encoding.active_limit(quality, track.applied),
                         budget_bps: track.encoding.bitrate_estimate,
                         target: track.applied,
-                        ceiling: track.encoding.remote,
+                        ceiling: track.encoding.remote.filter(|_| !track.encoding.direct),
                         hardware: track.encoding.hardware,
                     }),
                 );
@@ -498,6 +500,7 @@ struct Encoding {
     kind: VideoKind,
     remote: Option<CaptureLimits>,
     remote_limit: Option<VideoLimit>,
+    direct: bool,
     bitrate_estimate: Option<u32>,
     hardware: Option<bool>,
     capture_format: Option<(u16, u16)>,
@@ -526,10 +529,16 @@ impl Encoding {
             bitrate: initial_bitrate,
             ..local
         });
+        let bitrate = if self.direct && self.kind == VideoKind::Screen {
+            self.bitrate_estimate
+                .map_or(initial_bitrate, |_| local.bitrate)
+        } else {
+            remote.bitrate
+        };
         CaptureLimits {
             height: local.height.min(remote.height),
             fps: local.fps.min(remote.fps),
-            bitrate: local.bitrate.min(remote.bitrate),
+            bitrate: local.bitrate.min(bitrate),
         }
     }
 
@@ -709,6 +718,7 @@ mod tests {
                 bitrate: 8_000_000,
             }),
             remote_limit: Some(VideoLimit::WithinTarget),
+            direct: false,
             bitrate_estimate: None,
             hardware: None,
             capture_format: None,
@@ -729,8 +739,12 @@ mod tests {
             encoding.active_limit(quality, full),
             "Software encoder frame rate"
         );
-        encoding.remote.as_mut().unwrap().bitrate = 27_000_000;
         encoding.bitrate_estimate = Some(26_000_000);
+        assert_eq!(encoding.limits(quality, full).bitrate, 8_000_000);
+        encoding.direct = true;
+        assert_eq!(encoding.limits(quality, full).bitrate, 26_000_000);
+        encoding.direct = false;
+        encoding.remote.as_mut().unwrap().bitrate = 27_000_000;
         assert_eq!(
             encoding.limits(quality, full),
             CaptureLimits {

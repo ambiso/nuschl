@@ -210,7 +210,7 @@ pub(super) fn rows(
         .chain([
             (
                 "Requested quality",
-                requested.map_or_else(unavailable, limits),
+                requested.map_or_else(unavailable, geometry),
             ),
             ("Active limit", limit.into()),
         ])
@@ -232,11 +232,14 @@ pub(super) fn limit_label(limit: VideoLimit) -> &'static str {
     }
 }
 
+fn geometry(limits: CaptureLimits) -> String {
+    format!("{}p{}", limits.height, limits.fps)
+}
+
 fn limits(limits: CaptureLimits) -> String {
     format!(
-        "{}p{} · {}",
-        limits.height,
-        limits.fps,
+        "{} · {}",
+        geometry(limits),
         bitrate(Some(f64::from(limits.bitrate)))
     )
 }

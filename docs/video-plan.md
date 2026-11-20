@@ -266,6 +266,16 @@ and pacing use measured payload rates.
   10 s). Step-up needs 1.3× the next tier's floor for 10 s (frame rate) or 30 s
   (resolution).
 
+Screen publishers use the selected tier for dimensions and cadence. With the
+screen-rate capability, the SFU supplies a separate encoder ceiling. The
+ceiling leaves packet overhead and a share of the host, room and viewer
+budgets for each forwarded screen alongside camera and audio. A single-layer
+source uses the tightest viewer path; layered sources can keep higher rates for
+viewers that can receive them. The SFU probes within configured limits while
+actual payload varies with screen motion. The traffic pacing tier also caps
+screen bitrate whenever pacing is active. Direct screen publishers use their
+direct congestion controller for bitrate.
+
 ### 5.4 Direct or relayed
 
 Owner rule (2026-11-18):

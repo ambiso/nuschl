@@ -11,7 +11,7 @@ export const MAX_PEERS = 256;
 export const MAX_TRACKS = 3 * MAX_PEERS;
 /** A key message in hex (16 KiB). */
 const MAX_KEY = 2 * 16 * 1024;
-const MAX_VIDEO_BITRATE = 50_000_000;
+export const MAX_VIDEO_BITRATE = 50_000_000;
 
 const id = (value) => Number.isSafeInteger(value) && value >= 0;
 const limit = (max) => (value) => Number.isInteger(value) && value > 0 && value <= max;

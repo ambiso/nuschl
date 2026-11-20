@@ -2,7 +2,7 @@
 // One optional WebRTC leg per publisher in a two-person call. Signalling goes
 // through the stream worker's authenticated pair, and the SFU stays available
 // for fallback. A direct leg negotiates with detached senders.
-import { TIERS, fitTier, publishTier } from "./signal.js";
+import { MAX_VIDEO_BITRATE, TIERS, fitTier, publishTier } from "./signal.js";
 import { sendCodecs } from "./support.js";
 
 const GATHER_TIMEOUT = 3000;
@@ -92,15 +92,19 @@ function desiredRate(call, sources) {
   return total;
 }
 
-async function applyCaps({ local, direct }) {
+async function applyCaps({ kind, local, direct }, screenRate) {
   const caps = encodingOf(local.sender);
   const parameters = direct.sender.getParameters();
   const encoding = parameters.encodings[0];
-  const keys = ["maxBitrate", "maxFramerate", "scaleResolutionDownBy"];
-  if (!keys.some((key) => encoding[key] !== caps[key])) return;
-  for (const key of keys) {
-    if (caps[key] === undefined) delete encoding[key];
-    else encoding[key] = caps[key];
+  const values = {
+    maxBitrate: kind === "screen" && screenRate ? MAX_VIDEO_BITRATE : caps.maxBitrate,
+    maxFramerate: caps.maxFramerate,
+    scaleResolutionDownBy: caps.scaleResolutionDownBy,
+  };
+  if (!Object.entries(values).some(([key, value]) => encoding[key] !== value)) return;
+  for (const [key, value] of Object.entries(values)) {
+    if (value === undefined) delete encoding[key];
+    else encoding[key] = value;
   }
   await direct.sender.setParameters(parameters);
 }
@@ -288,7 +292,7 @@ export class DirectPaths {
     if (leg?.active) {
       if (!direct || (Number.isFinite(bitrate) && bitrate * 0.8 < desired)) return this.#drop(leg, true);
       try {
-        for (const source of leg.sources) await applyCaps(source);
+        for (const source of leg.sources) await applyCaps(source, call.screenRate);
       } catch {
         await this.#drop(leg, true);
       }
@@ -355,8 +359,8 @@ export class DirectPaths {
     const { bitrate } = await selectedPair(call.publisher);
     const desired = desiredRate(call, leg.sources);
     if (!desired || !Number.isFinite(bitrate) || bitrate * 0.8 < desired) return this.#drop(leg, true);
-    // Install the same encoder caps while the direct senders are detached.
-    for (const source of leg.sources) await applyCaps(source);
+    // Install the direct encoder caps while the senders are detached.
+    for (const source of leg.sources) await applyCaps(source, call.screenRate);
     if (this.#peer() !== leg.peer || !sameSources(leg.sources, call)) return this.#drop(leg, true);
     leg.detached = true;
     for (const { local } of leg.sources) await local.sender.replaceTrack(null);
