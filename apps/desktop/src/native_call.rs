@@ -1054,9 +1054,14 @@ fn video_stats(stats: Option<&VideoStats>, owned: bool) -> impl IntoElement {
                             .truncate()
                             .text_xs()
                             .text_color(color(TEXT_MUTED))
-                            .child(label),
+                            .child(Text::new(label.into(), label.into())),
                     )
-                    .child(div().truncate().text_sm().child(value))
+                    .child(
+                        div()
+                            .truncate()
+                            .text_sm()
+                            .child(Text::new((label, 1_usize).into(), value.into())),
+                    )
             }),
         )
 }
