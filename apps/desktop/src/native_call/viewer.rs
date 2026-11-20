@@ -154,7 +154,7 @@ impl Viewer {
             MediaEvent::SourceAvailable { publisher, purpose } => {
                 self.sources.set(purpose, Some(publisher))
             }
-            MediaEvent::SourceEnded { purpose } => self.sources.set(purpose, None),
+            MediaEvent::SourceEnded { purpose, .. } => self.sources.set(purpose, None),
             MediaEvent::Direct { active } => {
                 self.stats.direct(active);
                 return Ok(());

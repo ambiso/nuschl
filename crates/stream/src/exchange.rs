@@ -342,10 +342,28 @@ impl Publisher {
 
     /// Handles a KeyRequest or KeyAck.
     pub fn receive(&mut self, message: &[u8], now: u64) -> Result<PublisherEvent, Error> {
+        self.receive_with(message, now, |_| true)
+    }
+
+    pub(crate) fn receive_from(
+        &mut self,
+        message: &[u8],
+        now: u64,
+        expected: Option<SubscriberId>,
+    ) -> Result<PublisherEvent, Error> {
+        self.receive_with(message, now, |subscriber| expected == Some(subscriber))
+    }
+
+    fn receive_with(
+        &mut self,
+        message: &[u8],
+        now: u64,
+        expected: impl FnOnce(SubscriberId) -> bool,
+    ) -> Result<PublisherEvent, Error> {
         let (kind, body) = open_message(&self.keys, message)?;
         match kind {
             REQUEST => self.request(body, now),
-            ACK => self.ack(&body),
+            ACK => self.ack(&body, expected),
             _ => Err(Error::Unexpected),
         }
     }
@@ -412,9 +430,16 @@ impl Publisher {
         Ok(PublisherEvent::Requested(subscriber))
     }
 
-    fn ack(&mut self, body: &[u8]) -> Result<PublisherEvent, Error> {
+    fn ack(
+        &mut self,
+        body: &[u8],
+        expected: impl FnOnce(SubscriberId) -> bool,
+    ) -> Result<PublisherEvent, Error> {
         let mut reader = Reader::new(body);
         let subscriber: SubscriberId = reader.array()?;
+        if !expected(subscriber) {
+            return Err(Error::UnknownSubscriber);
+        }
         let confirm: [u8; 32] = reader.array()?;
         reader.finish()?;
         let granted = self
