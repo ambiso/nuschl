@@ -37,6 +37,8 @@ pub enum MenuTarget {
     /// An inherited permission in the channel permissions table
     /// (`Desktop::menu_acl`).
     AclSource,
+    #[cfg(target_os = "linux")]
+    VideoStats(u64),
 }
 
 /// Original saved endpoint plus observed connection/target lifetimes. Local
@@ -400,6 +402,8 @@ impl Desktop {
                 | MenuTarget::Image
                 | MenuTarget::Message
                 | MenuTarget::AclSource => None,
+                #[cfg(target_os = "linux")]
+                MenuTarget::VideoStats(_) => None,
             };
             let wanted = channel
                 .into_iter()
@@ -781,6 +785,15 @@ impl Desktop {
 
     fn menu_entries(&self, menu: &Menu) -> Vec<Entry> {
         let mut entries = Vec::new();
+        #[cfg(target_os = "linux")]
+        if let MenuTarget::VideoStats(generation) = menu.target {
+            if let Some(label) = self.video_stats_command(generation) {
+                entries.push(local_item(label, "info", move |this, _, _, cx| {
+                    this.toggle_video_stats(generation, cx);
+                }));
+            }
+            return entries;
+        }
         if menu.target == MenuTarget::AclSource {
             for (number, (jump, label)) in self.menu_acl.iter().enumerate() {
                 let jump = jump.clone();
@@ -1537,6 +1550,8 @@ impl Desktop {
                 );
             }
             MenuTarget::Image | MenuTarget::Message | MenuTarget::AclSource => unreachable!(),
+            #[cfg(target_os = "linux")]
+            MenuTarget::VideoStats(_) => unreachable!(),
         }
         entries.retain(|entry| {
             !matches!(

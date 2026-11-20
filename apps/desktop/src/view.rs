@@ -2373,50 +2373,18 @@ fn conversation(
         in_this_voice,
     };
     let dragged = this.dragged_files.clone();
-    div()
-        .flex_1()
-        .min_w_0()
-        .h_full()
-        .relative()
+    let middle = div()
         .flex()
         .flex_col()
-        .bg(color(MAIN))
-        .rounded_br(this.window_corners.bottom_right)
-        // Asked about whatever is being dragged, hovered or not (see file_drop).
-        .can_drop(move |value, _, _| {
-            if let Some(paths) = value.downcast_ref::<ExternalPaths>() {
-                dragged.replace(Some(paths.paths().to_vec()));
-            }
-            true
-        })
-        .drag_over::<ExternalPaths>(|style, _, _, _| style.bg(color(HOVER)))
-        .when(!pane.dense, |view| {
-            view.child(
-                layout::scroll_region(
-                    "conversation-context",
-                    "Conversation controls",
-                    pane.chrome,
-                    window,
-                    cx,
-                )
-                .flex_shrink_0()
-                .child(conversation_header(this, &context, cx))
-                .child(conversation_notices(
-                    this,
-                    index,
-                    channel.target.clone(),
-                    window,
-                    cx,
-                )),
-            )
-        })
+        .flex_1()
+        .min_h_0()
+        .overflow_hidden()
         .map(|view| {
             #[cfg(target_os = "linux")]
             let view = view.when(this.native_call_in(&server.id, &channel.target), |view| {
-                view.when_some(
-                    crate::native_call::panel(this, window, cx),
-                    |view, panel| view.child(panel),
-                )
+                view.when_some(crate::native_call::panel(this, cx), |view, panel| {
+                    view.child(panel)
+                })
             });
             view
         })
@@ -2426,6 +2394,7 @@ fn conversation(
                 div()
                     .relative()
                     .flex_1()
+                    .overflow_hidden()
                     .min_h(
                         this.composer
                             .read(cx)
@@ -2524,7 +2493,45 @@ fn conversation(
                     )
                     .when_some(jump_pill(this, channel, cx), |view, pill| view.child(pill)),
             ),
+        });
+    div()
+        .flex_1()
+        .min_w_0()
+        .h_full()
+        .relative()
+        .flex()
+        .flex_col()
+        .bg(color(MAIN))
+        .rounded_br(this.window_corners.bottom_right)
+        // Asked about whatever is being dragged, hovered or not (see file_drop).
+        .can_drop(move |value, _, _| {
+            if let Some(paths) = value.downcast_ref::<ExternalPaths>() {
+                dragged.replace(Some(paths.paths().to_vec()));
+            }
+            true
         })
+        .drag_over::<ExternalPaths>(|style, _, _, _| style.bg(color(HOVER)))
+        .when(!pane.dense, |view| {
+            view.child(
+                layout::scroll_region(
+                    "conversation-context",
+                    "Conversation controls",
+                    pane.chrome,
+                    window,
+                    cx,
+                )
+                .flex_shrink_0()
+                .child(conversation_header(this, &context, cx))
+                .child(conversation_notices(
+                    this,
+                    index,
+                    channel.target.clone(),
+                    window,
+                    cx,
+                )),
+            )
+        })
+        .child(middle)
         .child(composer(this, server, &context, window, cx))
         .child(file_drop(this, cx))
         .into_any_element()

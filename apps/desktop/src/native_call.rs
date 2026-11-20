@@ -5,8 +5,9 @@ mod preview;
 mod stats;
 
 use crate::{
-    dialogs::{Tone, styled_button},
+    dialogs::{Tone, icon_button, styled_button},
     layout,
+    menus::MenuTarget,
     services::ServiceEvent,
     state::Desktop,
     theme::{BORDER, MAIN, TEXT, TEXT_MUTED, color},
@@ -177,7 +178,7 @@ struct Surface {
     image: Option<Arc<RenderImage>>,
     stats: Option<Arc<VideoStats>>,
     own_video: Option<VideoKind>,
-    expanded: bool,
+    quality: watch::Sender<Selection>,
     _updates: Task<()>,
 }
 
@@ -186,6 +187,7 @@ impl Surface {
         updates: Arc<Latest>,
         status: &str,
         own_video: Option<VideoKind>,
+        quality: watch::Sender<Selection>,
         cx: &mut Context<Self>,
     ) -> Self {
         let observe = cx.spawn(async move |this, cx| {
@@ -229,7 +231,7 @@ impl Surface {
             image: None,
             stats: None,
             own_video,
-            expanded: false,
+            quality,
             _updates: observe,
         }
     }
@@ -238,47 +240,67 @@ impl Surface {
 impl Render for Surface {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         crate::images::collect(window);
-        let height = picture_height(window, self.expanded);
         div()
             .flex()
             .flex_col()
+            .flex_1()
             .gap_1()
             .min_h_0()
             .w_full()
-            .when(self.expanded, |surface| surface.flex_1())
             .child(
                 div()
                     .id("native-call-status")
+                    .flex_shrink_0()
                     .text_sm()
                     .text_color(color(TEXT_MUTED))
                     .child(gpui_kit::text!(self.status.clone())),
             )
             .when_some(self.image.clone(), |view, image| {
+                let image_size = image.size(0);
+                let quality = self.quality.clone();
                 view.child(
                     div()
                         .id("native-call-picture")
+                        .role(Role::Image)
                         .aria_label(match self.own_video {
                             Some(VideoKind::Camera) => "Your camera",
                             Some(VideoKind::Screen) => "Your screen",
                             None => "Incoming video",
                         })
+                        .relative()
                         .w_full()
                         .min_h_0()
-                        .when(self.expanded, |picture| picture.flex_1())
-                        .when(!self.expanded, |picture| picture.h(height))
+                        .flex_1()
+                        .overflow_hidden()
                         .bg(rgb(0x08090c))
-                        .child(img(image).size_full().object_fit(ObjectFit::Contain)),
+                        .child(
+                            img(image)
+                                .absolute()
+                                .size_full()
+                                .object_fit(ObjectFit::Contain),
+                        )
+                        .when(self.own_video.is_none(), |picture| {
+                            picture.child(
+                                canvas(
+                                    |_, _, _| (),
+                                    move |bounds, (), window, _| {
+                                        let fitted =
+                                            ObjectFit::Contain.get_bounds(bounds, image_size);
+                                        let pixels = (f32::from(fitted.size.height)
+                                            * window.scale_factor())
+                                            as u32;
+                                        quality.send_if_modified(|selection| {
+                                            std::mem::replace(&mut selection.pixels, pixels)
+                                                != pixels
+                                        });
+                                    },
+                                )
+                                .absolute()
+                                .size_full(),
+                            )
+                        }),
                 )
             })
-    }
-}
-
-fn picture_height(window: &Window, expanded: bool) -> Pixels {
-    let viewport = f32::from(window.viewport_size().height);
-    if expanded {
-        px((viewport - 64.).max(0.))
-    } else {
-        px((viewport * 0.36).min(400.))
     }
 }
 
@@ -367,7 +389,8 @@ impl Desktop {
             server,
             conversation,
             voice_generation,
-            surface: cx.new(|cx| Surface::new(updates.clone(), status, own_video, cx)),
+            surface: cx
+                .new(|cx| Surface::new(updates.clone(), status, own_video, selection.clone(), cx)),
             quality: selection,
             quality_open: false,
             stats_open: false,
@@ -459,10 +482,6 @@ impl Desktop {
             return;
         };
         call.expanded = expanded;
-        call.surface.update(cx, |surface, cx| {
-            surface.expanded = expanded;
-            cx.notify();
-        });
         if expanded {
             window.focus(&self.window_focus, cx);
             if !window.is_fullscreen() && self.native_call_fullscreen.is_none() {
@@ -573,6 +592,7 @@ pub fn expanded(
     }
     let cover = div()
         .id("expanded-video-call")
+        .relative()
         .size_full()
         .flex()
         .flex_col()
@@ -585,33 +605,42 @@ pub fn expanded(
                 cx.stop_propagation();
             }
         }))
-        .when_some(panel(this, window, cx), |cover, panel| cover.child(panel));
+        .when_some(panel(this, cx), |cover, panel| cover.child(panel))
+        .when_some(crate::menus::menu(this, cx), |cover, menu| {
+            cover.child(menu)
+        });
     Some(crate::chrome::frame(window, cover.into_any_element()))
 }
 
-pub fn panel(this: &Desktop, window: &Window, cx: &mut Context<Desktop>) -> Option<AnyElement> {
+pub fn panel(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
     let call = this.native_call.as_ref()?;
     if call.minimized {
         return None;
     }
     let expanded = call.expanded;
-    let stats = call.surface.read(cx).stats.clone();
+    let generation = this.native_call_generation;
+    let surface = call.surface.read(cx);
+    let has_picture = surface.image.is_some();
+    let stats = surface.stats.clone();
     let kind = call
         .own_video
         .or_else(|| stats.as_ref().map(|stats| stats.kind));
-    let pixels = (f32::from(picture_height(window, expanded)) * window.scale_factor()) as u32;
-    call.quality
-        .send_if_modified(|selection| std::mem::replace(&mut selection.pixels, pixels) != pixels);
     let quality = call.quality.borrow().quality;
     let actions = layout::actions()
-        .child(styled_button(
+        .child(icon_button(
             "native-call-expand",
+            if expanded {
+                "fullscreen-exit"
+            } else {
+                "fullscreen"
+            },
             if expanded {
                 "Exit full screen"
             } else {
                 "Full screen"
             },
-            Tone::Secondary,
+            TEXT,
+            None,
             move |this, window, cx| this.set_call_expanded(!expanded, window, cx),
             cx,
         ))
@@ -637,21 +666,13 @@ pub fn panel(this: &Desktop, window: &Window, cx: &mut Context<Desktop>) -> Opti
                 cx,
             ))
         })
-        .child(styled_button(
-            "native-call-toggle-stats",
-            if call.stats_open {
-                "Hide video stats"
-            } else {
-                "Video stats"
-            },
-            Tone::Secondary,
-            |this, _, cx| {
-                if let Some(call) = &mut this.native_call {
-                    call.stats_open = !call.stats_open;
-                    call.quality_open = false;
-                    cx.notify();
-                }
-            },
+        .child(icon_button(
+            "native-call-options",
+            "more",
+            "Video options",
+            TEXT,
+            None,
+            move |this, window, cx| this.open_video_menu(generation, window.mouse_position(), cx),
             cx,
         ))
         .child(stop_button(call, cx));
@@ -660,11 +681,24 @@ pub fn panel(this: &Desktop, window: &Window, cx: &mut Context<Desktop>) -> Opti
             .id("native-call")
             .flex()
             .flex_col()
-            .flex_shrink_0()
             .min_w_0()
             .min_h_0()
+            .overflow_hidden()
             .when(expanded, |panel| panel.flex_1().p_3())
-            .when(!expanded, |panel| panel.px_3().py_2())
+            .when(!expanded, |panel| {
+                panel
+                    .max_h(relative(0.5))
+                    .px_3()
+                    .py_2()
+                    .when(has_picture, |panel| panel.h(relative(0.5)))
+            })
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    this.open_video_menu(generation, event.position, cx);
+                    cx.stop_propagation();
+                }),
+            )
             .gap_1()
             .border_b_1()
             .border_color(color(BORDER))
@@ -688,6 +722,53 @@ pub fn panel(this: &Desktop, window: &Window, cx: &mut Context<Desktop>) -> Opti
             .child(call.surface.clone())
             .into_any_element(),
     )
+}
+
+impl Desktop {
+    fn open_video_menu(
+        &mut self,
+        generation: u64,
+        position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(call) = self
+            .native_call
+            .as_ref()
+            .filter(|call| self.native_call_generation == generation && !call.minimized)
+        else {
+            return;
+        };
+        if let Some(index) = self
+            .client
+            .servers
+            .iter()
+            .position(|server| server.id == call.server)
+        {
+            self.make_menu(index, MenuTarget::VideoStats(generation), position);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn video_stats_command(&self, generation: u64) -> Option<&'static str> {
+        let call = self.native_call.as_ref()?;
+        (self.native_call_generation == generation && !call.minimized).then_some(
+            if call.stats_open {
+                "Hide video stats"
+            } else {
+                "Video stats"
+            },
+        )
+    }
+
+    pub(crate) fn toggle_video_stats(&mut self, generation: u64, cx: &mut Context<Self>) {
+        if self.native_call_generation == generation
+            && let Some(call) = &mut self.native_call
+        {
+            call.stats_open = !call.stats_open;
+            call.quality_open = false;
+            cx.notify();
+        }
+    }
 }
 
 fn quality_label(kind: VideoKind, quality: Quality) -> String {
@@ -723,7 +804,6 @@ fn quality_choices(
                             call.quality
                                 .send_modify(|selection| selection.quality = quality);
                             call.quality_open = false;
-                            call.stats_open = true;
                             cx.notify();
                         }
                     },
@@ -736,6 +816,7 @@ fn quality_choices(
 fn video_stats(stats: Option<&VideoStats>, owned: bool, quality: Quality) -> impl IntoElement {
     let body = div()
         .id("native-call-video-stats")
+        .role(Role::Group)
         .aria_label("Video stats")
         .flex()
         .flex_col()
