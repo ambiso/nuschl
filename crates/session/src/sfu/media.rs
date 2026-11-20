@@ -963,45 +963,40 @@ async fn run(
                 }
                 ServerMessage::Key { from, data } if peers.contains(&from) => {
                     if let Ok(data) = hex::decode(data)
-                        && let Ok(outcome) = connection.signal(Action::Key { peer: from, data }).await
+                        && let Ok(Outcome::Signal { publisher, data, .. }) =
+                            connection.signal(Action::Key { peer: from, data }).await
+                        && direct_pair == Some((from, publisher))
+                        && let Some(direct) = &mut direct
+                        && let Ok(signal) = serde_json::from_slice(&data)
                     {
-                        match outcome {
-                            Outcome::Signal { publisher, data, .. }
-                                if direct_pair == Some((from, publisher))
-                                    && let Some(direct) = &mut direct
-                                    && let Ok(signal) = serde_json::from_slice(&data) =>
-                            {
-                                let result = match signal {
-                                    Signal::Ready if publisher => {
-                                        direct.ready = true;
-                                        Ok(())
-                                    }
-                                    Signal::Offer { candidates, description }
-                                        if !publisher && direct.can_accept() && discovery.is_none() =>
-                                    {
-                                        discovery = direct.accept(from, candidates, description, &subscribed);
-                                        Ok(())
-                                    }
-                                    Signal::Answer { candidates, description } if publisher => {
-                                        direct.answer(worker, from, candidates, description).await
-                                    }
-                                    Signal::Connected { id } if publisher => {
-                                        if let Some(attempt) = &mut direct.leg && attempt.id == id {
-                                            attempt.confirmed = true;
-                                        }
-                                        Ok(())
-                                    }
-                                    Signal::Close { id } => {
-                                        retreat = direct.leg.as_ref().is_some_and(|attempt| attempt.id == id);
-                                        notify = false;
-                                        Ok(())
-                                    }
-                                    _ => Ok(()),
-                                };
-                                retreat |= result.is_err();
+                        let result = match signal {
+                            Signal::Ready if publisher => {
+                                direct.ready = true;
+                                Ok(())
                             }
-                            _ => {}
-                        }
+                            Signal::Offer { candidates, description }
+                                if !publisher && direct.can_accept() && discovery.is_none() =>
+                            {
+                                discovery = direct.accept(from, candidates, description, &subscribed);
+                                Ok(())
+                            }
+                            Signal::Answer { candidates, description } if publisher => {
+                                direct.answer(worker, from, candidates, description).await
+                            }
+                            Signal::Connected { id } if publisher => {
+                                if let Some(attempt) = &mut direct.leg && attempt.id == id {
+                                    attempt.confirmed = true;
+                                }
+                                Ok(())
+                            }
+                            Signal::Close { id } => {
+                                retreat = direct.leg.as_ref().is_some_and(|attempt| attempt.id == id);
+                                notify = false;
+                                Ok(())
+                            }
+                            _ => Ok(()),
+                        };
+                        retreat |= result.is_err();
                     }
                 }
                 ServerMessage::Quality { source: mid, max_height, max_fps, max_bitrate, limit, .. }
