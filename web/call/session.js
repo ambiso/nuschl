@@ -396,10 +396,10 @@ export class Call extends EventTarget {
   }
 
   renewLease() {
-    // The stream host accepts this small JSON body as a simple POST. The room's
-    // WebSocket reports expiration; the browser can discard the HTTP response.
+    // A simple POST also renews on older stream hosts. The room's WebSocket
+    // reports expiration independently of the HTTP response.
     fetch(`https://${this.host}/sfu/lease`, {
-      method: "POST", mode: "no-cors", credentials: "omit", redirect: "error",
+      method: "POST", credentials: "omit", redirect: "error",
       body: this.leaseBody, signal: AbortSignal.timeout(LEASE_MS),
     }).catch(() => {});
   }

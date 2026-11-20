@@ -51,7 +51,7 @@ async function joinApp(name) {
 try {
   const hostPage = await joinApp("video-host");
   const guest = await joinApp("video-guest");
-  const nextLease = hostPage.waitForRequest(request => new URL(request.url()).pathname === "/sfu/lease");
+  const nextLease = hostPage.waitForResponse(response => new URL(response.url()).pathname === "/sfu/lease");
   nextLease.catch(() => {});
   await hostPage.getByRole("button", { name: "Start call", exact: true }).click();
   const joined = page => page.waitForFunction(() =>
@@ -75,7 +75,9 @@ try {
   await hostPage.getByRole("button", { name: "Lobby", exact: true }).click();
   await hostPage.getByRole("button", { name: "Show video", exact: true }).click();
   await hostPage.getByRole("button", { name: "Stop sharing", exact: true }).waitFor();
-  assert.equal((await nextLease).method(), "POST");
+  const lease = await nextLease;
+  assert.equal(lease.request().method(), "POST");
+  assert.equal(lease.status(), 204);
   await hostPage.getByRole("button", { name: "End call", exact: true }).click();
   await guest.getByRole("alert").getByText("Call ended", { exact: true }).waitFor();
   await guest.locator("article").getByText("Call ended", { exact: true }).waitFor();
