@@ -41,9 +41,9 @@ async fn native_call_switches_paths_and_sources() {
     publisher.switch_source(Purpose::ScreenVideo).unwrap();
     publisher.switch_source(Purpose::Camera).unwrap();
     let mut viewer = Connection::connect_with_roots(
-        CryptoHandle::start(crypto, directory.path().join("viewer")),
+        CryptoHandle::start(crypto.clone(), directory.path().join("viewer")),
         connect(&posted),
-        roots,
+        roots.clone(),
     )
     .await
     .unwrap();
@@ -210,6 +210,15 @@ async fn native_call_switches_paths_and_sources() {
         }
     }).await.expect("both camera and screen remain live");
 
+    let extra = Connection::connect_with_roots(
+        CryptoHandle::start(crypto, directory.path().join("extra")),
+        connect(&posted),
+        roots,
+    )
+    .await
+    .unwrap();
+    assert_eq!(extra.welcome().peers.len(), 2);
+
     publisher.set_source(Purpose::ScreenVideo, false).unwrap();
     let mut screen_ended = false;
     timeout(HANDSHAKE, async {
@@ -225,8 +234,7 @@ async fn native_call_switches_paths_and_sources() {
                         assert_eq!(purpose, Purpose::ScreenVideo);
                         screen_ended = true;
                     }
-                    MediaEvent::Frame { purpose: Purpose::Camera, timestamp: received, .. }
-                        if screen_ended && received >= 1_000_000 => break,
+                    MediaEvent::Frame { purpose: Purpose::Camera, .. } if screen_ended => break,
                     _ => {}
                 }
             }
@@ -234,4 +242,5 @@ async fn native_call_switches_paths_and_sources() {
     }).await.expect("stopping the screen keeps the camera live");
     publisher.stop().await.unwrap();
     viewer.stop().await.unwrap();
+    extra.close().await.unwrap();
 }

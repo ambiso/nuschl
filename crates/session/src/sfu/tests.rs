@@ -407,7 +407,6 @@ async fn native_video_for_policy(relay_only: bool) {
     )
     .await
     .unwrap();
-    let publisher = alice.welcome().peer;
     if relay_only {
         timeout(
             HANDSHAKE,
@@ -432,7 +431,14 @@ async fn native_video_for_policy(relay_only: bool) {
     .await
     .unwrap();
     assert_eq!(alice.welcome().peers[0].id, bob.welcome().peer);
-    let mut alice = alice
+    // In the relay-only run the invited participant presents to an idle host.
+    let (sender, receiver) = if relay_only {
+        (bob, alice)
+    } else {
+        (alice, bob)
+    };
+    let publisher = sender.welcome().peer;
+    let mut alice = sender
         .into_media(MediaOptions {
             executable: rtc.clone(),
             sfu_port: sfu.media.port(),
@@ -440,7 +446,7 @@ async fn native_video_for_policy(relay_only: bool) {
         })
         .await
         .unwrap();
-    let mut bob = bob
+    let mut bob = receiver
         .into_media(MediaOptions {
             executable: rtc.clone(),
             sfu_port: sfu.media.port(),
