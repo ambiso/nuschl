@@ -97,13 +97,14 @@ struct VideoStats {
     limits: Option<String>,
 }
 
-struct Display {
+struct Display<'a> {
+    source_changes: SourceChanges<'a>,
     updates: Arc<Latest>,
     quality: watch::Receiver<Selection>,
     stats: stats::Stats,
 }
 
-impl Display {
+impl Display<'_> {
     fn report(&mut self, kind: VideoKind, limits: Option<String>) {
         self.updates.stats(Some(Arc::new(VideoStats {
             kind,
@@ -1107,6 +1108,7 @@ async fn drive(
         result = prepare(crypto, options, source, &updates) => result?,
     };
     let mut display = Display {
+        source_changes: SourceChanges { generation, events },
         updates,
         quality,
         stats: stats::Stats::new(policy.relay_only, Instant::now()),
@@ -1117,7 +1119,6 @@ async fn drive(
             grant,
             video_worker,
             &mut display,
-            SourceChanges { generation, events },
             source_requests,
             cancel,
         )
@@ -1153,11 +1154,11 @@ async fn publish_video(
     media: &mut Media,
     mut grant: portal::Grant,
     worker: PathBuf,
-    display: &mut Display,
-    changes: SourceChanges<'_>,
+    display: &mut Display<'_>,
     mut source_requests: mpsc::Receiver<Source>,
     mut cancel: Pin<&mut impl Future<Output = ()>>,
 ) -> Result<(), String> {
+    let changes = display.source_changes;
     loop {
         let source = grant.source();
         let monitor = grant.can_include_app();
@@ -1230,7 +1231,6 @@ async fn publish_video(
         let Some(next) = result? else {
             return Ok(());
         };
-        media.switch_source(purpose(next.source())).map_err(text)?;
         grant = next;
     }
 }
@@ -1382,7 +1382,7 @@ async fn send_video(
     preview: &mut Option<preview::Preview>,
     mut encoding: Encoding,
     mut applied: CaptureLimits,
-    display: &mut Display,
+    display: &mut Display<'_>,
     mut choices: Pin<&mut impl Stream<Item = Result<portal::Grant, String>>>,
 ) -> Result<Option<portal::Grant>, String> {
     let mut ready = false;
@@ -1393,7 +1393,16 @@ async fn send_video(
         let mut retune = false;
         let mut report = false;
         tokio::select! {
-            choice = choices.next() => return choice.transpose(),
+            choice = choices.next() => {
+                let Some(grant) = choice.transpose()? else { return Ok(None); };
+                match media.switch_source(purpose(grant.source())) {
+                    Ok(()) => return Ok(Some(grant)),
+                    Err(error) => {
+                        drop(grant);
+                        display.source_changes.report(SourceChange::Failed(text(error))).await?;
+                    }
+                }
+            }
             event = media.next() => match call_event(event)? {
                 Some(MediaEvent::SendReady) => { ready = true; capture.request_keyframe(); }
                 Some(MediaEvent::KeyframeRequired) => capture.request_keyframe(),
@@ -1460,7 +1469,7 @@ async fn send_video(
 async fn receive_video(
     media: &mut Media,
     executable: PathBuf,
-    display: &mut Display,
+    display: &mut Display<'_>,
     cancel: std::pin::Pin<&mut impl Future<Output = ()>>,
 ) -> Result<Finish, String> {
     let mut decoder = None;
