@@ -15,7 +15,7 @@ use crate::{
 };
 use nuschl_core::bookmark::ServerBookmark;
 use nuschl_protocol::nuschl::v1;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Why an Unmute stays muted (#199).
 pub(crate) const CANT_SPEAK_HERE: &str = "You can't speak here.";
@@ -178,6 +178,7 @@ pub struct ServerState {
     pub users: BTreeMap<u32, User>,
     /// Calls others announced with a card (`Client::calls_in`).
     pub calls: Vec<crate::client::Call>,
+    pub(crate) ended_calls: VecDeque<crate::client::EndedCall>,
     /// Channels this connection has seen (cached ones not among them go).
     pub seen_channels: BTreeSet<u32>,
     /// Our latest local microphone/privacy choice, initialized on connect.
@@ -317,6 +318,7 @@ impl ServerState {
             own_session: None,
             users: BTreeMap::new(),
             calls: Vec::new(),
+            ended_calls: VecDeque::new(),
             seen_channels: BTreeSet::new(),
             muted: true,
             deafened: false,

@@ -153,12 +153,24 @@ def snapshot(application):
     return eventually(walk, "the accessibility tree kept changing during every walk")
 
 
-def items(application):
-    """Every node of an application in one call, from the Cache interface that
-    screen readers keep their copy of the tree with: (node, role, name, states),
-    without the hierarchy. Much faster than snapshot() for finding controls."""
+def items(application, *, subtree=False):
+    """Cached (node, role, name, states) entries. Pass subtree=True to limit the
+    result to this node and its descendants within the application."""
     data = application.bus("call", application.destination, "/org/a11y/atspi/cache", "org.a11y.atspi.Cache",
                            "GetItems")[0]
+    if subtree:
+        children = {}
+        for row in data:
+            children.setdefault(tuple(row[2]), []).append(tuple(row[0]))
+        root = (application.destination, application.path)
+        included = {root}
+        pending = [root]
+        while pending:
+            for child in children.get(pending.pop(), ()):
+                if child not in included:
+                    included.add(child)
+                    pending.append(child)
+        data = [row for row in data if tuple(row[0]) in included]
     return [(Node(application.bus, destination, path), ROLES.get(role, f"role {role}"), name, states[0])
             for (destination, path), _, _, _, _, _, name, role, _, states in data]
 

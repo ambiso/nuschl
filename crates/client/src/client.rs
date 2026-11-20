@@ -280,6 +280,7 @@ pub enum SendError {
 mod call;
 mod plugin;
 mod share;
+pub(crate) use call::EndedCall;
 pub use call::{Call, MAX_CALLS, OwnCall};
 pub use plugin::{
     MAX_PLUGIN_QUEUE, MAX_PLUGIN_QUEUE_BYTES, MAX_PLUGIN_RECEIVERS, PluginDataEvent,
@@ -2662,6 +2663,10 @@ impl Client {
                 self.platform.play_sound(&server.id, sound);
             }
         }
+        let sender_instance = peer
+            .as_ref()
+            .filter(|user| !message.outgoing && user.instance != 0)
+            .map(|user| user.instance);
         let archived_order = server.archived(&server.channels[position]);
         let channel = &mut server.channels[position];
         // Their message is here: they stopped typing it.
@@ -2721,12 +2726,13 @@ impl Client {
             server.dismiss_notice();
         }
         received.serial.and_then(|serial| {
-            let channel = &server.channels[position];
+            let channel = &mut server.channels[position];
             let message = channel
                 .timeline
                 .messages
-                .iter()
+                .iter_mut()
                 .find(|message| message.serial == serial)?;
+            message.sender_instance = sender_instance;
             Some(MessageReceipt {
                 server: server.id.clone(),
                 channel: channel.id,
@@ -5186,6 +5192,110 @@ mod tests {
             client.send_text("x".repeat(MAX_CONTENT_BYTES + 1)),
             Err(SendError::TooLong)
         );
+    }
+
+    #[test]
+    fn call_end_updates_only_an_invitation_from_the_announcing_presence() {
+        use nuschl_core::call::{CARD_DATA_ID, Card};
+        use nuschl_protocol::plugin::Payload;
+
+        let (mut client, _, id) = connected();
+        client.servers[0].users.get_mut(&1).unwrap().instance = 1;
+        for session in [4, 5] {
+            client.servers[0].users.insert(
+                session,
+                User {
+                    session,
+                    name: "Ada".into(),
+                    channel: 2,
+                    instance: u64::from(session),
+                    ..Default::default()
+                },
+            );
+        }
+        let target = TextTarget::Channel(2);
+        let link = "https://stream.example/call#test";
+        let plugin = |sender, instance, card: Card| Input::Server {
+            server: id.clone(),
+            generation: 1,
+            event: ServerEvent::PluginData(ReceivedPluginData {
+                sender,
+                sender_instance: instance,
+                sender_user_id: None,
+                sender_certificate_hash: None,
+                payload: Payload::new(CARD_DATA_ID.into(), card.encode()).unwrap(),
+            }),
+        };
+        let mut invite = |sender| {
+            let Input::Message { message, .. } =
+                message(&id, 2, &format!("Call: {link}"), i64::from(sender))
+            else {
+                panic!("expected an invitation");
+            };
+            let peer = client.servers[0].users.get(&sender).cloned();
+            let receipt = client
+                .receive_message(&id, 1, target.clone(), "2".into(), peer, message)
+                .unwrap();
+            client.servers[0]
+                .channels
+                .iter()
+                .find(|channel| channel.target == target)
+                .unwrap()
+                .timeline
+                .messages
+                .iter()
+                .find(|message| message.serial == receipt.serial)
+                .unwrap()
+                .clone()
+        };
+        let ada = invite(4);
+        let bob = invite(5);
+
+        client.handle(plugin(5, 5, Card::Ended));
+        assert!(client.servers[0].ended_calls.is_empty());
+        client.handle(plugin(4, 4, Card::Active(link.into())));
+        client.handle(message(&id, 2, "Call ended", 11));
+        client.handle(plugin(4, 6, Card::Ended));
+        client.handle(plugin(5, 5, Card::Ended));
+        let calls = client.calls_in(0, &target);
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].matches_author(&ada));
+        assert!(!calls[0].matches_author(&bob));
+
+        client.handle(plugin(5, 5, Card::Active(link.into())));
+        client.handle(plugin(5, 5, Card::Ended));
+        assert!(client.call_ended(0, &target, link, &bob));
+        assert!(!client.call_ended(0, &target, link, &ada));
+        assert_eq!(client.calls_in(0, &target).len(), 1);
+
+        client.handle(plugin(4, 4, Card::Ended));
+        assert!(client.calls_in(0, &target).is_empty());
+        assert!(client.call_ended(0, &target, link, &ada));
+        assert!(!client.call_ended(0, &TextTarget::Channel(3), link, &ada));
+        assert!(!client.call_ended(0, &target, "https://stream.example/call#other", &ada));
+    }
+
+    #[test]
+    fn ending_our_call_marks_our_invitation() {
+        let (mut client, _, id) = connected();
+        let target = TextTarget::Channel(2);
+        let link = "https://stream.example/call#test";
+        let invite = message(&id, 2, &format!("Call: {link}"), 10);
+        let Input::Message {
+            message: incoming, ..
+        } = invite
+        else {
+            panic!("expected an invitation");
+        };
+        let incoming = crate::timeline::Message::from(incoming);
+        let outgoing = crate::timeline::Message {
+            outgoing: true,
+            ..incoming.clone()
+        };
+        client.start_call(0, target.clone(), link.into()).unwrap();
+        client.end_call();
+        assert!(client.call_ended(0, &target, link, &outgoing));
+        assert!(!client.call_ended(0, &target, link, &incoming));
     }
 
     #[test]

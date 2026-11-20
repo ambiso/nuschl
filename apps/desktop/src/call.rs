@@ -173,16 +173,7 @@ impl Desktop {
     pub fn end_call(&mut self) {
         #[cfg(target_os = "linux")]
         self.stop_native_owner();
-        if let Some(call) = self.client.own_call() {
-            let announcing = self.selected_indices().is_some_and(|(server, channel)| {
-                let server = &self.client.servers[server];
-                server.id == call.server && server.channels[channel].target == call.target
-            });
-            self.client.end_call();
-            if announcing {
-                let _ = self.client.send_text("Call ended".into());
-            }
-        }
+        self.client.end_call();
         self.call = None;
     }
 

@@ -198,12 +198,11 @@ without text.
 
 On Linux with the video and RTC workers installed, **Start meeting** opens an
 in-app room with your camera and screen off. **Start camera** and **Share
-screen** open a room and request capture through the desktop portal. The call
-card appears as soon as the meeting starts. It offers **Join video call** for
-native playback and **Copy link** for inviting someone through the browser.
-The channel also receives the guest link for people using Mumble. People who
-enter the channel later receive the card while the call is active. In a narrow
-layout, start the meeting and use the call toolbar to choose what to share.
+screen** open a room and request capture through the desktop portal. The chat
+shows the invitation as a call card with **Join video call** and **Copy link**.
+People using Mumble see the guest link in chat. People who enter the channel
+later receive the active call card. In a narrow layout, start the meeting and
+use the call toolbar to choose what to share.
 
 The presenter can enable camera and screen independently in the call toolbar.
 Sharing begins after the system picker grants access. Each source has its own
@@ -242,9 +241,10 @@ with that person alone. The link goes to them as a private message and the
 card appears in their conversation with you. The call ends when either
 participant leaves the server.
 
-**End call** closes the room for everyone, including people watching in the
-desktop app. **Leave video** closes your own view. The creator leaving the
-channel or server also ends the call.
+**End call** closes the room for everyone and updates the invitation card in
+the current desktop session. A typed event from the creator's Mumble presence
+updates the card for its conversation and guest link. **Leave video** closes
+your own view. The creator leaving the channel or server also ends the call.
 
 The link (`https://stream.nuschl.eu/call#v=1&k=…&h=…`) lets anyone who has it
 join, and the Mumble server sees it. Calls use the project's call host,

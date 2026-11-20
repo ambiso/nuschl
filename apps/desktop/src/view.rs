@@ -15,7 +15,10 @@ use crate::{
     unread::{self, Lane},
 };
 use gpui_kit::{base::input::Textarea, prelude::*, *};
-use nuschl_client::{HistorySource, SessionSecurity, conversation::Entry, tree::TreeKey};
+use nuschl_client::{
+    HistorySource, SessionSecurity, conversation::Entry, timeline::Message, tree::TreeKey,
+};
+use nuschl_core::{ContentBlock, TextRole};
 use nuschl_session::connection::{TextTarget, User};
 use std::{cell::Cell, collections::HashMap, rc::Rc};
 
@@ -2537,13 +2540,7 @@ fn conversation(
                 )
                 .flex_shrink_0()
                 .child(conversation_header(this, &context, cx))
-                .child(conversation_notices(
-                    this,
-                    index,
-                    channel.target.clone(),
-                    window,
-                    cx,
-                )),
+                .child(conversation_notices(this, index, channel, window, cx)),
             )
         })
         .child(middle)
@@ -2961,7 +2958,17 @@ fn entry_label(
                     ui.time
                 ));
             }
-            let mut text = ui.document.plain_text();
+            let mut text = if let Some(link) = invitation_url(message).and_then(guest_link)
+                && let Some(index) = this.client.server_index(&server.id)
+            {
+                let who = if message.outgoing { "You" } else { name };
+                let ended = this
+                    .client
+                    .call_ended(index, &channel.target, &link.url(), message);
+                call_card_title(who, link.host(), ended)
+            } else {
+                ui.document.plain_text()
+            };
             let images = ui.document.blocks.iter();
             let images = images.filter(|block| matches!(block, Block::Image { .. }));
             match images.count() {
@@ -3215,7 +3222,7 @@ pub(crate) fn banner(
 fn conversation_notices(
     this: &Desktop,
     index: usize,
-    target: TextTarget,
+    channel: &crate::state::ChannelView,
     window: &mut Window,
     cx: &mut Context<Desktop>,
 ) -> AnyElement {
@@ -3284,7 +3291,7 @@ fn conversation_notices(
             .into_any_element(),
         );
     }
-    notices.extend(call_card(this, index, &target, cx));
+    notices.extend(unmatched_call_card(this, index, channel, cx));
     if let Some(text) = &server.suggestion {
         let ptt = text.contains("push-to-talk");
         let actions = layout::actions()
@@ -3332,88 +3339,267 @@ fn conversation_notices(
     layout::notices(window, cx, notices)
 }
 
-/// The call in conversation `target` with the actions for its current state.
-fn call_card(
+fn invitation_url(message: &Message) -> Option<&str> {
+    if message.deleted.is_some() {
+        return None;
+    }
+    let [
+        ContentBlock::Text {
+            text,
+            role: TextRole::Paragraph,
+            ..
+        },
+    ] = message.document.blocks.as_slice()
+    else {
+        return None;
+    };
+    text.strip_prefix("Call: ")
+}
+
+fn guest_link(url: &str) -> Option<nuschl_stream::Link> {
+    crate::call::join_link(url).filter(|link| link.publisher().is_none())
+}
+
+/// A live invitation also reaches participants who entered after the message.
+fn unmatched_call_card(
     this: &Desktop,
     index: usize,
-    target: &TextTarget,
+    channel: &crate::state::ChannelView,
     cx: &mut Context<Desktop>,
 ) -> Option<AnyElement> {
     let server = &this.client.servers[index];
-    #[cfg(target_os = "linux")]
-    if this.native_call_in(&server.id, target) {
-        return crate::native_call::call_card(this, index, cx);
-    }
+    let target = &channel.target;
     let own = this
         .client
         .own_call()
-        .filter(|call| call.server == server.id && call.target == *target)
-        .and(this.call.as_ref());
-    if let Some(call) = own {
-        let actions = layout::actions().child(styled_button(
-            "call-end",
-            "End call",
-            Tone::Danger,
-            |this, _, cx| {
-                this.end_call();
-                cx.notify();
-            },
-            cx,
-        ));
-        return Some(video_call_card("You", &call.link, actions, cx));
+        .filter(|call| call.server == server.id && call.target == *target);
+    let incoming = this.client.calls_in(index, target);
+    if own.is_none() && incoming.is_empty() {
+        return None;
     }
-    let call = *this.client.calls_in(index, target).first()?;
-    let link = crate::call::join_link(&call.link)?;
-    let actions = layout::actions();
-    #[cfg(target_os = "linux")]
-    let actions = actions.when(
-        this.native_call.is_none() && this.native_available(link.host()),
-        |actions| {
-            let url = link.url();
-            let server = server.id.clone();
-            let target = target.clone();
-            actions.child(styled_button(
-                "call-watch-here",
-                "Join video call",
-                Tone::Primary,
-                move |this, _, cx| {
-                    if let Some(link) = crate::call::join_link(&url) {
-                        this.open_native_call(server.clone(), target.clone(), &link, None, cx);
-                        cx.notify();
-                    }
-                },
-                cx,
+    let mut announced: HashMap<&str, Vec<&Message>> = HashMap::new();
+    for message in &channel.timeline.messages {
+        if let Some(url) = invitation_url(message) {
+            announced.entry(url).or_default().push(message);
+        }
+    }
+    let (who, link, inviter) = own
+        .map(|call| ("You", call.link.as_str(), None))
+        .filter(|(_, url, _)| {
+            !announced
+                .get(url)
+                .is_some_and(|rows| rows.iter().any(|message| message.outgoing))
+        })
+        .into_iter()
+        .chain(incoming.iter().filter_map(|call| {
+            if announced
+                .get(call.link.as_str())
+                .is_some_and(|rows| rows.iter().any(|message| call.matches_author(message)))
+            {
+                return None;
+            }
+            let user = server.users.get(&call.sender)?;
+            Some((
+                user.name.as_str(),
+                call.link.as_str(),
+                Some((call.sender, call.sender_instance)),
             ))
-        },
-    );
-    let who = server
-        .users
-        .get(&call.sender)
-        .map_or("", |user| user.name.as_str());
-    Some(video_call_card(who, &link, actions, cx))
+        }))
+        .find_map(|(who, url, inviter)| Some((who, guest_link(url)?, inviter)))?;
+    Some(video_call_card(
+        this,
+        index,
+        target,
+        CallCardSource::Announcement(inviter),
+        who,
+        &link,
+        cx,
+    ))
 }
 
-pub(crate) fn video_call_card(
+#[derive(Clone, Copy)]
+enum CallCardSource<'a> {
+    Message(usize, &'a Message),
+    Announcement(Option<(u32, u64)>),
+}
+
+impl CallCardSource<'_> {
+    fn position(self) -> usize {
+        match self {
+            Self::Message(index, _) => index,
+            Self::Announcement(_) => usize::MAX,
+        }
+    }
+}
+
+fn video_call_card(
+    this: &Desktop,
+    index: usize,
+    target: &TextTarget,
+    source: CallCardSource<'_>,
     who: &str,
     link: &nuschl_stream::Link,
-    actions: Div,
     cx: &mut Context<Desktop>,
 ) -> AnyElement {
     let url = link.url();
-    let actions = actions.child(styled_button(
-        "call-copy-link",
+    let position = source.position();
+    let ended = matches!(source, CallCardSource::Message(_, message)
+        if this.client.call_ended(index, target, &url, message));
+    let title = call_card_title(who, link.host(), ended);
+    let actions = if ended {
+        None
+    } else {
+        call_card_actions(this, index, target, source, &url, cx)
+    };
+    let copy = icon_button(
+        ("call-copy-link", position),
+        "copy",
         "Copy link",
-        Tone::Secondary,
+        TEXT_MUTED,
+        None,
         move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(url.clone())),
         cx,
-    ));
-    banner(
-        "call-card",
-        ACCENT,
-        "video",
-        format!("Video call · {who} · {}", link.host()),
-        Some(actions.into_any_element()),
-    )
+    );
+    div()
+        .id(("call-card", position))
+        .role(Role::Group)
+        .aria_label(title.clone())
+        .w_full()
+        .min_w_0()
+        .max_w(px(480.))
+        .p_2()
+        .rounded(px(8.))
+        .bg(color(SIDEBAR))
+        .border_1()
+        .border_color(color(BORDER_STRONG))
+        .text_sm()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            layout::row()
+                .items_center()
+                .child(layout::fixed().child(icon("video", 18., color(ACCENT))))
+                .child(layout::label(("call-title", position), title))
+                .child(copy),
+        )
+        .children(actions)
+        .into_any_element()
+}
+
+fn call_card_title(who: &str, host: &str, ended: bool) -> String {
+    let status = if ended { "Call ended" } else { "Video call" };
+    format!("{status} · {who} · {host}")
+}
+
+fn call_card_actions(
+    this: &Desktop,
+    index: usize,
+    target: &TextTarget,
+    source: CallCardSource<'_>,
+    url: &str,
+    cx: &mut Context<Desktop>,
+) -> Option<Div> {
+    let server = &this.client.servers[index];
+    let generation = server.generation;
+    let position = source.position();
+    let ours = match source {
+        CallCardSource::Message(_, message) => message.outgoing,
+        CallCardSource::Announcement(inviter) => inviter.is_none(),
+    };
+    let own = ours && owns_invitation(this, &server.id, generation, target, url);
+    #[cfg(target_os = "linux")]
+    let inviter = match source {
+        CallCardSource::Message(_, message) => invitation_sender(this, index, target, url, message),
+        CallCardSource::Announcement(inviter) => inviter,
+    };
+    #[cfg(target_os = "linux")]
+    if this.native_call.is_some() {
+        return if own || inviter.is_some() {
+            crate::native_call::card_actions(this, server, target, url, inviter, cx)
+        } else {
+            None
+        };
+    }
+    if own {
+        let id = server.id.clone();
+        let target = target.clone();
+        let url = url.to_owned();
+        return Some(layout::actions().child(styled_button(
+            ("call-end", position),
+            "End call",
+            Tone::Danger,
+            move |this, _, cx| {
+                if owns_invitation(this, &id, generation, &target, &url) {
+                    this.end_call();
+                    cx.notify();
+                }
+            },
+            cx,
+        )));
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(inviter) = inviter
+        && this.native_available(nuschl_core::call::link_host(url)?)
+    {
+        let id = server.id.clone();
+        let target = target.clone();
+        let url = url.to_owned();
+        return Some(layout::actions().child(styled_button(
+            ("call-join", position),
+            "Join video call",
+            Tone::Primary,
+            move |this, _, cx| {
+                if let Some(index) = this.client.server_index(&id)
+                    && this.client.servers[index].generation == generation
+                    && let Some(link) = guest_link(&url)
+                {
+                    this.open_native_call(
+                        id.clone(),
+                        target.clone(),
+                        &link,
+                        None,
+                        Some(inviter),
+                        cx,
+                    );
+                    cx.notify();
+                }
+            },
+            cx,
+        )));
+    }
+    None
+}
+
+fn owns_invitation(
+    this: &Desktop,
+    server: &str,
+    generation: u64,
+    target: &TextTarget,
+    url: &str,
+) -> bool {
+    this.call.is_some()
+        && this.client.own_call().is_some_and(|call| {
+            call.server == server
+                && call.generation == generation
+                && call.target == *target
+                && call.link == url
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn invitation_sender(
+    this: &Desktop,
+    index: usize,
+    target: &TextTarget,
+    url: &str,
+    message: &Message,
+) -> Option<(u32, u64)> {
+    this.client
+        .calls_in(index, target)
+        .into_iter()
+        .find(|call| call.link == url && call.matches_author(message))
+        .map(|call| (call.sender, call.sender_instance))
 }
 
 fn message_row(
@@ -3430,14 +3616,26 @@ fn message_row(
     if let Some(deletion) = message.deleted {
         return tombstone_row(this, message, index, deletion, author, grouped);
     }
-    // A file offer shows as a card in place of its text (transfer.rs).
-    let card = crate::transfer::card(this, server, channel, index, cx);
     let editing = this
         .editing
         .as_ref()
         .is_some_and(|editing| editing.serial == message.serial);
     let serial = message.serial;
     let name = names::author_name(&message.author, author, &this.settings).to_string();
+    let card = crate::transfer::card(this, server, channel, index, cx).or_else(|| {
+        let link = invitation_url(message).and_then(guest_link)?;
+        let server_index = this.client.server_index(&server.id)?;
+        let who = if message.outgoing { "You" } else { &name };
+        Some(video_call_card(
+            this,
+            server_index,
+            &channel.target,
+            CallCardSource::Message(index, message),
+            who,
+            &link,
+            cx,
+        ))
+    });
     // With a nickname shown, the name they sent it under.
     let real_name = author
         .map(|author| names::full_name(author, &this.settings))
@@ -3453,7 +3651,7 @@ fn message_row(
         .as_ref()
         .filter(|hovered| hovered.message == serial);
     let mut texts = Vec::new();
-    // A file offer shows as a card in place of its text (transfer.rs).
+    // A structured invitation or offer occupies its message row.
     let blocks = card.map_or_else(
         || blocks(this, &ui.document, selected, hovered, &mut texts, None, cx),
         |card| vec![card],
@@ -3782,7 +3980,7 @@ fn composer(
                 .child(conversation_notices(
                     this,
                     context.index,
-                    context.channel.target.clone(),
+                    context.channel,
                     window,
                     cx,
                 ))

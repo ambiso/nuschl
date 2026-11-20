@@ -118,6 +118,8 @@ pub struct Message {
     /// Changes whenever the message's content does (an edit, a deletion), so
     /// a UI rebuilds what it derived from it.
     pub revision: u32,
+    /// The Mumble actor of a live incoming message.
+    pub(crate) sender_instance: Option<u64>,
     pub author: String,
     pub observed_at_ms: i64,
     pub status: MessageStatus,
@@ -167,6 +169,7 @@ impl From<IncomingMessage> for Message {
             id: message.id,
             serial: SERIALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             revision: 0,
+            sender_instance: None,
             author: message.message.author,
             observed_at_ms: message.message.observed_at_ms,
             status,
