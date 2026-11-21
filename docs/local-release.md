@@ -49,10 +49,10 @@ expired, missing, unrelated or already-published stage is refused; no fallback
 stage is guessed. Publication still needs `gh` authentication with the repository
 permissions described below. Preserve failed drafts for explicit inspection.
 
-Set `NUSCHL_APT_DESTINATION` in the release shell to also publish the staged
-Debian package. The confirmation displays the SSH destination and the
-fingerprint of the archive key. The [APT host setup](distro-packaging.md#publishing)
-describes the NixOS module and the dedicated OpenPGP key.
+For official releases, set `NUSCHL_APT_DESTINATION` in the release shell.
+Publication uploads the Debian package and updates `nuschl-bin` on the AUR
+before the GitHub release. See the [package publishing setup](distro-packaging.md#publishing)
+for the download host, OpenPGP key, and AUR SSH access.
 
 Both commands use the existing local publisher below; the manual commands are
 available for inspecting individual steps or supplying optional native Mac proof.

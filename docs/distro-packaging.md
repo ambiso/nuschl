@@ -167,14 +167,13 @@ before uploading the signed metadata that references them. Publication checks
 the remote Git tag first, then uploads APT, then creates the GitHub release.
 A failed APT upload can be retried using the same signed release stage.
 
-Then update the AUR package:
-
-```sh
-nix build .#aur -o aur
-git clone ssh://aur@aur.archlinux.org/nuschl-bin.git ~/nuschl-bin
-cp -rT aur/aur ~/nuschl-bin && chmod -R u+w ~/nuschl-bin
-git -C ~/nuschl-bin add -A && git -C ~/nuschl-bin commit -m "nuschl-bin <version>" && git -C ~/nuschl-bin push
-```
+Official releases also update the AUR. Set up an
+[AUR account and SSH key](https://wiki.archlinux.org/title/AUR_submission_guidelines#Authentication)
+with access to `nuschl-bin`, and configure your Git name and email. The publisher
+builds the AUR metadata from the release tag, verifies the staged package checksum
+and archive key, and pushes the update after uploading APT to the host that
+serves `dl.nuschl.eu`. If the AUR push fails, rerun publication with the same
+signed stage. An identical AUR update is skipped on retry.
 
 ### Re-signing
 

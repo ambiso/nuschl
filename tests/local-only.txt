@@ -40,6 +40,7 @@ receive_level_compare.py	not wired into a check yet (#313)
 recovery_key.py	not wired into a check yet (#313)
 reference_resample.py	not wired into a check yet (#313)
 relay_privacy.py	not wired into a check yet (#313)
+release_command.py	release publisher fixtures run locally with the update signer and a temporary Git repository
 release_notes.py	not wired into a check yet (#313)
 resample_reference.rs	not wired into a check yet (#313)
 resample_sonora.rs	not wired into a check yet (#313)

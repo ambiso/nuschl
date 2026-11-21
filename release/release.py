@@ -22,6 +22,8 @@ import textwrap
 import types
 
 ROOT = Path(__file__).resolve().parents[1]
+OFFICIAL_REPOSITORY = 'nuschl-eu/nuschl'
+AUR_REPOSITORY = 'ssh://aur@aur.archlinux.org/nuschl-bin.git'
 
 
 def load_backend():
@@ -305,6 +307,41 @@ def publish_apt(root, selection, publication):
     print('Published the signed APT archive to ' + destination)
 
 
+def aur_version(srcinfo):
+    match = re.search(r'^\s*pkgver = ([0-9]+\.[0-9]+\.[0-9]+)$', srcinfo, re.MULTILINE)
+    require(match, 'Expected a three-part Nuschl version in AUR metadata.')
+    return tuple(map(int, match[1].split('.')))
+
+
+def publish_aur(flake, stage, ledger, fingerprint):
+    with tempfile.TemporaryDirectory(prefix='aur-') as temporary:
+        root = Path(temporary).resolve()
+        backend.guarded_build(['nix', 'build', '--out-link', str(root / 'metadata'), flake + '#aur'],
+                              stage.parent / (root.name + '-build.log'))
+        output = root / 'metadata/aur'
+        srcinfo = (output / '.SRCINFO').read_text()
+        digest = backend.sha(stage / 'dist' / backend.debian_asset(ledger))
+        require({f'sha256sums = {digest}', f'validpgpkeys = {fingerprint}'} <=
+                {line.strip() for line in srcinfo.splitlines()},
+                'AUR metadata differs from the staged Debian package or APT signing key.')
+        checkout = root / 'nuschl-bin'
+        backend.run(['git', '-c', 'init.defaultBranch=master', 'clone', AUR_REPOSITORY, checkout])
+        files = ['.SRCINFO', 'PKGBUILD', f'keys/pgp/{fingerprint}.asc']
+        for name in files:
+            destination = checkout / name
+            require(destination.resolve() == destination, 'Unexpected symlink in the AUR checkout.')
+            if name == '.SRCINFO' and destination.exists():
+                require(aur_version(srcinfo) >= aur_version(destination.read_text()),
+                        'The AUR already lists a newer Nuschl version.')
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(output / name, destination)
+        backend.run(['git', '-C', checkout, 'add', '--', *files])
+        if git(checkout, 'diff', '--cached', '--name-only'):
+            backend.run(['git', '-C', checkout, 'commit', '-m', 'nuschl-bin ' + ledger['version']])
+            backend.run(['git', '-C', checkout, 'push', '--no-follow-tags', 'origin', 'HEAD:refs/heads/master'])
+            print('Published nuschl-bin to the AUR.')
+
+
 def execute(publish=False, *, confirm=None):
     selection, root = infer(ROOT, publish=publish), cache_root()
     confirm = confirm or confirm_modal
@@ -336,19 +373,28 @@ def execute(publish=False, *, confirm=None):
                 require(all(ledger[k] == selection[k] for k in ('repository', 'tag', 'commit')),
                         'Remembered release belongs to another source/tag.')
                 apt = apt_publication(ledger)
+                official = selection['repository'].lower() == OFFICIAL_REPOSITORY
+                require(apt or not official, 'Set NUSCHL_APT_DESTINATION for the official APT and AUR release.')
                 details = summary(selection, stage, 'PUBLISH these already-signed release bytes.')
                 details.extend(notes_summary(stage, ledger))
                 if apt:
                     details.append(f'Sign and upload the APT archive to {apt[0]} using OpenPGP key {apt[1]}.')
+                if official:
+                    details.append('Update the nuschl-bin AUR package using ' + AUR_REPOSITORY)
                 details.append('Push only this exact tag to origin without force, then publish; existing identical tags stay unchanged.')
                 require(confirm(details), 'Cancelled; signed artifacts kept and nothing published.')
                 require(infer(ROOT, publish=True) == selection, 'Source or origin changed during confirmation.')
                 require(record['identity'] == signed_identity(stage), 'Signed release changed during confirmation.')
                 verify_stage(stage, signer)
+                def publish_linux():
+                    publish_apt(root, selection, apt)
+                    if official:
+                        publish_aur(flake, stage, ledger, apt[1])
+
                 backend.run(['git', '-C', ROOT, 'push', '--no-follow-tags', 'origin',
                              'refs/tags/' + selection['tag'] + ':refs/tags/' + selection['tag']], timeout=300)
                 backend.publish(argparse.Namespace(stage=stage, signer=signer, gh=gh),
-                                before_upload=(lambda: publish_apt(root, selection, apt)) if apt else None)
+                                before_upload=publish_linux if apt else None)
             record['published'] = True
             remember(root, record)
             return stage
