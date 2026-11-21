@@ -297,7 +297,11 @@ async fn capture(
     let (supervisor, worker) = Socket::pair()?;
     supervisor.set_nonblocking(true)?;
     let mut supervisor = UnixStream::from_std(supervisor)?;
-    let mut child = nuschl_sandbox::command(&executable, Role::VideoCapture { node, vaapi })?
+    let role = Role::VideoCapture {
+        node,
+        vaapi: vaapi && super::VAAPI_AVAILABLE,
+    };
+    let mut child = nuschl_sandbox::command(&executable, role)?
         .stdin(Stdio::from(remote))
         .stdout(Stdio::from(OwnedFd::from(worker)))
         .stderr(Stdio::piped())

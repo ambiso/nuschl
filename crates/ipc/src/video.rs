@@ -22,6 +22,9 @@ pub use supervisor::{Encoder, Error, Output};
 use std::io;
 
 pub const HEADER_BYTES: usize = 16;
+/// Whether this build can grant the video worker a VA-API render device.
+pub const VAAPI_AVAILABLE: bool =
+    cfg!(target_os = "linux") && option_env!("NUSCHL_SOFTWARE_VIDEO_ONLY").is_none();
 const KIB: usize = 1024;
 const KEY: u8 = 1;
 

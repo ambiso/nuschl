@@ -103,7 +103,7 @@ sudo curl -fsSLo /usr/share/keyrings/nuschl-archive-keyring.gpg https://dl.nusch
 gpg --show-keys /usr/share/keyrings/nuschl-archive-keyring.gpg
 ```
 
-Check that the fingerprint is `352A 499A 9413 5B39 CDF0 BC3C 58F4 332D D74F C329`, then add the archive:
+Check that the fingerprint is `352A 499A 9413 5B39 CDF0 BC3C 58F4 332D D74F C329` before adding the archive.
 
 ```sh
 sudo tee /etc/apt/sources.list.d/nuschl.sources <<'EOF'
@@ -117,8 +117,8 @@ sudo apt update && sudo apt install nuschl
 ```
 
 The suites `trixie` and `noble` have the same contents as `stable`. On Ubuntu 23.10
-and later, AppArmor's default restriction of
-unprivileged user namespaces stops the worker sandbox, and Nuschl refuses to start
+and later, AppArmor's default restriction of unprivileged user namespaces stops
+the worker sandbox, and Nuschl refuses to start
 its workers; the fix is open in #148. APT updates Nuschl with the rest of the system. `sudo apt
 purge nuschl` removes the program; your settings and history stay in your home
 folder ([desktop.md](desktop.md#where-nuschl-keeps-its-files)).
