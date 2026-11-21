@@ -15,7 +15,7 @@ nuschl-legacy-html.workspace = true
 nuschl-link-preview.workspace = true
 nuschl-protocol.workspace = true
 nuschl-sandbox.workspace = true
-nuschl-stream-quality = { path = "../stream-quality", version = "0.2.0" }
+nuschl-stream-quality = { path = "../stream-quality", version = "0.3.0" }
 bytes = "1.12.1"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 prost = "0.14.4"

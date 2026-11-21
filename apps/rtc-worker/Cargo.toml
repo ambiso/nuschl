@@ -12,8 +12,8 @@ workspace = true
 
 [dependencies]
 nuschl-ipc.workspace = true
-nuschl-rtc = { path = "../../crates/rtc", version = "0.2.0" }
-nuschl-sframe = { path = "../../crates/sframe", version = "0.2.0" }
+nuschl-rtc = { path = "../../crates/rtc", version = "0.3.0" }
+nuschl-sframe = { path = "../../crates/sframe", version = "0.3.0" }
 
 [target.'cfg(windows)'.dependencies]
 nuschl-sandbox-windows.workspace = true

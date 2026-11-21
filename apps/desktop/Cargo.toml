@@ -25,7 +25,7 @@ nuschl-legacy-html.workspace = true
 nuschl-protocol.workspace = true
 nuschl-sandbox.workspace = true
 nuschl-session.workspace = true
-nuschl-stream = { path = "../../crates/stream", version = "0.2.0" }
+nuschl-stream = { path = "../../crates/stream", version = "0.3.0" }
 nuschl-update.workspace = true
 serde_json = "1.0.154"
 tokio = { version = "1.54.1", features = [

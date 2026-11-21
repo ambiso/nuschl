@@ -3302,11 +3302,11 @@ dependencies = [
 
 [[package]]
 name = "nuschl-audio-jitter"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "nuschl-client"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hex",
  "icu_collator",
@@ -3324,7 +3324,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-content"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "hex",
@@ -3340,7 +3340,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "hex",
@@ -3352,7 +3352,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-e2ee"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "libcrux-sha2 0.0.9",
  "nuschl-identity",
@@ -3394,7 +3394,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-identity"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "curve25519-dalek 4.1.3",
  "getrandom 0.4.3",
@@ -3416,7 +3416,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-ipc"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "nuschl-core",
@@ -3431,7 +3431,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-kt"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "akd",
  "akd_core",
@@ -3451,11 +3451,11 @@ dependencies = [
 
 [[package]]
 name = "nuschl-legacy-html"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "nuschl-link-preview"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ipnet",
  "nuschl-core",
@@ -3467,7 +3467,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-math"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "comemo",
  "rayon",
@@ -3480,7 +3480,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-protocol"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes 0.8.4",
  "bytes",
@@ -3494,7 +3494,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-sandbox"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "thiserror 2.0.21",
  "tokio",
@@ -3503,7 +3503,7 @@ dependencies = [
 
 [[package]]
 name = "nuschl-session"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "directories",
@@ -3535,11 +3535,11 @@ dependencies = [
 
 [[package]]
 name = "nuschl-stream-quality"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "nuschld"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "argon2",
  "async-trait",
