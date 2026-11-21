@@ -95,13 +95,17 @@ Nuschl and managed settings show as set by the system configuration and stay so.
 
 ## Debian and Ubuntu
 
-Use the APT instructions below once the download host is deployed and the
-[archive key fingerprint is published](distro-packaging.md#publishing). The
+Use the APT instructions below once the first package is published. The
 packages target amd64 on Debian 13 (trixie) and Ubuntu 24.04 (noble).
 
 ```sh
 sudo curl -fsSLo /usr/share/keyrings/nuschl-archive-keyring.gpg https://dl.nuschl.eu/apt/nuschl-archive-keyring.gpg
 gpg --show-keys /usr/share/keyrings/nuschl-archive-keyring.gpg
+```
+
+Check that the fingerprint is `352A 499A 9413 5B39 CDF0 BC3C 58F4 332D D74F C329`, then add the archive:
+
+```sh
 sudo tee /etc/apt/sources.list.d/nuschl.sources <<'EOF'
 Types: deb
 URIs: https://dl.nuschl.eu/apt
@@ -112,9 +116,8 @@ EOF
 sudo apt update && sudo apt install nuschl
 ```
 
-Compare the fingerprint `gpg --show-keys` prints with the one in this section
-(published with the first release). The suites `trixie` and `noble` have the same
-contents as `stable`. On Ubuntu 23.10 and later, AppArmor's default restriction of
+The suites `trixie` and `noble` have the same contents as `stable`. On Ubuntu 23.10
+and later, AppArmor's default restriction of
 unprivileged user namespaces stops the worker sandbox, and Nuschl refuses to start
 its workers; the fix is open in #148. APT updates Nuschl with the rest of the system. `sudo apt
 purge nuschl` removes the program; your settings and history stay in your home
