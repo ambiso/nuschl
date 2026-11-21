@@ -57,7 +57,9 @@
 - **macOS Intel and Apple silicon:** [download the complete universal app ZIP](https://github.com/nuschl-eu/nuschl/releases/download/v0.3.0/nuschl-0.3.0-macos-universal.zip), unpack it and move
   `Nuschl.app` to Applications. Requires macOS 14.2 or later. Native macOS runtime
   testing remains outstanding.
-- **Linux:** install through the Nix flake at this release's tag.
+- **Linux** builds are available through the Nix flake at this release's tag
+  and as an amd64 Debian package. The Debian package and its AUR repackaging
+  include native calls with software video encoding and decoding.
 
 The installer and both ZIPs include all required helper programs and licenses.
 The individual files listed under Assets support automatic updates.

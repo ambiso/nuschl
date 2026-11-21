@@ -710,8 +710,8 @@
             '';
         # Portable Linux builds (#151, docs/distro-packaging.md): cargo-zigbuild
         # links every crate and C dependency statically. The desktop and the
-        # media worker link glibc dynamically at the symbol floor below and the
-        # host's X11, xkbcommon, PipeWire and ALSA libraries by soname; GPUI
+        # media and video workers link glibc dynamically at the symbol floor below
+        # and use the host's X11, xkbcommon, PipeWire and ALSA libraries by soname; GPUI
         # opens Vulkan and Wayland at runtime. Everything else is static musl.
         portableGlibc = "2.17";
         portableBuilder = (crane.mkLib pkgs).overrideToolchain (
@@ -762,7 +762,8 @@
             ]
           );
         portableGnu = portableBuild "x86_64-unknown-linux-gnu.${portableGlibc}" "nuschl-linux-gnu" {
-          cargoExtraArgs = "--locked -p nuschl -p nuschl-media-worker";
+          cargoExtraArgs = "--locked -p nuschl -p nuschl-media-worker -p nuschl-video-worker";
+          NUSCHL_SOFTWARE_VIDEO_ONLY = "1";
           # Link inputs by soname only. Their own glibc references resolve
           # against the host's glibc at runtime.
           rustflags = "-C link-arg=-Wl,--allow-shlib-undefined -L native=${pkgs.libxcb}/lib -L native=${pkgs.libxkbcommon}/lib";
@@ -813,7 +814,7 @@
           };
         portableHeadless = portableMusl "nuschl-linux-musl" (
           "--locked -p nuschld -p nuschl-cli -p nuschl-tui -p nuschl-musicbot -p nuschl-musicbot-codec-worker"
-          + " -p nuschl-content-worker -p nuschl-crypto-worker -p nuschl-math-worker -p nuschl-storage-worker -p nuschl-transfer-worker"
+          + " -p nuschl-content-worker -p nuschl-crypto-worker -p nuschl-math-worker -p nuschl-storage-worker -p nuschl-transfer-worker -p nuschl-rtc-worker"
         );
         portableVerifier =
           feature:
@@ -822,8 +823,8 @@
         # side by side in lib/nuschl, with the clients linked from bin.
         linuxPortable = pkgs.runCommand "nuschl-linux-portable-${version}" { } ''
           mkdir -p "$out/lib/nuschl" "$out/bin"
-          cp ${portableGnu}/bin/nuschl ${portableGnu}/bin/nuschl-media-worker "$out/lib/nuschl/"
-          for program in nuschl-cli nuschl-tui nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-storage-worker nuschl-transfer-worker; do
+          cp ${portableGnu}/bin/{nuschl,nuschl-media-worker,nuschl-video-worker} "$out/lib/nuschl/"
+          for program in nuschl-cli nuschl-tui nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-rtc-worker nuschl-storage-worker nuschl-transfer-worker; do
             cp ${portableHeadless}/bin/$program "$out/lib/nuschl/"
           done
           cp ${portableVerifier "ed25519"}/bin/* ${portableVerifier "mldsa44"}/bin/* "$out/lib/nuschl/"

@@ -34,15 +34,23 @@ const REOPEN_TIMEOUT: Duration = Duration::from_secs(5);
 const HEALTHY_CAPTURE: Duration = Duration::from_secs(30);
 pub(super) type Reopening = BoxFuture<'static, (CaptureAttempt, Option<Grant>)>;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CaptureMode {
-    #[default]
     #[cfg(target_os = "linux")]
     HardwareWithPreview,
     #[cfg(target_os = "linux")]
     Hardware,
-    #[cfg_attr(not(target_os = "linux"), default)]
     Software,
+}
+
+impl Default for CaptureMode {
+    fn default() -> Self {
+        #[cfg(target_os = "linux")]
+        if nuschl_ipc::video::VAAPI_AVAILABLE {
+            return Self::HardwareWithPreview;
+        }
+        Self::Software
+    }
 }
 
 #[cfg(target_os = "linux")]

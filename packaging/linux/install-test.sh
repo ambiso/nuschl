@@ -15,14 +15,24 @@ id tester 2>/dev/null || useradd --create-home tester
 # The content worker renders a message through the sandbox, as an
 # unprivileged user and with the test VM's Nix store hidden. Without bwrap
 # on the PATH the sandbox fails closed.
+hidden='mkdir -p /nix && mount -t tmpfs none /nix && exec runuser -u tester --'
+
 sandbox() {
-  hidden='mkdir -p /nix && mount -t tmpfs none /nix && exec runuser -u tester --'
   unshare --mount sh -c "$hidden nuschl render 'sandboxed **content**'" | grep -F content
   if unshare --mount sh -c "$hidden env PATH=/nonexistent /usr/bin/nuschl render text"; then exit 1; fi
 }
 
+worker_starts() {
+  status=0
+  output=$(unshare --mount sh -c "$hidden /usr/lib/nuschl/$1" 2>&1) || status=$?
+  printf '%s\n' "$output" | grep -F "$2"
+  test "$status" -eq 1
+}
+
 check() {
   unshare --mount sh -c 'mkdir -p /nix && mount -t tmpfs none /nix && nuschl --version' | grep -F "$1"
+  worker_starts nuschl-rtc-worker 'usage: nuschl-rtc-worker --call'
+  worker_starts nuschl-video-worker 'invalid video worker role'
   for scheme in mumble nuschl; do
     test "$(runuser -u tester -- xdg-mime query default "x-scheme-handler/$scheme")" = org.nuschl.Nuschl.desktop
   done

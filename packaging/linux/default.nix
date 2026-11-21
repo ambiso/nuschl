@@ -2,7 +2,7 @@
 # workspace version; packages are published from release tags.
 {
   pkgs,
-  # lib/nuschl/ with the desktop executable and its eight helpers.
+  # lib/nuschl/ with the desktop executable and its helpers.
   binaries,
   projectRoot,
   nativeNotices,
@@ -20,12 +20,14 @@ let
     "nuschl-crypto-worker"
     "nuschl-math-worker"
     "nuschl-media-worker"
+    "nuschl-rtc-worker"
     "nuschl-storage-worker"
     "nuschl-transfer-worker"
+    "nuschl-video-worker"
     "nuschl-update-verify-ed25519"
     "nuschl-update-verify-mldsa44"
   ];
-  # Helper discovery looks next to the executable, so all nine share a directory.
+  # Helper discovery looks next to the executable.
   stage = pkgs.runCommand "nuschl-stage-${version}" { } ''
     for program in ${pkgs.lib.escapeShellArgs programs}; do
       install -Dm755 ${binaries}/lib/nuschl/$program "$out/usr/lib/nuschl/$program"

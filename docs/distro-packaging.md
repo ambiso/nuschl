@@ -7,19 +7,21 @@ that `.deb`. [install.md](install.md#debian-and-ubuntu) shows how users install 
 ## The package
 
 `packaging/linux/default.nix` builds both from the portable binaries below
-(`linux-portable`). The stage puts the nine programs next to each other in
+(`linux-portable`). The stage puts the programs next to each other in
 `/usr/lib/nuschl/`, since helper discovery looks in the executable's directory:
 
 ```
-nuschl                        nuschl-storage-worker
-nuschl-content-worker         nuschl-transfer-worker
-nuschl-crypto-worker          nuschl-update-verify-ed25519
-nuschl-math-worker            nuschl-update-verify-mldsa44
-nuschl-media-worker
+nuschl                        nuschl-rtc-worker
+nuschl-content-worker         nuschl-storage-worker
+nuschl-crypto-worker          nuschl-transfer-worker
+nuschl-math-worker            nuschl-update-verify-ed25519
+nuschl-media-worker           nuschl-update-verify-mldsa44
+nuschl-video-worker
 ```
 
-Native video calls currently require the Linux Nix package, which includes
-the RTC and video workers.
+These packages use software AV1 encoding and decoding for native video calls.
+Screen and camera capture use the desktop session's PipeWire portals. The
+Linux Nix package also includes VA-API hardware acceleration.
 
 `/usr/bin/nuschl` links to the executable. The stage adds the desktop entry,
 which registers `mumble://` and `nuschl://`, the hicolor icons, the AppStream
@@ -28,7 +30,7 @@ maintainer scripts and changes no system policy. The in-app updater is off on
 Linux; APT and pacman update the package.
 
 `Depends` names glibc 2.17 (from the newest glibc symbol), the libraries the
-desktop and the media worker link or open (libxcb, libxkbcommon, Vulkan,
+desktop and its workers link or open (libxcb, libxkbcommon, Vulkan,
 PipeWire 0.3.53 with its modules, ALSA), bubblewrap 0.8 and util-linux for the
 sandbox, and the desktop and icon cache tools. Wayland and EGL are
 `Recommends`. `nuschl-bin` depends on the matching Arch packages. The version is
@@ -40,20 +42,22 @@ the workspace version with revision `1`; packages are published from release tag
 cargo-zigbuild. Every Rust crate and C dependency, including SQLite, ring, the
 compiler runtime and the unwinder, is linked statically.
 
-- `linux-portable` has the nine programs above plus `nuschl-cli` and `nuschl-tui`
+- `linux-portable` has the programs above plus `nuschl-cli` and `nuschl-tui`
   side by side in `lib/nuschl/`, links to the three clients in `bin/`, the desktop
   entry, icons and licences.
 - `server-static` has `nuschld` and its storage worker in `bin/`, and the music bot
   in `bin/` with its codec and content workers in `libexec/nuschl-musicbot/`.
 
-`nuschl` and `nuschl-media-worker` link glibc dynamically: symbol versions up to
-`GLIBC_2.17`, interpreter `/lib64/ld-linux-x86-64.so.2`, no RPATH. They load these
+`nuschl`, `nuschl-media-worker`, and `nuschl-video-worker` link glibc dynamically
+with symbol versions up to `GLIBC_2.17` and interpreter
+`/lib64/ld-linux-x86-64.so.2`. They load these
 host libraries by soname:
 
 | Program | Linked | Opened at runtime |
 | --- | --- | --- |
 | `nuschl` | `libxcb.so.1`, `libxkbcommon.so.0`, `libxkbcommon-x11.so.0` | `libvulkan.so.1` and its ICDs, `libwayland-client.so.0`, `libEGL.so.1` |
 | `nuschl-media-worker` | `libpipewire-0.3.so.0` (0.3.53 or later), `libasound.so.2` | PipeWire, PulseAudio and ALSA plugins of those libraries |
+| `nuschl-video-worker` | `libpipewire-0.3.so.0` | PipeWire plugins |
 
 All other programs are static musl executables. The build fails when a program
 needs another library, a newer glibc symbol, another interpreter, or names a Nix
@@ -86,8 +90,9 @@ The checks `distro-debian`, `distro-ubuntu` and `distro-arch`
 (`packaging/linux/tests.nix`, running `install-test.sh`) install
 the packages on clean systems: Debian 13 and Ubuntu 24.04 images from nixpkgs'
 `vmTools`, and an Arch root made from one day of the Arch Linux Archive. Each
-installs the package, runs `nuschl --version` with the Nix store hidden, checks
-`xdg-mime query default` for both URL schemes, and renders a message with
+installs the package, runs `nuschl --version` and starts the RTC and video
+workers with the Nix store hidden, checks `xdg-mime query default` for both URL
+schemes, and renders a message with
 `nuschl render` as an unprivileged user, which runs the content worker in its
 sandbox; the same command fails without `bwrap` on the `PATH`. Debian and
 Ubuntu install from the signed test repository with apt, upgrade to the next
