@@ -891,7 +891,7 @@ def sign(args):
     print('Local hybrid signature and both-component verification passed; nothing uploaded.')
 
 
-def publish(args):
+def publish(args, *, before_upload=None):
     stage = args.stage.resolve(strict=True)
     ledger = validate(stage)
     verification = verification_record(stage, ledger)
@@ -922,6 +922,8 @@ def publish(args):
     releases = json.loads(run([args.gh, 'api', '--paginate', '--slurp', f'repos/{repo}/releases?per_page=100']))
     require(not any(r['tag_name'] == tag for page in releases for r in page),
             'release/draft already exists; never overwrite or resume unknown authority')
+    if before_upload:
+        before_upload()
     run([args.gh, 'release', 'create', tag, '--repo', repo, '--verify-tag', '--draft',
          '--title', 'Nuschl ' + ledger['version'], '--notes-file', notes_file,
          *sorted((stage / 'dist').iterdir())], timeout=1800)

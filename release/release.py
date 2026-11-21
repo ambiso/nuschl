@@ -257,7 +257,7 @@ def archive_fingerprint(key):
     return primary
 
 
-def apt_publication(stage, ledger):
+def apt_publication(ledger):
     destination = os.environ.get('NUSCHL_APT_DESTINATION')
     if not destination:
         return None
@@ -266,12 +266,12 @@ def apt_publication(stage, ledger):
     path = destination.split(':', 1)[1]
     require(len(Path(path).parts) > 1 and '..' not in Path(path).parts,
             'Use a dedicated APT directory for NUSCHL_APT_DESTINATION.')
-    asset = backend.debian_asset(ledger)
-    require(asset, 'This stage has no signed Debian package. Run just release to prepare one.')
+    require(backend.debian_asset(ledger),
+            'This stage has no signed Debian package. Run just release to prepare one.')
     require(shutil.which('gpg') and shutil.which('rsync'),
             'Refresh direnv to get GnuPG and rsync before publishing to APT.')
     key = ROOT / 'packaging/nuschl-archive-keyring.asc'
-    return destination.rstrip('/') + '/', archive_fingerprint(key), stage / 'dist' / asset
+    return destination.rstrip('/') + '/', archive_fingerprint(key), Path(ledger['products']['deb']['output'])
 
 
 def publish_apt(root, selection, publication):
@@ -287,11 +287,17 @@ def publish_apt(root, selection, publication):
     flake = 'git+' + ROOT.as_uri() + '?rev=' + selection['head']
     backend.run(['nix', 'run', flake + '#apt-repository', '--',
                  archive, fingerprint, package], timeout=600)
-    # Publish the pool and by-hash indices before exposing their signed Release.
     sync = ['rsync', '-rt', '--chmod=D755,F644', '--delay-updates']
+    # Keep already published package versions immutable on the mirror.
+    pool = [archive / 'pool', destination]
+    backend.run([*sync, '--ignore-existing', '--', *pool], timeout=900)
+    changes = backend.run(['rsync', '-rnc', '--itemize-changes', '--out-format=%i',
+                           '--', *pool], timeout=300)
+    require(not changes.strip(), 'The APT mirror has different bytes for an existing package or signature.')
+    # Publish by-hash indices before exposing their signed Release.
     source = str(archive) + '/'
     metadata = ('InRelease', 'Release', 'Release.gpg')
-    backend.run([*sync, *('--exclude=/dists/*/' + name for name in metadata),
+    backend.run([*sync, '--exclude=/pool/', *('--exclude=/dists/*/' + name for name in metadata),
                  '--', source, destination], timeout=900)
     backend.run([*sync, '--include=/dists/', '--include=/dists/*/',
                  *('--include=/dists/*/' + name for name in metadata),
@@ -329,7 +335,7 @@ def execute(publish=False, *, confirm=None):
                 ledger = verify_stage(stage, signer)
                 require(all(ledger[k] == selection[k] for k in ('repository', 'tag', 'commit')),
                         'Remembered release belongs to another source/tag.')
-                apt = apt_publication(stage, ledger)
+                apt = apt_publication(ledger)
                 details = summary(selection, stage, 'PUBLISH these already-signed release bytes.')
                 details.extend(notes_summary(stage, ledger))
                 if apt:
@@ -339,11 +345,10 @@ def execute(publish=False, *, confirm=None):
                 require(infer(ROOT, publish=True) == selection, 'Source or origin changed during confirmation.')
                 require(record['identity'] == signed_identity(stage), 'Signed release changed during confirmation.')
                 verify_stage(stage, signer)
-                if apt:
-                    publish_apt(root, selection, apt)
                 backend.run(['git', '-C', ROOT, 'push', '--no-follow-tags', 'origin',
                              'refs/tags/' + selection['tag'] + ':refs/tags/' + selection['tag']], timeout=300)
-                backend.publish(argparse.Namespace(stage=stage, signer=signer, gh=gh))
+                backend.publish(argparse.Namespace(stage=stage, signer=signer, gh=gh),
+                                before_upload=(lambda: publish_apt(root, selection, apt)) if apt else None)
             record['published'] = True
             remember(root, record)
             return stage

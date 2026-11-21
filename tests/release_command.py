@@ -217,7 +217,8 @@ class ReleaseCommand(unittest.TestCase):
             self.assertEqual(upload.call_args.args[-1], publication)
             self.assertEqual(self.local.tree(stage / 'dist'), before)
             self.assertFalse(self.pointer()['published'])
-            self.assertFalse(self.remote_calls)
+            self.assertFalse(self.created)
+            self.assertEqual(self.remote_calls[0][0], 'git')
             upload.side_effect = None
             front.execute(True, confirm=lambda details: True)
         self.assertTrue(self.pointer()['published'])
@@ -226,17 +227,24 @@ class ReleaseCommand(unittest.TestCase):
         stage = self.prepare()
         destination = 'release@dl.example:/srv/apt/'
         package = stage / 'dist/nuschl_0.1.0-1_amd64.deb'
-        with patch.object(self.local, 'run') as run:
+        with patch.object(self.local, 'run', return_value='') as run:
             front.publish_apt(self.pointer_path().parent, {'head': self.pointer()['commit']},
                               (destination, 'A' * 40, package))
-        build, files, metadata = [call.args[0] for call in run.call_args_list]
+        build, pool, check, files, metadata = [call.args[0] for call in run.call_args_list]
         self.assertEqual(build[:2], ['nix', 'run'])
         self.assertEqual(build[-1], package)
         self.assertEqual(files[-1], destination)
         self.assertEqual(metadata[-1], destination)
+        self.assertIn('--ignore-existing', pool)
+        self.assertIn('-rnc', check)
         self.assertIn('--exclude=/dists/*/InRelease', files)
         self.assertIn('--include=/dists/*/InRelease', metadata)
         self.assertIn('--exclude=*', metadata)
+        with patch.object(self.local, 'run', side_effect=['', '', '>fc........\n']) as run:
+            with self.assertRaisesRegex(ValueError, 'mirror has different bytes'):
+                front.publish_apt(self.pointer_path().parent, {'head': self.pointer()['commit']},
+                                  (destination, 'A' * 40, package))
+            self.assertEqual(run.call_count, 3)
 
     def test_missing_github_cli_refuses_before_publish_confirmation_or_tag_push(self):
         self.prepare()

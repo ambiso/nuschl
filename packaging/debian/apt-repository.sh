@@ -7,8 +7,10 @@
 # Release.gpg) and exports the public key to DIR/nuschl-archive-keyring.gpg.
 # Run it without DEBs to re-sign the repository before Valid-Until passes.
 set -euo pipefail
-dir=$1 key=$2
+dir=$1
+key=$(gpg --batch --with-colons --fingerprint --list-keys "$2" | awk -F: '$1 == "fpr" && !seen { print $10; seen=1 }')
 shift 2
+test -n "$key"
 pool=$dir/pool/main/n/nuschl
 mkdir -p "$pool"
 for deb in "$@"; do
@@ -23,7 +25,12 @@ for deb in "$@"; do
 done
 sign() { gpg --batch --yes --local-user "$key" --digest-algo SHA512 "$@"; }
 for deb in "$pool"/*.deb; do
-  test -e "$deb.sig" || sign --detach-sign --output "$deb.sig" "$deb"
+  if test -e "$deb.sig"; then
+    gpg --batch --assert-signer "$key" --verify "$deb.sig" "$deb"
+  else
+    sign --detach-sign --output "$deb.sig.new" "$deb"
+    mv "$deb.sig.new" "$deb.sig"
+  fi
 done
 cd "$dir"
 gpg --batch --yes --export --output nuschl-archive-keyring.gpg "$key"

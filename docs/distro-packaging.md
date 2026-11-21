@@ -18,6 +18,9 @@ nuschl-math-worker            nuschl-update-verify-mldsa44
 nuschl-media-worker
 ```
 
+Native video calls currently require the Linux Nix package, which includes
+the RTC and video workers.
+
 `/usr/bin/nuschl` links to the executable. The stage adds the desktop entry,
 which registers `mumble://` and `nuschl://`, the hicolor icons, the AppStream
 file and the license notices in `/usr/share/licenses/nuschl/`. The package has no
@@ -155,9 +158,9 @@ The archive contains the previous packages and indices alongside the new ones.
 
 `apt-repository` signs the Debian package and the indices for `stable`,
 `trixie`, and `noble`. Rsync uploads the pool and indices addressed by hash
-before uploading the signed metadata that references them. The GitHub release
-starts after the APT upload succeeds. A failed APT upload can be retried using
-the same signed release stage.
+before uploading the signed metadata that references them. Publication checks
+the remote Git tag first, then uploads APT, then creates the GitHub release.
+A failed APT upload can be retried using the same signed release stage.
 
 Then update the AUR package:
 
