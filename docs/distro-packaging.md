@@ -104,8 +104,25 @@ signature missing, with a signature by another key, and with modified contents.
 
 ## Publishing
 
-The owner publishes from a local copy of the repository directory. The
-repository and the AUR package use one Ed25519 OpenPGP key.
+The APT repository and the AUR package use a dedicated OpenPGP archive key.
+The operator signs the archive locally and uploads the signed files over SSH.
+
+### The download host (once)
+
+Point `dl.nuschl.eu` at the download host and add the Nuschl module to its
+NixOS configuration:
+
+```nix
+{
+  imports = [ inputs.nuschl.nixosModules.apt ];
+  services.nuschl-apt.enable = true;
+}
+```
+
+The host needs the usual `security.acme` account settings and incoming TCP
+80 and 443 for HTTP-01 and HTTPS. The module serves `/apt/` from
+`/srv/dl.nuschl.eu/apt` by default. Create the directory with write access for
+the SSH upload account and read and traversal access for nginx.
 
 ### The archive key (once)
 
@@ -113,7 +130,6 @@ repository and the AUR package use one Ed25519 OpenPGP key.
 gpg --quick-generate-key 'Nuschl packages <packages@nuschl.eu>' ed25519 sign 3y
 fpr=$(gpg --with-colons --list-keys packages@nuschl.eu | awk -F: '$1 == "fpr" { print $10; exit }')
 gpg --armor --export "$fpr" > packaging/nuschl-archive-keyring.asc
-gpg --armor --export-secret-keys "$fpr" > nuschl-archive-key.secret.asc  # offline backup
 ```
 
 Commit `packaging/nuschl-archive-keyring.asc` in a pull request and add the
@@ -123,19 +139,25 @@ then export and commit the public key again.
 
 ### A release
 
+Run `just release` to stage the exact-tag Debian package with the other
+artifacts. From the release shell, set the SSH destination and confirm the
+publication:
+
 ```sh
-nix build .#deb -o nuschl.deb
-nix run .#apt-repository -- ~/nuschl-apt "$fpr" nuschl.deb
-rsync -a ~/nuschl-apt/pool ~/nuschl-apt/nuschl-archive-keyring.gpg HOST:/srv/dl.nuschl.eu/apt/
-rsync -a ~/nuschl-apt/dists HOST:/srv/dl.nuschl.eu/apt/
+export NUSCHL_APT_DESTINATION=release@dl.nuschl.eu:/srv/dl.nuschl.eu/apt
+just release --publish
 ```
 
-`apt-repository` copies the `.deb` into `pool/`, writes a detached signature
-`.deb.sig` for every `.deb` without one, indexes the pool with `apt-ftparchive`
-for the suites `stable`, `trixie` and `noble` (same contents), and signs each
-suite's `Release` (`InRelease`, `Release.gpg`) with `Valid-Until` 30 days ahead.
-Uploading `pool/` first puts every file the indexes name on the server before them. `HOST`
-and the path stand for the server behind dl.nuschl.eu.
+The publisher uses the fingerprint checked into `packaging/nuschl-archive-keyring.asc`.
+Its private key must be available to GnuPG in the release shell. Keep the local
+archive at `${XDG_CACHE_HOME:-~/.cache}/nuschl-release/apt-archive` across releases.
+The archive contains the previous packages and indices alongside the new ones.
+
+`apt-repository` signs the Debian package and the indices for `stable`,
+`trixie`, and `noble`. Rsync uploads the pool and indices addressed by hash
+before uploading the signed metadata that references them. The GitHub release
+starts after the APT upload succeeds. A failed APT upload can be retried using
+the same signed release stage.
 
 Then update the AUR package:
 
@@ -152,6 +174,7 @@ Clients reject the repository once `Valid-Until` passes. At least every 30 days,
 re-sign it and upload the indexes:
 
 ```sh
-nix run .#apt-repository -- ~/nuschl-apt "$fpr"
-rsync -a ~/nuschl-apt/dists HOST:/srv/dl.nuschl.eu/apt/
+archive="${XDG_CACHE_HOME:-$HOME/.cache}/nuschl-release/apt-archive"
+nix run .#apt-repository -- "$archive" "$fpr"
+rsync -rt --delay-updates "$archive/dists" "$NUSCHL_APT_DESTINATION/"
 ```

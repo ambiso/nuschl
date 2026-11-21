@@ -95,9 +95,9 @@ Nuschl and managed settings show as set by the system configuration and stay so.
 
 ## Debian and Ubuntu
 
-The APT repository at `https://dl.nuschl.eu/apt` has Nuschl for amd64 on Debian 13
-(trixie), Ubuntu 24.04 (noble) and newer releases. Its key signs only this
-repository:
+Use the APT instructions below once the download host is deployed and the
+[archive key fingerprint is published](distro-packaging.md#publishing). The
+packages target amd64 on Debian 13 (trixie) and Ubuntu 24.04 (noble).
 
 ```sh
 sudo curl -fsSLo /usr/share/keyrings/nuschl-archive-keyring.gpg https://dl.nuschl.eu/apt/nuschl-archive-keyring.gpg
@@ -122,8 +122,8 @@ folder ([desktop.md](desktop.md#where-nuschl-keeps-its-files)).
 
 ## Arch Linux
 
-The AUR package `nuschl-bin` installs the same `.deb` after checking its sha256
-and its signature by the repository key. Import the key from the package's
+Once published, the AUR package `nuschl-bin` installs the same `.deb` after
+checking its SHA-256 and archive signature. Import the key from its
 `keys/pgp/` folder (AUR helpers offer to), then build it:
 
 ```sh
@@ -217,8 +217,8 @@ Windows or macOS runner is needed. The release zips both, publishes the Windows
 installer, publishes every file of each installation as its own release asset, and
 writes `update.json`, which lists every Windows/macOS installation file with its
 size and SHA-256. It also publishes the validated deployable static web bundle,
-Linux Nix installation references, source lock file and build evidence. These
-are clearly labelled; there is no portable Linux executable archive. Third-party
+the Debian amd64 package, Linux Nix installation references, source lock file,
+and build evidence. Third-party
 notices from cargo-about accompany native/cross/web packages; a crate without
 license text fails the build, and a bundle whose scope or text hash differs blocks
 CI payload upload and publication. See [release notices](release-notices.md).

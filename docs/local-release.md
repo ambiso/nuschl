@@ -24,7 +24,8 @@ preparation, hybrid signing and verification checks below. It uploads nothing.
 It prints a unique private temporary directory under
 `${XDG_CACHE_HOME:-~/.cache}/nuschl-release/`. This directory **remains after the
 command exits**: test the `stage/install/windows/` and `stage/install/Nuschl.app/`
-trees, archives in `stage/dist/`, and Linux Nix references in the receipt there.
+trees, archives and the Debian package in `stage/dist/`, and Linux Nix
+references in the receipt there.
 Review the release body in `stage/notes/RELEASE-NOTES.md` (see below).
 Build logs and failed attempts remain available too. Use a disk-backed cache,
 not `/tmp` or another tmpfs.
@@ -39,15 +40,19 @@ This selects the last **successfully signed** stage recorded for this repository
 and tag. Failed or cancelled preparation never replaces that record. It checks
 the remembered ledger/manifest/signature/checksum identity and reruns the backend's
 source, Nix-product, artifact and hybrid-signature verification before its one
-publication confirmation. It neither rebuilds nor signs again and needs no
-private key. It reuses the release notes frozen during preparation, never
-regenerates them, and shows their path, commit range and `cliff.toml` hash in the
-confirmation. After Yes, only that exact tag is pushed without force; an identical
+publication confirmation. It reuses the built applications and their signatures,
+and shows the frozen release notes' path, commit range and `cliff.toml` hash in
+the confirmation. After Yes, only that exact tag is pushed without force; an identical
 remote tag is unchanged and a different remote tag is refused. The backend then
 uploads a draft and verifies every uploaded digest before making it public. A changed,
 expired, missing, unrelated or already-published stage is refused; no fallback
 stage is guessed. Publication still needs `gh` authentication with the repository
 permissions described below. Preserve failed drafts for explicit inspection.
+
+Set `NUSCHL_APT_DESTINATION` in the release shell to also publish the staged
+Debian package. The confirmation displays the SSH destination and the
+fingerprint of the archive key. The [APT host setup](distro-packaging.md#publishing)
+describes the NixOS module and the dedicated OpenPGP key.
 
 Both commands use the existing local publisher below; the manual commands are
 available for inspecting individual steps or supplying optional native Mac proof.
@@ -90,14 +95,14 @@ python3 release/local-release.py prepare \
 The output directory must not already exist. Omit `--build` to use already-built
 local products and fail if any exact-tag product is absent. `--build` selects the
 actual tag's `windows`, `windows-installer`, `macos-app`, `default`, `server`,
-`web-relay` and `web-site` outputs sequentially. The guard stops only its own
+`web-relay`, `web-site`, and `deb` outputs sequentially. The guard stops only its own
 build if `/tmp` free space or `MemAvailable` drops below 8 GiB. Client `TMPDIR`
 does not relocate daemon scratch; monitor/coordinate substantial builds.
 
 Preparation records each actual `.drv`, output store path and NAR hash, with
 `local-nix` provenance. The helper copies all
 Windows and macOS programs, complete scoped notices, static web files and exact
-Linux Nix references; Linux is not a portable native tarball. Windows/Mac archives
+Linux Nix references and the Debian binary package. Windows/Mac archives
 are canonical checked copies, and the Windows installer is the selected product's
 exact file. Original notice bytes and the 256-file updater
 limit remain enforced. Both entry points must exist in the static site.

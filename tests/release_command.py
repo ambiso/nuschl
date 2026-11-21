@@ -52,7 +52,8 @@ class ReleaseCommand(unittest.TestCase):
         self.key.parent.mkdir(parents=True)
         shutil.copyfile(self.fixture.secret, self.key)
         self.key.chmod(0o600)
-        self.patch(patch.dict(os.environ, {'HOME': str(self.home), 'XDG_CACHE_HOME': str(self.cache)}))
+        self.patch(patch.dict(os.environ, {'HOME': str(self.home), 'XDG_CACHE_HOME': str(self.cache),
+                                          'NUSCHL_APT_DESTINATION': ''}))
         fixture_bin = self.area / 'fixture-bin'
         fixture_bin.mkdir()
         fake_gh = fixture_bin / 'gh'
@@ -177,7 +178,7 @@ class ReleaseCommand(unittest.TestCase):
         self.assertEqual(stage.parent.stat().st_mode & 0o777, 0o700)
         self.assertEqual(self.pointer_path().stat().st_mode & 0o777, 0o600)
         self.assertNotIn('/tmp/', str(stage))
-        self.assertEqual(len(self.builds), 8)
+        self.assertEqual(len(self.builds), len(self.local.PRODUCTS) + 1)
         self.assertIn('?rev=' + self.pointer()['commit'] + '#update-signer', self.builds[0][-1])
         self.assertFalse(self.remote_calls)
         old = self.pointer_path().read_bytes()
@@ -203,6 +204,39 @@ class ReleaseCommand(unittest.TestCase):
         self.assertTrue(self.pointer()['published'])
         with self.assertRaisesRegex(ValueError, 'already published'):
             front.execute(True, confirm=lambda details: True)
+
+    def test_apt_failure_keeps_signed_stage_and_precedes_github_publication(self):
+        stage = self.prepare()
+        before = self.local.tree(stage / 'dist')
+        publication = ('release@dl.example:/srv/apt/', 'A' * 40,
+                       stage / 'dist/nuschl_0.1.0-1_amd64.deb')
+        with patch.object(front, 'apt_publication', return_value=publication), \
+             patch.object(front, 'publish_apt', side_effect=ValueError('fixture APT upload failed')) as upload:
+            with self.assertRaisesRegex(ValueError, 'fixture APT upload failed'):
+                front.execute(True, confirm=lambda details: True)
+            self.assertEqual(upload.call_args.args[-1], publication)
+            self.assertEqual(self.local.tree(stage / 'dist'), before)
+            self.assertFalse(self.pointer()['published'])
+            self.assertFalse(self.remote_calls)
+            upload.side_effect = None
+            front.execute(True, confirm=lambda details: True)
+        self.assertTrue(self.pointer()['published'])
+
+    def test_apt_upload_sends_indexes_before_signed_metadata(self):
+        stage = self.prepare()
+        destination = 'release@dl.example:/srv/apt/'
+        package = stage / 'dist/nuschl_0.1.0-1_amd64.deb'
+        with patch.object(self.local, 'run') as run:
+            front.publish_apt(self.pointer_path().parent, {'head': self.pointer()['commit']},
+                              (destination, 'A' * 40, package))
+        build, files, metadata = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(build[:2], ['nix', 'run'])
+        self.assertEqual(build[-1], package)
+        self.assertEqual(files[-1], destination)
+        self.assertEqual(metadata[-1], destination)
+        self.assertIn('--exclude=/dists/*/InRelease', files)
+        self.assertIn('--include=/dists/*/InRelease', metadata)
+        self.assertIn('--exclude=*', metadata)
 
     def test_missing_github_cli_refuses_before_publish_confirmation_or_tag_push(self):
         self.prepare()

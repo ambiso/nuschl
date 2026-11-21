@@ -14,7 +14,12 @@ mkdir -p "$pool"
 for deb in "$@"; do
   # shellcheck disable=SC2016 # dpkg-deb expands the fields
   name=$(dpkg-deb --showformat '${Package}_${Version}_${Architecture}' --show "$deb")
-  install -m644 "$deb" "$pool/$name.deb"
+  target=$pool/$name.deb
+  if test -e "$target"; then
+    cmp -s "$deb" "$target" || { echo "APT package version already exists with different bytes: $name" >&2; exit 1; }
+  else
+    install -m644 "$deb" "$target"
+  fi
 done
 sign() { gpg --batch --yes --local-user "$key" --digest-algo SHA512 "$@"; }
 for deb in "$pool"/*.deb; do
@@ -27,13 +32,23 @@ mkdir -p "$packages"
 apt-ftparchive -o APT::FTPArchive::MD5=false -o APT::FTPArchive::SHA1=false packages pool > "$packages/Packages"
 gzip -9 -n -c "$packages/Packages" > "$packages/Packages.gz"
 for suite in stable trixie noble; do
-  mkdir -p "dists/$suite/main/binary-amd64"
-  test "$suite" = stable || cp "$packages/Packages" "$packages/Packages.gz" "dists/$suite/main/binary-amd64/"
+  indices=dists/$suite/main/binary-amd64
+  mkdir -p "$indices"
+  test "$suite" = stable || cp "$packages/Packages" "$packages/Packages.gz" "$indices/"
+  # Keep indexed bytes available by digest while clients update across releases.
+  for algorithm in SHA256 SHA512; do
+    mkdir -p "$indices/by-hash/$algorithm"
+    for index in "$indices/Packages" "$indices/Packages.gz"; do
+      digest=$("${algorithm,,}sum" "$index")
+      install -m644 "$index" "$indices/by-hash/$algorithm/${digest%% *}"
+    done
+  done
   rm -f "dists/$suite/Release" "dists/$suite/InRelease" "dists/$suite/Release.gpg"
   apt-ftparchive -o APT::FTPArchive::MD5=false -o APT::FTPArchive::SHA1=false \
     -o APT::FTPArchive::Release::Origin=Nuschl -o APT::FTPArchive::Release::Label=Nuschl \
     -o APT::FTPArchive::Release::Suite="$suite" -o APT::FTPArchive::Release::Codename="$suite" \
     -o APT::FTPArchive::Release::Architectures=amd64 -o APT::FTPArchive::Release::Components=main \
+    -o APT::FTPArchive::Release::Acquire-By-Hash=yes \
     -o APT::FTPArchive::Release::ValidTime=2592000 release "dists/$suite" > Release
   mv Release "dists/$suite/Release"
   sign --clearsign --output "dists/$suite/InRelease" "dists/$suite/Release"
