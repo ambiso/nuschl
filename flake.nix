@@ -41,6 +41,7 @@
       nixosModules.default = import ./nix/module.nix { inherit self; };
       # The web host: web client, share links and the tunnel relay (docs/web.md).
       nixosModules.web = import ./nix/web-module.nix { inherit self; };
+      nixosModules.apt = ./nix/apt-module.nix;
       # The key-transparency auditor (docs/witness.md).
       nixosModules.witness = import ./nix/witness-module.nix { inherit self; };
       # The Mumble music bot for Subsonic servers (docs/musicbot.md).
@@ -1197,6 +1198,8 @@
               pkgs.cargo-audit
               pkgs.just
               pkgs.gh
+              pkgs.gnupg
+              pkgs.rsync
               # Release notes; release/local-release.py runs it offline with cliff.toml.
               pkgs.git-cliff
               pkgs.nixfmt
