@@ -1407,17 +1407,11 @@ fn video_stats(stats: Option<&VideoStats>, owned: bool) -> impl IntoElement {
                     .flex_shrink_0()
                     .child(
                         div()
-                            .truncate()
                             .text_xs()
                             .text_color(color(TEXT))
-                            .child(Text::new(label.into(), label.into())),
+                            .child(layout::text(label, label)),
                     )
-                    .child(
-                        div()
-                            .truncate()
-                            .text_sm()
-                            .child(Text::new((label, 1_usize).into(), value.into())),
-                    )
+                    .child(div().text_sm().child(layout::text((label, 1_usize), value)))
             }),
         )
 }
