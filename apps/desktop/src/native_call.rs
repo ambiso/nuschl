@@ -1033,7 +1033,7 @@ fn panel_with_toolbar(
             cx,
         ))
         .child(stop_button(call, cx));
-    let has_notices = call.source_pending.is_some() || call.reopening_screen || call.monitor;
+    let has_notices = call.source_pending.is_some() || call.reopening_screen;
     let notices = has_notices.then(|| {
         div()
             .when_some(call.source_pending, |notices, source| {
@@ -1046,12 +1046,6 @@ fn panel_with_toolbar(
                 notices.child(layout::text(
                     "native-call-screen-reopening",
                     "Reconnecting screen share…",
-                ))
-            })
-            .when(call.monitor && !call.reopening_screen, |notices| {
-                notices.child(layout::text(
-                    "native-call-monitor-warning",
-                    "Anyone watching can see the Nuschl window while it’s on the shared monitor.",
                 ))
             })
     });
