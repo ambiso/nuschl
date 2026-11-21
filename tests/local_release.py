@@ -60,8 +60,12 @@ class LocalRelease(unittest.TestCase):
             subprocess.run(['git', '-C', self.repo, *args], check=True, capture_output=True)
         self.products = {}
         for name in local.PRODUCTS:
-            out = self.root / ('store-' + name)
-            out.mkdir()
+            if name == 'deb':
+                out = self.root / ('a'*32 + '-nuschl_0.1.0-1_amd64.deb')
+                out.write_bytes(b'Synthetic Debian package')
+            else:
+                out = self.root / ('store-' + name)
+                out.mkdir()
             self.products[name] = {'output': str(out), 'drv': '/nix/store/' + 'a'*32 + '-' + name + '.drv',
                                    'narHash': 'sha256-' + 'A'*43 + '=', 'source_kind': 'local-nix'}
         win = Path(self.products['windows']['output'])
@@ -178,6 +182,26 @@ class LocalRelease(unittest.TestCase):
         (self.stage / 'dist/nuschl-0.1.0-windows-x86_64-setup.exe').write_bytes(b'MZ changed')
         with self.assertRaisesRegex(ValueError, 'installer differs'):
             local.check_products(self.stage, local.load(self.stage / 'ledger.json'), self.repo)
+
+    def test_debian_asset_must_be_the_selected_nix_product(self):
+        ledger = local.load(self.stage / 'ledger.json')
+        asset = local.debian_asset(ledger)
+        self.assertEqual(asset, 'nuschl_0.1.0-1_amd64.deb')
+        staged = self.stage / 'dist' / asset
+        self.assertEqual(staged.read_bytes(), Path(self.products['deb']['output']).read_bytes())
+        staged.write_bytes(b'foreign Debian package')
+        self.rewrite_ledger_binding()
+        with self.assertRaisesRegex(ValueError, 'Debian package differs'):
+            local.validate(self.stage)
+
+    def test_legacy_stage_keeps_its_product_set_and_passes_verification(self):
+        self.stage = self.root / 'legacy-stage'
+        with patch.object(local, 'PRODUCTS', local.LEGACY_PRODUCTS):
+            local.prepare(argparse.Namespace(source_repo=self.repo, tag='v0.1.0',
+                repository='fixture/project', output=self.stage, build=False))
+        self.sign()
+        self.assertIsNone(local.debian_asset(local.validate(self.stage)))
+        local.verify_signature(self.stage, SIGNER)
 
     def test_rehashed_derivation_or_nar_receipt_is_not_authority(self):
         ledger = local.load(self.stage / 'ledger.json')

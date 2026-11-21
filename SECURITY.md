@@ -190,6 +190,11 @@ the newest version.
 The hybrid signing pair stays on the local signing machine; hosted CI holds no
 signing secret or publication authority.
 
+**APT publication.** The signed release ledger binds the exact Nix-built Debian
+package. The optional APT publication uses a separate local OpenPGP key pinned by
+`packaging/nuschl-archive-keyring.asc`. The download host receives package bytes,
+signed indices and the archive public key over SSH.
+
 **Server.** `nuschld` is the network-facing process. It holds the TLS key (ring)
 and hashes passwords with argon2id under a concurrency limit and a per-account
 limit on failed guesses. It accepts self-signed client certificates (Mumble's

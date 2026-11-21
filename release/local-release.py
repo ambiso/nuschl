@@ -32,7 +32,8 @@ PROGRAMS = ('nuschl', 'nuschl-content-worker', 'nuschl-crypto-worker', 'nuschl-m
             'nuschl-media-worker', 'nuschl-storage-worker', 'nuschl-transfer-worker',
             'nuschl-rtc-worker', 'nuschl-video-worker',
             'nuschl-update-verify-ed25519', 'nuschl-update-verify-mldsa44')
-PRODUCTS = ('windows', 'windows-installer', 'macos-app', 'default', 'server', 'web-relay', 'web-site')
+LEGACY_PRODUCTS = ('windows', 'windows-installer', 'macos-app', 'default', 'server', 'web-relay', 'web-site')
+PRODUCTS = (*LEGACY_PRODUCTS, 'deb')
 
 
 def module(path):
@@ -243,10 +244,23 @@ def select_product(flake, name):
             'Nix selection must name exact store derivation/output')
     raw = json.loads(run(['nix', 'path-info', '--json', selected['output']]))
     info = raw[0] if isinstance(raw, list) else raw[selected['output']]
-    require(Path(selected['output']).is_dir() and
+    output = Path(selected['output'])
+    expected_type = output.is_file() and not output.is_symlink() if name == 'deb' else output.is_dir()
+    require(expected_type and
             re.fullmatch(r'sha256-[A-Za-z0-9+/]{43}=', info.get('narHash', '')),
             'selected Nix output is not built/has no NAR receipt; use --build')
     return {**selected, 'narHash': info['narHash'], 'source_kind': 'local-nix'}
+
+
+def debian_asset(ledger):
+    product = ledger['products'].get('deb')
+    if product is None:
+        return None
+    name = Path(product['output']).name
+    version = re.escape(ledger['version'])
+    match = re.fullmatch(rf'[0-9a-z]{{32}}-(nuschl_{version}-[0-9]+_amd64\.deb)', name)
+    require(match is not None, 'invalid Debian package name for the selected tag')
+    return match[1]
 
 
 def archive_tree(path, expected, prefix=None, *, zipped=False, source_root=None):
@@ -268,7 +282,8 @@ def nix_instructions(repository, commit):
 
 def check_products(stage, ledger, repository):
     flake = 'git+' + repository.resolve().as_uri() + '?rev=' + ledger['commit']
-    expected = {name: select_product(flake, name) for name in PRODUCTS}
+    deb = debian_asset(ledger)
+    expected = {name: select_product(flake, name) for name in (PRODUCTS if deb else LEGACY_PRODUCTS)}
     require(ledger['products'] == expected, 'selected-tag derivation/output/NAR evidence changed')
     windows = Path(expected['windows']['output'])
     mapped = tree(windows / 'bin')
@@ -286,6 +301,9 @@ def check_products(stage, ledger, repository):
     setup = f'nuschl-{version}-windows-x86_64-setup.exe'
     require(sha(stage / 'dist' / setup) == sha(Path(expected['windows-installer']['output']) / setup),
             'Windows installer differs from selected Nix product')
+    if deb:
+        require(sha(stage / 'dist' / deb) == sha(Path(expected['deb']['output'])),
+                'Debian package differs from selected Nix product')
     archive_tree(stage / f'dist/nuschl-{version}-web-site.tar',
                  tree(Path(expected['web-site']['output']), size=512 * 1024**2),
                  source_root=Path(expected['web-site']['output']))
@@ -619,6 +637,9 @@ def prepare(args):
     canonical_zip(windows, dist / f'nuschl-{version}-windows-x86_64.zip')
     setup = f'nuschl-{version}-windows-x86_64-setup.exe'
     shutil.copyfile(Path(products['windows-installer']['output']) / setup, dist / setup)
+    deb = debian_asset({'version': version, 'products': products})
+    if deb:
+        shutil.copyfile(products['deb']['output'], dist / deb)
     canonical_zip(install / 'Nuschl.app', dist / f'nuschl-{version}-macos-universal.zip', 'Nuschl.app')
     write(dist / f'nuschl-{version}-linux-nix.json', products)
     shutil.copyfile(source / 'flake.lock', dist / 'flake.lock')
@@ -681,6 +702,8 @@ def validate(stage):
             require(sha(stage / 'dist' / asset) == sha(path), 'updater asset differs from installation')
     allowed = updater_assets | {f'nuschl-{ledger["version"]}-{suffix}' for suffix in
         ('windows-x86_64.zip', 'windows-x86_64-setup.exe', 'macos-universal.zip', 'web-site.tar', 'linux-nix.json')} | {'flake.lock', 'INSTALL-NIX.txt'}
+    if deb := debian_asset(ledger):
+        allowed.add(deb)
     require(set(actual) == allowed, 'unexpected/missing release asset outside source-selected product set')
     require(manifest['platforms'] == expected, 'manifest file set/hash/URLs changed')
     check_installs(stage, stage / 'source')
@@ -868,7 +891,7 @@ def sign(args):
     print('Local hybrid signature and both-component verification passed; nothing uploaded.')
 
 
-def publish(args):
+def publish(args, *, before_upload=None):
     stage = args.stage.resolve(strict=True)
     ledger = validate(stage)
     verification = verification_record(stage, ledger)
@@ -899,6 +922,8 @@ def publish(args):
     releases = json.loads(run([args.gh, 'api', '--paginate', '--slurp', f'repos/{repo}/releases?per_page=100']))
     require(not any(r['tag_name'] == tag for page in releases for r in page),
             'release/draft already exists; never overwrite or resume unknown authority')
+    if before_upload:
+        before_upload()
     run([args.gh, 'release', 'create', tag, '--repo', repo, '--verify-tag', '--draft',
          '--title', 'Nuschl ' + ledger['version'], '--notes-file', notes_file,
          *sorted((stage / 'dist').iterdir())], timeout=1800)
