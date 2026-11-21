@@ -23,6 +23,7 @@ import types
 
 ROOT = Path(__file__).resolve().parents[1]
 OFFICIAL_REPOSITORY = 'nuschl-eu/nuschl'
+OFFICIAL_APT_DESTINATION = 'root@dl.nuschl.eu:/srv/dl.nuschl.eu/apt'
 AUR_REPOSITORY = 'ssh://aur@aur.archlinux.org/nuschl-bin.git'
 
 
@@ -259,8 +260,8 @@ def archive_fingerprint(key):
     return primary
 
 
-def apt_publication(ledger):
-    destination = os.environ.get('NUSCHL_APT_DESTINATION')
+def apt_publication(ledger, *, official):
+    destination = os.environ.get('NUSCHL_APT_DESTINATION') or (OFFICIAL_APT_DESTINATION if official else '')
     if not destination:
         return None
     require(re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]*@[A-Za-z0-9][A-Za-z0-9.-]*:/[A-Za-z0-9_./-]+', destination),
@@ -372,9 +373,8 @@ def execute(publish=False, *, confirm=None):
                 ledger = verify_stage(stage, signer)
                 require(all(ledger[k] == selection[k] for k in ('repository', 'tag', 'commit')),
                         'Remembered release belongs to another source/tag.')
-                apt = apt_publication(ledger)
                 official = selection['repository'].lower() == OFFICIAL_REPOSITORY
-                require(apt or not official, 'Set NUSCHL_APT_DESTINATION for the official APT and AUR release.')
+                apt = apt_publication(ledger, official=official)
                 details = summary(selection, stage, 'PUBLISH these already-signed release bytes.')
                 details.extend(notes_summary(stage, ledger))
                 if apt:

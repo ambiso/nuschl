@@ -148,13 +148,10 @@ then export and commit the public key again.
 ### A release
 
 Run `just release` to stage the exact-tag Debian package with the other
-artifacts. From the release shell, set the SSH destination and confirm the
-publication:
+artifacts, then confirm publication with `just release --publish`.
 
-```sh
-export NUSCHL_APT_DESTINATION=release@dl.nuschl.eu:/srv/dl.nuschl.eu/apt
-just release --publish
-```
+Official releases default to `root@dl.nuschl.eu:/srv/dl.nuschl.eu/apt`. Set
+`NUSCHL_APT_DESTINATION` to override the destination, for example with an SSH alias.
 
 The publisher uses the fingerprint checked into `packaging/nuschl-archive-keyring.asc`.
 Its private key must be available to GnuPG in the release shell. Keep the local
@@ -183,5 +180,5 @@ re-sign it and upload the indexes:
 ```sh
 archive="${XDG_CACHE_HOME:-$HOME/.cache}/nuschl-release/apt-archive"
 nix run .#apt-repository -- "$archive" "$fpr"
-rsync -rt --delay-updates "$archive/dists" "$NUSCHL_APT_DESTINATION/"
+rsync -rt --delay-updates "$archive/dists" "${NUSCHL_APT_DESTINATION:-root@dl.nuschl.eu:/srv/dl.nuschl.eu/apt}/"
 ```

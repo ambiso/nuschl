@@ -248,8 +248,11 @@ class ReleaseCommand(unittest.TestCase):
 
     def test_official_release_updates_aur_after_apt_and_can_retry(self):
         stage = self.prepare()
-        publication = ('release@dl.example:/srv/apt/', 'A' * 40, stage / 'dist/fixture.deb')
         uploads = []
+
+        def upload_apt(root, selection, publication):
+            self.assertEqual(publication[0], 'root@dl.nuschl.eu:/srv/dl.nuschl.eu/apt/')
+            uploads.append('APT')
 
         def upload_aur(*args):
             self.assertFalse(self.created)
@@ -257,18 +260,18 @@ class ReleaseCommand(unittest.TestCase):
             if uploads == ['APT', 'AUR']:
                 raise ValueError('fixture AUR push failed')
 
-        with patch.object(front, 'OFFICIAL_REPOSITORY', 'fixture/project'):
-            with self.assertRaisesRegex(ValueError, 'Set NUSCHL_APT_DESTINATION'):
+        with patch.object(front, 'OFFICIAL_REPOSITORY', 'fixture/project'), \
+             patch.object(front, 'archive_fingerprint', return_value='A' * 40), \
+             patch.object(front, 'publish_apt', side_effect=upload_apt), \
+             patch.object(front, 'publish_aur', side_effect=upload_aur):
+            with self.assertRaisesRegex(ValueError, 'fixture AUR push failed'):
                 front.execute(True, confirm=lambda details: True)
-            self.assertFalse(self.remote_calls)
-            with patch.object(front, 'apt_publication', return_value=publication), \
-                 patch.object(front, 'publish_apt', side_effect=lambda *args: uploads.append('APT')), \
-                 patch.object(front, 'publish_aur', side_effect=upload_aur):
-                with self.assertRaisesRegex(ValueError, 'fixture AUR push failed'):
-                    front.execute(True, confirm=lambda details: True)
-                self.assertFalse(self.pointer()['published'])
-                self.assertFalse(self.created)
-                front.execute(True, confirm=lambda details: True)
+            self.assertFalse(self.pointer()['published'])
+            self.assertFalse(self.created)
+            front.execute(True, confirm=lambda details: True)
+            with patch.dict(os.environ, {'NUSCHL_APT_DESTINATION': 'release@dl.example:/srv/apt'}):
+                ledger = self.local.load(stage / 'ledger.json')
+                self.assertEqual(front.apt_publication(ledger, official=True)[0], 'release@dl.example:/srv/apt/')
         self.assertEqual(uploads, ['APT', 'AUR', 'APT', 'AUR'])
         self.assertTrue(self.pointer()['published'])
 

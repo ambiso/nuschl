@@ -49,10 +49,11 @@ expired, missing, unrelated or already-published stage is refused; no fallback
 stage is guessed. Publication still needs `gh` authentication with the repository
 permissions described below. Preserve failed drafts for explicit inspection.
 
-For official releases, set `NUSCHL_APT_DESTINATION` in the release shell.
-Publication uploads the Debian package and updates `nuschl-bin` on the AUR
-before the GitHub release. See the [package publishing setup](distro-packaging.md#publishing)
-for the download host, OpenPGP key, and AUR SSH access.
+Official releases upload the Debian package to `root@dl.nuschl.eu:/srv/dl.nuschl.eu/apt`
+and update `nuschl-bin` on the AUR before the GitHub release. Set
+`NUSCHL_APT_DESTINATION` to use a different SSH destination. See the
+[package publishing setup](distro-packaging.md#publishing) for the download host,
+OpenPGP key and AUR SSH access.
 
 Both commands use the existing local publisher below; the manual commands are
 available for inspecting individual steps or supplying optional native Mac proof.
