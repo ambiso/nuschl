@@ -57,8 +57,9 @@ negation. State constraints as direct rules.
 
 - CI is one command that runs the same locally: `nix build -f ci.nix`.
 - The crate2nix graph is generated: regenerate it with `just crate2nix`.
-- Use the Nix and cargo defaults for parallelism. Keep scratch on disk and stop
-  your own build when `/tmp` or available memory falls below 8 GiB.
+- Use the Nix and Cargo defaults for parallelism. Adjust build concurrency
+  when needed to prevent out-of-memory failures. Keep scratch on disk and stop
+  your own build when `/tmp` has less than 8 GiB free.
 
 ## Changes and issues
 
