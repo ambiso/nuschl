@@ -25,7 +25,7 @@ fn periods_are_utc_months_and_days() {
 fn steps_follow_the_excess_over_the_paced_share() {
     let directory = nuschl_testkit::temp_dir();
     let mut traffic = traffic(&directory, 30_000, NOVEMBER);
-    // A burst at the start of the month runs at full quality.
+    // A burst can use the share already accrued.
     let middle = NOVEMBER + (DECEMBER - NOVEMBER) / 2;
     traffic.add(15_000);
     assert_eq!(
@@ -48,6 +48,26 @@ fn steps_follow_the_excess_over_the_paced_share() {
     assert_eq!(traffic.step(DECEMBER), 0);
     assert_eq!(traffic.sent(), 0);
     assert!(!traffic.exhausted());
+}
+
+#[test]
+fn accrued_monthly_share_covers_hours_of_above_average_traffic() {
+    let directory = nuschl_testkit::temp_dir();
+    let path = directory.path().join("traffic");
+    std::fs::write(path, format!("{NOVEMBER} 9800000000000\n")).expect("save");
+    let middle = NOVEMBER + (DECEMBER - NOVEMBER) / 2;
+    let mut traffic = traffic(&directory, 20_000_000_000_000, middle);
+
+    // Send 160 Mbit/s, above the month's average of about 62 Mbit/s.
+    for minute in 1..=360 {
+        traffic.add(1_200_000_000);
+        let step = traffic.step(middle + minute * 60);
+        if minute <= 240 {
+            assert_eq!(step, 0, "minute {minute}");
+        }
+    }
+    assert_eq!(traffic.step(middle + 6 * 3_600), 1);
+    assert_eq!(traffic.step(middle + 9 * 3_600), 0);
 }
 
 #[test]

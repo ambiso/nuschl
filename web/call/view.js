@@ -5,7 +5,7 @@
 // tiles too; `controls.js` starts and stops them.
 
 import { qualityOptions } from "./controls.js";
-import { TIERS, fitTier, qualityRequest } from "./signal.js";
+import { TIERS, fitTier, publishTier, qualityRequest } from "./signal.js";
 import { VideoStats } from "./receiver-stats.js";
 
 const endings = {
@@ -229,7 +229,8 @@ export class View {
     } : {
       source: track.source,
       sender: () => this.call.direct.sender(track.source.transceiver.sender),
-      requested: () => TIERS[kind][track.source.tier] ?? TIERS[kind].at(-1),
+      requested: () => publishTier(kind, track.source.tier),
+      screenRate: kind === "screen" && this.call.screenRate,
     }) };
     details.addEventListener("toggle", () => {
       if (details.open && details.isConnected) this.stats.open({ ...target });

@@ -77,7 +77,7 @@ const limitations = new Map([
   ["other", "Sender encoder"],
 ]);
 
-export function publisherMeasurements({ width, height, frameRate }, requested, { cap, reason, scale }, sample, previous) {
+export function publisherMeasurements({ width, height, frameRate }, requested, { cap, reason, scale, screenRate }, sample, previous) {
   const planned = Number.isFinite(scale) && scale >= 1
     ? dimensions(Math.floor(width / scale), Math.floor(height / scale)) : "—";
   const ceiling = cap ? `${tier(cap)} · ${bitrateText(cap[2])}` : "—";
@@ -86,7 +86,8 @@ export function publisherMeasurements({ width, height, frameRate }, requested, {
   const bitrate = bytes !== undefined && span > 0 && span <= MAX_SAMPLE_SPAN_MS ? 8000 * bytes / span : undefined;
   let active = limitations.get(sample?.qualityLimitationReason);
   if (!active) {
-    if (cap?.some((value, index) => value < requested[index])) {
+    const limited = screenRate ? reason && reason !== "within_target" : cap?.[2] < requested[2];
+    if (cap && (cap[0] < requested[0] || cap[1] < requested[1] || limited)) {
       active = reason ? videoLimitLabel(reason) : "Server encoder ceiling · reason unavailable";
     } else if (Math.min(width, height) + 2 < requested[0]) {
       active = "Capture resolution";
@@ -102,13 +103,13 @@ export function publisherMeasurements({ width, height, frameRate }, requested, {
 }
 
 function displayPublisher(target, sender, sample, status = "") {
-  const { source, requested } = target;
+  const { source, requested, screenRate } = target;
   const scale = sender?.getParameters().encodings?.[0]?.scaleResolutionDownBy;
   const onSfu = sender === source.transceiver.sender;
   const cap = onSfu ? source.remoteCap : undefined;
   const reason = onSfu ? source.remoteLimit : undefined;
   const previous = target.sampleSender === sender ? target.previous : undefined;
-  display(target, publisherMeasurements(source.track.getSettings(), requested(), { cap, reason, scale }, sample, previous), status);
+  display(target, publisherMeasurements(source.track.getSettings(), requested(), { cap, reason, scale, screenRate }, sample, previous), status);
   target.previous = sample;
   target.sampleSender = sender;
 }

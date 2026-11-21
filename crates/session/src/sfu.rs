@@ -198,6 +198,7 @@ impl Connection {
             let ServerMessage::Hello {
                 nonce,
                 video_limits,
+                screen_rate,
             } = read(&mut socket).await?
             else {
                 return Err(Error::Protocol("expected a challenge"));
@@ -224,6 +225,7 @@ impl Connection {
                     }),
                     codecs: options.codecs.to_vec(),
                     video_limits,
+                    screen_rate,
                 },
             )
             .await?;

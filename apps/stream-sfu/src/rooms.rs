@@ -63,6 +63,7 @@ pub struct Join {
     pub create: Option<(Key, Key)>,
     pub decoders: crate::protocol::Decoders,
     pub video_limits: bool,
+    pub screen_rate: bool,
 }
 
 pub fn prove(key: &Key, label: &[u8], nonce: &Nonce) -> [u8; 32] {

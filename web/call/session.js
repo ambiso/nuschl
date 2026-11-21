@@ -4,7 +4,7 @@
 // who is in the call, and this page's own camera and screen on the publish
 // connection, encrypted in the stream worker and encoded in the call codec.
 import { DirectPaths, ENCODINGS } from "./direct.js";
-import { MAX_PEERS, TIERS, join, parse } from "./signal.js";
+import { MAX_PEERS, join, parse, publishTier } from "./signal.js";
 import { preferences, scalabilityMode, sendCodecs } from "./support.js";
 
 /** A publisher whose keys have not arrived is asked again after this. */
@@ -93,11 +93,14 @@ export class Call extends EventTarget {
     switch (message?.type) {
       case "hello": {
         this.videoLimitReports = message.video_limits === true;
+        this.screenRate = message.screen_rate === true;
         const admission = await this.stream.request({ kind: "admit", nonce: message.nonce });
         if (this.ownsLease && admission.create) {
           this.leaseBody = JSON.stringify({ stream_id: this.opened.room, host_key: admission.create.host_key });
         }
-        this.send(join(this.opened, admission, this.codecs, this.videoLimitReports));
+        this.send(join(this.opened, admission, this.codecs, {
+          videoLimits: this.videoLimitReports, screenRate: this.screenRate,
+        }));
         return;
       }
       case "welcome":
@@ -321,8 +324,11 @@ export class Call extends EventTarget {
     if (kind === "audio") return;
     source.applying = Promise.resolve(source.applying).then(async () => {
       if (this.sources.get(kind) !== source || this.ended) return;
-      const local = TIERS[kind][source.tier] ?? TIERS[kind].at(-1);
-      const [height, fps, bitrate] = local.map((value, index) => Math.min(value, source.remoteCap?.[index] ?? value));
+      const [localHeight, localFps, localRate] = publishTier(kind, source.tier);
+      const [remoteHeight, remoteFps, remoteRate] = source.remoteCap ?? [localHeight, localFps, localRate];
+      const height = Math.min(localHeight, remoteHeight);
+      const fps = Math.min(localFps, remoteFps);
+      const bitrate = kind === "screen" && this.screenRate ? remoteRate : Math.min(localRate, remoteRate);
       const { sender } = source.transceiver;
       const parameters = sender.getParameters();
       const encoding = parameters.encodings?.[0];
@@ -353,6 +359,7 @@ export class Call extends EventTarget {
       const mode = await scalabilityMode(globalThis, this.codec, kind, source.track.getSettings());
       if (this.sources.get(kind) !== source || this.ended) continue;
       source.transceiver = this.sender(kind, source.track, mode);
+      source.remoteCap = undefined;
       source.remoteLimit = undefined;
     }
     await this.offer();

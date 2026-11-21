@@ -10,8 +10,8 @@
 //! transport up while no source is forwarded.
 //!
 //! ```text
-//! SFU → peer  hello {nonce, video_limits?}
-//! peer → SFU  join {room, verifier, proof, host_proof?, create?: {admit_key, host_key}, codecs, video_limits?}
+//! SFU → peer  hello {nonce, video_limits?, screen_rate?}
+//! peer → SFU  join {room, verifier, proof, host_proof?, create?: {admit_key, host_key}, codecs, video_limits?, screen_rate?}
 //! SFU → peer  welcome {peer, role, peers: [{id, role}], codec, turn?: {urls, username, credential}}
 //!             | error {reason}
 //! peer → SFU  offer {sdp, screens?: [mid]} publish connection; screens names
@@ -106,6 +106,9 @@ pub const MAX_MESSAGE_BYTES: usize = 256 * 1024;
 /// Subscribers (a key request is 1,272 bytes); the SFU relays them unread.
 pub const MAX_KEY_MESSAGE: usize = 16 * 1024;
 
+/// Maximum bounded encoder target for a negotiated screen rate, in bits per second.
+pub const MAX_SCREEN_BITRATE: u64 = 50_000_000;
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ClientMessage {
@@ -120,6 +123,8 @@ pub enum ClientMessage {
         codecs: Vec<Codec>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         video_limits: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        screen_rate: bool,
     },
     Offer {
         sdp: String,
@@ -220,6 +225,8 @@ pub enum ServerMessage {
         nonce: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         video_limits: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        screen_rate: bool,
     },
     Welcome(Welcome),
     Joined {
@@ -360,6 +367,7 @@ mod tests {
             hello,
             ServerMessage::Hello {
                 video_limits: false,
+                screen_rate: false,
                 ..
             }
         ));
@@ -395,6 +403,7 @@ mod tests {
                 host_proof: None,
                 create: Some(_),
                 video_limits: false,
+                screen_rate: false,
                 ref codecs,
                 ..
             } if codecs == &[Codec::Vp9, Codec::Av1]

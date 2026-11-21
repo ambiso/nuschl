@@ -167,3 +167,24 @@ test("relay-only and calls with a third participant skip direct signaling and IC
   }
   assert.equal(Connection.opened.length, initial);
 });
+
+test("available upload above the screen tier baseline can offer direct despite a higher encoder cap", async (t) => {
+  globalThis.RTCPeerConnection = Connection;
+  globalThis.RTCRtpScriptTransform = class {};
+  const host = call(1);
+  host.screenRate = true;
+  const initial = Connection.opened.length;
+  let upload = 9_900_000;
+  host.publisher = { getStats: async () => bitrates(upload) };
+  host.sources.set("screen", {
+    track, tier: "2", remoteCap: [2160, 60, 24_000_000],
+    transceiver: { mid: "s0", sender: sender(track, { maxBitrate: 24_000_000 }, () => {}) },
+  });
+  const publish = new DirectPaths(host);
+  t.after(() => publish.close());
+  await publish.receive({ peer: 2, publisher: true, data: '{"type":"ready"}' });
+  assert.equal(Connection.opened.length, initial);
+  upload = 10_000_000;
+  await publish.tick();
+  assert.equal(Connection.opened.length, initial + 1);
+});

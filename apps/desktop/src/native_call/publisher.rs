@@ -10,6 +10,7 @@ use nuschl_client::native::sfu::{Media, MediaEvent, Purpose, VideoKind};
 use nuschl_ipc::video::{Capture, CaptureLimits, Error, Source, VideoFrame};
 #[cfg(target_os = "linux")]
 use nuschl_ipc::video::{CaptureFailure, portal};
+use nuschl_protocol::sfu::VideoLimit;
 #[cfg(target_os = "linux")]
 use std::os::unix::process::ExitStatusExt as _;
 use std::{
@@ -142,6 +143,7 @@ impl Publisher {
             kind: video_kind(source),
             remote: None,
             remote_limit: None,
+            direct: self.direct,
             bitrate_estimate: None,
             hardware: None,
             capture_format: None,
@@ -340,6 +342,7 @@ impl Publisher {
                 self.direct = active;
                 self.estimate = None;
                 for track in self.slots.iter_mut().flatten() {
+                    track.encoding.direct = active;
                     track.stats.direct(active);
                 }
             }
@@ -379,7 +382,7 @@ impl Publisher {
                         limit: track.encoding.active_limit(quality, track.applied),
                         budget_bps: track.encoding.bitrate_estimate,
                         target: track.applied,
-                        ceiling: track.encoding.remote,
+                        ceiling: track.encoding.remote.filter(|_| !track.encoding.direct),
                         hardware: track.encoding.hardware,
                     }),
                 );
@@ -496,7 +499,8 @@ fn recoverable(error: &Error) -> bool {
 struct Encoding {
     kind: VideoKind,
     remote: Option<CaptureLimits>,
-    remote_limit: Option<nuschl_protocol::sfu::VideoLimit>,
+    remote_limit: Option<VideoLimit>,
+    direct: bool,
     bitrate_estimate: Option<u32>,
     hardware: Option<bool>,
     capture_format: Option<(u16, u16)>,
@@ -508,7 +512,10 @@ impl Encoding {
         CaptureLimits {
             height: tier.height,
             fps: tier.fps.into(),
-            bitrate: video_rate(tier.ceiling),
+            bitrate: video_rate(match self.kind {
+                VideoKind::Camera => tier.ceiling,
+                VideoKind::Screen => nuschl_protocol::sfu::MAX_SCREEN_BITRATE,
+            }),
         }
     }
 
@@ -522,10 +529,16 @@ impl Encoding {
             bitrate: initial_bitrate,
             ..local
         });
+        let bitrate = if self.direct && self.kind == VideoKind::Screen {
+            self.bitrate_estimate
+                .map_or(initial_bitrate, |_| local.bitrate)
+        } else {
+            remote.bitrate
+        };
         CaptureLimits {
             height: local.height.min(remote.height),
             fps: local.fps.min(remote.fps),
-            bitrate: local.bitrate.min(remote.bitrate),
+            bitrate: local.bitrate.min(bitrate),
         }
     }
 
@@ -540,21 +553,26 @@ impl Encoding {
         } else if ceiling != self.preferred(quality) {
             match (self.remote, self.remote_limit) {
                 (None, _) => "Initial encoder ceiling",
+                (_, Some(VideoLimit::WithinTarget)) if self.kind == VideoKind::Screen => {
+                    self.capture_limit(applied)
+                }
                 (_, Some(limit)) => stats::limit_label(limit),
                 _ => "Server encoder ceiling · reason unavailable",
             }
         } else {
-            match self.capture_format {
-                Some((height, _)) if height.saturating_add(2) < applied.height => {
-                    "Capture resolution"
-                }
-                Some((_, fps)) if fps < applied.fps => match self.hardware {
-                    Some(false) => "Software encoder frame rate",
-                    _ => "Capture frame rate",
-                },
-                Some(_) => "Within selected quality",
-                None => "Unavailable",
-            }
+            self.capture_limit(applied)
+        }
+    }
+
+    fn capture_limit(&self, applied: CaptureLimits) -> &'static str {
+        match self.capture_format {
+            Some((height, _)) if height.saturating_add(2) < applied.height => "Capture resolution",
+            Some((_, fps)) if fps < applied.fps => match self.hardware {
+                Some(false) => "Software encoder frame rate",
+                _ => "Capture frame rate",
+            },
+            Some(_) => "Within selected quality",
+            None => "Unavailable",
         }
     }
 
@@ -588,7 +606,10 @@ impl Encoding {
         };
         limits.height = limits.height.min(height);
         limits.fps = limits.fps.min(u16::from(fps));
-        limits.bitrate = video_rate(budget.min(tier.ceiling));
+        limits.bitrate = video_rate(match self.kind {
+            VideoKind::Camera => budget.min(tier.ceiling),
+            VideoKind::Screen => budget,
+        });
         limits
     }
 }
@@ -601,7 +622,7 @@ fn video_rate(bitrate: u64) -> u32 {
 mod tests {
     #[cfg(target_os = "linux")]
     use super::{CaptureFailure, CaptureMode, Error, recoverable};
-    use super::{CaptureLimits, Encoding, Publisher, Quality, Source, VideoKind};
+    use super::{CaptureLimits, Encoding, Publisher, Quality, Source, VideoKind, VideoLimit};
     use futures_util::FutureExt as _;
     use std::future::pending;
     #[cfg(target_os = "linux")]
@@ -696,7 +717,8 @@ mod tests {
                 fps: 60,
                 bitrate: 8_000_000,
             }),
-            remote_limit: None,
+            remote_limit: Some(VideoLimit::WithinTarget),
+            direct: false,
             bitrate_estimate: None,
             hardware: None,
             capture_format: None,
@@ -716,6 +738,20 @@ mod tests {
         assert_eq!(
             encoding.active_limit(quality, full),
             "Software encoder frame rate"
+        );
+        encoding.bitrate_estimate = Some(26_000_000);
+        assert_eq!(encoding.limits(quality, full).bitrate, 8_000_000);
+        encoding.direct = true;
+        assert_eq!(encoding.limits(quality, full).bitrate, 26_000_000);
+        encoding.direct = false;
+        encoding.remote.as_mut().unwrap().bitrate = 27_000_000;
+        assert_eq!(
+            encoding.limits(quality, full),
+            CaptureLimits {
+                height: 1440,
+                fps: 60,
+                bitrate: 26_000_000
+            }
         );
         encoding.bitrate_estimate = Some(100_000);
         let reduced = encoding.limits(quality, full);
