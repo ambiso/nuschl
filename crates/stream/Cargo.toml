@@ -19,6 +19,7 @@ hpke-rs = "0.8.0"
 hpke-rs-libcrux = { version = "0.8.0", default-features = false }
 libcrux-chacha20poly1305 = "0.0.10"
 libcrux-hkdf = "0.0.9"
+libcrux-hmac = "0.0.9"
 # 0.0.10 fixes RUSTSEC-2026-0330 and RUSTSEC-2026-0331.
 libcrux-kem = { version = "0.0.10", default-features = false }
 libcrux-sha2 = "0.0.9"

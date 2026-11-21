@@ -16,7 +16,6 @@ workspace = true
 
 [dependencies]
 hex = "0.4.3"
-libcrux-hmac = "0.0.9"
 nuschl-sframe = { path = "../sframe", version = "0.3.0" }
 nuschl-stream = { path = "../stream", version = "0.3.0" }
 rand_core = "0.10.1"

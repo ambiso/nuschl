@@ -49,16 +49,32 @@ def make_case(name, packets, pushes, operations, ticks, gains):
 
 
 def scenarios(reference):
+    warmup=24
     voice=reference.encode(signal(24*960,1),1,24000,application=2048,bandwidth=1103,fec=True,packet_loss=25)
     gains=[.25+(i%4)*.25 for i in range(24)]
-    pushes=[(i*2,i*20,i,False) for i in range(20) if i not in (9,13,14)]
-    pushes=[(seq,15 if index==2 else 25 if index==1 else 195 if index==10 else 290 if index==15 else at,index,index==19) for seq,at,index,_ in pushes]
-    pushes += [(28,400,14,False),(10,105,5,False)]
-    ops=[(2+i*2,'fec' if i in (9,14) else 'plc' if i==13 else 'packet',10 if i==9 else 15 if i==14 else i,2) for i in range(20)]
-    # Same live context, sequence reset after a drained terminator.
-    pushes += [(0,500,20,False),(2,520,21,True)]
-    ops += [(52,'reset',0,0),(52,'packet',20,2),(54,'packet',21,2)]
-    fixed=make_case('loss-reorder-fec-plc-restart',voice,pushes,ops,58,gains)
+    fixed_packets=[voice[0]]*warmup+voice
+    fixed_gains=[gains[0]]*warmup+gains
+    first_end=warmup+19
+    lost={warmup+9:'fec',warmup+13:'plc',warmup+14:'fec'}
+    # Establish a stable baseline, then advance the following packet and later
+    # arrivals by 20 ms. The reordered packet is available before its pull, and
+    # following data keeps the queue inside the time-stretch deadband and
+    # the first packet after the two-packet loss is queued before concealment.
+    reordered=warmup+1
+    def arrival(index):
+        if index==reordered:return index*20+1
+        if index==warmup+15:return index*20-40
+        return index*20-(20 if index>reordered else 0)
+    pushes=[(i*2,arrival(i),i,i==first_end) for i in range(first_end+1) if i not in lost]
+    late=warmup+14
+    pushes += [(late*2,(warmup+20)*20,late,False)]
+    pushes += [((warmup+5)*2,arrival(warmup+5)+5,warmup+5,False)]
+    ops=[(2+i*2,lost.get(i,'packet'),i+1 if lost.get(i)=='fec' else i,2) for i in range(first_end+1)]
+    # Keep the same receiver alive across an explicit terminator and restart.
+    pushes += [(0,(warmup+25)*20,warmup+20,False),(2,(warmup+26)*20,warmup+21,True)]
+    restart=warmup*2+52
+    ops += [(restart,'reset',0,0),(restart,'packet',warmup+20,2),(restart+2,'packet',warmup+21,2)]
+    fixed=make_case('loss-reorder-fec-plc-restart',fixed_packets,pushes,ops,2*warmup+58,fixed_gains)
     base=reference.encode(signal(48_000,2),2,64000,application=2051,frame_samples=480)
     durations=list(range(1,13))
     packets=[];at=0

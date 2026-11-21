@@ -9,8 +9,12 @@ import { join as joinPath } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { unsized } from "./frames.js";
-import { MAX_MESSAGE, MAX_PEERS, join, linkOf, parse } from "./signal.js";
-import { preferences, sendCodecs, support } from "./support.js";
+import { canShareAudio } from "./controls.js";
+import { publisherMeasurements, receiverRates } from "./receiver-stats.js";
+import { Call } from "./session.js";
+import { MAX_MESSAGE, MAX_PEERS, TIERS, fitTier, join, linkOf, parse, qualityRequest } from "./signal.js";
+import { preferences, scalabilityMode, sendCodecs, support } from "./support.js";
+import { View } from "./view.js";
 
 const directory = process.env.STREAM_WASM;
 assert.ok(directory, "STREAM_WASM must name the stream worker's wasm-bindgen build");
@@ -32,6 +36,37 @@ const location = (href) => {
   return { origin: url.origin, pathname: url.pathname, search: url.search, hash: url.hash, host: url.host };
 };
 const request = (worker, body) => JSON.parse(worker.handle(JSON.stringify({ v: 1, ...body }), Date.now()));
+
+test("creating a browser call returns only the guest invitation, with host admission in the worker", () => {
+  const worker = new StreamWorker();
+  const opened = request(worker, { kind: "create", host, allow_direct: false });
+  assert.equal(opened.creator, true);
+  const link = new URL(opened.invitation);
+  assert.equal(link.host, host);
+  assert.equal(link.pathname, "/call");
+  assert.deepEqual([...new URLSearchParams(link.hash.slice(1)).keys()], ["v", "k", "h"]);
+  const joined = request(worker, { kind: "admit", nonce: "0".repeat(64) });
+  assert.ok(joined.create.host_key);
+  assert.ok(joined.host_proof);
+  const guest = new StreamWorker();
+  assert.equal(request(guest, { kind: "open", host, link: opened.invitation }).creator, false);
+  const guestAdmission = request(guest, { kind: "admit", nonce: "0".repeat(64) });
+  assert.equal(guestAdmission.create, null);
+  assert.equal(guestAdmission.host_proof, null);
+  assert.equal(request(worker, { kind: "admit", nonce: "0".repeat(64) }).create.host_key, joined.create.host_key);
+});
+
+test("audio capture requires a browser tab and excludes call tabs", () => {
+  const capture = (displaySurface, handle) => ({
+    getSettings: () => ({ displaySurface }),
+    getCaptureHandle: () => handle,
+  });
+  assert.equal(canShareAudio(capture("browser", null)), true);
+  assert.equal(canShareAudio(capture("browser", { handle: "nuschl-call" })), false);
+  assert.equal(canShareAudio(capture("monitor", null)), false);
+  assert.equal(canShareAudio(capture("window", null)), false);
+  assert.equal(canShareAudio({ getSettings: () => ({ displaySurface: "browser" }) }), false);
+});
 
 test("the page hands the worker the call link and reads relay-only from the query", () => {
   const fragment = `#v=1&k=${b64(S)}&h=${b64(V)}`;
@@ -142,6 +177,148 @@ test("SFU messages: the page's bounds", () => {
   assert.throws(() => parse("{"));
 });
 
+test("viewer quality uses tile pixels and the v1 request layout", () => {
+  assert.equal(fitTier("camera", 300), 1);
+  assert.equal(fitTier("camera", 700), 2);
+  assert.equal(fitTier("screen", 720), 0);
+  assert.equal(fitTier("screen", 1200), 2);
+  assert.equal(fitTier("screen", 4000), 3);
+  assert.deepEqual(qualityRequest(0x01020304050607, "screen", 3),
+    { type: "quality", request: "0100010203040506070103" });
+  assert.equal(qualityRequest(23, "camera", 0).request, "0100000000000000170000");
+});
+
+test("an explicit receive tier applies before layout and survives a tile resize", () => {
+  class Element extends EventTarget {
+    constructor(ownerDocument) {
+      super();
+      this.ownerDocument = ownerDocument;
+      this.children = [];
+    }
+    setAttribute() {}
+    replaceChildren(...children) { this.children = children; }
+    append(...children) { this.children.push(...children); }
+  }
+  const document = { createElement: () => new Element(document) };
+  const track = { peer: 4, screen: true };
+  const video = {};
+  const sent = [];
+  const view = {
+    document,
+    call: { tracks: new Map([["source", track]]), send: (message) => sent.push(message) },
+    tiers: new Map(),
+    sentTiers: new WeakMap(),
+    sizes: new Map(),
+    observer: { observe() {} },
+  };
+  const { control, requested } = View.prototype.viewerQuality.call(view, "source", video, track, "Screen");
+  assert.equal(requested(), undefined);
+  assert.deepEqual(sent, []);
+  const select = control.children[1];
+  select.value = "2";
+  select.dispatchEvent(new Event("change"));
+  assert.equal(requested(), TIERS.screen[2]);
+  assert.deepEqual(sent, [{ type: "quality", request: "0100000000000000040102" }]);
+  view.sizes.get(video).resize(400);
+  assert.equal(requested(), TIERS.screen[2]);
+  assert.equal(sent.length, 1);
+});
+
+test("negotiated video limits follow only the accepted video track", async () => {
+  const call = new Call({ request: async () => ({ proof: "proof" }) }, { codecs: ["av1"] });
+  call.opened = { room: "room", verifier: "verifier" };
+  const messages = [];
+  call.send = (message) => messages.push(message);
+  const hello = { type: "hello", nonce: "01".repeat(32) };
+  await call.receive(parse(JSON.stringify(hello)));
+  assert.equal(messages[0].video_limits, undefined);
+  assert.equal(messages[0].screen_rate, undefined);
+  const track = { peer: 4, kind: "video" };
+  call.tracks.set("1", track);
+  const report = { type: "video_limit", mid: "1", peer: 4, limit: "sfu_host" };
+  await call.receive(parse(JSON.stringify(report)));
+  assert.equal(track.limit, undefined);
+  await call.receive(parse(JSON.stringify({ ...hello, video_limits: true, screen_rate: true })));
+  assert.equal(messages[1].video_limits, true);
+  assert.equal(messages[1].screen_rate, true);
+  assert.throws(() => parse(JSON.stringify({ ...hello, screen_rate: 1 })), /malformed hello/);
+  await call.receive(parse(JSON.stringify({ ...report, peer: 7 })));
+  assert.equal(track.limit, undefined);
+  await call.receive(parse(JSON.stringify(report)));
+  assert.equal(track.limit, "sfu_host");
+  await call.receive(parse(JSON.stringify({ ...report, limit: "within_target" })));
+  assert.equal(track.limit, "within_target");
+  for (const invalid of [{ peer: 0 }, { mid: "x".repeat(17) }, { limit: "unknown" }]) {
+    assert.throws(() => parse(JSON.stringify({ ...report, ...invalid })), /malformed video_limit/);
+  }
+});
+
+test("publisher quality applies bounded encoder limits to the matching MID", async () => {
+  const request = "0100000000000000040100";
+  const quality = { type: "quality", request, source: "3", max_height: 720, max_fps: 15, max_bitrate: 800_000 };
+  assert.equal(parse(JSON.stringify({ type: "quality", request })), null);
+  for (const limits of [{ source: "x".repeat(17) }, { max_height: 0 }, { max_fps: 61 }, { max_bitrate: 1.5 }, { max_bitrate: 50_000_001 }]) {
+    assert.throws(() => parse(JSON.stringify({ ...quality, ...limits })), /malformed quality/);
+  }
+
+  const call = new Call({}, { codecs: ["av1"] });
+  const applied = [];
+  const sender = {
+    getParameters: () => ({ encodings: [{}] }),
+    setParameters: async ({ encodings }) => applied.push(encodings[0]),
+  };
+  const transceiver = { mid: "3", sender };
+  const track = { getSettings: () => ({ width: 3440, height: 1440 }) };
+  call.sources.set("screen", { transceiver, track });
+
+  await call.receive(parse(JSON.stringify(quality)));
+  assert.deepEqual(applied, [{ scaleResolutionDownBy: 2, maxFramerate: 15, maxBitrate: 800_000 }]);
+  transceiver.mid = "4";
+  await call.receive(quality);
+  assert.equal(applied.length, 1);
+  await call.receive({ ...quality, source: "4", max_height: 2160, max_fps: 60, max_bitrate: 15_000_000 });
+  assert.deepEqual(applied[1], { scaleResolutionDownBy: 1, maxFramerate: 60, maxBitrate: 15_000_000 });
+  await call.setPublishTier("screen", "2");
+  assert.deepEqual(applied[2], { scaleResolutionDownBy: 1, maxFramerate: 60, maxBitrate: 8_000_000 });
+  await call.setPublishTier("screen", "1");
+  assert.deepEqual(applied[3], {
+    scaleResolutionDownBy: 1440 / 1080, maxFramerate: 30, maxBitrate: 3_000_000,
+  });
+  await call.receive({ ...quality, source: "4" });
+  assert.deepEqual(applied[4], { scaleResolutionDownBy: 2, maxFramerate: 15, maxBitrate: 800_000 });
+
+  call.screenRate = true;
+  await call.receive(parse(JSON.stringify({ ...quality, source: "4", max_height: 2160, max_fps: 60, max_bitrate: 24_000_000 })));
+  assert.deepEqual(applied[5], { scaleResolutionDownBy: 1440 / 1080, maxFramerate: 30, maxBitrate: 24_000_000 });
+  await call.setPublishTier("screen", "2");
+  assert.deepEqual(applied[6], { scaleResolutionDownBy: 1, maxFramerate: 60, maxBitrate: 24_000_000 });
+  await call.receive({ ...quality, source: "4", max_height: 1440, max_fps: 60, max_bitrate: 6_000_000 });
+  assert.deepEqual(applied[7], { scaleResolutionDownBy: 1, maxFramerate: 60, maxBitrate: 6_000_000 });
+  call.sources.set("camera", { transceiver: { mid: "5", sender }, track, tier: "2" });
+  await call.receive({ ...quality, source: "5", max_height: 1080, max_fps: 30, max_bitrate: 4_000_000 });
+  assert.deepEqual(applied[8], { scaleResolutionDownBy: 2, maxFramerate: 30, maxBitrate: 2_000_000 });
+});
+
+test("ultrawide publisher stats distinguish capture, verified caps and encoded resolution", () => {
+  const capture = { width: 3440, height: 1440 };
+  const target = TIERS.screen[2];
+  const previous = { id: "screen", timestamp: 1000, bytesSent: 0 };
+  const encoded = {
+    id: "screen", timestamp: 2000, bytesSent: 250_000, framesPerSecond: 30,
+    frameWidth: 2580, frameHeight: 1080, qualityLimitationReason: "bandwidth",
+  };
+  assert.deepEqual(publisherMeasurements(capture, target, { cap: TIERS.screen[3], scale: 1 }, encoded, previous),
+    ["3440 × 1440", "1440p60", "2160p60 · 15.0 Mb/s", "3440 × 1440", "2580 × 1080", "30.0 fps", "2.0 Mb/s", "Sender upload"]);
+  assert.deepEqual(publisherMeasurements(capture, target, { cap: TIERS.screen[1], scale: 1440 / 1080, reason: "traffic_budget" }),
+    ["3440 × 1440", "1440p60", "1080p30 · 3.0 Mb/s", "2580 × 1080", "—", "—", "—", "SFU traffic budget pacing"]);
+  assert.deepEqual(publisherMeasurements(capture, target, {
+    cap: [1440, 60, 24_000_000], scale: 1, reason: "sfu_viewer", screenRate: true,
+  }).slice(-2), ["—", "SFU per-viewer cap"]);
+  const idle = { ...encoded, frameWidth: 3440, frameHeight: 1440, framesPerSecond: 0, bytesSent: 0, qualityLimitationReason: "none" };
+  assert.deepEqual(publisherMeasurements(capture, target, { scale: 1 }, idle, previous).slice(-2),
+    ["0.0 kb/s", "Within selected quality"]);
+});
+
 test("support: encoded transforms and AV1 or VP9, AV1 first", () => {
   const scope = (mimeTypes, transform = class {}) => ({
     RTCRtpScriptTransform: transform,
@@ -167,6 +344,20 @@ test("publishing: the call codec only, with retransmission, or nothing", () => {
   assert.deepEqual(sendCodecs({}, "vp9"), []);
 });
 
+test("one AV1 encoding uses layers with confirmed encoder support", async () => {
+  const video = { width: 1920, height: 1080, frameRate: 30 };
+  const scope = { navigator: { mediaCapabilities: { encodingInfo: async ({ type, video }) => {
+    assert.equal(type, "webrtc");
+    assert.equal(video.contentType, "video/AV1");
+    assert.equal(video.width, 1920);
+    return { supported: true, smooth: video.scalabilityMode === "L2T2_KEY" };
+  } } } };
+  assert.equal(await scalabilityMode(scope, "av1", "screen", video), "L2T2_KEY");
+  assert.equal(await scalabilityMode(scope, "av1", "camera", video), undefined);
+  assert.equal(await scalabilityMode(scope, "vp9", "screen", video), undefined);
+  assert.equal(await scalabilityMode({}, "av1", "screen", video), undefined);
+});
+
 test("frames: the AV1 depacketizer's size field comes off again", () => {
   const sent = [0x08, ...Array.from({ length: 200 }, (_, i) => i)];
   const sized = Uint8Array.from([0x0a, 200 | 0x80, 1, ...sent.slice(1)]);
@@ -175,5 +366,38 @@ test("frames: the AV1 depacketizer's size field comes off again", () => {
   for (const other of [[0x08, 1, 2], [0x28], [0x0a, 3, 1], [0x0a, 0x80], [0x2a]]) {
     const frame = Uint8Array.from(other);
     assert.deepEqual([...unsized(frame)], other, String(other));
+  }
+});
+
+test("receiver stats use interval frame, byte and jitter buffer counters", () => {
+  const previous = {
+    id: "video", timestamp: 4000, framesDecoded: 120, presentedFrames: 118,
+    bytesReceived: 500_000, jitterBufferDelay: 0.5, jitterBufferEmittedCount: 60,
+  };
+  const current = {
+    id: "video", timestamp: 5000, framesDecoded: 150, presentedFrames: 146,
+    bytesReceived: 625_000, jitterBufferDelay: 1, jitterBufferEmittedCount: 80,
+  };
+  assert.deepEqual(receiverRates(previous, current), {
+    decoded: 30, presented: 28, bitrate: 1_000_000, jitterBufferMs: 25,
+  });
+  assert.deepEqual(receiverRates(previous, { ...current, timestamp: 6000 }), {
+    decoded: 15, presented: 14, bitrate: 500_000, jitterBufferMs: 25,
+  });
+});
+
+test("receiver stats discard stale samples and handle unavailable or reset counters", () => {
+  const previous = {
+    id: "video", timestamp: 4000, framesDecoded: 120, presentedFrames: 118,
+    bytesReceived: 500_000, jitterBufferDelay: 0.5, jitterBufferEmittedCount: 60,
+  };
+  const current = { ...previous, timestamp: 5000, bytesReceived: 0, presentedFrames: undefined };
+  assert.deepEqual(receiverRates(previous, current), {
+    decoded: 0, presented: undefined, bitrate: undefined, jitterBufferMs: undefined,
+  });
+  assert.deepEqual(receiverRates(undefined, current), {});
+  assert.deepEqual(receiverRates(previous, { ...current, id: "replacement" }), {});
+  for (const timestamp of [undefined, 3999, 4000, 9001]) {
+    assert.deepEqual(receiverRates(previous, { ...current, timestamp }), {});
   }
 });

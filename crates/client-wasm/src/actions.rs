@@ -191,7 +191,7 @@ pub fn validate(
         return Err(STALE.into());
     }
     match call.method.as_str() {
-        "send_text" | "older" => {
+        "send_text" | "start_video_call" | "older" => {
             require(call.index.is_none() && call.target.is_none() && call.subject.is_none())?;
             let (index, channel) = selection.ok_or(STALE)?;
             let current = server(
@@ -200,7 +200,7 @@ pub fn validate(
                 index,
                 &proof.server,
                 true,
-                call.method == "send_text",
+                call.method != "older",
             )?;
             let channel = current.channels.get(channel).ok_or(STALE)?;
             let selected = proof.selected.ok_or(STALE)?;
@@ -217,7 +217,7 @@ pub fn validate(
                             && captured.session == session
                             && counter(&expected.instance) == Some(captured.instance),
                     )?;
-                    if call.method == "send_text" {
+                    if call.method != "older" {
                         require(current.users.get(&session).is_some_and(|user| {
                             user.instance == captured.instance && user.instance != 0
                         }))?;
@@ -226,7 +226,7 @@ pub fn validate(
                 TextTarget::Channel(target) => require(
                     target == channel.id
                         && selected.peer.is_none()
-                        && (call.method != "send_text" || channel.instance != 0),
+                        && (call.method == "older" || channel.instance != 0),
                 )?,
                 _ if call.method == "older" => require(selected.peer.is_none())?,
                 _ => return Err(STALE.into()),

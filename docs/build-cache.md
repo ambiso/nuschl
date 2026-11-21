@@ -50,7 +50,7 @@ Darwin retains the existing patched cargo-zigbuild, SDK 14.5 and deployment targ
 one explicit binary with no default features. This is an intermediate step toward
 the separately queued full crate2nix cross migration. The desktop Cargo roots no
 longer enable either verifier feature. Final Windows/macOS slices copy the exact
-separate products before checking all nine programs; macOS checks their minimum
+separate products before checking the complete program set. macOS checks their minimum
 OS before universal lipo and app signing. Existing complete notice scopes remain.
 
 Build the engines independently:
@@ -62,7 +62,7 @@ python3 tests/build_cache_cross.py --artifacts --output /disk/new-cross-proof
 ```
 
 The second regression inspects real production derivations and feature/provider
-roots, exact final-helper copy inputs, and all nine required program assertions.
+roots, exact final-helper copy inputs, and the complete program set.
 With `--artifacts`, it checks each output has exactly one executable, actual PE
 imports have no MinGW runtime DLLs, all four Mach-O slices have the expected
 architecture/minimum OS and no Nix-store dylib imports, and both universal helper

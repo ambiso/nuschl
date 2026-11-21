@@ -269,7 +269,7 @@ impl Client {
             base: format!("{url}{separator}api/integration/v1/"),
             authorization: format!("Bearer {key}"),
             // The library transport: no redirects, so the key never follows one.
-            agent: subsonic::transport_agent(Some(TIMEOUT), TIMEOUT),
+            agent: subsonic::transport_agent(url, Some(TIMEOUT), TIMEOUT),
         }
     }
 

@@ -100,6 +100,7 @@
             || lib.hasSuffix ".sql" path
             || lib.hasSuffix ".json" path
             || lib.hasSuffix ".vp8" path
+            || lib.hasSuffix "/apps/rtc-worker/tests/fixtures/screen.av1" path
             || lib.hasSuffix ".svg" path
             # The Windows icon and the resource script embed-resource compiles.
             || lib.hasSuffix ".ico" path
@@ -291,6 +292,28 @@
               mkdir -p "$out/share/licenses/nuschl"
               cp -R ${rtcNotices.bundle}/share/licenses/nuschl/. "$out/share/licenses/nuschl/"
             '';
+        videoWorker = crates.project.workspaceMembers.nuschl-video-worker.build.override {
+          features = [ "vaapi" ];
+        };
+        videoProbeNoticeScope = "video-probe-${pkgs.stdenv.hostPlatform.rust.rustcTarget}";
+        videoProbe =
+          pkgs.runCommand "nuschl-video-probe"
+            {
+              nativeBuildInputs = [ pkgs.makeWrapper ];
+              meta.mainProgram = "nuschl-video-probe";
+            }
+            ''
+              mkdir -p "$out/bin"
+              cp ${videoWorker}/bin/nuschl-video-{worker,probe} "$out/bin/"
+              install -Dm644 ${./LICENSE} "$out/share/licenses/nuschl/EUPL-1.2"
+              ${installNotices (releaseNotices.forScope videoProbeNoticeScope).bundle}
+              wrapProgram "$out/bin/nuschl-video-probe" --prefix PATH : ${
+                lib.makeBinPath [
+                  pkgs.bubblewrap
+                  pkgs.util-linux
+                ]
+              }
+            '';
         serverPackage =
           pkgs.runCommand "nuschld-${common.version}"
             {
@@ -331,7 +354,9 @@
               }")
             mkdir -p "$out/libexec/nuschl"
             mv "$out/bin/nuschl" "$out/libexec/nuschl/nuschl"
-            for worker in nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-media-worker nuschl-storage-worker nuschl-transfer-worker nuschl-update-verify-ed25519 nuschl-update-verify-mldsa44; do
+            install -Dm755 ${videoWorker}/bin/nuschl-video-worker "$out/bin/nuschl-video-worker"
+            install -Dm755 ${crates.project.workspaceMembers.nuschl-rtc-worker.build}/bin/nuschl-rtc-worker "$out/bin/nuschl-rtc-worker"
+            for worker in nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-media-worker nuschl-storage-worker nuschl-transfer-worker nuschl-video-worker nuschl-rtc-worker nuschl-update-verify-ed25519 nuschl-update-verify-mldsa44; do
               test -f "$out/bin/$worker"
               ln -s "../../bin/$worker" "$out/libexec/nuschl/$worker"
             done
@@ -391,6 +416,19 @@
             pkgs.bubblewrap
             pkgs.util-linux
           ];
+          nuschl-rtc-worker.testInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            pkgs.bubblewrap
+            pkgs.util-linux
+          ];
+          nuschl-video-worker = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+            features = [ "vaapi" ];
+            testInputs = [
+              pkgs.bubblewrap
+              pkgs.util-linux
+              pkgs.ffmpeg-headless
+              pkgs.pipewire
+            ];
+          };
           # The math worker's confinement tests spawn sandboxed workers, and
           # the CLI's e2ee tests run the crypto worker through the sandbox.
           nuschl-math-worker.testInputs = [
@@ -404,6 +442,17 @@
           nuschl-crypto-worker.testInputs = [
             pkgs.bubblewrap
             pkgs.util-linux
+          ];
+          nuschl-session.testInputs = [
+            pkgs.bubblewrap
+            pkgs.util-linux
+            crates.project.workspaceMembers.nuschl-crypto-worker.build
+            crates.project.workspaceMembers.nuschl-stream-sfu.build
+          ]
+          ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            pkgs.coturn
+            crates.project.workspaceMembers.nuschl-rtc-worker.build
+            videoWorker
           ];
           # The signer's tests need its feature; the default build has none.
           nuschl-update-worker.features = [ "signer" ];
@@ -490,7 +539,7 @@
               "aarch64-apple-darwin"
             ];
           };
-        desktopCrates = "-p nuschl -p nuschl-content-worker -p nuschl-crypto-worker -p nuschl-math-worker -p nuschl-media-worker -p nuschl-storage-worker -p nuschl-transfer-worker";
+        desktopCrates = "-p nuschl -p nuschl-content-worker -p nuschl-crypto-worker -p nuschl-math-worker -p nuschl-media-worker -p nuschl-storage-worker -p nuschl-transfer-worker -p nuschl-video-worker -p nuschl-rtc-worker";
         crossCommon = {
           inherit version;
           inherit src dummySrc;
@@ -512,9 +561,10 @@
             __CRANE_EXPORT_CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER = "${pkgs.coreutils}/bin/false";
             CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS = "-C target-feature=+crt-static -L native=${mingw.windows.pthreads}/lib";
             postInstall = ''
+              rm -f "$out/bin/nuschl-video-probe.exe"
               cp ${windowsVerifiers.ed25519}/bin/nuschl-update-verify-ed25519.exe "$out/bin/"
               cp ${windowsVerifiers.mldsa44}/bin/nuschl-update-verify-mldsa44.exe "$out/bin/"
-              for program in nuschl nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-media-worker nuschl-storage-worker nuschl-transfer-worker nuschl-update-verify-ed25519 nuschl-update-verify-mldsa44; do
+              for program in nuschl nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-media-worker nuschl-storage-worker nuschl-transfer-worker nuschl-video-worker nuschl-rtc-worker nuschl-update-verify-ed25519 nuschl-update-verify-mldsa44; do
                 test -f "$out/bin/$program.exe"
               done
               if ${pkgs.binutils}/bin/objdump -p "$out/bin/nuschl.exe" | grep -iE 'DLL Name:.*(libgcc|libstdc|libwinpthread)'; then
@@ -588,9 +638,10 @@
             // {
               pname = "nuschl-macos-${arch}";
               postInstall = ''
+                rm -f "$out/bin/nuschl-video-probe"
                 cp ${macVerifier arch "ed25519"}/bin/nuschl-update-verify-ed25519 "$out/bin/"
                 cp ${macVerifier arch "mldsa44"}/bin/nuschl-update-verify-mldsa44 "$out/bin/"
-                for program in nuschl nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-media-worker nuschl-storage-worker nuschl-transfer-worker nuschl-update-verify-ed25519 nuschl-update-verify-mldsa44; do
+                for program in nuschl nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-media-worker nuschl-storage-worker nuschl-transfer-worker nuschl-video-worker nuschl-rtc-worker nuschl-update-verify-ed25519 nuschl-update-verify-mldsa44; do
                   test -f "$out/bin/$program"
                 done
               ''
@@ -601,7 +652,7 @@
           pkgs.runCommand "nuschl-macos-universal" { nativeBuildInputs = [ pkgs.llvmPackages.llvm ]; }
             ''
               mkdir -p "$out/bin"
-              for program in nuschl nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-media-worker nuschl-storage-worker nuschl-transfer-worker nuschl-update-verify-ed25519 nuschl-update-verify-mldsa44; do
+              for program in nuschl nuschl-content-worker nuschl-crypto-worker nuschl-math-worker nuschl-media-worker nuschl-storage-worker nuschl-transfer-worker nuschl-video-worker nuschl-rtc-worker nuschl-update-verify-ed25519 nuschl-update-verify-mldsa44; do
                 llvm-lipo -create ${macSlice "x86_64"}/bin/$program ${macSlice "aarch64"}/bin/$program \
                   -output "$out/bin/$program"
                 llvm-lipo "$out/bin/$program" -verify_arch x86_64 arm64
@@ -643,6 +694,8 @@
                 <key>CFBundleVersion</key><string>$version</string>
                 <key>LSMinimumSystemVersion</key><string>${macMinimum}</string>
                 <key>NSHighResolutionCapable</key><true/>
+                <key>NSCameraUsageDescription</key><string>Nuschl shares your camera when you start it in a video call.</string>
+                <key>NSScreenCaptureUsageDescription</key><string>Nuschl shares the screen or window you choose in a video call.</string>
                 <key>NSMicrophoneUsageDescription</key><string>Nuschl sends your voice to the people in your channel.</string>
                 <key>NSAudioCaptureUsageDescription</key><string>Nuschl removes what your speakers play from your microphone, so others do not hear it. The sound stays on this Mac.</string>
               </dict>
@@ -829,6 +882,7 @@
         packages.macos-app = macApp;
         packages.macos-aarch64 = macSlice "aarch64";
         packages.rtc-probe = rtcPackage;
+        packages.${if pkgs.stdenv.hostPlatform.isLinux then "video-probe" else null} = videoProbe;
         # The web client's tunnel relay and its probe (docs/web.md), from cached crates.
         packages.web-relay = crates.project.workspaceMembers."nuschl-web-relay".build;
         packages.stream-sfu = crates.project.workspaceMembers."nuschl-stream-sfu".build;
@@ -855,15 +909,21 @@
         '';
         # The call page and its stream worker, served by the stream host at /call
         # (nix/stream-module.nix).
-        packages.call-site = pkgs.runCommand "nuschl-call-site" { } ''
-          mkdir -p "$out/licenses/nuschl"
-          cp ${./web/call}/*.{html,css,js} "$out/"
-          cp ${./web/site/nuschl.svg} "$out/nuschl.svg"
-          rm "$out"/*.test.js
-          cp ${webClient.streamWasm}/nuschl_stream_wasm{.js,_bg.wasm} "$out/"
-          cp ${./LICENSE} "$out/licenses/nuschl/EUPL-1.2"
-          cp -R ${releaseNotices.callPage.bundle}/share/licenses/nuschl/. "$out/licenses/nuschl/"
-        '';
+        packages.call-site =
+          let
+            site = lib.cleanSourceWith {
+              src = ./web/call;
+              filter = path: _: !(lib.hasSuffix ".test.js" path);
+            };
+          in
+          pkgs.runCommand "nuschl-call-site" { } ''
+            mkdir -p "$out/licenses/nuschl"
+            cp ${site}/*.{html,css,js} "$out/"
+            cp ${./web/site/nuschl.svg} "$out/nuschl.svg"
+            cp ${webClient.streamWasm}/nuschl_stream_wasm{.js,_bg.wasm} "$out/"
+            cp ${./LICENSE} "$out/licenses/nuschl/EUPL-1.2"
+            cp -R ${releaseNotices.callPage.bundle}/share/licenses/nuschl/. "$out/licenses/nuschl/"
+          '';
         apps.rtc-probe =
           (flake-utils.lib.mkApp {
             drv = rtcPackage;
@@ -930,6 +990,7 @@
             node --test tests/content_window.unit.mjs tests/sdk_rpc.unit.mjs tests/sdk_rpc_startup.unit.mjs \
               tests/web_audio.unit.mjs tests/web_content.unit.mjs tests/share_links.mjs \
               tests/web_output_quality.mjs tests/web_playout_clock.mjs
+            node tests/web_playout_worker.mjs ${webClient.audioWasm}
             touch $out
           '';
           # The call page's stream worker on wasm32 replays the native transcript.
@@ -938,6 +999,14 @@
               ${./crates/stream-wasm/test-vectors/transcript.txt}
             touch $out
           '';
+          # The audio worker's simd128 build encodes and decodes to the scalar build's bits.
+          audio-wasm-simd =
+            pkgs.runCommand "nuschl-audio-wasm-simd" { nativeBuildInputs = [ pkgs.nodejs ]; }
+              ''
+                node ${./tests/web_audio_simd.mjs} ${webClient.audioWasmScalar} ${webClient.audioWasm} \
+                  ${./tests/fixtures/music-290k.opus}
+                touch $out
+              '';
           # The call page's link handling, admission, worker messages and bounds.
           call-page = pkgs.runCommand "nuschl-call-page" { nativeBuildInputs = [ pkgs.nodejs ]; } ''
             cp -R ${./web/call} call
@@ -1067,6 +1136,7 @@
               inherit pkgs;
               relay = crates.project.workspaceMembers."nuschl-web-relay".build;
               module = self.nixosModules.web;
+              streamModule = self.nixosModules.stream;
             };
             # The screen-share TURN relay and stream host under their modules,
             # with a fake SFU peer (`nix build .#checks.x86_64-linux.vm-turn-stream`).
@@ -1082,6 +1152,12 @@
               turnModule = self.nixosModules.turn;
               streamModule = self.nixosModules.stream;
               callSite = self.packages.${system}.call-site;
+              nativeCallTest = crates.sessionTest;
+              nativeCallWorkers = [
+                crates.project.workspaceMembers.nuschl-crypto-worker.build
+                crates.project.workspaceMembers.nuschl-rtc-worker.build
+                videoWorker
+              ];
             };
             # The music bot under its module, against Murmur and a fake library
             # (`nix build .#checks.x86_64-linux.vm-musicbot`).
@@ -1106,22 +1182,7 @@
               nuschl = package;
               sourceIdentity = self.rev or self.outPath;
               contentWorker = crates.project.workspaceMembers."nuschl-content-worker".build;
-              # Export the actual cached test ELF without running its private
-              # network fixture in a build sandbox or rewriting its bytes.
-              nativeFetchTest =
-                (crates.project.workspaceMembers."nuschl-session".build.override {
-                  runTests = true;
-                  testPreRun = ''
-                    case "$f" in
-                      */nuschl_session-*)
-                        test ! -e "$out/bin/nuschl-preview-fetch-test"
-                        install -Dm0555 "$f" "$out/bin/nuschl-preview-fetch-test"
-                        ;;
-                    esac
-                    continue
-                  '';
-                }).test.overrideAttrs
-                  { dontFixup = true; };
+              nativeFetchTest = crates.sessionTest;
             };
           }
         );
@@ -1147,6 +1208,8 @@
             ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
               pkgs.bubblewrap
               pkgs.util-linux
+              pkgs.ffmpeg-headless
+              pkgs.coturn
             ];
           LD_LIBRARY_PATH = lib.optionalString pkgs.stdenv.hostPlatform.isLinux (
             lib.makeLibraryPath buildInputs

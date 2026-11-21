@@ -4,6 +4,10 @@
 // strings (the stream host requires Trusted Types). This page's own sources show as
 // tiles too; `controls.js` starts and stops them.
 
+import { qualityOptions } from "./controls.js";
+import { TIERS, fitTier, publishTier, qualityRequest } from "./signal.js";
+import { VideoStats } from "./receiver-stats.js";
+
 const endings = {
   transforms: ["Browser not supported", "Use a current Firefox or Chromium."],
   codecs: ["Browser not supported", "No AV1 or VP9 video. Use a current Firefox or Chromium."],
@@ -16,9 +20,10 @@ const endings = {
   full: ["Call full", ""],
   busy: ["Call host busy", "Try again later."],
   rate: ["Call host busy", "Try again later."],
+  bandwidth: ["Call bandwidth is full", "Try rejoining when a video stops or its quality drops."],
   relay: ["Relay unavailable", "This call host offers no relay."],
 };
-const rejoin = new Set(["lost", "media", "slow", "busy", "rate"]);
+const rejoin = new Set(["lost", "media", "slow", "busy", "rate", "bandwidth"]);
 
 const element = (document, name, attributes = {}, ...children) => {
   const node = document.createElement(name);
@@ -35,17 +40,35 @@ export class View {
   pinned = null;
   /** A tile per video track mid, kept while the track lasts. */
   tiles = new Map();
+  audio = new Map();
+  /** Explicit viewer choices survive a publisher's encoder restart. */
+  tiers = new Map();
+  sentTiers = new WeakMap();
+  sizes = new Map();
 
-  constructor(document, call) {
+  constructor(root, call, retry = () => this.document.defaultView.location.reload()) {
+    const document = root.ownerDocument ?? root;
     this.document = document;
     this.call = call;
-    const $ = (id) => document.getElementById(id);
+    this.retry = retry;
+    this.stats = new VideoStats(document);
+    this.observer = new document.defaultView.ResizeObserver((entries) => {
+      for (const { target, contentRect, devicePixelContentBoxSize } of entries) {
+        const device = devicePixelContentBoxSize?.[0];
+        const pixels = device ? Math.min(device.inlineSize, device.blockSize) :
+          Math.min(contentRect.width, contentRect.height) * document.defaultView.devicePixelRatio;
+        this.sizes.get(target)?.resize(pixels);
+      }
+    });
+    const $ = (id) => root.querySelector(`#${id}`);
     this.nodes = {
       status: $("status"), stage: $("stage"), large: $("large"), grid: $("grid"), empty: $("empty"),
+      audio: $("shared-audio"),
       roster: $("roster"), count: $("count"), controls: $("controls"), host: $("host-actions"),
       ending: $("ending"), main: $("call"),
     };
-    call.addEventListener("change", () => this.render());
+    this.changed = () => this.render();
+    call.addEventListener("change", this.changed);
     this.render();
   }
 
@@ -57,15 +80,25 @@ export class View {
   showEnding(reason) {
     const [title, detail] = endings[reason] ?? ["Disconnected", ""];
     const { ending, main } = this.nodes;
+    this.close();
     main.hidden = true;
     const actions = [];
-    if (rejoin.has(reason) || !(reason in endings)) {
+    if (this.retry && (rejoin.has(reason) || !(reason in endings))) {
       const button = element(this.document, "button", { type: "button" }, "Rejoin");
-      button.addEventListener("click", () => this.document.defaultView.location.reload());
+      button.addEventListener("click", this.retry);
       actions.push(button);
     }
     ending.replaceChildren(element(this.document, "h1", {}, title), ...(detail ? [element(this.document, "p", {}, detail)] : []), ...actions);
     ending.hidden = false;
+  }
+
+  close() {
+    this.call.removeEventListener("change", this.changed);
+    this.stats.close();
+    this.observer.disconnect();
+    this.sharedAudio(new Map());
+    for (const size of this.sizes.values()) size.cancel();
+    this.sizes.clear();
   }
 
   render() {
@@ -74,17 +107,31 @@ export class View {
     const { status, large, grid, empty, roster, count, host } = this.nodes;
     const values = call.self === null ? ["Connecting"] : [call.codec.toUpperCase()];
     if (call.relay) values.push("Relay only");
+    else if (call.direct.active) values.push("Direct video");
     status.textContent = values.join(" · ");
 
     // Tiles: one per video track and per own source; the large view holds the pinned
     // tile or someone else's screen.
-    const own = [...call.sources].map(([kind, source]) => [
+    const own = [...call.sources].filter(([kind]) => kind !== "audio").map(([kind, source]) => [
       `own:${source.track.id}`,
-      { peer: call.self, screen: kind === "screen", stream: source.stream, own: true },
+      { peer: call.self, screen: kind === "screen", stream: source.stream, own: true, source },
     ]);
-    const videos = [...call.tracks].filter(([, track]) => track.kind === "video").concat(own);
-    const shown = new Set(videos.map(([key]) => key));
-    for (const [key, tile] of this.tiles) if (!shown.has(key)) { tile.remove(); this.tiles.delete(key); }
+    const videos = [...call.tracks].filter(([, track]) => track.kind === "video")
+      .map(([mid, track]) => [mid, call.direct.track(track)]).concat(own);
+    this.sharedAudio(call.tracks);
+    const shown = new Map(videos);
+    for (const [key, tile] of this.tiles) {
+      const video = tile.querySelector("video");
+      if (shown.get(key)?.stream === video.srcObject) continue;
+      this.observer.unobserve(video);
+      this.sizes.get(video)?.cancel();
+      this.sizes.delete(video);
+      const stats = tile.querySelector(".video-stats");
+      if (stats) this.stats.close(stats);
+      tile.remove();
+      this.tiles.delete(key);
+    }
+    for (const peer of this.tiers.keys()) if (!call.peers.has(peer)) this.tiers.delete(peer);
     // A pin stays while its source is away, as during an encoder restart.
     const pinned = videos.find(([, track]) => pin(track) === this.pinned)?.[0];
     const featured = pinned ?? videos.find(([, track]) => track.screen && !track.own)?.[0] ?? null;
@@ -104,7 +151,27 @@ export class View {
     const people = [[call.self, call.role], ...[...call.peers].sort(([a], [b]) => a - b)].filter(([id]) => id !== null);
     count.textContent = String(people.length);
     roster.replaceChildren(...people.map(([id, role]) => this.person(id, role)));
-    host.hidden = call.role !== "host";
+    if (host) host.hidden = call.role !== "host";
+  }
+
+  sharedAudio(tracks) {
+    const { audio } = this.nodes;
+    for (const [mid, { track, player, row }] of this.audio) {
+      if (tracks.get(mid) === track) continue;
+      player.srcObject = null;
+      row.remove();
+      this.audio.delete(mid);
+    }
+    for (const [mid, track] of tracks) {
+      if (track.kind !== "audio" || this.audio.has(mid)) continue;
+      const label = `${this.name(track.peer)} · Shared audio`;
+      const player = element(this.document, "audio", { controls: "", "aria-label": label });
+      player.srcObject = track.stream;
+      const row = element(this.document, "div", {}, element(this.document, "span", {}, label), player);
+      audio.append(row);
+      this.audio.set(mid, { track, player, row });
+    }
+    audio.hidden = this.audio.size === 0;
   }
 
   tile(mid, track) {
@@ -121,18 +188,109 @@ export class View {
     const tile = element(this.document, "figure", { class: "tile", "data-state": "waiting", "data-peer": String(track.peer) },
       video, element(this.document, "figcaption", {}, label), toggle);
     if (track.screen) tile.dataset.screen = "";
-    if (track.own) tile.dataset.own = "";
+    if (track.own) {
+      tile.dataset.own = "";
+      const kind = track.screen ? "screen" : "camera";
+      video.addEventListener("resize", () => this.call.applyCap(kind, track.source).catch(() => {}));
+    }
+    if (track.own || track.receiver) tile.append(this.videoStats(mid, video, track, label));
     video.addEventListener("loadeddata", () => { tile.dataset.state = "playing"; });
     this.tiles.set(mid, tile);
     return tile;
   }
 
+  videoStats(mid, video, track, label) {
+    const doc = this.document;
+    const details = element(doc, "details", { class: "video-stats" });
+    const list = element(doc, "dl");
+    const jitter = { title: "Average time a frame spent in the receiver’s jitter buffer" };
+    const names = track.own
+      ? ["Capture resolution", "Send target", "Call server limit", "Encoder size ceiling", "Encoded resolution", "Encoded FPS", "Send bitrate", "Active limit"]
+      : ["Resolution", "Decoded frame rate", "Presented frame rate", "Receive bitrate", "Jitter buffer delay", "Receive target", "Active limit"];
+    const values = names.map(name => {
+      const value = element(doc, "dd", {}, "—");
+      list.append(element(doc, "dt", name === "Jitter buffer delay" ? jitter : {}, name), value);
+      return value;
+    });
+    const kind = track.screen ? "screen" : "camera";
+    const quality = track.own ? null : this.viewerQuality(mid, video, track, label);
+    const message = element(doc, "p", { hidden: "" });
+    details.append(element(doc, "summary", { "aria-label": `Video stats for ${label}` }, "Video stats"));
+    if (quality) details.append(quality.control);
+    details.append(message, list);
+    const target = { details, video, message, values, ...(quality ? {
+      receiver: track.receiver, requested: quality.requested,
+      limit: () => {
+        const current = this.call.tracks.get(mid);
+        if (current?.receiver === track.receiver && current.peer === track.peer && current.source === track.source) {
+          return current.limit;
+        }
+      },
+    } : {
+      source: track.source,
+      sender: () => this.call.direct.sender(track.source.transceiver.sender),
+      requested: () => publishTier(kind, track.source.tier),
+      screenRate: kind === "screen" && this.call.screenRate,
+    }) };
+    details.addEventListener("toggle", () => {
+      if (details.open && details.isConnected) this.stats.open({ ...target });
+      else this.stats.close(details);
+    });
+    return details;
+  }
+
+  viewerQuality(mid, video, track, label) {
+    const kind = track.screen ? "screen" : "camera";
+    const select = element(this.document, "select", { "aria-label": `Quality for ${label}` });
+    qualityOptions(select, kind);
+    const tiers = this.tiers.get(track.peer) ?? {};
+    this.tiers.set(track.peer, tiers);
+    select.value = tiers[kind] ?? "";
+
+    const original = this.call.tracks.get(mid);
+    const sent = this.sentTiers.get(original) ?? { at: -Infinity };
+    this.sentTiers.set(original, sent);
+    let size = 0, timer;
+    const chosen = () => {
+      if (select.value === "") return size > 0 ? fitTier(kind, size) : undefined;
+      const tier = Number(select.value);
+      return TIERS[kind][tier] ? tier : undefined;
+    };
+    const send = () => {
+      clearTimeout(timer);
+      if (this.call.tracks.get(mid) !== original || this.call.ended) return;
+      const tier = chosen();
+      if (tier === undefined || tier === sent.tier) return;
+      // The SFU accepts one request per second. Keep the latest choice until then.
+      const wait = sent.at + 1100 - performance.now();
+      if (wait > 0) {
+        timer = setTimeout(send, wait);
+        return;
+      }
+      this.call.send(qualityRequest(track.peer, kind, tier));
+      sent.tier = tier;
+      sent.at = performance.now();
+    };
+    select.addEventListener("change", () => {
+      tiers[kind] = select.value;
+      send();
+    });
+    this.sizes.set(video, { resize: (pixels) => { size = pixels; send(); }, cancel: () => clearTimeout(timer) });
+    this.observer.observe(video, { box: "device-pixel-content-box" });
+    send();
+    return {
+      control: element(this.document, "label", { class: "viewer-quality" }, "Receive quality", select),
+      requested: () => TIERS[kind][chosen()],
+    };
+  }
+
   person(id, role) {
-    const own = id === this.call.self ? [...this.call.sources.keys()].map((kind) => ({ screen: kind === "screen" })) : [];
+    const labels = { camera: "Camera", screen: "Screen", audio: "Shared audio" };
+    const own = id === this.call.self ? [...this.call.sources.keys()].map((kind) => labels[kind]) : [];
     const sources = [...this.call.tracks.values()]
-      .filter((track) => track.peer === id && track.kind === "video")
-      .concat(own)
-      .map((track) => (track.screen ? "Screen" : "Camera"));
+      .filter((track) => track.peer === id)
+      .map((track) => labels[track.kind === "audio" ? "audio" : track.screen ? "screen" : "camera"])
+      .concat(own);
     const item = element(this.document, "li", {}, element(this.document, "span", { class: "name" }, this.name(id)));
     if (role === "host") item.append(element(this.document, "span", { class: "tag" }, "Host"));
     if (sources.length) item.append(element(this.document, "span", { class: "sources" }, sources.join(", ")));

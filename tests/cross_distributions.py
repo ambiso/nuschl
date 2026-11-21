@@ -22,7 +22,8 @@ from cross_macho import verify_adhoc
 
 PROGRAMS = ["nuschl", "nuschl-content-worker", "nuschl-crypto-worker",
             "nuschl-math-worker", "nuschl-media-worker", "nuschl-storage-worker",
-            "nuschl-transfer-worker", "nuschl-update-verify-ed25519",
+            "nuschl-transfer-worker", "nuschl-rtc-worker", "nuschl-video-worker",
+            "nuschl-update-verify-ed25519",
             "nuschl-update-verify-mldsa44"]
 
 

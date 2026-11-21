@@ -38,6 +38,14 @@ pub enum ServiceEvent {
     CallLeaseEnded {
         id: u64,
     },
+    NativeSourceChanged {
+        generation: u64,
+        change: crate::native_call::SourceChange,
+    },
+    NativeFinished {
+        generation: u64,
+        result: Result<crate::native_call::Finish, String>,
+    },
 }
 
 pub struct Services {
@@ -130,6 +138,14 @@ impl Services {
         self.handle
             .spawn(crate::call::run(id, url, body, stop, events));
     }
+    pub fn native_call(&self, start: crate::native_call::Start) {
+        self.handle.spawn(crate::native_call::run(
+            start,
+            self.settings.clone(),
+            self.sender.clone(),
+        ));
+    }
+
     /// Closing the sender lets the task shut its worker down cleanly.
     pub fn stop_preview(&mut self) {
         self.preview.take();

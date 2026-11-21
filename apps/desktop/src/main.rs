@@ -29,6 +29,7 @@ mod math;
 mod menus;
 mod motion;
 mod names;
+mod native_call;
 mod notify;
 mod panels;
 mod picker;

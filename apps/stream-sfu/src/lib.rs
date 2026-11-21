@@ -204,6 +204,8 @@ fn join(message: ClientMessage) -> Option<Join> {
         host_proof,
         create,
         codecs,
+        video_limits,
+        screen_rate,
     } = message
     else {
         return None;
@@ -220,6 +222,8 @@ fn join(message: ClientMessage) -> Option<Join> {
             None => None,
         },
         decoders: Decoders::new(&codecs)?,
+        video_limits,
+        screen_rate,
     })
 }
 
@@ -303,6 +307,8 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(
     let nonce = rooms::random::<32>();
     let hello = ServerMessage::Hello {
         nonce: hex::encode(nonce),
+        video_limits: true,
+        screen_rate: true,
     };
     if socket.send(text(&hello)).await.is_err() {
         return;
@@ -312,9 +318,7 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(
         _ => None,
     };
     let Some(first) = first else {
-        let _ = socket
-            .send(text(&ServerMessage::Error { reason: "join" }))
-            .await;
+        let _ = socket.send(text(&ServerMessage::error("join"))).await;
         return;
     };
     let (out, mut outgoing) = mpsc::channel(OUTGOING);
@@ -346,7 +350,7 @@ async fn connection<S: AsyncRead + AsyncWrite + Unpin>(
                         }
                         Err(_) => "message",
                     };
-                    let _ = socket.send(self::text(&ServerMessage::Error { reason })).await;
+                    let _ = socket.send(self::text(&ServerMessage::error(reason))).await;
                     break;
                 }
                 Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}

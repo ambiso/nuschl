@@ -17,13 +17,16 @@ platform decisions reversible without duplicating the session model.
 | `nuschl-cli` | Diagnostic frontend using the real session implementation | GPUI, audio codecs |
 | `nuschl-ipc` | Versioned worker messages, framing, and native supervision | Content parser, SQLite, codecs |
 | `nuschl-sandbox` | Worker confinement for the client and music-bot worker roles (the music-bot codec on Linux only): bwrap/prlimit, Seatbelt, AppContainer policies, job containment, spawning. `nuschld`'s storage worker (systemd unit; it holds the database credential and may reach PostgreSQL), its Murmur reader (Landlock to one read-only file, no network; also the systemd unit under the NixOS service) and the TUI clipboard helpers (OS clipboard programs that need the display socket; prlimit only) do not use it (SECURITY.md) | Protocol messages, untrusted-content parsers, codecs, unsafe code |
-| `nuschl-sandbox-windows` | The workers' Windows launch stage (the one crate with unsafe Win32 calls) | Anything a worker does after it is confined |
+| `nuschl-sandbox-windows` | The workers' Windows launch stage and its isolated Win32 calls | Anything a worker does after it is confined |
+| `nuschl-capture-macos` | AVFoundation camera consent and ScreenCaptureKit screen selection and frames | Network, profile data, codecs, microphone and display rendering |
 | `nuschl-content` | Message Markdown and formulas in one bounded parse (syntax hidden, lines kept), legacy HTML to inert text, syntax highlighting | Network access, database, native regex engines |
 | `nuschl-storage` | SQLx/Tokio history operations for SQLite and PostgreSQL | UI, session credentials, arbitrary SQL from IPC |
 | `nuschl` | GPUI desktop shell and native application supervision | Direct parser, database, or codec implementation |
 | `nuschld` | Server session/routing authority and native transports | GPUI, content parser, audio decoding |
 | `nuschl-content-worker` | Parse and highlight untrusted content | Credentials, microphone, user files, network |
 | `nuschl-media-worker` | Audio device adapters, DSP, Opus | Server credentials, history database, arbitrary files, network |
+| `nuschl-video-worker` | Linux PipeWire capture, AV1 encoding and AV1 decoding in separate roles | Server credentials, arbitrary files, network, the session bus |
+| `nuschl-rtc-worker` | Linux call transport, SFrame and its active media keys | Identity keys, call links, session tokens, devices, codecs, host network sockets |
 | `nuschl-storage-worker` | Own the explicitly selected history database | Server credentials, microphone, network |
 | `nuschl-musicbot` | Credential/network parent for Subsonic playback, queues/history and authenticated web controls (docs/musicbot.md) | Codec/DSP dependencies and execution, GPUI, user private identity keys |
 | `nuschl-musicbot-codec-worker` | The music bot's isolated decode/encode/duck roles: Symphonia, rubato, Opus, RNNoise | Credentials, network, audio devices, state files, session code |
@@ -146,6 +149,14 @@ quality on recorded speech is still open. Being written in Rust is not proof of 
 safety or correct Opus output. Codec and
 DSP SIMD remains confined to the media worker. Native PipeWire or platform processing
 can be reused when it is already working well on the active route.
+
+The media worker uses opus-rs's Deep PLC, libopus's neural vocoder, after SILK and
+Hybrid packets. CELT-only streams use classic concealment to preserve the upper
+band. For each 10 ms mix, the worker starts neural concealment only when the
+estimated cost fits its 4 ms deadline and lets a decode finish once started.
+The browser uses classic concealment. The test module
+`apps/media-worker/src/mixer/concealment.rs` measures quality, instructions and
+real-time margin.
 
 When Nuschl's own canceller runs, its reference is a recording of the output device,
 not Nuschl's playback buffer (`reference.rs`): PipeWire captures the sink, PulseAudio

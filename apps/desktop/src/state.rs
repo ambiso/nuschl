@@ -200,6 +200,9 @@ pub struct Desktop {
     /// Our call's creator link and lease, and the last lease's id.
     pub call: Option<crate::call::Creator>,
     pub call_leases: u64,
+    pub native_call: Option<crate::native_call::Active>,
+    pub native_call_generation: u64,
+    pub native_call_fullscreen: Option<std::time::Instant>,
     pub link_preview: crate::link_preview::ComposerPreview,
     pub profile: Profile,
     pub form: Option<ServerForm>,
@@ -526,6 +529,9 @@ impl Desktop {
             services,
             call: None,
             call_leases: 0,
+            native_call: None,
+            native_call_generation: 0,
+            native_call_fullscreen: None,
             link_preview: crate::link_preview::ComposerPreview::default(),
             profile,
             form: None,
@@ -1576,6 +1582,7 @@ impl Desktop {
         self.driver.apply_settings(settings.clone());
         self.client.preferences = nuschl_client::native::preferences(&settings);
         self.settings = settings;
+        self.sync_native_call();
         self.sync_global_shortcuts();
     }
     /// A slider's value, heard but not saved (`commit_settings` saves): memory
@@ -2454,6 +2461,7 @@ impl Desktop {
         self.expire_typing(cx);
         self.flush_outgoing(cx);
         self.sync_call();
+        self.sync_native_call();
     }
     /// Follow what the client says changed.
     pub fn apply_updates(&mut self, cx: &mut Context<Self>) {
@@ -2703,6 +2711,12 @@ impl Desktop {
             }
             ServiceEvent::Prepared { id, result } => self.prepared(id, result, cx),
             ServiceEvent::CallLeaseEnded { id } => self.call_lease_ended(id),
+            ServiceEvent::NativeSourceChanged { generation, change } => {
+                self.native_source_changed(generation, change, cx)
+            }
+            ServiceEvent::NativeFinished { generation, result } => {
+                self.native_finished(generation, result)
+            }
             ServiceEvent::ServerIcon { server, icon } => {
                 if let Some(server) = self
                     .client

@@ -131,6 +131,22 @@ impl Link {
         self.publisher.as_ref()
     }
 
+    /// The proofs sent in an SFU join after its hello challenge.
+    pub fn admission_proofs(&self, nonce: &[u8; 32]) -> ([u8; 32], Option<[u8; 32]>) {
+        fn proof(key: &[u8; 32], label: &[u8], nonce: &[u8; 32]) -> [u8; 32] {
+            let mut tag = [0; 32];
+            libcrux_hmac::hmac_sha2_256(&mut tag, key, &[label, nonce].concat());
+            tag
+        }
+
+        let keys = self.keys();
+        let admit = proof(keys.admit_key(), b"nuschl/stream/v2 sfu admit", nonce);
+        let host = self
+            .publisher()
+            .map(|secret| proof(&host_key(secret), b"nuschl/stream/v2 sfu host", nonce));
+        (admit, host)
+    }
+
     /// The link to post: S and V.
     pub fn url(&self) -> String {
         format!(

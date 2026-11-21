@@ -1,26 +1,25 @@
 // SPDX-License-Identifier: EUPL-1.2
-//! Calls (docs/desktop.md, "Calls"): Start call and Share screen open the
-//! creator's page in the system browser and post the call to the channel,
-//! Join opens a call someone announced, and the creator's lease on the call
-//! host keeps the call alive.
+//! Calls (docs/desktop.md, "Calls"). The creator posts a link and renews the
+//! room's lease. The creator and invitees join through the desktop or browser.
 //!
-//! The lease keeps the room the creator's page made: every [`RENEW`] the desktop
+//! The lease keeps the creator's room alive: every `RENEW` the desktop
 //! sends `POST <origin>/sfu/lease` with `{"stream_id", "host_key"}` in lowercase
 //! hex (`nuschl-stream` derives them from S and P; P stays on this device). 204
 //! means the lease is renewed, 404 that the call host has no such room (E1,
 //! `apps/stream-sfu/src/protocol.rs`). Ending the call sends `DELETE` with the
 //! same body. The call ends when the room is gone after it existed, when the
-//! room fails to appear within [`GRACE`] (the page creates it), when renewals
-//! fail for [`TIMEOUT`], and after [`MAX`]. Hosts `localhost` and `127.0.0.1` take
+//! room fails to appear within `GRACE`, when renewals
+//! fail for `TIMEOUT`, and after `MAX`. Hosts `localhost` and `127.0.0.1` take
 //! the lease over `http://`, for development and tests. With relay-only on, the page
 //! opens as `/call?relay#…` and connects through the call host's TURN server only
 //! (docs/web.md, "The call page").
-use crate::{services::ServiceEvent, state::Desktop};
-use gpui_kit::Context;
-use nuschl_core::call::DEFAULT_HOST;
+use crate::services::ServiceEvent;
+use crate::state::Desktop;
+use nuschl_core::{call::DEFAULT_HOST, model::TextTarget};
 use nuschl_stream::Link;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
 pub const RENEW: Duration = Duration::from_secs(10);
 pub const TIMEOUT: Duration = Duration::from_secs(30);
@@ -127,50 +126,22 @@ pub async fn run(
 }
 
 impl Desktop {
-    /// Start a call in conversation `target` on server `index` (the open
-    /// conversation: our channel or a direct conversation) and open its page,
-    /// where the camera and screen start.
-    pub fn start_call(
-        &mut self,
-        index: usize,
-        target: nuschl_core::model::TextTarget,
-        cx: &mut Context<Self>,
-    ) {
-        let host = match self.settings.call_host.as_str() {
+    pub fn call_host(&self) -> &str {
+        match self.settings.call_host.as_str() {
             "" => DEFAULT_HOST,
             host => host,
-        };
-        let started = Link::generate(host, &mut getrandom::SysRng)
-            .map_err(|error| format!("No call: {error}"))
-            .and_then(|link| {
-                self.client.start_call(index, target, link.url())?;
-                Ok(link)
-            });
-        match started {
-            Ok(link) => self.open_call(link, "Call", cx),
-            Err(error) => self.client.servers[index].set_notice(error),
         }
     }
 
-    /// Our call gets a new link; the page opens again on it.
-    pub fn rotate_call(&mut self, cx: &mut Context<Self>) {
-        let Some(link) = self
-            .call
-            .as_ref()
-            .and_then(|call| Link::generate(call.link.host(), &mut getrandom::SysRng).ok())
-        else {
-            return;
-        };
-        self.client.rotate_call(link.url());
-        self.open_call(link, "New call link", cx);
+    pub fn create_call(&mut self, index: usize, target: TextTarget) -> Result<Link, String> {
+        let link = Link::generate(self.call_host(), &mut getrandom::SysRng)
+            .map_err(|error| format!("No call: {error}"))?;
+        self.client.start_call(index, target, link.url())?;
+        Ok(link)
     }
 
-    /// Open the creator's page, post the Join link as text for stock Mumble
-    /// clients and keep the lease; a previous lease ends.
-    fn open_call(&mut self, link: Link, label: &str, cx: &mut Context<Self>) {
-        let url = link.creator_url().expect("the creator's link");
-        cx.open_url(&page_url(&url, self.settings.relay_only));
-        let _ = self.client.send_text(format!("{label}: {}", link.url()));
+    pub fn announce_call(&mut self, link: Link) {
+        self.client.announce_own_call();
         let (url, body) = lease_request(&link);
         self.call_leases += 1;
         let (stop, stopped) = oneshot::channel();
@@ -183,10 +154,8 @@ impl Desktop {
     }
 
     pub fn end_call(&mut self) {
-        if self.client.own_call().is_some() {
-            self.client.end_call();
-            let _ = self.client.send_text("Call ended".into());
-        }
+        self.stop_native_owner();
+        self.client.end_call();
         self.call = None;
     }
 
@@ -208,15 +177,6 @@ impl Desktop {
             self.call = None;
             self.client.end_call();
         }
-    }
-}
-
-/// The call page for a call link: `/call?relay#…` for relay-only users.
-pub fn page_url(link: &str, relay_only: bool) -> String {
-    if relay_only {
-        link.replacen("/call#", "/call?relay#", 1)
-    } else {
-        link.to_owned()
     }
 }
 
@@ -269,16 +229,6 @@ mod tests {
         );
         assert!(join_link(&link.url().replace("&h=", "&x=")).is_none());
         assert!(join_link("https://stream.example/call#v=1").is_none());
-    }
-
-    #[test]
-    fn relay_only_users_open_the_page_with_relay() {
-        let link = "https://stream.example/call#v=1&k=a&h=b";
-        assert_eq!(page_url(link, false), link);
-        assert_eq!(
-            page_url(link, true),
-            "https://stream.example/call?relay#v=1&k=a&h=b"
-        );
     }
 
     #[test]

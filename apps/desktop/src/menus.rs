@@ -8,6 +8,7 @@ use crate::{
     state::{Desktop, Panel, Status},
     theme::*,
 };
+use gpui_kit::base::{Align, Placement, Positioner};
 use gpui_kit::{
     base::{
         FocusTrapElement,
@@ -25,6 +26,8 @@ use std::rc::Rc;
 /// Voice target ids registered with the server (1–30 are available).
 pub const WHISPER_TARGET: u32 = 1;
 
+const QUALITY_MENU_GAP: Pixels = px(4.);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuTarget {
     User(u32),
@@ -37,6 +40,9 @@ pub enum MenuTarget {
     /// An inherited permission in the channel permissions table
     /// (`Desktop::menu_acl`).
     AclSource,
+    VideoStats(u64),
+    VideoQuality(u64, crate::native_call::Feed),
+    VideoFeeds(u64),
 }
 
 /// Original saved endpoint plus observed connection/target lifetimes. Local
@@ -221,6 +227,18 @@ impl ActionOrigin {
     }
 }
 
+#[derive(Clone, Copy)]
+pub enum MenuAnchor {
+    Point(Point<Pixels>),
+    Above(Bounds<Pixels>),
+}
+
+impl From<Point<Pixels>> for MenuAnchor {
+    fn from(point: Point<Pixels>) -> Self {
+        Self::Point(point)
+    }
+}
+
 #[derive(Clone)]
 pub struct Menu {
     pub origin: ActionOrigin,
@@ -231,7 +249,7 @@ pub struct Menu {
     pub channel_url: Option<String>,
     pub local_share_url: Option<String>,
     pub target: MenuTarget,
-    pub position: Point<Pixels>,
+    anchor: MenuAnchor,
 }
 
 #[derive(Clone, Debug)]
@@ -287,6 +305,7 @@ enum Entry {
         label: String,
         icon: &'static str,
         danger: bool,
+        choice: Option<bool>,
         action: Action,
     },
     Volume {
@@ -330,6 +349,7 @@ fn item(
         label,
         icon,
         danger: false,
+        choice: None,
         action: Rc::new(action),
     }
 }
@@ -348,6 +368,7 @@ fn danger(
         label,
         icon,
         danger: true,
+        choice: None,
         action: Rc::new(action),
     }
 }
@@ -400,6 +421,9 @@ impl Desktop {
                 | MenuTarget::Image
                 | MenuTarget::Message
                 | MenuTarget::AclSource => None,
+                MenuTarget::VideoStats(_)
+                | MenuTarget::VideoQuality(..)
+                | MenuTarget::VideoFeeds(_) => None,
             };
             let wanted = channel
                 .into_iter()
@@ -417,7 +441,7 @@ impl Desktop {
         self.make_menu(server, target, position);
     }
 
-    pub fn make_menu(&mut self, server: usize, target: MenuTarget, position: Point<Pixels>) {
+    pub fn make_menu(&mut self, server: usize, target: MenuTarget, anchor: impl Into<MenuAnchor>) {
         let Some(view) = self.client.servers.get(server) else {
             return;
         };
@@ -454,7 +478,7 @@ impl Desktop {
             channel_url: None,
             local_share_url: None,
             target,
-            position,
+            anchor: anchor.into(),
         };
         if let MenuTarget::Channel(channel) = target {
             menu.channel_url = self.channel_url(server, channel);
@@ -781,6 +805,45 @@ impl Desktop {
 
     fn menu_entries(&self, menu: &Menu) -> Vec<Entry> {
         let mut entries = Vec::new();
+        if let MenuTarget::VideoStats(generation) = menu.target {
+            if let Some(label) = self.video_stats_command(generation) {
+                entries.push(local_item(label, "info", move |this, _, _, cx| {
+                    this.toggle_video_stats(generation, cx);
+                }));
+            }
+            return entries;
+        }
+        if let MenuTarget::VideoQuality(generation, feed) = menu.target {
+            return self
+                .video_quality_commands(generation, feed)
+                .map(|(quality, label, selected)| {
+                    let mut entry = local_item(label, "check", move |this, _, _, cx| {
+                        this.set_video_quality(generation, feed, quality, cx);
+                    })
+                    .key(format!("quality:{quality:?}"));
+                    if let Entry::Item { choice, .. } = &mut entry {
+                        *choice = Some(selected);
+                    }
+                    entry
+                })
+                .collect();
+        }
+        if let MenuTarget::VideoFeeds(generation) = menu.target {
+            return self
+                .video_feed_commands(generation)
+                .into_iter()
+                .map(|(feed, label, selected)| {
+                    let mut entry = local_item(label, "check", move |this, _, _, cx| {
+                        this.set_video_feed(generation, feed, cx);
+                    })
+                    .key(format!("feed:{feed:?}"));
+                    if let Entry::Item { choice, .. } = &mut entry {
+                        *choice = Some(selected);
+                    }
+                    entry
+                })
+                .collect();
+        }
         if menu.target == MenuTarget::AclSource {
             for (number, (jump, label)) in self.menu_acl.iter().enumerate() {
                 let jump = jump.clone();
@@ -1537,6 +1600,9 @@ impl Desktop {
                 );
             }
             MenuTarget::Image | MenuTarget::Message | MenuTarget::AclSource => unreachable!(),
+            MenuTarget::VideoStats(_)
+            | MenuTarget::VideoQuality(..)
+            | MenuTarget::VideoFeeds(_) => unreachable!(),
         }
         entries.retain(|entry| {
             !matches!(
@@ -1878,7 +1944,10 @@ struct MenuSurfaceState {
 #[derive(IntoElement)]
 struct MenuSurface {
     identity: SharedString,
-    position: Point<Pixels>,
+    anchor: MenuAnchor,
+    quality: bool,
+    label: &'static str,
+    max_width: Pixels,
     rows: Vec<AnyElement>,
 }
 
@@ -1901,76 +1970,94 @@ impl RenderOnce for MenuSurface {
         let inset = window.client_inset().unwrap_or(px(0.));
         let gutter = inset + px(8.);
         let reserve = (gutter + inset) * 2.;
-        let width = (viewport.width - reserve).max(px(0.)).min(px(320.));
-        let height = (viewport.height - reserve).max(px(0.));
+        let width = (viewport.width - reserve).max(px(0.)).min(self.max_width);
+        let height = match self.anchor {
+            MenuAnchor::Point(_) => viewport.height - reserve,
+            MenuAnchor::Above(trigger) => {
+                // On a short viewport the choices scroll within the space
+                // beside the trigger.
+                trigger.top().max(viewport.height - trigger.bottom()) - gutter - QUALITY_MENU_GAP
+            }
+        }
+        .max(px(0.));
         let content_height = (height - px(10.)).max(px(0.));
         // The scrollbar gutter exists only while the actions overflow, so
         // highlighted rows span the menu otherwise. The handle reports the
         // previous layout; a changed overflow lays out once more.
         let overflows = state.scroll.max_offset().y > px(0.);
         let scroll = state.scroll.clone();
-        deferred(
-            anchored()
-                .position(self.position - point(gutter, gutter))
-                .snap_to_window()
+        let content = div()
+            .id("context-menu")
+            .role(Role::Menu)
+            .aria_label(self.label)
+            .occlude()
+            .w(width)
+            .max_h(height)
+            .p_1()
+            .relative()
+            .when(!self.quality, |menu| menu.rounded(px(8.)))
+            .bg(if self.quality {
+                tint(APP, 0xeb)
+            } else {
+                color(APP)
+            })
+            .border_1()
+            .border_color(color(BORDER_STRONG))
+            .shadow_lg()
+            .child(
+                crate::layout::scrollable(
+                    "context-menu-actions",
+                    "Context menu actions",
+                    state.scroll.clone(),
+                )
+                .track_focus(&state.focus)
+                .tab_stop(false)
+                .max_h(content_height)
+                .when(!overflows, |actions| actions.pr(px(0.)))
                 .child(
-                    div().p(gutter).child(
-                        div()
-                            .id("context-menu")
-                            .role(Role::Menu)
-                            .aria_label("Context menu")
-                            .occlude()
-                            .w(width)
-                            .max_h(height)
-                            .p_1()
-                            .relative()
-                            .rounded(px(8.))
-                            .bg(color(APP))
-                            .border_1()
-                            .border_color(color(BORDER_STRONG))
-                            .shadow_lg()
-                            .child(
-                                crate::layout::scrollable(
-                                    "context-menu-actions",
-                                    "Context menu actions",
-                                    state.scroll.clone(),
-                                )
-                                .track_focus(&state.focus)
-                                .tab_stop(false)
-                                .max_h(content_height)
-                                .when(!overflows, |actions| actions.pr(px(0.)))
-                                .child(
-                                    canvas(
-                                        move |_, window, _| {
-                                            if (scroll.max_offset().y > px(0.)) != overflows {
-                                                window.request_animation_frame();
-                                            }
-                                        },
-                                        |_, _, _, _| {},
-                                    )
-                                    .absolute()
-                                    .size(px(0.)),
-                                )
-                                .child(
-                                    div()
-                                        .w_full()
-                                        .min_w_0()
-                                        .flex()
-                                        .flex_col()
-                                        .children(self.rows),
-                                ),
-                            )
-                            .child(crate::layout::scrollbar(
-                                "context-menu-scrollbar",
-                                &state.scroll,
-                                APP,
-                            ))
-                            // A handle of its own: focus_trap tracks it, and each
-                            // focused handle may be tracked once per frame.
-                            .focus_trap("context-menu-focus", &state.trap),
-                    ),
+                    canvas(
+                        move |_, window, _| {
+                            if (scroll.max_offset().y > px(0.)) != overflows {
+                                window.request_animation_frame();
+                            }
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size(px(0.)),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .children(self.rows),
                 ),
-        )
+            )
+            .child(crate::layout::scrollbar(
+                "context-menu-scrollbar",
+                &state.scroll,
+                APP,
+            ))
+            // A handle of its own: focus_trap tracks it, and each
+            // focused handle may be tracked once per frame.
+            .focus_trap("context-menu-focus", &state.trap);
+        let popup = match self.anchor {
+            MenuAnchor::Point(position) => anchored()
+                .position(position - point(gutter, gutter))
+                .snap_to_window()
+                .child(div().p(gutter).child(content))
+                .into_any_element(),
+            MenuAnchor::Above(trigger) => Positioner::side(trigger)
+                .placement(Placement::Top)
+                .align(Align::Start)
+                .offset(QUALITY_MENU_GAP)
+                .margin(px(8.))
+                .child(content)
+                .into_any_element(),
+        };
+        deferred(popup)
     }
 }
 
@@ -1980,6 +2067,12 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
     if entries.is_empty() {
         return None;
     }
+    let quality = matches!(menu.target, MenuTarget::VideoQuality(..));
+    let (label, width) = match menu.target {
+        MenuTarget::VideoFeeds(_) => ("Video sources", px(224.)),
+        _ if quality => ("Video quality", px(224.)),
+        _ => ("Context menu", px(320.)),
+    };
     let snapshot = Rc::new(menu.clone());
     let rows = entries
         .into_iter()
@@ -2009,6 +2102,7 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
                 label,
                 icon: name,
                 danger,
+                choice,
                 action,
             } => {
                 let _ = action;
@@ -2018,33 +2112,47 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
                 let origin_menu = snapshot.clone();
                 let key_menu = snapshot.clone();
                 let foreground = if danger { DANGER_HOVER } else { TEXT };
+                let icon_color = if quality {
+                    TEXT
+                } else if danger {
+                    DANGER_HOVER
+                } else {
+                    TEXT_MUTED
+                };
+                let accent = color(if danger { DANGER } else { ACCENT });
+                let (highlight, highlight_text) = if quality {
+                    (accent.opacity(0.18), color(TEXT))
+                } else {
+                    (accent, color(WHITE))
+                };
                 let control = div()
                     .id(SharedString::from(format!("menu-item:{element_key}")))
                     .group(SharedString::from(format!("menu-item:{element_key}")))
-                    .role(Role::MenuItem)
+                    .role(if choice.is_some() {
+                        Role::MenuItemRadio
+                    } else {
+                        Role::MenuItem
+                    })
                     .aria_label(label.clone())
+                    .when_some(choice, |control, selected| {
+                        control
+                            .aria_toggled(selected.into())
+                            .when(selected, |control| control.bg(color(SELECTED)))
+                    })
                     .tab_index(0)
                     .min_w_0()
                     .flex_shrink_0()
                     .px_2()
                     .py(px(6.))
-                    .rounded(px(5.))
+                    .when(!quality, |row| row.rounded(px(5.)))
                     .flex()
                     .items_center()
                     .gap_2()
                     .cursor_pointer()
                     .text_sm()
                     .text_color(color(foreground))
-                    .hover(move |style| {
-                        style
-                            .bg(color(if danger { DANGER } else { ACCENT }))
-                            .text_color(color(WHITE))
-                    })
-                    .focus(move |style| {
-                        style
-                            .bg(color(if danger { DANGER } else { ACCENT }))
-                            .text_color(color(WHITE))
-                    })
+                    .hover(move |style| style.bg(highlight).text_color(highlight_text))
+                    .focus(move |style| style.bg(highlight).text_color(highlight_text))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.activate_menu(&origin_menu, &pointer_key, window, cx);
@@ -2059,17 +2167,16 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
                             cx.stop_propagation();
                         }
                     }))
-                    .child(
-                        icon(
-                            name,
-                            15.,
-                            color(if danger { DANGER_HOVER } else { TEXT_MUTED }),
-                        )
-                        .group_hover(
-                            SharedString::from(format!("menu-item:{element_key}")),
-                            |style| style.text_color(color(WHITE)),
-                        ),
-                    )
+                    .child(if choice == Some(false) {
+                        div().w(px(15.)).flex_shrink_0().into_any_element()
+                    } else {
+                        icon(name, 15., color(icon_color))
+                            .group_hover(
+                                SharedString::from(format!("menu-item:{element_key}")),
+                                move |style| style.text_color(highlight_text),
+                            )
+                            .into_any_element()
+                    })
                     .child(
                         crate::layout::flexible()
                             .whitespace_normal()
@@ -2138,6 +2245,10 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
             }
         })
         .collect::<Vec<_>>();
+    let trigger: Option<Bounds<Pixels>> = match menu.anchor {
+        MenuAnchor::Point(_) => None,
+        MenuAnchor::Above(trigger) => Some(trigger),
+    };
     Some(
         div()
             .id("menu-layer")
@@ -2145,7 +2256,10 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
             .inset_0()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    if trigger.is_some_and(|bounds| bounds.contains(&event.position)) {
+                        return;
+                    }
                     this.menu = None;
                     window.focus(&this.window_focus, cx);
                     cx.notify();
@@ -2169,7 +2283,10 @@ pub fn menu(this: &Desktop, cx: &mut Context<Desktop>) -> Option<AnyElement> {
             }))
             .child(MenuSurface {
                 identity: format!("context-menu:{}", menu.invocation).into(),
-                position: menu.position,
+                anchor: menu.anchor,
+                quality,
+                label,
+                max_width: width,
                 rows,
             })
             .into_any_element(),

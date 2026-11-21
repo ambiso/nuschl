@@ -13,7 +13,8 @@ use nuschl_stream::{MAX_KEY_MESSAGE, REQUEST_LIFETIME_MS};
 use rand_core::{TryCryptoRng, TryRng};
 use serde_json::{Value, json};
 
-use crate::{MAX_REQUEST, REKEY_INTERVAL_MS, Worker};
+use crate::{MAX_REQUEST, Worker};
+use nuschl_stream::REKEY_INTERVAL_MS;
 
 /// xorshift32, one byte per step; the replay's `crypto.getRandomValues` is the same.
 struct TestRng(u32);
@@ -176,14 +177,14 @@ fn transcript() -> String {
     let opened = call.ok(
         a,
         T0,
-        json!({"v": 1, "kind": "open", "link": CREATOR_LINK, "host": HOST}),
+        json!({"v": 1, "kind": "open", "link": CREATOR_LINK, "host": HOST, "allow_direct": true}),
     );
     assert_eq!(opened["creator"], true);
     let posted = CREATOR_LINK.split("&p=").next().expect("link");
     let opened_b = call.ok(
         b,
         T0,
-        json!({"v": 1, "kind": "open", "link": posted, "host": HOST}),
+        json!({"v": 1, "kind": "open", "link": posted, "host": HOST, "allow_direct": true}),
     );
     assert_eq!(opened_b["room"], opened["room"]);
     assert_eq!(opened_b["verifier"], opened["verifier"]);
@@ -218,6 +219,30 @@ fn transcript() -> String {
         confirmed["events"],
         json!([{"kind": "confirmed", "peer": SUBSCRIBER}])
     );
+
+    for (from, to, publisher, data) in [
+        (b, PUBLISHER, false, r#"{"type":"ready"}"#),
+        (
+            a,
+            SUBSCRIBER,
+            true,
+            "a=candidate:1 1 UDP 1 127.0.0.1 54321 typ host",
+        ),
+    ] {
+        let direct = call.ok(
+            from,
+            T0 + 1000,
+            json!({"v": 1, "kind": "direct", "peer": to, "publisher": publisher, "data": data}),
+        );
+        let [received] = &call.deliver(from, T0 + 1000, &direct)[..] else {
+            panic!("one direct signal");
+        };
+        let peer = [PUBLISHER, SUBSCRIBER][from];
+        assert_eq!(
+            received["events"],
+            json!([{"kind": "direct", "peer": peer, "publisher": !publisher, "data": data}])
+        );
+    }
 
     // The resend fails as unexpected at B; frames switch to epoch 2 a second after the rekey.
     let resend = call.ok(a, T0 + 1500, json!({"v": 1, "kind": "tick"}));
@@ -287,6 +312,24 @@ fn transcript() -> String {
     let frame = call.encrypt(after, true, b"epoch 4");
     assert_eq!(call.decrypt(after, &frame), Err("unknown key id".into()));
     call.lines
+}
+
+#[test]
+fn relay_only_worker_has_no_direct_signaling() {
+    let mut worker = Worker::new(TestRng(3));
+    let open = json!({"v": 1, "kind": "open", "link": CREATOR_LINK, "host": HOST});
+    worker.handle(&open.to_string(), T0).unwrap();
+    assert_eq!(
+        worker.handle(
+            r#"{"v":1,"kind":"direct","peer":2,"publisher":true,"data":"candidate"}"#,
+            T0
+        ),
+        Err("direct signaling disabled".into())
+    );
+    assert_eq!(
+        worker.handle(r#"{"v":1,"kind":"key","from":2,"data":"0105"}"#, T0),
+        Err("direct signaling disabled".into())
+    );
 }
 
 #[test]

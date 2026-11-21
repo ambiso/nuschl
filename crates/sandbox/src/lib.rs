@@ -7,8 +7,7 @@
 //! - macOS: Seatbelt profiles applied with `sandbox-exec` (`macos`).
 //! - Windows: the worker's own launch stage puts it in an AppContainer and a
 //!   job object (`windows`, [`windows_policy`]). That launch stage is the
-//!   separate `nuschl-sandbox-windows` crate: it is the one first-party crate
-//!   allowed unsafe code, and only the workers link it.
+//!   separate `nuschl-sandbox-windows` crate, which only the workers link.
 //!
 //! Every builder refuses rather than start a worker unconfined. Only trusted
 //! supervisors choose the executable and the role.
@@ -58,6 +57,18 @@ pub enum Role<'a> {
     Update { post_quantum: bool },
     /// The music bot's codec children, started as `--codec-worker operation`.
     MusicbotCodec { operation: &'static str },
+    /// Video encoding, with the source supplied over its input pipe.
+    VideoEncode,
+    /// Video capture from an inherited portal-granted PipeWire connection.
+    VideoCapture { node: Option<u32>, vaapi: bool },
+    /// Native interactive capture, limited to one source class.
+    DesktopVideoCapture { camera: bool },
+    /// AV1 video decoding from the input pipe, with an optional DRM render node.
+    VideoDecode { vaapi: bool },
+    /// Encoded call media and opaque datagrams over inherited IPC.
+    Rtc,
+    /// An ephemeral call's signaling and media keys, with no profile access.
+    CallKeys,
     /// History storage: only `directory`, writable.
     Storage { directory: &'a Path },
     /// The crypto worker: only `directory`, writable.
@@ -132,6 +143,13 @@ impl<'a> Role<'a> {
             Role::Update { post_quantum: true } => Capabilities { name: "update.mldsa44", memory: 256 * MIB, cpu_seconds: Some(5), ..NOTHING },
             Role::Update { post_quantum: false } => Capabilities { name: "update.ed25519", memory: 256 * MIB, cpu_seconds: Some(5), ..NOTHING },
             Role::MusicbotCodec { .. } => Capabilities { name: "musicbot-codec", linux_only: true, ..NOTHING },
+            Role::VideoEncode => Capabilities { name: "video-encode", cpu_seconds: Some(120), ..NOTHING },
+            Role::VideoCapture { .. } => Capabilities { name: "video-capture", cpu_seconds: Some(3600), linux_only: true, ..NOTHING },
+            Role::DesktopVideoCapture { camera: true } => Capabilities { name: "video-camera", cpu_seconds: Some(3600), lpac: false, ..NOTHING },
+            Role::DesktopVideoCapture { camera: false } => Capabilities { name: "video-screen", cpu_seconds: Some(3600), lpac: false, ..NOTHING },
+            Role::VideoDecode { vaapi } => Capabilities { name: "video-decode", cpu_seconds: Some(3600), linux_only: vaapi, ..NOTHING },
+            Role::Rtc => Capabilities { name: "rtc", cpu_seconds: Some(3600), ..NOTHING },
+            Role::CallKeys => Capabilities { name: "call-keys", cpu_seconds: Some(3600), ..NOTHING },
             Role::Storage { directory } => Capabilities { name: "storage", writable: Some(directory), ..NOTHING },
             Role::Crypto { directory } => Capabilities { name: "crypto", writable: Some(directory), ..NOTHING },
             Role::Media => Capabilities { name: "media", audio: true, lpac: false, ..NOTHING },
@@ -151,6 +169,14 @@ impl<'a> Role<'a> {
             } => vec!["--preview-fetch".into()],
             Role::Content { arguments, .. } => arguments.to_vec(),
             Role::MusicbotCodec { operation } => vec!["--codec-worker".into(), operation.into()],
+            Role::VideoEncode => vec!["--encode".into()],
+            Role::VideoCapture { .. } => vec!["--encode".into(), "--capture".into()],
+            Role::DesktopVideoCapture { camera: true } => vec!["--camera".into()],
+            Role::DesktopVideoCapture { camera: false } => vec!["--screen".into()],
+            Role::VideoDecode { vaapi: false } => vec!["--decode".into()],
+            Role::VideoDecode { vaapi: true } => vec!["--decode-vaapi".into()],
+            Role::Rtc => vec!["--call".into()],
+            Role::CallKeys => vec!["--call-keys".into()],
             Role::Storage { .. } => vec!["--database".into(), data.join("history.sqlite3").into()],
             Role::Crypto { .. } => vec!["--data".into(), data.into()],
             Role::Media => vec!["--live".into()],
@@ -244,7 +270,7 @@ pub async fn spawn(command: Command) -> Result<Worker, Error> {
 }
 
 /// Start a fixed role with its trusted Linux namespace-init receipt piped on
-/// standard error (the preview and media roles). Its owner acquires the
+/// standard error (preview, audio, video and RTC). Its owner acquires the
 /// receipt before input and waits for the whole sandbox to exit.
 pub async fn spawn_receipted(executable: &Path, role: Role<'_>) -> Result<Worker, Error> {
     let stderr = if cfg!(target_os = "linux") {
@@ -253,6 +279,20 @@ pub async fn spawn_receipted(executable: &Path, role: Role<'_>) -> Result<Worker
         Stdio::null()
     };
     spawn_with_stderr(command(executable, role)?, stderr).await
+}
+
+/// Start a call role with its end of the private, one-way key pipe. Neither
+/// the session nor unrelated workers receives an end of the running pipe.
+#[cfg(any(target_os = "macos", windows))]
+pub async fn spawn_call_worker(
+    executable: &Path,
+    role: Role<'_>,
+    epochs: Stdio,
+) -> Result<Worker, Error> {
+    if !matches!(role, Role::CallKeys | Role::Rtc) {
+        return Err(io::Error::other("invalid call worker role").into());
+    }
+    spawn_with_stderr(command(executable, role)?, epochs).await
 }
 
 async fn spawn_with_stderr(mut command: Command, stderr: Stdio) -> Result<Worker, Error> {

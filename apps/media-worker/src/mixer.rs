@@ -27,6 +27,31 @@ const MAX_PER_STREAM: usize = 64;
 const MAX_DECODED: usize = 20 * FRAME;
 /// Larger than any Opus packet a client sends (Mumble limits them too).
 const MAX_OPUS_BYTES: usize = 1024;
+/// The decoder complexity from which opus-rs conceals lost frames with Deep
+/// PLC, its neural vocoder (libopus's threshold).
+const NEURAL_COMPLEXITY: i32 = 5;
+/// Target deadline for starting neural concealment in a 10 ms mixed frame.
+const NEURAL_BUDGET: Duration = Duration::from_millis(4);
+
+/// Neural concealment time in the frame being mixed.
+struct Budget {
+    limit: Duration,
+    until: Instant,
+    /// How long the last neural concealment took: the estimate for the next.
+    /// It shrinks with every concealment it turns down, so one slow call
+    /// does not rule out Deep PLC for good.
+    cost: Duration,
+}
+
+impl Budget {
+    fn new(limit: Duration) -> Self {
+        Self {
+            limit,
+            until: Instant::now(),
+            cost: Duration::ZERO,
+        }
+    }
+}
 
 /// Gain is frozen with decoded audio, but applied only in the wide accumulator.
 /// Finite f32 PCM × gain≤4 × 128 speakers cannot overflow f64.
@@ -47,6 +72,8 @@ struct EncodedPacket {
 
 struct Speaker {
     decoder: OpusDecoder,
+    /// Last successfully decoded packet uses SILK or Hybrid.
+    neural_plc: bool,
     jitter: JitterBuffer<EncodedPacket>,
     pcm: VecDeque<QueuedFrame>,
     /// Gain of the preceding successfully decoded packet, also used for loss.
@@ -60,8 +87,10 @@ impl Speaker {
         let mut decoder = OpusDecoder::new(48_000, 2)?;
         // Match Mumble: retain intensity-stereo energy when folded to mono.
         decoder.set_phase_inversion_disabled(true);
+        decoder.set_complexity(NEURAL_COMPLEXITY)?;
         Ok(Self {
             decoder,
+            neural_plc: false,
             jitter: JitterBuffer::default(),
             pcm: VecDeque::with_capacity(MAX_DECODED),
             volume: 1.,
@@ -70,8 +99,34 @@ impl Speaker {
         })
     }
 
+    fn reset_decoder(&mut self) {
+        self.decoder.reset();
+        self.neural_plc = false;
+    }
+
+    /// Use Deep PLC for SILK or Hybrid while the estimate fits the budget.
+    fn conceal(
+        &mut self,
+        budget: &mut Budget,
+        decode: impl FnOnce(&mut OpusDecoder) -> Result<usize, &'static str>,
+    ) -> Result<usize, &'static str> {
+        if self.neural_plc {
+            let start = Instant::now();
+            if start + budget.cost <= budget.until {
+                let decoded = decode(&mut self.decoder);
+                budget.cost = start.elapsed();
+                return decoded;
+            }
+            budget.cost = budget.cost * 3 / 4;
+        }
+        self.decoder.set_complexity(0)?;
+        let decoded = decode(&mut self.decoder);
+        self.decoder.set_complexity(NEURAL_COMPLEXITY)?;
+        decoded
+    }
+
     /// Top up decoded audio for one output frame.
-    fn fill(&mut self, scratch: &mut [f32]) {
+    fn fill(&mut self, scratch: &mut [f32], budget: &mut Budget) {
         while self.pcm.len() < FRAME {
             let was_playing = self.jitter.is_playing();
             match self.jitter.pull() {
@@ -79,6 +134,9 @@ impl Speaker {
                     let plays = !end || self.fade.end();
                     if let Ok(count) = self.decoder.decode(&opus.opus, MAX_PACKET_SAMPLES, scratch)
                     {
+                        // The TOC's high bit distinguishes CELT-only packets
+                        // from SILK and Hybrid (RFC 6716 section 3.1).
+                        self.neural_plc = opus.opus.first().is_some_and(|toc| toc & 0x80 == 0);
                         self.jitter.observe_frames((count / FRAME) as u64);
                         self.volume = opus.gain;
                         if plays {
@@ -87,15 +145,15 @@ impl Speaker {
                         }
                     }
                     if end {
-                        self.decoder.reset();
+                        self.reset_decoder();
                     }
                 }
                 Pull::Lost { fec, frames } => {
                     let size = (frames as usize * FRAME).min(MAX_PACKET_SAMPLES);
-                    let decoded = match fec {
-                        Some(next) => self.decoder.decode_fec(&next.opus, size, scratch),
-                        None => self.decoder.decode(&[], size, scratch),
-                    };
+                    let decoded = self.conceal(budget, |decoder| match fec {
+                        Some(next) => decoder.decode_fec(&next.opus, size, scratch),
+                        None => decoder.decode(&[], size, scratch),
+                    });
                     if let Ok(count) = decoded {
                         self.fade.play(&mut scratch[..2 * count]);
                         self.extend(&scratch[..2 * count]);
@@ -105,7 +163,8 @@ impl Speaker {
                 }
                 Pull::Idle => {
                     if self.fade.ran_dry(was_playing)
-                        && let Ok(count) = self.decoder.decode(&[], FRAME, scratch)
+                        && let Ok(count) =
+                            self.conceal(budget, |decoder| decoder.decode(&[], FRAME, scratch))
                     {
                         self.fade.fade_out(&mut scratch[..2 * count]);
                         self.extend(&scratch[..2 * count]);
@@ -146,6 +205,7 @@ pub struct Mixer {
     /// By (stream, sender).
     speakers: BTreeMap<(u32, u32), Speaker>,
     scratch: Vec<f32>,
+    budget: Budget,
 }
 
 impl Default for Mixer {
@@ -153,6 +213,7 @@ impl Default for Mixer {
         Self {
             speakers: BTreeMap::new(),
             scratch: vec![0.; 2 * MAX_PACKET_SAMPLES],
+            budget: Budget::new(NEURAL_BUDGET),
         }
     }
 }
@@ -196,7 +257,7 @@ impl Mixer {
             && !speaker.jitter.is_playing()
         {
             speaker.jitter = JitterBuffer::default();
-            speaker.decoder.reset();
+            speaker.reset_decoder();
             speaker.fade = UnderrunFade::default();
         }
         speaker.last_packet = now;
@@ -231,8 +292,9 @@ impl Mixer {
 
     /// Add one frame of every speaker's audio to `mix`.
     pub fn mix(&mut self, mix: &mut [[f64; 2]; FRAME]) {
+        self.budget.until = Instant::now() + self.budget.limit;
         for speaker in self.speakers.values_mut() {
-            speaker.fill(&mut self.scratch);
+            speaker.fill(&mut self.scratch, &mut self.budget);
             for (out, sample) in mix
                 .iter_mut()
                 .zip(speaker.pcm.drain(..speaker.pcm.len().min(FRAME)))
@@ -292,6 +354,9 @@ pub fn finish(
 }
 
 #[cfg(test)]
+mod concealment;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::MAX_PACKET_BYTES;
@@ -314,6 +379,9 @@ mod tests {
         let packets = tone(3, 0.2);
         let mut clean = Mixer::default();
         for mixer in [&mut injected, &mut clean] {
+            // Deep PLC for every concealment, however long a decode takes:
+            // each mixer's budget follows its own clock.
+            mixer.budget.limit = Duration::from_secs(3600);
             feed(mixer, 1, 1, &packets, 0.25);
         }
         let before = injected.speakers[&(1, 1)].last_packet;
@@ -333,7 +401,11 @@ mod tests {
 
     /// 20 ms Opus packets of a tone at `amplitude`.
     fn tone(count: usize, amplitude: f32) -> Vec<Vec<u8>> {
-        let mut encoder = OpusEncoder::new(48_000, 1, Application::Voip).unwrap();
+        tone_in_mode(count, amplitude, Application::Voip)
+    }
+
+    fn tone_in_mode(count: usize, amplitude: f32, application: Application) -> Vec<Vec<u8>> {
+        let mut encoder = OpusEncoder::new(48_000, 1, application).unwrap();
         encoder.bitrate_bps = 48_000;
         let mut packet = [0_u8; MAX_PACKET_BYTES];
         (0..count)
@@ -446,6 +518,71 @@ mod tests {
         assert!(speaker.decoder.phase_inversion_disabled());
         speaker.decoder.reset();
         assert!(speaker.decoder.phase_inversion_disabled());
+        assert_eq!(speaker.decoder.complexity(), NEURAL_COMPLEXITY);
+    }
+
+    #[test]
+    fn lost_frames_get_deep_plc_within_the_budget_and_classic_concealment_past_it() {
+        let packets = tone(6, 0.5);
+        // What each concealment gives after the same received packets.
+        let conceal = |complexity| {
+            let mut decoder = OpusDecoder::new(48_000, 2).unwrap();
+            decoder.set_phase_inversion_disabled(true);
+            decoder.set_complexity(complexity).unwrap();
+            let mut pcm = vec![0.; 4 * FRAME];
+            for opus in &packets {
+                decoder.decode(opus, 2 * FRAME, &mut pcm).unwrap();
+            }
+            decoder.decode(&[], 2 * FRAME, &mut pcm).unwrap();
+            pcm
+        };
+        let (neural, classic) = (conceal(NEURAL_COMPLEXITY), conceal(0));
+        assert_ne!(neural, classic);
+        for (cost, expected) in [
+            (Duration::ZERO, &neural),
+            (Duration::from_secs(1), &classic),
+        ] {
+            let mut speaker = Speaker::new(Instant::now()).unwrap();
+            speaker.neural_plc = true;
+            let mut pcm = vec![0.; 4 * FRAME];
+            for opus in &packets {
+                speaker.decoder.decode(opus, 2 * FRAME, &mut pcm).unwrap();
+            }
+            let mut budget = Budget::new(NEURAL_BUDGET);
+            budget.until = Instant::now() + NEURAL_BUDGET;
+            budget.cost = cost;
+            let count = speaker
+                .conceal(&mut budget, |decoder| {
+                    decoder.decode(&[], 2 * FRAME, &mut pcm)
+                })
+                .unwrap();
+            assert_eq!(count, 2 * FRAME);
+            assert_eq!(&pcm, expected);
+            assert_eq!(speaker.decoder.complexity(), NEURAL_COMPLEXITY);
+        }
+    }
+
+    #[test]
+    fn concealment_uses_the_last_received_packet_mode_and_discards_it_on_reset() {
+        for (application, expected) in [
+            (Application::RestrictedSilk, NEURAL_COMPLEXITY),
+            (Application::RestrictedCelt, 0),
+        ] {
+            let mut mixer = Mixer::default();
+            feed(&mut mixer, 1, 1, &tone_in_mode(6, 0.5, application), 1.);
+            mixer.mix(&mut [[0.; 2]; FRAME]);
+            let speaker = mixer.speakers.get_mut(&(1, 1)).unwrap();
+            let mut budget = Budget::new(Duration::from_secs(1));
+            budget.until = Instant::now() + budget.limit;
+            speaker
+                .conceal(&mut budget, |decoder| {
+                    assert_eq!(decoder.complexity(), expected);
+                    Ok(0)
+                })
+                .unwrap();
+            speaker.reset_decoder();
+            assert!(!speaker.neural_plc);
+        }
     }
 
     #[test]

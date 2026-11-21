@@ -47,31 +47,34 @@ allow = [
 # its Noise transit encryption, compiled in although 0.8 does not negotiate it,
 # and its WebAssembly-only WebSocket stack.
 exceptions = [
-  { allow = [
-    "Unlicense",
-  ], crate = "noise-protocol" },
-  { allow = [
-    "Unlicense",
-  ], crate = "noise-rust-crypto" },
-  { allow = [
-    "Unlicense",
-  ], crate = "ws_stream_wasm" },
-  { allow = [
-    "Unlicense",
-  ], crate = "async_io_stream" },
-  { allow = [
-    "Unlicense",
-  ], crate = "pharos" },
+  # rav1e declares the LLVM fuzzing runtime only under cfg(fuzzing).
+  { allow = ["NCSA"], crate = "libfuzzer-sys" },
+  { allow = ["Unlicense"], crate = "noise-protocol" },
+  { allow = ["Unlicense"], crate = "noise-rust-crypto" },
+  { allow = ["Unlicense"], crate = "ws_stream_wasm" },
+  { allow = ["Unlicense"], crate = "async_io_stream" },
+  { allow = ["Unlicense"], crate = "pharos" },
 ]
 
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
 deny = [
+  { name = "turn-client-proto", wrappers = [
+    "nuschl-session",
+  ], reason = "Keep TURN allocations and destination checks in the session broker" },
   { name = "str0m", wrappers = [
     "nuschl-rtc",
     "nuschl-stream-sfu",
   ], reason = "Keep the WebRTC implementation behind the encoded-media transport boundary and in the SFU, which forwards RTP unchanged" },
+  { name = "nuschl-rtc", wrappers = [
+    "nuschl-rtc-probe",
+    "nuschl-rtc-worker",
+  ], reason = "Run the native WebRTC state machine in the confined call worker or in the loopback diagnostic" },
+  { name = "nuschl-sframe", wrappers = [
+    "nuschl-rtc-worker",
+    "nuschl-stream-wasm",
+  ], reason = "Keep call media encryption in the native RTC worker and the browser stream worker" },
   { name = "openssl", reason = "Use rustls for transport security" },
   { name = "ml-dsa", wrappers = [
     "nuschl-update-worker",
@@ -98,6 +101,26 @@ deny = [
   { name = "cpal", wrappers = [
     "nuschl-media-worker",
   ], reason = "Native audio APIs belong in the media worker" },
+  { name = "pipewire", wrappers = [
+    "cpal",
+    "nuschl-media-worker",
+    "nuschl-video-worker",
+  ], reason = "PipeWire bindings belong in the confined audio and video workers" },
+  { name = "gstreamer", wrappers = [
+    "gstreamer-app",
+    "gstreamer-base",
+    "nuschl-video-worker",
+  ], reason = "Native video pipelines run only in the confined video worker" },
+  { name = "gstreamer-app", wrappers = [
+    "nuschl-video-worker",
+  ], reason = "Only the confined video worker receives GStreamer media buffers" },
+  { name = "rav1e", wrappers = [
+    "ravif",
+    "nuschl-video-worker",
+  ], reason = "AVIF encoding stays behind ravif, and native video encoding runs inside the isolated video worker" },
+  { name = "rav1d", wrappers = [
+    "nuschl-video-worker",
+  ], reason = "The confined video worker decodes untrusted AV1" },
   { name = "opus-rs", wrappers = [
     "nuschl-media-worker",
     "nuschl-audio-wasm",
@@ -180,12 +203,15 @@ deny = [
     "nuschl-storage-worker",
     "nuschl-transfer-worker",
     "nuschl-update-worker",
-  ], reason = "The one first-party crate with unsafe code (Win32 AppContainer launch) runs only as the workers' own launch stage" },
+    "nuschl-video-worker",
+    "nuschl-rtc-worker",
+  ], reason = "Win32 AppContainer launch runs only as the workers' own launch stage" },
+  { name = "nuschl-capture-macos", wrappers = ["nuschl-video-worker"], reason = "Apple camera and screen bindings run only in the video capture worker" },
   { name = "nuschl-stream", wrappers = [
     "nuschl",
     "nuschl-crypto-worker",
     "nuschl-stream-wasm",
-  ], reason = "Call key agreement belongs to the crypto worker and the browser call page's stream worker; the desktop parses call links and derives the lease keys (SECURITY.md); the SDK driver waits for its SECURITY.md row (docs/video-plan.md §4)" },
+  ], reason = "Call key agreement belongs to the crypto worker and the browser call page's stream worker; the desktop parses call links and derives the lease keys (SECURITY.md)" },
   { name = "aes-gcm", wrappers = [
     "dimpl",
     "noise-rust-crypto",
@@ -227,8 +253,12 @@ deny = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# opus-rs, the Opus codec: the owner's fork, at the commit Cargo.lock pins.
-allow-git = ["https://github.com/ambiso/opus-rs"]
+# Cargo.lock pins the owner's media transport and codec patches and the rav1d Rust decoder API.
+allow-git = ["https://github.com/ambiso/opus-rs", "https://github.com/ambiso/str0m", "https://github.com/memorysafety/rav1d"]
+
+[[bans.features]]
+name = "rav1d"
+deny = ["asm"]
 
 [[bans.features]]
 name = "str0m"

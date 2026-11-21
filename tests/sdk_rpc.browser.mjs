@@ -34,7 +34,7 @@ self.addEventListener("message",event=>{if(event.data?.__rpc_stall_test__!==true
  console.log("PRIVATE_SDK_STALL_END:"+Date.now());postMessage({kind:"rpc-fault-tail"});
 });
 `)]);
-    res.writeHead(200,{"Content-Type":types[extname(target)]||"application/octet-stream","Content-Security-Policy":csp,"Permissions-Policy":"camera=(), geolocation=(), microphone=(self)","Cross-Origin-Opener-Policy":"same-origin","Referrer-Policy":"no-referrer","X-Content-Type-Options":"nosniff"});res.end(body);
+    res.writeHead(200,{"Content-Type":types[extname(target)]||"application/octet-stream","Content-Security-Policy":csp,"Permissions-Policy":"camera=(), geolocation=(), microphone=(self)","Cross-Origin-Opener-Policy":"same-origin","Cross-Origin-Embedder-Policy":"require-corp","Referrer-Policy":"no-referrer","X-Content-Type-Options":"nosniff"});res.end(body);
   } catch {res.writeHead(404);res.end();}
 });
 const tunnels=new Set();

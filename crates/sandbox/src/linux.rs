@@ -3,7 +3,10 @@
 //! unshared (no network), read-only system libraries, private /proc, /dev
 //! and /tmp, itself at `/worker` and an empty environment; its role adds to that.
 
-use std::{os::unix::fs::MetadataExt as _, path::Path};
+use std::{
+    os::unix::fs::{FileTypeExt as _, MetadataExt as _},
+    path::Path,
+};
 
 use tokio::process::Command;
 
@@ -36,7 +39,15 @@ pub(crate) fn command(executable: &Path, role: Role) -> Result<Command, Error> {
     }
     command.arg("--").arg(helper("bwrap")?);
     command.args(["--die-with-parent", "--new-session", "--unshare-all"]);
-    if matches!(role, Role::Preview { .. } | Role::Media) {
+    if matches!(
+        role,
+        Role::Preview { .. }
+            | Role::Media
+            | Role::VideoEncode
+            | Role::VideoCapture { .. }
+            | Role::VideoDecode { .. }
+            | Role::Rtc
+    ) {
         command.args(["--json-status-fd", "2"]);
     }
     bind_existing(
@@ -59,6 +70,20 @@ pub(crate) fn command(executable: &Path, role: Role) -> Result<Command, Error> {
     if can.audio {
         media(&mut command);
     }
+    if let Role::VideoCapture { node, vaapi } = role {
+        bind_existing(&mut command, &["/usr/share/pipewire"]);
+        if let Some(node) = node {
+            command
+                .args(["--setenv", "NUSCHL_VIDEO_NODE"])
+                .arg(node.to_string());
+        }
+        if vaapi {
+            video_acceleration(&mut command);
+        }
+    }
+    if let Role::VideoDecode { vaapi: true } = role {
+        video_acceleration(&mut command);
+    }
     if can.network {
         command.arg("--share-net");
         let resolver = [
@@ -79,6 +104,63 @@ pub(crate) fn command(executable: &Path, role: Role) -> Result<Command, Error> {
     let input = can.readable.map(|_| Path::new("/input"));
     command.args(role.arguments(Path::new("/data"), input));
     Ok(command)
+}
+
+/// Grant one DRM render node and the system VA drivers for that node.
+fn video_acceleration(command: &mut Command) {
+    const RENDER: &str = "/dev/dri/renderD128";
+    const RENDER_DEV: u64 = (226 << 8) | 128;
+    if !std::fs::symlink_metadata(RENDER)
+        .is_ok_and(|info| info.file_type().is_char_device() && info.rdev() == RENDER_DEV)
+    {
+        return;
+    }
+    let sysfs = Path::new("/sys/dev/char/226:128");
+    let (Ok(render_info), Ok(device)) = (sysfs.canonicalize(), sysfs.join("device").canonicalize())
+    else {
+        return;
+    };
+    if !render_info.starts_with(&device) || !device.starts_with("/sys/devices") {
+        return;
+    }
+    // GStreamer/libva locate this exact render node through udev and libdrm.
+    command.arg("--ro-bind").arg(&device).arg(&device);
+    command
+        .arg("--symlink")
+        .arg(&render_info)
+        .arg("/sys/class/drm/renderD128");
+    command.arg("--symlink").arg(&render_info).arg(sysfs);
+    if let Ok(bus) = device.join("subsystem").canonicalize()
+        && bus.starts_with("/sys/bus")
+    {
+        command.arg("--dir").arg(bus);
+    }
+    command.args(["--dev-bind", RENDER, RENDER]);
+    command.args(["--setenv", "NUSCHL_VIDEO_VAAPI", "1"]);
+    // Keep the pipeline's per-thread glibc arenas within the address-space limit.
+    command.args(["--setenv", "MALLOC_ARENA_MAX", "2"]);
+    command.args(["--setenv", "GST_PLUGIN_SYSTEM_PATH_1_0", ""]);
+    command.args(["--setenv", "GST_PLUGIN_PATH_1_0", ""]);
+    command.args(["--setenv", "GST_REGISTRY", "/tmp/gst-registry"]);
+    command.args(["--setenv", "GST_REGISTRY_FORK", "no"]);
+    let drivers = Path::new("/run/opengl-driver/lib/dri");
+    if drivers.is_dir() {
+        command.args(["--dir", "/run/nuschl-va"]);
+        for name in [
+            "radeonsi_drv_video.so",
+            "iHD_drv_video.so",
+            "i965_drv_video.so",
+            "nouveau_drv_video.so",
+        ] {
+            if let Ok(library) = drivers.join(name).canonicalize() {
+                command
+                    .arg("--ro-bind")
+                    .arg(library)
+                    .arg(format!("/run/nuschl-va/{name}"));
+            }
+        }
+        command.args(["--setenv", "LIBVA_DRIVERS_PATH", "/run/nuschl-va"]);
+    }
 }
 
 /// Audio service sockets, ALSA devices and public audio configuration. No
@@ -172,12 +254,13 @@ mod tests {
             arguments: &[],
         });
         assert!(!ordinary.iter().any(|arg| arg == "--json-status-fd"));
-        let media = arguments(Role::Media);
-        assert!(
-            media
-                .windows(2)
-                .any(|pair| pair == ["--json-status-fd", "2"])
-        );
+        for role in [Role::Media, Role::Rtc] {
+            assert!(
+                arguments(role)
+                    .windows(2)
+                    .any(|pair| pair == ["--json-status-fd", "2"])
+            );
+        }
     }
 
     #[test]
@@ -200,6 +283,7 @@ mod tests {
             directory: &directory,
         });
         let media = arguments(Role::Media);
+        let rtc = arguments(Role::Rtc);
         let offer = arguments(Role::Transfer {
             file: Some(&executable),
         });
@@ -207,6 +291,7 @@ mod tests {
         assert_eq!(content[..3], ["--as=536870912", "--cpu=7", "--"]);
         assert_eq!(math[..3], ["--as=536870912", "--cpu=120", "--"]);
         assert_eq!(update[..3], ["--as=268435456", "--cpu=5", "--"]);
+        assert_eq!(rtc[..3], ["--as=1073741824", "--cpu=3600", "--"]);
         for persistent in [&codec, &storage, &media, &crypto, &offer, &receive] {
             assert_eq!(persistent[..2], ["--as=1073741824", "--"]);
         }
@@ -220,6 +305,7 @@ mod tests {
                 &["/worker", "--database", "/data/history.sqlite3"],
             ),
             (&media, &["/worker", "--live"]),
+            (&rtc, &["/worker", "--call"]),
             (&crypto, &["/worker", "--data", "/data"]),
             (&offer, &["/worker", "--file", "/input"]),
             (&receive, &["/worker"]),

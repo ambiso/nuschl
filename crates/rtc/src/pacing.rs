@@ -8,18 +8,20 @@ pub(crate) const WINDOW: Duration = Duration::from_millis(120);
 pub(crate) struct Bucket {
     tokens: f64,
     updated: Instant,
+    window: Duration,
 }
 
 impl Bucket {
-    pub fn new(now: Instant) -> Self {
+    pub fn new(now: Instant, window: Duration) -> Self {
         Self {
             tokens: f64::INFINITY,
             updated: now,
+            window,
         }
     }
 
     pub fn available(&self, now: Instant, rate: u64) -> f64 {
-        let cap = rate as f64 * WINDOW.as_secs_f64();
+        let cap = rate as f64 * self.window.as_secs_f64();
         (self.tokens + now.saturating_duration_since(self.updated).as_secs_f64() * rate as f64)
             .min(cap)
     }

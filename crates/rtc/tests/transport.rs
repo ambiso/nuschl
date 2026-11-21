@@ -2,7 +2,7 @@
 //! Deterministic ICE/DTLS/SRTP exchange: datagrams stay in memory, no public STUN.
 use nuschl_rtc::{
     Error, Event, Frame, Kind, MAX_DATAGRAM_BYTES, MAX_OPUS_BYTES, MAX_SDP_BYTES, Output, Peer,
-    Purpose, SignalingId, Track,
+    Purpose, SignalingId, Track, VideoCodec,
 };
 use std::{
     collections::VecDeque,
@@ -28,7 +28,7 @@ struct Pair {
 
 impl Pair {
     fn new(video: bool, corrupt_fingerprint: bool) -> Self {
-        Self::setup(video, corrupt_fingerprint, &[])
+        Self::setup(video, corrupt_fingerprint, &[], VideoCodec::Vp8, None)
     }
 
     fn multi() -> Self {
@@ -41,19 +41,27 @@ impl Pair {
                 Purpose::Camera,
                 Purpose::ScreenVideo,
             ],
+            VideoCodec::Vp8,
+            None,
         )
     }
 
-    fn setup(video: bool, corrupt_fingerprint: bool, purposes: &[Purpose]) -> Self {
+    fn setup(
+        video: bool,
+        corrupt_fingerprint: bool,
+        purposes: &[Purpose],
+        codec: VideoCodec,
+        call_video_limit: Option<usize>,
+    ) -> Self {
         let now = Instant::now();
         let addresses = [
             "127.0.0.1:41000".parse().unwrap(),
             "127.0.0.1:41001".parse().unwrap(),
         ];
-        let mut peers = [
-            Peer::new(addresses[0], now).unwrap(),
-            Peer::new(addresses[1], now).unwrap(),
-        ];
+        let mut peers = addresses.map(|address| match call_video_limit {
+            Some(limit) => Peer::for_call(address, now, codec, limit, false).unwrap(),
+            None => Peer::with_video(address, now, codec).unwrap(),
+        });
         let offer = if purposes.is_empty() {
             peers[0].offer(video).unwrap()
         } else {
@@ -204,6 +212,67 @@ impl Pair {
 
 fn video() -> Arc<[u8]> {
     Arc::from(include_bytes!("fixtures/rtc-keyframe.vp8").as_slice())
+}
+
+#[test]
+fn selected_call_codecs_carry_fragmented_screen_frames() {
+    for (codec, header) in [
+        // AV1 sequence-header OBU and LEB128 size (4096 bytes).
+        (VideoCodec::Av1, &[0x0a, 0x80, 0x20][..]),
+        (VideoCodec::Vp9, &[0x82, 0x49, 0x83, 0x42][..]),
+    ] {
+        let mut pair = Pair::setup(true, false, &[Purpose::ScreenVideo], codec, None);
+        pair.connect();
+        let mut encoded = header.to_vec();
+        encoded.resize(4096 + header.len(), 0x42);
+        let encoded: Arc<[u8]> = encoded.into();
+        pair.write(0, Kind::Video, 9000, encoded.clone());
+        pair.advance(Duration::from_millis(160)).unwrap();
+        let [decoded] = pair.frames[1].as_slice() else {
+            panic!("expected one {codec:?} frame");
+        };
+        assert_eq!(decoded.purpose, Purpose::ScreenVideo);
+        assert_eq!(decoded.timestamp, 9000);
+        assert_eq!(decoded.data, encoded);
+    }
+}
+
+#[test]
+fn call_video_paces_a_fragmented_keyframe_alongside_following_frames() {
+    let mut pair = Pair::setup(
+        true,
+        false,
+        &[Purpose::ScreenVideo],
+        VideoCodec::Av1,
+        Some(1024 * 1024 + 64),
+    );
+    pair.connect();
+    // A 96 KiB sequence header OBU models an encrypted keyframe of the same size.
+    let mut key = vec![0x0a, 0x80, 0x80, 0x06];
+    key.resize(96 * 1024 + 4, 0x42);
+    let key: Arc<[u8]> = key.into();
+    pair.write(0, Kind::Video, 9_000, key.clone());
+    let delta: Arc<[u8]> = vec![0x2a, 0x01, 0x5a].into();
+    for timestamp in [9_900, 10_800, 11_700, 12_600] {
+        pair.advance(Duration::from_millis(10)).unwrap();
+        pair.write(0, Kind::Video, timestamp, delta.clone());
+    }
+    // The current sending budget refuses a keyframe that would take too long.
+    let track = pair.peers[0].track_for(Purpose::ScreenVideo).unwrap();
+    assert!(matches!(
+        pair.peers[0].write(track, 13_500, pair.now, vec![0x42; 300 * 1024].into()),
+        Err(Error::Backpressure)
+    ));
+    pair.advance(Duration::from_millis(300)).unwrap();
+    let [first, rest @ ..] = pair.frames[1].as_slice() else {
+        panic!("expected paced video at the receiver");
+    };
+    assert_eq!(first.data, key);
+    assert_eq!(rest.len(), 4);
+    for (i, frame) in rest.iter().enumerate() {
+        assert_eq!(frame.timestamp, 9_900 + i as u64 * 900);
+        assert_eq!(frame.data, delta);
+    }
 }
 
 #[test]

@@ -321,7 +321,7 @@ impl Desktop {
             .is_some_and(|scheme| scheme.eq_ignore_ascii_case("mumble://"))
             && nuschl_core::share::ShareLink::parse(url).is_err()
         {
-            cx.open_url(url);
+            cx.open_url(&nuschl_core::call::page_url(url, self.settings.relay_only));
             return;
         }
         let mut url = match MumbleUrl::parse(url) {

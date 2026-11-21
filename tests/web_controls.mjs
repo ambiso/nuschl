@@ -26,7 +26,7 @@ const server = createServer(async (req, res) => {
     const path = resolve(directory, "." + mounted);
     assert.ok(path === directory || path.startsWith(directory + sep));
     const target = extname(mounted) ? path : resolve(path, "index.html");
-    res.writeHead(200, {"Content-Type":types[extname(target)] || "application/octet-stream", "Content-Security-Policy":csp, "Referrer-Policy":"no-referrer", "Cross-Origin-Opener-Policy":"same-origin", "Permissions-Policy":"camera=(), geolocation=(), microphone=(self)"});
+    res.writeHead(200, {"Content-Type":types[extname(target)] || "application/octet-stream", "Content-Security-Policy":csp, "Referrer-Policy":"no-referrer", "Cross-Origin-Opener-Policy":"same-origin","Cross-Origin-Embedder-Policy":"require-corp", "Permissions-Policy":"camera=(), geolocation=(), microphone=(self)"});
     res.end(await readFile(target));
   } catch { res.writeHead(404); res.end(); }
 });

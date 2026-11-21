@@ -2,23 +2,20 @@
 // No session, credentials, endpoint or storage capability crosses this boundary.
 // Codec/WASM work stays here, never in the UI or AudioWorklet callback.
 import init,{VoiceEncoder,VoicePlayout} from "./audio-codec/nuschl_audio_wasm.js";
-import {FRAME,MAX_PACKET,MAX_STREAMS,decimal} from "./audio-protocol.js";
-let encoder=null,epoch="",enabled=false,receiveEpoch="",playback=false,loaded=false;
-let pendingConfigure=null,port=null,wanted=null,lastRequest=0,lastStart=null,lastDemand=null;
-const speakers=new Map();
+import {FRAME,MAX_PACKET,MAX_STREAMS,MAX_CAPTURE,decimal} from "./audio-protocol.js";
+import {BlockRing,Lead,mixSpeaker,PLAYOUT_BLOCKS,PLAYOUT_FRAME,CAPTURE_BLOCKS} from "./audio-worklet.js";
+let encoder=null,epoch=0,enabled=false,receiveEpoch=0,playback=false,loaded=false;
+let pendingConfigure=null,port=null,playout=null,capture=null,lastTick=null,encodedOutstanding=0;
+const speakers=new Map(),lead=new Lead(),mix=new Float64Array(PLAYOUT_FRAME*2);
 let burst=0,created=0,windowStart=performance.now();
-const validEpoch=value=>typeof value==="string"&&value.length>0&&value.length<=200;
+const validEpoch=value=>Number.isInteger(value)&&value>0&&value<=0x7fffffff;
 const positive=value=>Number.isSafeInteger(value)&&value>0;
 function freeSpeakers() {
   for(const state of speakers.values())state.receiver.free();
-  speakers.clear();lastDemand=null;
+  speakers.clear();
 }
 function expire(now) {
   for(const [speaker,state] of speakers)if(now-state.last>2000){state.receiver.free();speakers.delete(speaker);}
-}
-function ready() {
-  if(!loaded||!wanted||!port)return;
-  port.postMessage({kind:"playout-ready",epoch:wanted.epoch,enabled:wanted.enabled&&playback&&wanted.epoch===receiveEpoch,clock_generation:wanted.clock_generation});
 }
 function configure(data) {
   if(!validEpoch(data.epoch)||!validEpoch(data.receive_epoch)||typeof data.capture!=="boolean"||typeof data.playback!=="boolean"||
@@ -30,52 +27,54 @@ function configure(data) {
     if(enabled){encoder=new VoiceEncoder();encoder.set_bitrate(data.bitrate);}
     encoderBitrate=data.bitrate;
   }
-  if(receiveEpoch!==data.receive_epoch||playback!==data.playback)freeSpeakers();
-  receiveEpoch=data.receive_epoch;playback=data.playback;ready();
+  if(receiveEpoch!==data.receive_epoch||playback!==data.playback){freeSpeakers();lastTick=null;}
+  receiveEpoch=data.receive_epoch;playback=data.playback;
 }
 let encoderBitrate=0;
-function direct(data) {
-  if(!data||typeof data!=="object")return;
-  if(data.kind==="playout-configure") {
-    if(!validEpoch(data.epoch)||typeof data.enabled!=="boolean"||!positive(data.clock_generation))return;
-    if(wanted&&data.clock_generation<wanted.clock_generation)return;
-    if(wanted&&data.clock_generation===wanted.clock_generation) {
-      if(data.epoch===wanted.epoch&&data.enabled===wanted.enabled)ready();
-      return;
-    }
-    // Main may authorize/queue a new RX before this port's barrier arrives.
-    // It already flushed the previous authorization: do not discard fresh data
-    // merely because another port's old wanted tuple still exists.
-    if(wanted&&data.epoch===receiveEpoch&&(!data.enabled||
-        wanted.epoch===data.epoch&&wanted.enabled===data.enabled))freeSpeakers();
-    wanted={epoch:data.epoch,enabled:data.enabled,clock_generation:data.clock_generation};
-    lastStart=null;ready();return;
-  }
-  if(data.kind!=="render"||!loaded||!playback||!wanted?.enabled||wanted.epoch!==receiveEpoch||
-      data.epoch!==receiveEpoch||data.clock_generation!==wanted.clock_generation||!positive(data.request)||data.request<=lastRequest||
-      !Number.isSafeInteger(data.start_frame)||data.start_frame<0||data.start_frame>Number.MAX_SAFE_INTEGER-480||data.start_frame%480!==0||data.frames!==480||
-      lastStart!==null&&data.start_frame!==lastStart+480)return;
-  lastRequest=data.request;lastStart=data.start_frame;
+// The worklet coalesces wakes. Each pass consumes a snapshot of capture
+// and renders at most a ringful of playback, even as the audio clock advances.
+function pump() {
+  playout?.clearWake();
+  if (!loaded || !playout) return;
   try {
-    const now=performance.now();
-    // Audio clock is authoritative. After a worker scheduling gap, discard
-    // old decode/packet caches; never run a wall-clock catch-up burst.
-    if(lastDemand!==null&&now-lastDemand>100)freeSpeakers();
-    lastDemand=now;expire(now);
-    const output=[],transfers=[];
-    for(const [speaker,state] of speakers) {
-      const samples=state.receiver.render();
-      if(!samples.length)continue;
-      if(!(samples instanceof Float32Array)||samples.length!==960||!samples.every(Number.isFinite))throw new Error("Invalid playout PCM");
-      const volume=state.receiver.gain();
-      if(!Number.isFinite(volume)||volume<0||volume>4)throw new Error("Invalid playout gain");
-      output.push({speaker,samples,channels:2,frames:480,volume});transfers.push(samples.buffer);
+    for (let left = Math.min(capture.size(), CAPTURE_BLOCKS); left > 0; left--) {
+      const at = capture.head(), tag = capture.tags[at * 2];
+      // A wake can arrive before the matching configuration on the page port.
+      if (tag > epoch || tag === epoch && !enabled) break;
+      const frame = capture.tags[at * 2 + 1] >>> 0;
+      const age = (capture.ticks() - frame) >>> 0;
+      if (tag === epoch && encodedOutstanding < MAX_CAPTURE && age > 0 && age <= MAX_CAPTURE) {
+        const pcm = capture.data.subarray(at * FRAME, (at + 1) * FRAME);
+        const deadline = performance.timeOrigin + performance.now() + (MAX_CAPTURE - age + 1) * 20;
+        const opus = encoder.encode(pcm);
+        encodedOutstanding++;
+        postMessage({kind:"encoded", epoch, frame, deadline, opus}, [opus.buffer]);
+      }
+      capture.pop();
     }
-    port.postMessage({kind:"playout",epoch:data.epoch,clock_generation:data.clock_generation,request:data.request,start_frame:data.start_frame,frames:480,speakers:output},transfers);
-  } catch(error) {
-    // A fatal render error cannot release backpressure into more decode work.
-    playback=false;freeSpeakers();ready();
-    postMessage({kind:"playout-error",epoch:receiveEpoch,message:String(error?.message||error).slice(0,200)});
+    if (!playback) return;
+    const tick = playout.ticks();
+    const now = performance.now();
+    if (lastTick !== null) lead.observe((tick - lastTick) >>> 0, now);
+    lastTick = tick;
+    expire(now);
+    for (let left = lead.blocks - playout.size(); left > 0; left--) {
+      mix.fill(0);
+      for (const {receiver} of speakers.values()) {
+        const samples = receiver.render();
+        if (!samples.length) continue;
+        if (!(samples instanceof Float32Array) || samples.length !== mix.length || !samples.every(Number.isFinite))
+          throw new Error("Invalid playout PCM");
+        const gain = receiver.gain();
+        if (!Number.isFinite(gain) || gain < 0 || gain > 4) throw new Error("Invalid playout gain");
+        mixSpeaker(mix, samples, gain);
+      }
+      if (!playout.push(receiveEpoch, 0, mix)) break;
+    }
+  } catch (error) {
+    playback = false;
+    freeSpeakers();
+    postMessage({kind:"playout-error", epoch:receiveEpoch, message:String(error?.message || error).slice(0,200)});
   }
 }
 function packet(data) {
@@ -84,7 +83,7 @@ function packet(data) {
     return;
   }
   try {
-    if(!Number.isInteger(data.speaker)||data.speaker<0||data.speaker>0xffffffff||!positive(data.job)||
+    if(!Number.isInteger(data.speaker)||data.speaker<0||data.speaker>0xffffffff||!positive(data.job)||!Number.isFinite(data.arrival)||data.arrival<0||data.arrival>Number.MAX_SAFE_INTEGER/1000||
         !(data.opus instanceof Uint8Array)||data.opus.length<1||data.opus.length>MAX_PACKET||!decimal(data.sequence)||
         BigInt(data.sequence)>((1n<<63n)-1n)||typeof data.end!=="boolean"||!Number.isFinite(data.volume)||data.volume<0||data.volume>4)throw new Error("Invalid encoded packet");
     // Full packing validation precedes speaker creation and any timing/gain state.
@@ -99,7 +98,7 @@ function packet(data) {
     }
     if(now-state.window>=1000){state.window=now;state.count=0;}
     if(++state.count>200)throw new Error("Speaker admission budget exhausted");
-    state.receiver.push(BigInt(data.sequence),data.opus,data.end,data.volume,BigInt(Math.floor(now*1000)));
+    state.receiver.push(BigInt(data.sequence),data.opus,data.end,data.volume,BigInt(Math.floor(data.arrival*1000)));
     state.last=now;
     postMessage({kind:"packet-queued",epoch:receiveEpoch,job:data.job});
   } catch(error) {
@@ -111,29 +110,24 @@ function packet(data) {
 onmessage=({data})=>{
   if(!data||typeof data!=="object")return;
   try {
+    if(data.kind==="rings") {
+      if(playout||!(data.playout instanceof SharedArrayBuffer)||!(data.capture instanceof SharedArrayBuffer))return;
+      playout=new BlockRing(data.playout,PLAYOUT_BLOCKS,PLAYOUT_FRAME*2,Float64Array);capture=new BlockRing(data.capture,CAPTURE_BLOCKS,FRAME);return;
+    }
     if(data.kind==="playout-port") {
       if(port||!data.port||typeof data.port.postMessage!=="function"){data.port?.close();return;}
-      port=data.port;port.onmessage=({data})=>direct(data);port.start?.();return;
+      port=data.port;port.onmessage=pump;port.start?.();return;
     }
     if(data.kind==="configure"){configure(data);return;}
+    if(data.kind==="encoded-ack"){if(encodedOutstanding)encodedOutstanding--;return;}
     if(data.kind==="close"){encoder?.free();encoder=null;freeSpeakers();port?.close();port=null;close();return;}
     if(!loaded)return;
-    if(data.kind==="decode"){packet(data);return;}
-    if(data.epoch!==epoch) {
-      if(data.kind==="encode"&&validEpoch(data.epoch)&&positive(data.job))
-        postMessage({kind:"media-error",operation:"encode",epoch:data.epoch,job:data.job,message:"Capture epoch revoked"});
-      return;
-    }
-    if(data.kind==="encode") {
-      if(!enabled||!encoder||!positive(data.job)||!(data.samples instanceof Float32Array)||data.samples.length!==FRAME)throw new Error("Invalid capture frame");
-      const opus=encoder.encode(data.samples);
-      postMessage({kind:"encoded",epoch,job:data.job,opus},[opus.buffer]);
-    }
+    if(data.kind==="decode")packet(data);
   } catch(error) {
     postMessage({kind:"media-error",operation:data.kind,epoch,job:data.job,message:String(error?.message||error).slice(0,200)});
   }
 };
 await init();loaded=true;
 if(pendingConfigure){const pending=pendingConfigure;pendingConfigure=null;configure(pending);}
-postMessage({kind:"ready"});ready();
+postMessage({kind:"ready"});
 setInterval(()=>{expire(performance.now());postMessage({kind:"heartbeat"});},500);

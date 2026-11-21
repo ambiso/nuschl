@@ -11,8 +11,10 @@ export const MAX_PEERS = 256;
 export const MAX_TRACKS = 3 * MAX_PEERS;
 /** A key message in hex (16 KiB). */
 const MAX_KEY = 2 * 16 * 1024;
+export const MAX_VIDEO_BITRATE = 50_000_000;
 
 const id = (value) => Number.isSafeInteger(value) && value >= 0;
+const limit = (max) => (value) => Number.isInteger(value) && value > 0 && value <= max;
 const text = (max) => (value) => typeof value === "string" && value.length <= max;
 const hex = (min, max) => (value) =>
   text(max)(value) && value.length >= min && value.length % 2 === 0 && /^[0-9a-f]*$/.test(value);
@@ -22,13 +24,33 @@ const object = (fields) => (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value) &&
   Object.entries(fields).every(([name, check]) => check(value[name]));
 const nullable = (check) => (value) => value === null || check(value);
+const optional = (check) => (value) => value === undefined || check(value);
+
+const videoLimits = new Map([
+  ["within_target", "Within selected quality"],
+  ["receiver_quality", "Viewer quality selection"],
+  ["receiver_decode", "Viewer decoding capacity"],
+  ["receiver_bandwidth", "Viewer connection"],
+  ["sfu_host", "SFU host upload cap"],
+  ["sfu_room", "SFU room cap"],
+  ["sfu_viewer", "SFU per-viewer cap"],
+  ["traffic_budget", "SFU traffic budget pacing"],
+  ["forwarding_backlog", "SFU send queue"],
+  ["quality_recovery", "Restoring quality"],
+]);
+
+export const videoLimitLabel = (limit) => videoLimits.get(limit) ?? "Unavailable";
 
 const role = oneOf("host", "participant");
 const codec = oneOf("av1", "vp9");
 const sdp = text(MAX_MESSAGE);
 const mid = text(16);
 const messages = {
-  hello: { nonce: hex(64, 64) },
+  hello: {
+    nonce: hex(64, 64),
+    video_limits: optional((value) => typeof value === "boolean"),
+    screen_rate: optional((value) => typeof value === "boolean"),
+  },
   welcome: {
     peer: id,
     role,
@@ -42,8 +64,34 @@ const messages = {
   offer: { sdp, tracks: list(MAX_TRACKS, object({ mid, peer: id, source: mid, kind: oneOf("camera", "screen", "audio") })) },
   answer: { sdp },
   key: { from: id, data: hex(2, MAX_KEY) },
+  quality: {
+    request: hex(22, 22), source: mid, max_height: limit(2160), max_fps: limit(60), max_bitrate: limit(MAX_VIDEO_BITRATE),
+    limit: optional((value) => videoLimits.has(value)),
+  },
+  video_limit: { mid, peer: (value) => id(value) && value > 0, limit: (value) => videoLimits.has(value) },
   error: { reason: text(64) },
 };
+
+/** The camera and screen ladders in crates/stream-quality, lowest tier first. */
+export const TIERS = {
+  camera: [[180, 15, 200_000], [360, 30, 600_000], [720, 30, 2_000_000], [1080, 30, 4_000_000]],
+  screen: [[720, 15, 800_000], [1080, 30, 3_000_000], [1440, 60, 8_000_000], [2160, 60, 15_000_000]],
+};
+
+export function publishTier(kind, choice) {
+  return TIERS[kind][choice] ?? TIERS[kind].at(-1);
+}
+
+export function fitTier(kind, pixels) {
+  const tiers = TIERS[kind];
+  const fit = tiers.findIndex(([height]) => height >= pixels);
+  return fit < 0 ? tiers.length - 1 : fit;
+}
+
+/** The v1 QualityRequest: version, publisher (u64 big-endian), kind and tier. */
+export function qualityRequest(peer, kind, tier) {
+  return { type: "quality", request: `01${peer.toString(16).padStart(16, "0")}0${Number(kind === "screen")}0${tier}` };
+}
 
 /** The SFU message in `data`, or null for a type the page does not use. Throws when
  * the message breaks a bound. */
@@ -52,6 +100,8 @@ export function parse(data) {
   const message = JSON.parse(data);
   if (!object({ type: text(16) })(message)) throw new Error("malformed message");
   if (!Object.hasOwn(messages, message.type)) return null;
+  // Older SFUs send a tier index alone.
+  if (message.type === "quality" && message.source === undefined) return null;
   if (!object(messages[message.type])(message)) throw new Error(`malformed ${message.type}`);
   return message;
 }
@@ -68,7 +118,7 @@ export function linkOf(location) {
 
 /** The SFU `join` from the stream worker's `opened` and `admitted` replies and the
  * codecs this browser decodes. */
-export function join(opened, admitted, codecs) {
+export function join(opened, admitted, codecs, { videoLimits, screenRate } = {}) {
   return {
     type: "join",
     room: opened.room,
@@ -77,5 +127,7 @@ export function join(opened, admitted, codecs) {
     host_proof: admitted.host_proof,
     create: admitted.create,
     codecs,
+    ...(videoLimits ? { video_limits: true } : {}),
+    ...(screenRate ? { screen_rate: true } : {}),
   };
 }

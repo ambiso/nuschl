@@ -196,26 +196,64 @@ without text.
 
 ## Calls
 
-In the channel you are in, **Start call** and **Share screen** start a call
-(one per channel) on a stock Mumble server or a compatible `nuschld`. Nuschl opens the call page in your browser,
-where you start your camera and share your screen, and posts the call to the
-channel:
+With the video and RTC workers installed, **Start meeting** opens an in-app
+room with your camera and screen off. **Start camera** and **Share screen** open
+a room and request system consent. Linux uses the desktop portal, Windows uses
+Media Foundation and Windows Graphics Capture, and macOS uses AVFoundation and
+ScreenCaptureKit. The chat
+shows the invitation as a call card with **Join video call** and **Copy link**.
+People using Mumble see the guest link in chat. People who enter the channel
+later receive the active call card. In a narrow layout, start the meeting and
+use the call toolbar to choose what to share.
 
-- Nuschl users in the channel see a card with **Join**, which opens the page
-  for them. People who enter the channel later get the card
-  too. The card goes when its creator ends the call or leaves the channel.
-- Everyone gets a message with the link, so stock Mumble users can open the
-  page and share their camera and screen as well.
+The presenter can enable camera and screen independently in the call toolbar.
+Sharing begins after the system picker grants access. Each source has its own
+stop control. The panel shows a preview and indicates when viewers can see the
+Nuschl window on the selected monitor. With both sources active, **View camera**
+and **View screen** select which picture appears on the stage. On Linux, Nuschl
+attempts to reconnect to the same approved screen if capture stops unexpectedly.
+After a hardware capture failure, the first retry keeps hardware encoding with
+local preview off. A further hardware failure switches to software capture.
+**Stop sharing** cancels recovery. If the portal has closed the sharing session,
+use **Share screen** to grant access again. On Windows and macOS, use **Share
+screen** to choose the source after a capture worker exits. The software
+encoder on those systems currently runs at up to 720p and 15 fps.
+
+Choose **Full screen** to focus on video and **Exit full screen** or Escape
+to return to chat. **Minimize call** hides the video while the call continues.
+**Return to call** restores the panel from the call's chat card or the
+return strip in other conversations.
+
+The **Quality** dropdown selects a resolution and frame-rate ceiling. With
+**Auto**, presenters see the current encoder target and viewers see the
+received resolution. A 1440p tier can carry 3440 × 1440 when the capture,
+encoder and connection support it. Open **Video options** and choose
+**Video stats** for delivered dimensions, frame rate, encoded payload rate
+and the current route. Presenters also see the server ceiling, estimated
+budget and encoder target for the selected source. The stats overlay leaves
+the video size unchanged. Viewer Auto fits the video tile and requests at
+least the 1080p tier for screen shares to keep text readable.
+
+Native media uses one encrypted peer pair per desktop. Two native clients can
+switch to a direct connection when it can carry their video and return to the
+call server if needed. **Relay-only connections** routes native video through
+the call host's UDP TURN relay. Browser guests can use the link for group
+calls. The desktop keeps its meeting open for browser guests if native
+playback ends. Voice stays in Mumble.
+
+On supported browsers, **Share browser tab audio** includes sound from the tab
+you choose in the picker. Browser receivers can listen to that audio. Native
+desktop audio capture and playback are tracked in the [audio sharing design](screen-share-audio.md).
 
 In a direct conversation with someone online, the same buttons start a call
-with that person alone: the link goes to them as a private message, and the
-card shows in their direct conversation with you. The call ends when either of
-you leaves the server.
+with that person alone. The link goes to them as a private message and the
+card appears in their conversation with you. The call ends when either
+participant leaves the server.
 
-The creator's card also has **Rotate link**, which ends the call for everyone
-on the old link, opens the page again on a new one and posts it, and **End
-call**. The call also ends when you leave the channel or the server, after 4
-hours, and when the call page is gone.
+**End call** closes the room for everyone and updates the invitation card in
+the current desktop session. A typed event from the creator's Mumble presence
+updates the card for its conversation and guest link. **Leave video** closes
+your own view. The creator leaving the channel or server also ends the call.
 
 The link (`https://stream.nuschl.eu/call#v=1&k=…&h=…`) lets anyone who has it
 join, and the Mumble server sees it. Calls use the project's call host,

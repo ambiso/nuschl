@@ -30,7 +30,31 @@ let
     nativeBuildInputs = pkgConfig ++ [ pkgs.rustPlatform.bindgenHook ];
     buildInputs = [ pkgs.pipewire ];
   };
+  videoCodec = _: {
+    CARGO_CFG_TARGET_ARCH = pkgs.stdenv.hostPlatform.parsed.cpu.name;
+    CARGO_CFG_TARGET_OS = pkgs.stdenv.hostPlatform.parsed.kernel.name;
+    CARGO_ENCODED_RUSTFLAGS = "";
+  };
+  gst = pkgs.gst_all_1;
+  gstLibraries = [
+    pkgs.glib
+    gst.gstreamer
+    gst.gst-plugins-base
+  ];
+  withGstreamer = _: {
+    nativeBuildInputs = pkgConfig;
+    buildInputs = gstLibraries;
+  };
   overrides = pkgs.defaultCrateOverrides // {
+    # These build scripts read Cargo's target environment directly.
+    av-scenechange = videoCodec;
+    glib-sys = withGstreamer;
+    gio-sys = withGstreamer;
+    gobject-sys = withGstreamer;
+    gstreamer-sys = withGstreamer;
+    gstreamer-base-sys = withGstreamer;
+    gstreamer-app-sys = withGstreamer;
+    rav1e = videoCodec;
     pipewire-sys = bindgen;
     libspa-sys = bindgen;
     # Their build scripts probe the PipeWire version with pkg-config.
@@ -69,21 +93,36 @@ let
     };
     nuschl = attrs: withLibraries attrs // { NUSCHL_EMOJI_ASSETS = emojiAssets; };
     nuschl-media-worker = withLibraries;
+    nuschl-video-worker = attrs: {
+      nativeBuildInputs = pkgConfig;
+      buildInputs = [
+        pkgs.pipewire
+      ]
+      ++ lib.optionals (builtins.elem "vaapi" (attrs.features or [ ])) gstLibraries;
+      NUSCHL_VIDEO_GST_PLUGINS = lib.concatStringsSep ":" [
+        "${lib.getLib gst.gstreamer}/lib/gstreamer-1.0/libgstcoreelements.so"
+        "${gst.gst-plugins-base}/lib/gstreamer-1.0/libgstapp.so"
+        "${gst.gst-plugins-bad}/lib/gstreamer-1.0/libgstva.so"
+        "${gst.gst-plugins-bad}/lib/gstreamer-1.0/libgstvideoparsersbad.so"
+        "${pkgs.pipewire}/lib/gstreamer-1.0/libgstpipewire.so"
+      ];
+    };
     # The cli's e2ee tests exec the crypto worker beside the cli binary the
     # harness records at test-compile time (CARGO_BIN_EXE_nuschl-cli); the
     # merged dev dependency nuschld marks that compilation, and the worker
     # joins its bin directory.
-    nuschl-cli = attrs:
+    nuschl-cli =
+      attrs:
       withLibraries attrs
-      // lib.optionalAttrs
-        (lib.any (d: lib.hasInfix "rust_nuschld" (d.name or (toString d)))
-          (attrs.dependencies or [ ]))
-        {
-          postInstall = (attrs.postInstall or "") + ''
-            cp ${project.workspaceMembers.nuschl-crypto-worker.build}/bin/nuschl-crypto-worker \
-              $out/bin/nuschl-crypto-worker
-          '';
-        };
+      //
+        lib.optionalAttrs
+          (lib.any (d: lib.hasInfix "rust_nuschld" (d.name or (toString d))) (attrs.dependencies or [ ]))
+          {
+            postInstall = (attrs.postInstall or "") + ''
+              cp ${project.workspaceMembers.nuschl-crypto-worker.build}/bin/nuschl-crypto-worker \
+                $out/bin/nuschl-crypto-worker
+            '';
+          };
   };
   project = import ./crate2nix/Cargo.nix {
     inherit pkgs;
@@ -98,6 +137,21 @@ let
 in
 {
   inherit project;
+  # Export the cached test ELF for VM scenarios that have their own fixtures.
+  sessionTest =
+    (project.workspaceMembers.nuschl-session.build.override {
+      runTests = true;
+      testPreRun = ''
+        case "$f" in
+          */nuschl_session-*)
+            test ! -e "$out/bin/nuschl-session-test"
+            install -Dm0555 "$f" "$out/bin/nuschl-session-test"
+            ;;
+        esac
+        continue
+      '';
+    }).test.overrideAttrs
+      { dontFixup = true; };
   # The programs of the desktop package (with the terminal client), each
   # built from cached crates.
   binaries = map (member: project.workspaceMembers.${member}.build) [

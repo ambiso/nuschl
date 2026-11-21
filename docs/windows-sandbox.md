@@ -63,6 +63,10 @@ command-line quoting and the per-worker policies are unit-tested on every platfo
 | storage | `nuschl.storage.<hash of the directory>` | less privileged | none | the history directory's contents (the directory itself: list, add, delete entries) | 1 GiB |
 | crypto | `nuschl.crypto.<hash of the directory>` | less privileged | none | its `keys` directory's contents (likewise) | 1 GiB |
 | media | `nuschl.media` | full | `microphone` | none | 1 GiB |
+| camera capture | `nuschl.video-camera` | full | `webcam` | none | 1 GiB, and 3600 CPU seconds |
+| screen capture | `nuschl.video-screen` | full | `graphicsCapture` | none | 1 GiB, and 3600 CPU seconds |
+| software video codec | `nuschl.video-encode` or `nuschl.video-decode` | less privileged | none | none | 1 GiB, and 120 or 3600 CPU seconds |
+| call keys and RTC | `nuschl.call-keys` and `nuschl.rtc` | less privileged | none | none | 1 GiB, and 3600 CPU seconds each |
 | transfer | `nuschl.transfer` | full | `internetClient`, `privateNetworkClientServer` | the offered file, as a read-only handle | 1 GiB |
 
 Every container may also use its own folder (`%LOCALAPPDATA%\Packages\<profile>\AC`),

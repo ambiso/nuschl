@@ -1,41 +1,31 @@
 #!/usr/bin/env python3
-"""Calls on a stock Mumble server: Start call, the call card, Join, Rotate link,
-End call and the creator's lease (docs/desktop.md, "Calls").
+"""Native desktop call controls and invitations on a loopback Mumble server.
 
-Two real desktops (Andi and Bea) in a private headless GNOME Shell, operated
-over AT-SPI, a stock Mumble client ("Witness") in the same channel of a
-loopback Murmur, and an owned loopback call host that answers the lease. Each
-desktop's `xdg-open` is a script that records the URL in place of a browser.
-Checks:
+Andi and Bea run in a private headless GNOME Shell with synthetic PulseAudio.
+A Mumble-protocol witness checks the public and private chat links. The call
+host listens on loopback and holds TLS admission open, so the test exercises the
+call UI and invitation lifecycle without granting camera or screen capture.
+Set TMPDIR and NUSCHL_WL_TMP to a short disk-backed scratch path.
+Run with --fullscreen to sample the light-theme video surface and controls with ffmpeg.
 
-- Start call opens the creator's page (S, V and P, V matching P) and posts
-  the Join link (S and V) as text, which the stock client receives;
-- the lease reaches the call host with stream_id and host_key; P stays with Andi;
-- Bea's card names Andi and the host, and Join opens the page with S and V;
-- Rotate link opens a new creator page and Bea's Join follows the new S;
-- the call ends when the call host reports the room gone; Share screen starts
-  a new one, and End call ends it and releases the lease; Bea's card goes away
-  both times;
-- a direct call from Andi to Bea shows Bea's card in her conversation with
-  Andi, Join opens its link, and the Witness sees neither; a direct call to
-  the Witness reaches it as a private message.
-
-    python3 tests/calls_desktop.py <binaries> --murmur <mumble-server> \\
-        --at-spi <at-spi2-core> --pulse-bin <pulseaudio>/bin --opus-library <libopus.so> \\
+    python3 tests/calls_desktop.py <binaries> --murmur <mumble-server> \
+        --at-spi <at-spi2-core> --pulse-bin <pulseaudio>/bin --opus-library <libopus.so> \
         --gnome-shell <gnome-shell> --output <directory>
 """
 import argparse
 import base64
 import hashlib
+import html
 import hmac
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import re
+import shlex
+import socket
 import ssl
+import subprocess
 import sys
 import tempfile
-import threading
 import time
 import uuid
 
@@ -44,41 +34,13 @@ from accessibility import items, start_registry  # noqa: E402
 from gnome_session import GnomeSession  # noqa: E402
 from local_murmur import Murmur, eventually, free_port  # noqa: E402
 from mumble_client import Client  # noqa: E402
-from voice_servers import VoiceTest, WIDTH, HEIGHT  # noqa: E402
+from voice_servers import VoiceTest  # noqa: E402
 
-SECRET = r"[A-Za-z0-9_-]{43}"
-LABEL = b"nuschl/stream/v2"
-
-
-def hkdf(secret, name, length):
-    """HKDF-SHA256 as nuschl-stream derives from S and P."""
-    prk = hmac.new(LABEL, secret, hashlib.sha256).digest()
-    return hmac.new(prk, LABEL + b" " + name + b"\x01", hashlib.sha256).digest()[:length]
-
-
-def decode(value):
-    return base64.urlsafe_b64decode(value + "=")
-
-
-class CallHost(BaseHTTPRequestHandler):
-    """The lease endpoint over loopback HTTP: 204 while `room` is set, else 404."""
-    room = True
-    requests = []
-
-    def answer(self):
-        body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
-        CallHost.requests.append((self.command, self.path, json.loads(body)))
-        self.send_response(204 if CallHost.room else 404)
-        self.end_headers()
-
-    do_POST = do_DELETE = answer
-
-    def log_message(self, *_):
-        pass
+AT_SPI_RADIO_MENU_ITEM = "role 45"
 
 
 class CallTest(VoiceTest):
-    def desktop(self, name, registry, known):
+    def desktop(self, name, registry, known, *, channel=1, path="Lobby"):
         profile = self.root / name
         (profile / "config").mkdir(parents=True)
         (profile / "config/servers.json").write_text(json.dumps([{
@@ -86,57 +48,314 @@ class CallTest(VoiceTest):
             "username": name, "certificate_sha256": self.pin,
         }]))
         (profile / "config/settings.json").write_text(json.dumps({
-            "server_icons": False, "call_host": f"127.0.0.1:{self.host.server_port}",
+            "server_icons": False, "call_host": self.call_host,
+            "appearance": {"theme": "light" if self.args.fullscreen else "system"},
         }))
         opened = self.root / f"{name}-opened.txt"
         bin_dir = self.root / f"{name}-bin"
         bin_dir.mkdir()
-        (bin_dir / "xdg-open").write_text(f"#!/bin/sh\nprintf '%s\\n' \"$1\" >> {opened}\n")
-        (bin_dir / "xdg-open").chmod(0o755)
+        launcher = bin_dir / "xdg-open"
+        launcher.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$1\" >> {shlex.quote(str(opened))}\n")
+        launcher.chmod(0o755)
         env = self.shell.app_environment()
         env.pop("NO_AT_BRIDGE", None)
         env.pop("BROWSER", None)
         env["PATH"] = f"{bin_dir}:{env['PATH']}"
-        self.spawn([str(self.args.binaries / "nuschl"), "--profile-dir", str(profile),
-                    f"mumble://{name}@127.0.0.1:{self.murmur.port}/Lobby"],
-                   env | {"NUSCHL_AUDIO_BACKEND": "pulse"}, f"desktop-{name}.log")
+        env.update(NO_PROXY="*", no_proxy="*")
+        process = self.spawn([str(self.args.binaries / "nuschl"), "--profile-dir", str(profile),
+                              f"mumble://{name}@127.0.0.1:{self.murmur.port}/{path}"],
+                             env | {"NUSCHL_AUDIO_BACKEND": "pulse"}, f"desktop-{name}.log")
         app = eventually(lambda: next((node for node in registry.children() if node.name.lower() == "nuschl"
                                        and node.destination not in known), None),
                          f"no accessibility tree for {name}", timeout=45)
         self.witness.wait(lambda event: event["kind"] == "user" and event["user"]["name"] == name
-                          and event["user"]["channel"] == 1, timeout=45)
-        return app, opened
+                          and event["user"]["channel"] == channel, timeout=45)
+        return app, opened, process.pid
 
     @staticmethod
-    def find(app, role, name, prefix=False):
-        return next((node for node, node_role, node_name, _ in items(app) if role in (None, node_role)
+    def find(app, role, name, prefix=False, *, subtree=False):
+        nodes = items(app, subtree=subtree)
+        return next((node for node, node_role, node_name, _ in nodes if role in (None, node_role)
                      and (node_name.startswith(name) if prefix else node_name == name)), None)
 
     def direct(self, app, name):
-        """Open the direct conversation with `name` from the channel tree."""
         eventually(lambda: self.find(app, "tree item", name, prefix=True), f"no user {name!r}").press()
         eventually(lambda: any(role == "list" and label.startswith("Messages with") and label.endswith(name)
                                for _, role, label, _ in items(app)), f"no conversation with {name}")
 
-    def press(self, app, name):
-        eventually(lambda: self.find(app, "push button", name), f"no button {name!r}").press()
+    def control(self, app, name, shown=True, *, subtree=False):
+        def matches():
+            node = self.find(app, "push button", name, subtree=subtree)
+            return node if shown else node is None
+
+        return eventually(matches, f"expected {name!r} to be {'shown' if shown else 'hidden'}", timeout=15)
+
+    def press(self, app, name, *, subtree=False):
+        self.control(app, name, subtree=subtree).press()
+
+    def click(self, control):
+        x, y, width, height = control.extents()
+        left, top = json.loads(self.shell.eval(
+            "const bounds = global.display.focus_window.get_buffer_rect(); JSON.stringify([bounds.x, bounds.y])"))
+        assert width > 0 and height > 0
+        self.shell.click(left + x + width // 2, top + y + height // 2)
+
+    def resize_desktop(self, pid, height):
+        lookup = ("const window = global.get_window_actors().map(actor => actor.meta_window)"
+                  f".find(window => window.get_pid() === {pid});")
+        previous = int(self.shell.eval(
+            lookup + "const rect = window.get_frame_rect();"
+            f"window.move_resize_frame(true, rect.x, rect.y, rect.width, {height});"
+            "window.activate(global.get_current_time()); String(rect.height)"))
+        eventually(lambda: abs(int(self.shell.eval(lookup + "String(window.get_frame_rect().height)")) - height) <= 24,
+                   "the fixture window did not resize", timeout=15)
+        return previous
+
+    def select_quality(self, app, current, selected, *, above):
+        trigger = self.control(app, f"Quality · {current}")
+        chat = self.timeline(app)
+        chat_bounds = chat.extents()
+        _, trigger_y, _, trigger_height = trigger.extents()
+        trigger.press()
+        menu = eventually(lambda: self.find(app, "menu", "Video quality"),
+                           "video quality dropdown did not open")
+        _, menu_y, _, menu_height = menu.extents()
+        geometry = f"trigger at {trigger_y} with height {trigger_height}, menu at {menu_y} with height {menu_height}"
+        if above:
+            assert menu_y + menu_height <= trigger_y, f"quality menu should open above: {geometry}"
+        else:
+            assert menu_y >= trigger_y + trigger_height, f"quality menu should fit below: {geometry}"
+        assert chat.extents() == chat_bounds, "opening the quality menu moved the chat"
+        eventually(lambda: self.find(menu, AT_SPI_RADIO_MENU_ITEM, selected),
+                   f"quality radio menu item missing: {selected}").press()
+        self.control(app, f"Quality · {selected}")
+        eventually(lambda: not self.find(app, "menu", "Video quality"),
+                   "video quality dropdown did not close")
+        assert chat.extents() == chat_bounds, "selecting a quality moved the chat"
+
+    def toggle_quality(self, app):
+        def closed():
+            names = {(role, label) for _, role, label, _ in items(app)}
+            return ("push button", "Quality · Auto") in names and ("menu", "Video quality") not in names
+
+        trigger = self.control(app, "Quality · Auto")
+        chat = self.timeline(app)
+        chat_bounds = chat.extents()
+        self.click(trigger)
+        eventually(lambda: self.find(app, "menu", "Video quality"), "video quality dropdown did not open", timeout=5)
+        assert chat.extents() == chat_bounds, "opening the quality menu moved the chat with stats hidden"
+        self.click(trigger)
+        eventually(closed, "video quality dropdown did not close on a second click", timeout=5)
+        assert chat.extents() == chat_bounds, "closing the quality menu moved the chat"
+
+    def video_stats(self, app, show):
+        self.press(app, "Video options")
+        label = "Video stats" if show else "Hide video stats"
+        eventually(lambda: self.find(app, "menu item", label), f"missing {label!r} menu item").press()
+        eventually(lambda: not self.find(app, "menu", "Context menu"), "video options did not close")
+        eventually(lambda: bool(self.find(app, None, "Video stats")) == show,
+                   f"expected video stats to be {'shown' if show else 'hidden'}")
+        if show:
+            for field in ("Resolution", "Video payload bitrate", "Connection"):
+                eventually(lambda: self.find(app, None, field), f"video stats lack {field!r}")
 
     @staticmethod
-    def opened(path, count):
-        return eventually(lambda: path.exists() and len(lines := path.read_text().split()) >= count
-                          and lines[count - 1], f"{path.name}: URL {count} not opened")
+    def timeline(app):
+        return next((node for node, role, label, _ in items(app)
+                     if role == "list" and label.startswith(("Messages in #", "Messages with "))), None)
+
+    def invitation(self, app, sender="Andi", *, ended=False, inline=True):
+        status = "Call ended" if ended else "Video call"
+        label = f"{status} · {sender} · {self.call_host}"
+
+        def card():
+            timeline = self.timeline(app)
+            if timeline:
+                candidate = self.find(timeline, "panel", label, subtree=True)
+                if inline:
+                    if candidate:
+                        cards = [node.path for node, role, name, _ in items(app)
+                                 if role == "panel" and name == label]
+                        if cards == [candidate.path]:
+                            return candidate
+                else:
+                    assert candidate is None, "a late invitation was added to chat history"
+                    return self.find(app, "panel", label)
+            return None
+
+        try:
+            return eventually(card, f"no {status.lower()} card for {sender}", timeout=15)
+        except AssertionError:
+            state = [(role, name) for _, role, name, _ in items(app) if role in {"panel", "list item"}]
+            raise AssertionError(f"no {status.lower()} card for {sender}: {state}") from None
+
+    def witness_link(self):
+        marker = f"https://{self.call_host}/call#"
+        event = self.witness.wait(lambda event: event["kind"] == "text" and not event["outgoing"]
+                                  and marker in event["body"])
+        body = html.unescape(event["body"])
+        secret = r"[A-Za-z0-9_-]{43}"
+        link = re.search(rf"{re.escape(marker)}v=1&k={secret}&h={secret}(?![A-Za-z0-9_-])", body)
+        assert link, body
+        assert "&p=" not in body, body
+        return event["target"], link.group()
+
+    def witness_end(self, request):
+        receivers = [[user["session"], user["instance"]] for user in self.witness.users.values()
+                     if user["name"] in {"Andi", "Bea"}]
+        assert len(receivers) == 2
+        self.witness.send(kind="plugin_data", request=request, receivers=receivers,
+                          data_id="nuschl/call", data=[1, 2])
+        event = self.witness.wait(lambda event: event["kind"] == "plugin_data_admission"
+                                  and event["request"] == request)
+        assert event["admitted"], event
+
+    def historical_invitation(self, app, pid):
+        def encode(value):
+            return base64.urlsafe_b64encode(value).decode().rstrip("=")
+
+        label = b"nuschl/stream/v2"
+        publisher = bytes(32)
+        extracted = hmac.digest(label, publisher, "sha256")
+        host_key = hmac.digest(extracted, label + b" host\x01", "sha256")
+        check = hashlib.sha256(host_key).digest()
+        old = f"https://{self.call_host}/call#v=1&k={encode(bytes([1]) * 32)}&h={encode(check)}"
+        self.witness.send(kind="text", channel=1, body=f"Call: {old}")
+        card = self.invitation(app, "Witness")
+        self.control(card, "Join video call", shown=False, subtree=True)
+        self.copy_link(card, pid, old)
+
+        creator = f"{old}&p={encode(publisher)}"
+        self.witness.send(kind="text", channel=1, body=f"Call: {creator}")
+        eventually(lambda: (timeline := self.timeline(app)) and self.find(timeline, None, f"Call: {creator}", subtree=True),
+                   "a creator URL did not remain ordinary chat")
+
+    def copy_link(self, card, pid, link):
+        # The compositor, its clipboard selection and both clients are private.
+        self.shell.eval("global.get_window_actors().map(actor => actor.meta_window)"
+                        f".find(window => window.get_pid() === {pid}).activate(global.get_current_time()); 'ok'")
+        eventually(lambda: self.shell.eval(f"global.display.focus_window?.get_pid() === {pid}") == "true",
+                   "the call window did not get focus")
+        clipboard = "imports.gi.St.Clipboard.get_default()"
+        selection = "imports.gi.St.ClipboardType.CLIPBOARD"
+        self.shell.eval(f"{clipboard}.set_text({selection}, 'call fixture sentinel'); 'ok'")
+        nodes = items(card, subtree=True)
+        title = next(node for node, _, label, _ in nodes if node.path != card.path and label == card.name)
+        button = next(node for node, role, label, _ in nodes if role == "push button" and label == "Copy link")
+        _, y, _, height = button.extents()
+        _, title_y, _, title_height = title.extents()
+        assert title_y <= y + height // 2 <= title_y + title_height, (
+            f"Copy link moved off the title row: button {(y, height)}, title {(title_y, title_height)}")
+        self.click(button)
+
+        def copied():
+            self.shell.eval(f"global._callLink = undefined; {clipboard}.get_text({selection},"
+                            " (_clipboard, text) => { global._callLink = text; }); 'ok'")
+            return self.shell.eval(f"global._callLink === {json.dumps(link)}") == "true"
+
+        eventually(copied, "the private clipboard did not receive the exact guest link", timeout=10)
+
+    def inline(self, app):
+        self.control(app, "Full screen")
+
+        def regions_are_disjoint():
+            full_screen = self.find(app, "push button", "Full screen")
+            messages = self.find(app, "list", "Messages in #Lobby")
+            if not full_screen or not messages:
+                return False
+            _, call_top, _, call_height = full_screen.extents()
+            _, chat_top, _, chat_height = messages.extents()
+            return call_height > 0 and chat_height > 0 and call_top + call_height <= chat_top
+
+        eventually(regions_are_disjoint, "inline call and chat have overlapping or empty regions", timeout=15)
+
+    def fullscreen(self, app, interaction):
+        screenshots = 0
+
+        def pixels(name, width, height, x, y):
+            nonlocal screenshots
+            screenshots += 1
+            screen = self.shell.screenshot(self.args.output / f"{name}-{screenshots:02d}.png")
+            return subprocess.check_output([
+                "ffmpeg", "-v", "error", "-i", str(screen), "-vf", f"format=rgb24,crop={width}:{height}:{x}:{y}",
+                "-f", "rawvideo", "-frames:v", "1", "pipe:1",
+            ], timeout=10)
+
+        def window_is_fullscreen():
+            return self.shell.eval("global.display.focus_window.is_fullscreen()") == "true"
+
+        black = bytes(3)
+        if interaction == "pointer":
+            def inline_readable():
+                status = self.find(app, None, "Joining video call")
+                if not status:
+                    return False
+                x, y, width, height = status.extents()
+                if width == 0 or height == 0:
+                    return False
+                left, top = json.loads(self.shell.eval(
+                    "const bounds = global.display.focus_window.get_buffer_rect(); JSON.stringify([bounds.x, bounds.y])"))
+                inline = pixels("inline-status", width, height, left + x, top + y)
+                colors = [inline[i:i + 3] for i in range(0, len(inline), 3)]
+                return black in colors and any(min(color) >= 192 for color in colors)
+
+            eventually(inline_readable, "light-theme status did not paint light text on a black backdrop", timeout=3)
+
+        self.press(app, "Full screen")
+        eventually(window_is_fullscreen, "the compositor did not enter fullscreen")
+        exit_button = self.control(app, "Exit full screen")
+        eventually(lambda: exit_button.extents()[1] > 800,
+                   "fullscreen controls did not reach the display's bottom edge")
+        x, y, _, _ = exit_button.extents()
+
+        def toolbar_pixels():
+            sample = pixels(interaction, 1, 21, x + 6, y - 14)
+            assert len(sample) == 63
+            return sample[:3], sample[-3:]
+
+        def toolbar_visible():
+            backdrop, toolbar = toolbar_pixels()
+            return backdrop == black and toolbar != black
+
+        self.shell.move(40, 40)
+        eventually(toolbar_visible, "fullscreen controls did not paint over a black background", timeout=3)
+        if interaction != "menu":
+            eventually(lambda: toolbar_pixels() == (black, black), "fullscreen controls did not fade", timeout=6)
+            assert exit_button.name == "Exit full screen"
+        if interaction == "pointer":
+            self.shell.move(80, 40)
+            eventually(toolbar_visible, "pointer motion did not reveal fullscreen controls", timeout=3)
+        elif interaction == "keyboard":
+            self.shell.key("Tab")
+            eventually(lambda: exit_button.focused, "Tab did not reach the fullscreen controls", timeout=3)
+            time.sleep(3.3)
+            assert toolbar_visible(), "the focused controls faded"
+        else:
+            self.press(app, "Video options")
+            item = eventually(lambda: self.find(app, "menu item", "Video stats"), "fullscreen video menu did not open")
+            self.shell.move(*item.centre())
+            time.sleep(3.3)
+            assert toolbar_visible(), "the controls faded while the menu was open"
+            self.shell.key("Escape")
+            eventually(lambda: not self.find(app, "menu", "Context menu"), "Escape did not close the fullscreen menu")
+            assert window_is_fullscreen()
+        self.shell.key("Escape")
+        eventually(lambda: not window_is_fullscreen(), "Escape did not exit fullscreen")
+        self.inline(app)
 
     def run(self):
-        self.shell = GnomeSession(self.args.gnome_shell, 2 * WIDTH + 120, HEIGHT + 100,
+        self.shell = GnomeSession(self.args.gnome_shell, 1440, 950,
                                   log=(self.args.output / "shell.log").open("w"))
         self.shell.start()
         env = self.shell.app_environment()
         env.pop("NO_AT_BRIDGE", None)
         registry = start_registry(self.args.at_spi, env, self.spawn)
         self.start_pulse()
-        self.host = ThreadingHTTPServer(("127.0.0.1", 0), CallHost)
-        threading.Thread(target=self.host.serve_forever, daemon=True).start()
-        try:
+
+        # TCP connects to this owned listener. TLS waits with no application
+        # reading it, so the desktop never reaches the portal request.
+        with socket.create_server(("127.0.0.2", 0)) as listener:
+            self.call_host = f"127.0.0.2:{listener.getsockname()[1]}"
             directory = self.root / "murmur"
             directory.mkdir()
             self.murmur = Murmur(self.args.murmur, directory, free_port())
@@ -148,104 +367,129 @@ class CallTest(VoiceTest):
             self.witness = self.peers["Witness"] = Client(self.args.binaries, "127.0.0.1", self.murmur.port,
                                                           self.pin, "Witness", self.root / "witness")
             self.witness.send(kind="join", channel=1)
-            andi, andi_opened = self.desktop("Andi", registry, set())
-            bea, bea_opened = self.desktop("Bea", registry, {andi.destination})
-            origin = f"https://127.0.0.1:{self.host.server_port}"
-            creator = rf"{re.escape(origin)}/call#v=1&k=({SECRET})&h=({SECRET})&p=({SECRET})"
+            andi, andi_opened, andi_pid = self.desktop("Andi", registry, set())
+            if self.args.fullscreen:
+                for interaction in ("pointer", "keyboard", "menu"):
+                    self.press(andi, "Start meeting")
+                    self.fullscreen(andi, interaction)
+                    self.press(andi, "End call")
+                    print(f"Fullscreen {interaction} passed", flush=True)
+                return
+            bea, bea_opened, bea_pid = self.desktop("Bea", registry, {andi.destination})
+            cara, _, _ = self.desktop("Cara", registry, {andi.destination, bea.destination},
+                                      channel=2, path="Lobby/Development")
+            self.control(andi, "Share screen")
+            self.control(andi, "Start call", shown=False)
+            self.control(andi, "Start call in browser", shown=False)
 
-            # Start call: Andi's page holds S, V and P; the channel gets S and V.
-            self.press(andi, "Start call")
-            page = self.opened(andi_opened, 1)
-            match = re.fullmatch(creator, page)
-            assert match, page
-            secret, check, publisher = match.groups()
-            host_key = hkdf(decode(publisher), b"host", 32)
-            assert decode(check) == hashlib.sha256(host_key).digest()
-            text = self.witness.wait(lambda event: event["kind"] == "text" and secret in event["body"],
-                                     timeout=15)["body"]
-            assert f"/call#v=1&amp;k={secret}&amp;h={check}" in text and publisher not in text, text
-            # The lease carries the room and host_key; P stays with Andi.
-            lease = {"stream_id": hkdf(decode(secret), b"stream id", 16).hex(), "host_key": host_key.hex()}
-            eventually(lambda: ("POST", "/sfu/lease", lease) in CallHost.requests, "no lease renewal", timeout=15)
-            assert all(publisher not in json.dumps(body) and decode(publisher).hex() not in json.dumps(body)
-                       for _, _, body in CallHost.requests)
+            self.witness_end(1)
+            self.historical_invitation(bea, bea_pid)
+            self.press(andi, "Start meeting")
+            self.inline(andi)
+            own = self.invitation(andi, "You")
+            target, link = self.witness_link()
+            assert target == {"kind": "channel", "id": 1}
+            self.copy_link(own, andi_pid, link)
+            self.copy_link(self.invitation(bea), bea_pid, link)
+            assert not any(link in label for _, _, label, _ in items(self.timeline(bea), subtree=True)), "raw call text is visible"
 
-            # Bea's card and Join.
-            eventually(lambda: self.find(bea, None, f"Call · Andi · 127.0.0.1:{self.host.server_port}"),
-                       "Bea has no call card")
-            self.press(bea, "Join")
-            assert self.opened(bea_opened, 1) == f"{origin}/call#v=1&k={secret}&h={check}"
-            self.shot("card")
+            self.witness_end(2)
+            self.witness.send(kind="text", channel=1, body="Call ended")
+            eventually(lambda: (timeline := self.timeline(bea)) and self.find(timeline, None, "Call ended", subtree=True),
+                       "ordinary text was hidden")
+            self.control(self.invitation(bea), "Join video call", subtree=True)
 
-            # Rotate link: a new page for Andi, a new S for Bea.
-            self.press(andi, "Rotate link")
-            rotated = self.opened(andi_opened, 2)
-            new_secret, new_check, _ = re.fullmatch(creator, rotated).groups()
-            assert new_secret != secret and new_check != check
-            self.witness.wait(lambda event: event["kind"] == "text" and new_secret in event["body"], timeout=15)
-
-            def joins(expected):
-                self.press(bea, "Join")
-                time.sleep(0.5)
-                return bea_opened.read_text().split()[-1] == expected
-            eventually(lambda: joins(f"{origin}/call#v=1&k={new_secret}&h={new_check}"),
-                       "Join did not follow the new link")
-
-            # The room goes away: the lease ends the call and the card goes.
-            CallHost.room = False
-            eventually(lambda: self.find(andi, "push button", "Start call"), "the lease did not end the call",
-                       timeout=30)
-            eventually(lambda: not self.find(bea, "push button", "Join"), "Bea kept an ended call")
-
-            # Share screen starts a call too; End call releases the lease.
-            CallHost.room = True
-            self.press(andi, "Share screen")
-            assert re.fullmatch(creator, self.opened(andi_opened, 3))
-            eventually(lambda: self.find(bea, "push button", "Join"), "Bea has no card for the new call")
+            eventually(lambda: self.find(cara, "tree item", "Lobby"), "Cara cannot see Lobby").press()
+            self.press(cara, "Join voice")
+            self.control(self.invitation(cara, inline=False), "Join video call", subtree=True)
+            self.press(andi, "Minimize call")
+            own = self.invitation(andi, "You")
+            self.copy_link(own, andi_pid, link)
+            self.press(own, "Return to call", subtree=True)
+            self.inline(andi)
             self.press(andi, "End call")
-            eventually(lambda: any(method == "DELETE" for method, _, _ in CallHost.requests),
-                       "End call kept the lease")
-            eventually(lambda: not self.find(bea, "push button", "Join"), "Bea kept an ended call")
-            self.witness.wait(lambda event: event["kind"] == "text" and "Call ended" in event["body"], timeout=15)
+            self.control(andi, "Start meeting")
+            self.control(bea, "Join video call", shown=False)
+            self.control(cara, "Join video call", shown=False)
+            self.copy_link(self.invitation(andi, "You", ended=True), andi_pid, link)
+            self.invitation(bea, ended=True)
 
-            # A direct call: Andi and Bea alone. The Witness gets neither the
-            # link nor a card; Bea's card is in her conversation with Andi.
+            self.resize_desktop(andi_pid, 880)
+            self.press(andi, "Start camera")
+            self.inline(andi)
+            self.control(andi, "Open in browser", shown=False)
+            self.toggle_quality(andi)
+            self.video_stats(andi, show=True)
+            self.select_quality(andi, "Auto", "720p30", above=True)
+            self.video_stats(andi, show=False)
+            height = self.resize_desktop(andi_pid, 520)
+            settings = self.root / "Andi" / "config/settings.json"
+            for _ in range(2):
+                self.shell.chord("Control_L", "equal")
+            eventually(lambda: json.loads(settings.read_text()).get("appearance", {}).get("zoom") == 1.25,
+                       "the short fixture window did not reach 125% zoom", timeout=15)
+            self.select_quality(andi, "720p30", "Auto", above=False)
+            self.shell.chord("Control_L", "0")
+            self.resize_desktop(andi_pid, height)
+            self.inline(andi)
+            self.control(andi, "Video stats", shown=False)
+            self.video_stats(andi, show=True)
+            self.video_stats(andi, show=False)
+            assert self.witness_link()[0] == {"kind": "channel", "id": 1}
+            self.invitation(bea)
+            self.control(bea, "Open in browser", shown=False)
+
+            self.press(bea, "Join video call")
+            self.inline(bea)
+            self.press(bea, "Full screen")
+            self.control(bea, "Exit full screen")
+            self.video_stats(bea, show=True)
+            self.video_stats(bea, show=False)
+            eventually(lambda: not self.find(bea, "list", "Messages in #Lobby"),
+                       "full screen kept the inline chat tree", timeout=15)
+            self.press(bea, "Exit full screen")
+            self.inline(bea)
+            self.press(bea, "Minimize call")
+            invited = self.invitation(bea)
+            self.control(bea, "Full screen", shown=False)
+            self.press(invited, "Return to call", subtree=True)
+            self.inline(bea)
+
+            self.press(andi, "End call")
+            self.control(andi, "Start camera")
+            self.control(bea, "Leave video", shown=False)
+            self.control(bea, "Join video call", shown=False)
+
+            # A direct screen call makes the card available to Bea in the
+            # direct conversation. The Mumble witness sees only channel links.
             self.direct(andi, "Bea")
-            self.press(andi, "Start call")
-            secret, check, _ = re.fullmatch(creator, self.opened(andi_opened, 4)).groups()
             self.direct(bea, "Andi")
-            eventually(lambda: self.find(bea, None, f"Call · Andi · 127.0.0.1:{self.host.server_port}"),
-                       "Bea has no card for the direct call")
-            self.press(bea, "Join")
-            eventually(lambda: bea_opened.read_text().split()[-1] == f"{origin}/call#v=1&k={secret}&h={check}",
-                       "Join did not open the direct call")
-            self.shot("direct-card")
-            assert not any(secret in event.get("body", "") for event in list(self.witness.events)), \
-                "the Witness saw the direct call"
+            self.press(andi, "Share screen")
+            self.invitation(andi, "You")
+            self.invitation(bea)
+            self.press(bea, "Join video call")
+            self.press(bea, "Leave video")
+            self.control(bea, "Join video call")
             self.press(andi, "End call")
-            eventually(lambda: not self.find(bea, "push button", "Join"), "Bea kept an ended direct call")
+            self.control(bea, "Join video call", shown=False)
 
-            # A direct call with a stock client: the link arrives as a private message.
+            # The same action carries the link as a private Mumble message
+            # when the call recipient uses the Mumble protocol only.
             self.direct(andi, "Witness")
             self.press(andi, "Share screen")
-            secret = re.fullmatch(creator, self.opened(andi_opened, 5)).group(1)
-            private = self.witness.wait(lambda event: event["kind"] == "text" and secret in event["body"],
-                                        timeout=15)
             andi_session = next(user["session"] for user in self.witness.users.values() if user["name"] == "Andi")
-            assert private["target"] == {"kind": "direct", "id": andi_session}, private
-            print("Calls: Start call, card, Join, Rotate link, lease end, End call and direct calls passed.",
-                  flush=True)
-        finally:
-            self.host.shutdown()
+            assert self.witness_link()[0] == {"kind": "direct", "id": andi_session}
+            self.press(andi, "End call")
 
-    def shot(self, name):
-        time.sleep(0.8)
-        print(self.shell.screenshot(self.args.output / f"calls-{name}.png"), flush=True)
+            assert not andi_opened.exists() and not bea_opened.exists(), "a call launched the browser"
+            assert not self.microphone_open()
+            print("Calls passed for native controls, channel and direct invitations, and cleanup.", flush=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("binaries", type=Path)
+    parser.add_argument("--fullscreen", action="store_true")
     for name in ("murmur", "at-spi", "pulse-bin", "opus-library", "gnome-shell", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     args = parser.parse_args()

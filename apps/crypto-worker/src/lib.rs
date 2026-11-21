@@ -22,6 +22,9 @@
 //! [`CryptoRequest::Due`]: nuschl_ipc::crypto::CryptoRequest::Due
 #![forbid(unsafe_code)]
 
+mod call;
+#[cfg(any(target_os = "macos", windows))]
+pub use call::serve as serve_call_keys;
 pub mod link;
 pub mod mls;
 pub mod state;

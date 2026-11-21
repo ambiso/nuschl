@@ -6,27 +6,36 @@
 //!
 //! A receiver gets the frames of one decode target per layered source from
 //! Q1's `Selector`, which switches at switch points, with sequence numbers of
-//! its own ([`Rewrite`]) so frames it skips leave no gaps. A source without a
-//! descriptor reaches every receiver whole.
+//! its own ([`Rewrite`]) so intentional layer skips leave no gaps. The queue
+//! budget sheds pictures when a receiver falls behind.
 //!
 //! A receiver asks for a tier per source (`QualityRequest`) and states the
 //! tiers it decodes (`DecodeCapacity`), each at most once a second. The tier it
 //! gets is the least of both; until it asks, it asks for the top tier. Once a
-//! second each publisher hears the largest tier its receivers get per source.
+//! second the publisher hears the resulting demand for each source.
 
+use crate::protocol::VideoLimit;
 use nuschl_stream_quality::{
     DecodeCapacity, Kind, Throttle,
     adapt::Stepper,
     dd::{Choice, Layers, Selector},
     receive,
 };
-use std::collections::VecDeque;
-use str0m::rtp::{Extension, ExtensionSerializer, ExtensionValues};
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
+use str0m::rtp::{Extension, ExtensionSerializer, ExtensionValues, StreamTxQueueInfo};
+
+const QUEUE_AGE: Duration = Duration::from_millis(300);
+const MIN_QUEUE_BYTES: u64 = 32 * 1024;
+const MAX_QUEUE_BYTES: u64 = 2 * 1024 * 1024;
+const RECOVERY_INTERVAL: Duration = Duration::from_secs(10);
 
 /// A video source: its kind and the demand last sent to its publisher.
 pub struct Video {
     pub kind: Kind,
-    pub demand: Option<usize>,
+    pub demand: Option<(usize, u64, Option<VideoLimit>)>,
     pub throttle: Throttle,
     pub layers: Layers,
 }
@@ -54,6 +63,9 @@ pub struct View {
     /// The decode targets that fit the receiver's tier, lowest first.
     pub choices: Vec<Choice>,
     pub rewrite: Rewrite,
+    pub backlog: Backlog,
+    pub reported_limit: Option<VideoLimit>,
+    pub limit_throttle: Throttle,
 }
 
 impl View {
@@ -64,6 +76,179 @@ impl View {
             .iter()
             .find(|c| c.target == current)
             .map(|c| c.layer.spatial)
+    }
+
+    pub fn shed(&mut self, timestamp: u64, pause: Option<Instant>, limit: VideoLimit) {
+        self.backlog.shed(timestamp, pause, limit);
+        // Re-enter the decode target at a switch point after dropping a picture.
+        let target = self.selector.current();
+        self.selector = Selector::default();
+        self.selector.want(target);
+    }
+}
+
+/// The video admitted to one receiver's send queue and its temporary quality limit.
+#[derive(Default)]
+pub struct Backlog {
+    dropped_through: Option<u64>,
+    sampled_at: Option<Instant>,
+    unsampled_bytes: usize,
+    overloaded: Option<VideoLimit>,
+    limit: Option<VideoLimit>,
+    steps: usize,
+    recover_at: Option<Instant>,
+    recovery: Recovery,
+}
+
+#[derive(Clone, Copy, Default)]
+enum Recovery {
+    #[default]
+    Live,
+    Paused(Instant),
+    Requested(u64),
+    Picture {
+        timestamp: u64,
+        bytes: u64,
+    },
+}
+
+pub enum VideoAdmission {
+    Regular,
+    Pause,
+    RequestKeyframe,
+    Burst(u64),
+}
+
+impl Backlog {
+    pub fn dropped(&self, timestamp: u64) -> bool {
+        self.dropped_through.is_some_and(|last| timestamp <= last)
+    }
+
+    fn shed(&mut self, timestamp: u64, pause: Option<Instant>, limit: VideoLimit) {
+        self.dropped_through = Some(timestamp.max(self.dropped_through.unwrap_or(0)));
+        self.overloaded(limit);
+        self.recovery = pause.map_or(Recovery::Live, |now| {
+            Recovery::Paused(now + Duration::from_secs(1))
+        });
+    }
+
+    pub fn overloaded(&mut self, limit: VideoLimit) {
+        self.overloaded = Some(limit);
+    }
+
+    pub fn limit(&self) -> Option<VideoLimit> {
+        self.limit.filter(|_| self.limited() || self.recovering())
+    }
+
+    fn queued_bytes(&mut self, queue: Option<&dyn StreamTxQueueInfo>) -> usize {
+        let sampled_at = queue.map(StreamTxQueueInfo::created_at);
+        if self.sampled_at != sampled_at {
+            self.sampled_at = sampled_at;
+            self.unsampled_bytes = 0;
+        }
+        queue
+            .map_or(0, StreamTxQueueInfo::byte_size)
+            .saturating_add(self.unsampled_bytes)
+    }
+
+    pub fn full(
+        &mut self,
+        queue: Option<&dyn StreamTxQueueInfo>,
+        bitrate: u64,
+        payload: usize,
+        now: Instant,
+    ) -> bool {
+        let limit = (bitrate / 8 * 3 / 10).clamp(MIN_QUEUE_BYTES, MAX_QUEUE_BYTES);
+        let oldest = queue.and_then(StreamTxQueueInfo::first_unsent);
+        self.queued_bytes(queue).saturating_add(payload) as u64 > limit
+            || oldest.is_some_and(|at| now.saturating_duration_since(at) >= QUEUE_AGE)
+    }
+
+    pub fn enqueued(&mut self, payload: usize, cost: u64, marker: bool) {
+        self.unsampled_bytes += payload;
+        if let Recovery::Picture { timestamp, bytes } = self.recovery {
+            self.recovery = if marker {
+                Recovery::Live
+            } else {
+                Recovery::Picture {
+                    timestamp,
+                    bytes: bytes + cost,
+                }
+            };
+        }
+    }
+
+    pub fn recovering(&self) -> bool {
+        !matches!(self.recovery, Recovery::Live)
+    }
+
+    /// Reserve the next picture after a PLI while the video queue drains and
+    /// the configured one-second media credit replenishes.
+    pub fn admission(
+        &mut self,
+        timestamp: u64,
+        queue: Option<&dyn StreamTxQueueInfo>,
+        can_request: bool,
+        now: Instant,
+    ) -> VideoAdmission {
+        let recovery = self.recovery;
+        match recovery {
+            Recovery::Live => VideoAdmission::Regular,
+            Recovery::Paused(until)
+                if now >= until && can_request && self.queued_bytes(queue) == 0 =>
+            {
+                self.recovery = Recovery::Requested(timestamp);
+                VideoAdmission::RequestKeyframe
+            }
+            Recovery::Requested(previous) if timestamp > previous => {
+                self.recovery = Recovery::Picture {
+                    timestamp,
+                    bytes: 0,
+                };
+                VideoAdmission::Burst(0)
+            }
+            Recovery::Picture {
+                timestamp: stamp,
+                bytes,
+            } if timestamp == stamp => VideoAdmission::Burst(bytes),
+            Recovery::Picture {
+                timestamp: stamp, ..
+            } if timestamp > stamp => {
+                let limit = self.limit.unwrap_or(VideoLimit::ForwardingBacklog);
+                self.shed(stamp, Some(now), limit);
+                VideoAdmission::Pause
+            }
+            _ => VideoAdmission::Pause,
+        }
+    }
+
+    pub fn burst_full(
+        &mut self,
+        queue: Option<&dyn StreamTxQueueInfo>,
+        cost: u64,
+        burst: u64,
+    ) -> bool {
+        let burst = burst.min(MAX_QUEUE_BYTES);
+        cost > burst || self.queued_bytes(queue) as u64 > burst
+    }
+
+    pub fn tick(&mut self, now: Instant) {
+        if let Some(limit) = self.overloaded.take() {
+            self.limit = Some(limit);
+            self.steps = (self.steps + 1).min(Kind::Camera.top().max(Kind::Screen.top()));
+            self.recover_at = Some(now + RECOVERY_INTERVAL);
+        } else if self.recover_at.is_some_and(|at| now >= at) {
+            self.steps = self.steps.saturating_sub(1);
+            self.recover_at = (self.steps > 0).then_some(now + RECOVERY_INTERVAL);
+        }
+    }
+
+    pub fn tier(&self, tier: usize) -> usize {
+        tier.saturating_sub(self.steps)
+    }
+
+    pub fn limited(&self) -> bool {
+        self.steps > 0
     }
 }
 
@@ -123,10 +308,20 @@ pub fn full_capacity() -> DecodeCapacity {
 
 /// The tier a receiver gets of a source of `kind`, with the caps lowered by
 /// `step` tiers (`traffic`).
-pub fn tier(kind: Kind, view: &View, decode: DecodeCapacity, step: u64) -> usize {
+pub fn tier(kind: Kind, view: &View, decode: DecodeCapacity, step: u64) -> (usize, VideoLimit) {
     let top = kind.top();
+    let requested = view.request.unwrap_or(top).min(top);
     let policy = top.saturating_sub(usize::try_from(step).unwrap_or(usize::MAX));
-    receive(view.request.unwrap_or(top), decode.get(kind), top, policy)
+    let decode = decode.get(kind);
+    let tier = receive(requested, decode, top, policy);
+    let limit = if tier == requested {
+        VideoLimit::WithinTarget
+    } else if tier == decode {
+        VideoLimit::ReceiverDecode
+    } else {
+        VideoLimit::TrafficBudget
+    };
+    (tier, limit)
 }
 
 /// The descriptor's extension id in the SFU's offers; an offer from a peer
@@ -189,19 +384,142 @@ pub fn forwarded(received: &ExtensionValues) -> ExtensionValues {
 mod tests {
     use super::*;
 
+    struct Queue {
+        oldest: Instant,
+        bytes: usize,
+    }
+
+    impl StreamTxQueueInfo for Queue {
+        fn created_at(&self) -> Instant {
+            self.oldest
+        }
+
+        fn byte_size(&self) -> usize {
+            self.bytes
+        }
+
+        fn packet_count(&self) -> usize {
+            1
+        }
+
+        fn first_unsent(&self) -> Option<Instant> {
+            Some(self.oldest)
+        }
+    }
+
+    #[test]
+    fn video_queue_bounds_bytes_and_age() {
+        let now = Instant::now();
+        let mut backlog = Backlog::default();
+        let sample = Queue {
+            oldest: now,
+            bytes: 74_000,
+        };
+        assert!(!backlog.full(Some(&sample), 2_000_000, 1000, now));
+        backlog.enqueued(1000, 1000, false);
+        assert!(backlog.full(Some(&sample), 2_000_000, 1, now));
+        assert!(backlog.full(Some(&sample), 15_000_000, 1000, now + QUEUE_AGE));
+        assert!(!backlog.full(None, 2_000_000, 1000, now));
+    }
+
+    #[test]
+    fn video_shedding_covers_the_whole_remainder_and_recovers_slowly() {
+        let now = Instant::now();
+        let mut backlog = Backlog::default();
+        backlog.shed(12, None, VideoLimit::ForwardingBacklog);
+        assert!(backlog.dropped(11));
+        assert!(backlog.dropped(12));
+        assert!(!backlog.dropped(13));
+        backlog.tick(now);
+        assert_eq!(backlog.tier(3), 2);
+        backlog.shed(14, None, VideoLimit::ForwardingBacklog);
+        let latest = now + Duration::from_secs(1);
+        backlog.tick(latest);
+        assert_eq!(backlog.tier(3), 1);
+        assert_eq!(backlog.limit(), Some(VideoLimit::ForwardingBacklog));
+        backlog.tick(now + RECOVERY_INTERVAL);
+        assert_eq!(backlog.tier(3), 1);
+        assert_eq!(backlog.limit(), Some(VideoLimit::ForwardingBacklog));
+        backlog.tick(latest + RECOVERY_INTERVAL);
+        assert_eq!(backlog.tier(3), 2);
+        backlog.tick(latest + RECOVERY_INTERVAL * 2);
+        assert_eq!(backlog.tier(3), 3);
+        assert_eq!(backlog.limit(), None);
+    }
+
+    #[test]
+    fn unlayered_recovery_reserves_one_bounded_picture_after_pli() {
+        let now = Instant::now();
+        let mut backlog = Backlog::default();
+        backlog.shed(12, Some(now), VideoLimit::ForwardingBacklog);
+        assert!(matches!(
+            backlog.admission(13, None, true, now),
+            VideoAdmission::Pause
+        ));
+        let ready = now + Duration::from_secs(1);
+        let queued = Queue {
+            oldest: now,
+            bytes: 500,
+        };
+        assert!(matches!(
+            backlog.admission(14, Some(&queued), true, ready),
+            VideoAdmission::Pause
+        ));
+        assert!(matches!(
+            backlog.admission(14, None, false, ready),
+            VideoAdmission::Pause
+        ));
+        assert!(matches!(
+            backlog.admission(14, None, true, ready),
+            VideoAdmission::RequestKeyframe
+        ));
+        assert!(matches!(
+            backlog.admission(14, None, true, ready),
+            VideoAdmission::Pause
+        ));
+        assert!(matches!(
+            backlog.admission(15, None, true, ready),
+            VideoAdmission::Burst(0)
+        ));
+        assert!(!backlog.burst_full(None, 125_000, 125_000));
+        assert!(backlog.burst_full(None, 125_001, 125_000));
+        backlog.enqueued(1200, 1248, false);
+        assert!(matches!(
+            backlog.admission(15, None, true, ready),
+            VideoAdmission::Burst(1248)
+        ));
+        backlog.enqueued(1000, 1048, true);
+        assert!(matches!(
+            backlog.admission(16, None, true, ready),
+            VideoAdmission::Regular
+        ));
+    }
+
     #[test]
     fn traffic_steps_lower_the_tier() {
         let view = View::default();
         let full = full_capacity();
         let tiers: Vec<usize> = (0..5)
-            .map(|step| tier(Kind::Camera, &view, full, step))
+            .map(|step| tier(Kind::Camera, &view, full, step).0)
             .collect();
         assert_eq!(tiers, [3, 2, 1, 0, 0]);
         let asked = View {
             request: Some(1),
             ..View::default()
         };
-        assert_eq!(tier(Kind::Screen, &asked, full, 1), 1, "the least of both");
+        assert_eq!(
+            tier(Kind::Screen, &asked, full, 1),
+            (1, VideoLimit::WithinTarget)
+        );
+        assert_eq!(
+            tier(Kind::Camera, &view, full, 1),
+            (Kind::Camera.top() - 1, VideoLimit::TrafficBudget)
+        );
+        let decode = DecodeCapacity { camera: 0, ..full };
+        assert_eq!(
+            tier(Kind::Camera, &view, decode, 0),
+            (0, VideoLimit::ReceiverDecode)
+        );
     }
 
     #[test]

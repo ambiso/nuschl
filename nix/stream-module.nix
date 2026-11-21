@@ -118,10 +118,13 @@ in
         default = null;
         example = 20000000000000;
         description = ''
-          Bytes the SFU sends per period at most, null for no budget. Above the
-          paced share (the budget times the elapsed fraction of the period) it
-          lowers every receiver's quality step by step; at the budget it refuses
-          new video. The count survives restarts in the state directory.
+          Egress budget in bytes per period, or null for no budget. The paced
+          share is the budget times the elapsed fraction of the period.
+          Unused share allows bursts at normal quality. Above it the SFU lowers
+          video tiers step by step. At the budget it refuses joins and
+          publishing offers. Established media keeps forwarding under the
+          paced limits and can exceed the nominal budget. The count survives
+          restarts in the state directory.
         '';
       };
       period = mkOption {
@@ -219,6 +222,9 @@ in
             "= /sfu/lease" = {
               proxyPass = "http://unix:${socket}:";
               extraConfig = ''
+                ${headers "()"}
+                # The host key authorizes a lease. The browser receives only its HTTP status.
+                add_header Access-Control-Allow-Origin "*" always;
                 proxy_set_header X-Real-IP $remote_addr;
                 client_max_body_size 1k;
               '';

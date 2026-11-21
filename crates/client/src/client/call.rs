@@ -10,8 +10,11 @@
 //! call ends when we leave its channel, its other person leaves, or we leave
 //! the connection, on [`Client::end_call`] and when the caller's lease on the
 //! call host ends.
-use super::Client;
-use crate::server::{ServerState, Status};
+use super::{Client, TextDestination};
+use crate::{
+    server::{ServerState, Status},
+    timeline::Message,
+};
 use nuschl_core::{
     call::{CARD_DATA_ID, Card},
     model::TextTarget,
@@ -21,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::plugin::{MAX_PLUGIN_RECEIVERS, ReceivedPluginData};
 
-/// Received calls kept per server.
+/// Limit on active calls and on remembered endings, per server.
 pub const MAX_CALLS: usize = 64;
 
 /// A call someone announced: in a channel, or with us in the direct
@@ -35,7 +38,19 @@ pub struct Call {
     pub link: String,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct EndedCall {
+    target: TextTarget,
+    link: String,
+    /// An absent sender identifies our own invitation.
+    sender_instance: Option<u64>,
+}
+
 impl Call {
+    pub fn matches_author(&self, message: &Message) -> bool {
+        message.sender_instance == Some(self.sender_instance)
+    }
+
     fn live(&self, server: &ServerState) -> bool {
         server.users.get(&self.sender).is_some_and(|user| {
             user.instance == self.sender_instance
@@ -56,9 +71,17 @@ pub struct OwnCall {
     pub target: TextTarget,
     peer_instance: u64,
     pub link: String,
+    invite: Invite,
     /// Who was sent the card, and the sends awaiting admission.
     told: BTreeSet<(u32, u64)>,
     pending: BTreeMap<u64, Vec<(u32, u64)>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Invite {
+    Idle,
+    Pending,
+    Submitted,
 }
 
 impl Client {
@@ -70,6 +93,44 @@ impl Client {
             .iter()
             .filter(|call| call.target == *target && call.live(server))
             .collect()
+    }
+
+    /// Whether this invitation's creator ended the call.
+    pub fn call_ended(
+        &self,
+        index: usize,
+        target: &TextTarget,
+        guest_link: &str,
+        message: &Message,
+    ) -> bool {
+        let Some(server) = self.servers.get(index) else {
+            return false;
+        };
+        server.ended_calls.iter().any(|call| {
+            call.target == *target
+                && call.link == guest_link
+                && match call.sender_instance {
+                    Some(sender) => message.sender_instance == Some(sender),
+                    None => message.ours(server.own_user_id()),
+                }
+        })
+    }
+
+    /// The call host confirmed that the room for this invitation closed.
+    pub fn end_received_call(
+        &mut self,
+        index: usize,
+        target: &TextTarget,
+        guest_link: &str,
+        sender: (u32, u64),
+    ) {
+        if let Some(server) = self.servers.get_mut(index) {
+            finish_received_call(server, |call| {
+                (call.sender, call.sender_instance) == sender
+                    && call.target == *target
+                    && call.link == guest_link
+            });
+        }
     }
 
     pub fn own_call(&self) -> Option<&OwnCall> {
@@ -110,6 +171,7 @@ impl Client {
             target,
             peer_instance,
             link,
+            invite: Invite::Idle,
             told: BTreeSet::new(),
             pending: BTreeMap::new(),
         });
@@ -117,10 +179,24 @@ impl Client {
         Ok(())
     }
 
+    /// Share the current call link as chat text for Mumble participants.
+    /// Keep it with the call until the text send slot is available.
+    pub fn announce_own_call(&mut self) {
+        if let Some(call) = &mut self.own_call
+            && call.invite == Invite::Idle
+        {
+            call.invite = Invite::Pending;
+            self.sync_call();
+        }
+    }
+
     /// Give our call a new link; everyone it reaches gets the new card.
     pub fn rotate_call(&mut self, link: String) {
         if let Some(call) = &mut self.own_call {
             call.link = link;
+            if call.invite == Invite::Submitted {
+                call.invite = Invite::Idle;
+            }
             call.told.clear();
             call.pending.clear();
         }
@@ -134,6 +210,7 @@ impl Client {
         };
         let told: Vec<_> = call.told.into_iter().collect();
         if let Some(index) = self.current(&call.server, call.generation) {
+            remember_end(&mut self.servers[index], call.target, call.link, None);
             for receivers in told.chunks(MAX_PLUGIN_RECEIVERS) {
                 let _ = self.send_payload(index, receivers, payload(&Card::Ended));
             }
@@ -182,12 +259,12 @@ impl Client {
                 )
             }
             _ => {
-                self.own_call = None;
+                self.end_call();
                 return;
             }
         };
-        if server.status != Status::Connected {
-            self.own_call = None;
+        if server.status != Status::Connected || server.mls || !server.has_mumble_voice() {
+            self.end_call();
             return;
         }
         let card = payload(&card);
@@ -198,11 +275,23 @@ impl Client {
                 sent.push((request, receivers.to_vec()));
             }
         }
+        let send_invite = !self.sending();
         let call = self.own_call.as_mut().expect("checked above");
         call.told.retain(|member| members.contains(member));
         for (request, receivers) in sent {
             call.told.extend(&receivers);
             call.pending.insert(request, receivers);
+        }
+        if send_invite && call.invite == Invite::Pending {
+            call.invite = Invite::Submitted;
+            let expected_peer =
+                matches!(call.target, TextTarget::Direct(_)).then_some(call.peer_instance);
+            let destination = TextDestination::Invite {
+                target: call.target.clone(),
+                expected_peer,
+            };
+            let body = format!("Call: {}", call.link);
+            let _ = self.send_text_to(index, destination, body);
         }
     }
 
@@ -237,27 +326,53 @@ impl Client {
         else {
             return;
         };
-        let channel = sender.channel;
-        let sender = data.sender;
+        let (target, link) = match card {
+            Card::Active(link) => (TextTarget::Channel(sender.channel), link),
+            Card::Direct(link) => (TextTarget::Direct(data.sender), link),
+            Card::Ended => {
+                finish_received_call(server, |call| {
+                    call.sender == data.sender && call.sender_instance == data.sender_instance
+                });
+                return;
+            }
+        };
         let calls = std::mem::take(&mut server.calls);
         server.calls = calls
             .into_iter()
             .filter(|call| call.sender != data.sender && call.live(server))
             .collect();
-        let (target, link) = match card {
-            Card::Active(link) => (TextTarget::Channel(channel), link),
-            Card::Direct(link) => (TextTarget::Direct(sender), link),
-            Card::Ended => return,
-        };
         if server.calls.len() < MAX_CALLS {
             server.calls.push(Call {
-                sender,
+                sender: data.sender,
                 sender_instance: data.sender_instance,
                 target,
                 link,
             });
         }
     }
+}
+
+fn finish_received_call(server: &mut ServerState, matches: impl FnMut(&Call) -> bool) {
+    if let Some(active) = server.calls.iter().position(matches) {
+        let call = server.calls.remove(active);
+        remember_end(server, call.target, call.link, Some(call.sender_instance));
+    }
+}
+
+fn remember_end(
+    server: &mut ServerState,
+    target: TextTarget,
+    link: String,
+    sender_instance: Option<u64>,
+) {
+    if server.ended_calls.len() == MAX_CALLS {
+        server.ended_calls.pop_front();
+    }
+    server.ended_calls.push_back(EndedCall {
+        target,
+        link,
+        sender_instance,
+    });
 }
 
 fn payload(card: &Card) -> Payload {

@@ -12,15 +12,14 @@
 //! room id names the same keys for the whole life of its link. A room also
 //! ends when its lease lapses: the creator's device renews it with `host_key`.
 
+pub use crate::protocol::{PeerId, Role};
 use hmac::{KeyInit, Mac};
-use serde::Serialize;
 use std::{
     collections::HashMap,
     net::IpAddr,
     time::{Duration, Instant, SystemTime},
 };
 
-pub type PeerId = u64;
 /// `(stream_id, V)`.
 pub type RoomId = ([u8; 16], [u8; 32]);
 pub type Key = [u8; 32];
@@ -29,15 +28,6 @@ pub type Nonce = [u8; 32];
 /// Labels of the two proofs: `HMAC-SHA256(key, label || nonce)`.
 pub const ADMIT_LABEL: &[u8] = b"nuschl/stream/v2 sfu admit";
 pub const HOST_LABEL: &[u8] = b"nuschl/stream/v2 sfu host";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Role {
-    /// Proved S: publishes its own sources, subscribes, exchanges key messages.
-    Participant,
-    /// Also proved P: removes peers and ends the room.
-    Host,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
@@ -72,6 +62,8 @@ pub struct Join {
     /// with the same keys.
     pub create: Option<(Key, Key)>,
     pub decoders: crate::protocol::Decoders,
+    pub video_limits: bool,
+    pub screen_rate: bool,
 }
 
 pub fn prove(key: &Key, label: &[u8], nonce: &Nonce) -> [u8; 32] {

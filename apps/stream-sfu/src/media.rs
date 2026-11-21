@@ -10,8 +10,11 @@
 
 use crate::{
     config::Config,
-    protocol::{self, ClientMessage, Decoders, PeerInfo, ServerMessage, Track, TurnCredentials},
-    quality,
+    protocol::{
+        self, ClientMessage, Decoders, MAX_SCREEN_BITRATE, PeerInfo, ServerMessage, Track,
+        TurnCredentials, VideoLimit, Welcome,
+    },
+    quality::{self, VideoAdmission},
     rooms::{self, Bucket, Join, Nonce, PeerId, Refusal, RoomId, Rooms},
     routing::Routing,
     traffic::Traffic,
@@ -27,7 +30,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 use str0m::{
-    Candidate, Event, IceConnectionState, Input, Output, Rtc,
+    Candidate, Event, IceConnectionState, Input, Output, PacerReason, Reason, Rtc,
     bwe::{Bitrate, BweKind},
     change::{SdpAnswer, SdpOffer, SdpPendingOffer},
     format::{Codec, CodecConfig, FormatParams, PayloadParams},
@@ -51,6 +54,10 @@ const PACKET_OVERHEAD: usize = 48;
 pub const MAX_DATAGRAM: usize = 2048;
 /// A subscribe connection's bandwidth estimate before its first measurement.
 const INITIAL_ESTIMATE: u64 = 2_000_000;
+/// Immediate sends a connection may service before returning to socket and signalling I/O.
+const PACER_BATCH: usize = 16;
+/// Heap entries serviced before the event loop checks the other inputs again.
+const TIMEOUT_BATCH: usize = 32;
 
 pub enum Command {
     Join {
@@ -127,6 +134,8 @@ struct Peer {
     estimate: u64,
     decode: DecodeCapacity,
     decode_throttle: Throttle,
+    video_limits: bool,
+    screen_rate: bool,
 }
 
 impl Source {
@@ -353,16 +362,14 @@ impl Core {
         now: Instant,
     ) {
         if self.traffic.as_ref().is_some_and(Traffic::exhausted) {
-            let _ = out.try_send(ServerMessage::Error { reason: "traffic" });
+            let _ = out.try_send(ServerMessage::error("traffic"));
             return;
         }
         let decoders = join.decoders;
         let role = match self.rooms.join(id, &join, nonce, client, now) {
             Ok(role) => role,
             Err(refusal) => {
-                let _ = out.try_send(ServerMessage::Error {
-                    reason: refusal.reason(),
-                });
+                let _ = out.try_send(ServerMessage::error(refusal.reason()));
                 return;
             }
         };
@@ -377,7 +384,7 @@ impl Core {
         let others_decoders = others.iter().map(|other| self.peers[&other.id].decoders);
         let Some(codec) = protocol::call_codec(others_decoders.chain([decoders])) else {
             self.rooms.leave(&join.room, id);
-            let _ = out.try_send(ServerMessage::Error { reason: "codec" });
+            let _ = out.try_send(ServerMessage::error("codec"));
             return;
         };
         let turn = self.turn.as_ref().map(|turn| {
@@ -411,30 +418,45 @@ impl Core {
             estimate: INITIAL_ESTIMATE,
             decode: quality::full_capacity(),
             decode_throttle: Throttle::default(),
+            video_limits: join.video_limits,
+            screen_rate: join.screen_rate,
         };
         self.peers.insert(id, peer);
-        // A join fails when some stream's base layer no longer fits.
+        // Configured egress budgets govern admission. Measured connection
+        // capacity governs layer allocation after the viewer connects.
         let planned = self.plan().0;
         let rates = rates(&planned);
         let (receivers, streams) = self.streams(&planned, &rates);
-        if !budget::admits(&self.limits(), &receivers, &streams) {
+        let limits = self.limits();
+        if !budget::admits(&limits, receivers.len(), &streams) {
             let peer = self.peers.remove(&id).expect("inserted");
             self.rooms.leave(&peer.room, id);
             self.routing.remove(|(route, _)| route == id);
-            let _ = peer.out.try_send(ServerMessage::Error {
-                reason: "bandwidth",
-            });
+            let _ = peer.out.try_send(ServerMessage::error("bandwidth"));
             return;
+        }
+        // Give the estimator enough initial capacity to send the admitted
+        // base layers. Their traffic lets it measure this connection.
+        let base: u64 = planned
+            .iter()
+            .zip(&rates)
+            .filter(|(source, _)| source.receiver == id)
+            .filter_map(|(_, rates)| rates.first())
+            .sum();
+        let peer = self.peers.get_mut(&id).expect("admitted peer");
+        if base > peer.estimate {
+            peer.estimate = base;
+            peer.subscribe.bwe().reset(Bitrate::bps(base));
         }
         self.send(
             id,
-            ServerMessage::Welcome {
+            ServerMessage::Welcome(Welcome {
                 peer: id,
                 role,
                 peers: others.clone(),
                 codec,
                 turn,
-            },
+            }),
         );
         for other in others {
             self.send(other.id, ServerMessage::Joined { peer: id, role });
@@ -617,7 +639,7 @@ impl Core {
                     mid: f.mid?.to_string(),
                     peer: f.from,
                     source: f.source.to_string(),
-                    kind: f.label,
+                    kind: f.label.into(),
                 })
             })
             .collect();
@@ -645,7 +667,7 @@ impl Core {
             return;
         };
         if let Some(reason) = reason {
-            let _ = peer.out.try_send(ServerMessage::Error { reason });
+            let _ = peer.out.try_send(ServerMessage::error(reason));
         }
         self.rooms.leave(&peer.room, id);
         self.routing.remove(|(route, _)| route == id);
@@ -701,7 +723,10 @@ impl Core {
     }
 
     fn timeouts(&mut self, now: Instant) {
-        while let Some(&Reverse((at, id, leg))) = self.timers.peek() {
+        for _ in 0..TIMEOUT_BATCH {
+            let Some(&Reverse((at, id, leg))) = self.timers.peek() else {
+                break;
+            };
             if at > now {
                 break;
             }
@@ -743,7 +768,8 @@ impl Core {
 
     /// Polls one connection until it waits: sends its datagrams and handles
     /// its events.
-    fn drain(&mut self, id: PeerId, leg: Leg, now: Instant) {
+    fn drain(&mut self, id: PeerId, leg: Leg, mut now: Instant) {
+        let mut immediate = 0;
         loop {
             let Some(peer) = self.peers.get_mut(&id) else {
                 return;
@@ -761,6 +787,23 @@ impl Core {
                     return;
                 }
                 Ok(Output::Timeout(at)) => {
+                    // str0m asks for a new clock reading after each paced send.
+                    // Service due work here because Tokio timers run in milliseconds.
+                    if leg == Leg::Subscribe
+                        && immediate < PACER_BATCH
+                        && rtc.last_timeout_reason() == Reason::Pacer(PacerReason::Immediate)
+                    {
+                        let current = Instant::now();
+                        if at <= current {
+                            if rtc.handle_input(Input::Timeout(current)).is_err() {
+                                self.kicks.push((id, "media"));
+                                return;
+                            }
+                            now = current;
+                            immediate += 1;
+                            continue;
+                        }
+                    }
                     if peer.deadlines[leg as usize] != Some(at) {
                         peer.deadlines[leg as usize] = Some(at);
                         self.timers.push(Reverse((at, id, leg as u8)));
@@ -810,7 +853,11 @@ impl Core {
                 let Some(peer) = self.peers.get(&id) else {
                     return;
                 };
-                if let Some(forward) = peer.forwards.iter().find(|f| f.mid == Some(request.mid)) {
+                if let Some(forward) = peer
+                    .forwards
+                    .iter()
+                    .find(|f| f.mid == Some(request.mid) && !f.view.backlog.recovering())
+                {
                     let (from, source) = (forward.from, forward.source);
                     self.keyframe(from, source, now);
                 }
@@ -940,7 +987,13 @@ impl Core {
             return;
         }
         let video = source.kind == MediaKind::Video;
-        let size = (packet.payload.len() + PACKET_OVERHEAD) as f64;
+        let timestamp = packet.time.numer();
+        let payload = packet.payload.len();
+        let cost = (payload + PACKET_OVERHEAD) as u64;
+        let can_request = source
+            .keyframe_asked
+            .is_none_or(|at| now.saturating_duration_since(at) >= KEYFRAME_INTERVAL);
+        let recovery_burst = self.config.receiver_bitrate.min(self.config.room_bitrate) / 8;
         let receivers: Vec<PeerId> = self.rooms.get(&room).map_or_else(Vec::new, |r| {
             r.peers
                 .iter()
@@ -964,6 +1017,11 @@ impl Core {
                 continue;
             };
             let view = &mut forward.view;
+            if video && view.backlog.dropped(timestamp) {
+                view.rewrite.skip(*packet.seq_no);
+                dropped |= frame.is_some();
+                continue;
+            }
             let keep = match &frame {
                 None => true,
                 Some(None) => false,
@@ -988,18 +1046,59 @@ impl Core {
             else {
                 continue;
             };
-            let room_budget = &mut self.rooms.get_mut(&room).expect("room").budget;
-            if !peer.budget.take(size, now) || !room_budget.take(size, now) {
-                dropped = true;
-                continue;
-            }
-            let Some(seq) = forward.view.rewrite.forward(*packet.seq_no) else {
-                continue;
-            };
             let mut api = peer.subscribe.direct_api();
             let Some(stream) = api.stream_tx_by_mid(out_mid, None) else {
                 continue;
             };
+            let full = if video {
+                let queue = stream.queue_info();
+                match view.backlog.admission(timestamp, queue, can_request, now) {
+                    VideoAdmission::Regular => view.backlog.full(
+                        queue,
+                        peer.estimate.min(self.config.receiver_bitrate),
+                        payload,
+                        now,
+                    ),
+                    VideoAdmission::Burst(bytes) => {
+                        view.backlog.burst_full(queue, bytes + cost, recovery_burst)
+                    }
+                    VideoAdmission::Pause => {
+                        view.rewrite.skip(*packet.seq_no);
+                        continue;
+                    }
+                    VideoAdmission::RequestKeyframe => {
+                        view.rewrite.skip(*packet.seq_no);
+                        dropped = true;
+                        continue;
+                    }
+                }
+            } else {
+                false
+            };
+            let room_budget = &mut self.rooms.get_mut(&room).expect("room").budget;
+            let limit = if full {
+                Some(VideoLimit::ForwardingBacklog)
+            } else if !peer.budget.take(cost as f64, now) {
+                Some(VideoLimit::SfuViewer)
+            } else if !room_budget.take(cost as f64, now) {
+                Some(VideoLimit::SfuRoom)
+            } else {
+                None
+            };
+            if let Some(limit) = limit {
+                if video {
+                    view.rewrite.skip(*packet.seq_no);
+                    view.shed(timestamp, frame.is_none().then_some(now), limit);
+                }
+                dropped |= frame.is_some();
+                continue;
+            }
+            let Some(seq) = view.rewrite.forward(*packet.seq_no) else {
+                continue;
+            };
+            if video {
+                view.backlog.enqueued(payload, cost, marker);
+            }
             stream.write_rtp(
                 RtpWrite::new(
                     pt,
@@ -1019,38 +1118,144 @@ impl Core {
         }
     }
 
-    /// The decode targets each receiver's tier allows of each layered source,
-    /// and the largest tier asked of each video source.
-    fn plan(&self) -> (Vec<Planned>, HashMap<(PeerId, Mid), usize>) {
-        let mut demands: HashMap<(PeerId, Mid), usize> = HashMap::new();
+    /// The decode targets and publisher demands for each video source.
+    fn plan(&self) -> (Vec<Planned>, HashMap<(PeerId, Mid), Demand>) {
+        let mut demands: HashMap<(PeerId, Mid), Demand> = HashMap::new();
         let mut planned = Vec::new();
+        let limits = self.limits();
+        let (host, rooms, viewers) = self.screen_shares();
         for (&id, peer) in &self.peers {
             for (index, forward) in peer.forwards.iter().enumerate() {
-                let Some(video) = self.peers.get(&forward.from).and_then(|p| {
-                    p.sources
-                        .iter()
-                        .find(|s| s.mid == forward.source)
-                        .and_then(|s| s.video.as_ref())
-                }) else {
+                if forward.stopping {
+                    continue;
+                }
+                let Some(publisher) = self.peers.get(&forward.from) else {
                     continue;
                 };
-                let tier = quality::tier(video.kind, &forward.view, peer.decode, self.step);
+                let Some(video) = publisher
+                    .sources
+                    .iter()
+                    .find(|s| s.mid == forward.source)
+                    .and_then(|s| s.video.as_ref())
+                else {
+                    continue;
+                };
+                let (requested, mut limit) =
+                    quality::tier(video.kind, &forward.view, peer.decode, self.step);
+                let backlog = &forward.view.backlog;
+                let tier = backlog.tier(requested);
+                if let Some(active) = backlog
+                    .limit()
+                    .filter(|_| tier < requested || backlog.recovering())
+                {
+                    limit = active;
+                }
                 let mut choices = video.layers.choices(video.kind, tier);
                 // Past the lowest tier the traffic budget leaves base layers only.
-                if self.step > video.kind.top() as u64 {
+                if self.step > video.kind.top() as u64 && choices.len() > 1 {
                     choices.truncate(1);
+                    limit = VideoLimit::TrafficBudget;
                 }
                 let demand = demands.entry((forward.from, forward.source)).or_default();
-                *demand = (*demand).max(tier);
+                let publisher_limit =
+                    if limit == VideoLimit::WithinTarget && tier < video.kind.top() {
+                        VideoLimit::ReceiverQuality
+                    } else {
+                        limit
+                    };
+                demand.request(tier, publisher_limit);
+                let raised = video.kind == Kind::Screen && publisher.screen_rate;
+                let single_layer = (raised || backlog.limited())
+                    && video.layers.choices(video.kind, video.kind.top()).len() <= 1;
+                if backlog.limited() && single_layer {
+                    let (configured, configured_limit) =
+                        if self.config.receiver_bitrate <= self.config.room_bitrate {
+                            (self.config.receiver_bitrate, VideoLimit::SfuViewer)
+                        } else {
+                            (self.config.room_bitrate, VideoLimit::SfuRoom)
+                        };
+                    let affordable = video.kind.affordable(configured);
+                    let cap = if affordable < tier {
+                        (affordable, configured_limit)
+                    } else {
+                        (tier, publisher_limit)
+                    };
+                    demand.shared_cap = demand.shared_cap.min(cap);
+                }
+                let mut probe = video.kind.ladder()[requested].ceiling;
+                if raised {
+                    let viewer = viewers[&id];
+                    let (configured, configured_limit) = [
+                        (host.rate(limits.host), VideoLimit::SfuHost),
+                        (rooms[&peer.room].rate(limits.room), VideoLimit::SfuRoom),
+                        (viewer.rate(limits.receiver), VideoLimit::SfuViewer),
+                    ]
+                    .into_iter()
+                    .fold((MAX_SCREEN_BITRATE, VideoLimit::WithinTarget), |a, b| {
+                        a.min(b)
+                    });
+                    let policy = if self.step > 0 {
+                        let step = self.step.min(video.kind.top() as u64) as usize;
+                        let index = video.kind.top() - step;
+                        (
+                            video.kind.ladder()[index].ceiling,
+                            VideoLimit::TrafficBudget,
+                        )
+                    } else {
+                        (MAX_SCREEN_BITRATE, VideoLimit::WithinTarget)
+                    };
+                    // Probe independently of payload and leave room for packet headers.
+                    probe = configured.min(policy.0.saturating_mul(10).div_ceil(9));
+                    let network = viewer.rate(peer.estimate).min(MAX_SCREEN_BITRATE);
+                    let mut cap = (configured * 9 / 10, configured_limit)
+                        .min((network * 9 / 10, VideoLimit::ReceiverBandwidth))
+                        .min(policy);
+                    if backlog.limited() {
+                        cap = cap.min((video.kind.ladder()[tier].ceiling, limit));
+                    }
+                    demand.screen_rate(cap, single_layer);
+                    if limit == VideoLimit::WithinTarget {
+                        limit = cap.1;
+                    }
+                }
                 planned.push(Planned {
                     receiver: id,
                     forward: index,
                     choices,
-                    ceiling: video.kind.ladder()[tier].ceiling,
+                    ceiling: probe,
+                    limit,
                 });
             }
         }
         (planned, demands)
+    }
+
+    /// Split configured egress across simultaneously forwarded screens. Reserve
+    /// enough for the ceiling of the call's camera and Opus sources.
+    fn screen_shares(
+        &self,
+    ) -> (
+        ScreenShare,
+        HashMap<RoomId, ScreenShare>,
+        HashMap<PeerId, ScreenShare>,
+    ) {
+        let mut host = ScreenShare::default();
+        let mut rooms: HashMap<_, ScreenShare> = HashMap::new();
+        let mut viewers = HashMap::new();
+        for (&id, peer) in &self.peers {
+            let mut usage = ScreenShare::default();
+            for forward in peer.forwards.iter().filter(|f| !f.stopping) {
+                match forward.label {
+                    "screen" => usage.screens += 1,
+                    "camera" => usage.reserved += Kind::Camera.ladder()[Kind::Camera.top()].ceiling,
+                    _ => usage.reserved += 256_000,
+                }
+            }
+            host.reserve(usage);
+            rooms.entry(peer.room).or_default().reserve(usage);
+            viewers.insert(id, usage);
+        }
+        (host, rooms, viewers)
     }
 
     fn limits(&self) -> budget::Limits {
@@ -1095,8 +1300,7 @@ impl Core {
     /// receiver's layered sources, moves each receiver's decode target toward
     /// its share at Q1's `Stepper` pace, asks each subscribe connection's
     /// bandwidth estimator to probe for the receiver's tiers, and tells each
-    /// publisher the largest tier asked of each of its video sources, when it
-    /// changed.
+    /// publisher the new demand for each of its sources that changed.
     fn quality(&mut self, now: Instant) {
         let since = now.saturating_duration_since(self.origin);
         if let Some(traffic) = &mut self.traffic {
@@ -1109,6 +1313,11 @@ impl Core {
                 tracing::warn!("saving the traffic count: {error}");
             }
         }
+        for peer in self.peers.values_mut() {
+            for forward in &mut peer.forwards {
+                forward.view.backlog.tick(now);
+            }
+        }
         let (planned, demands) = self.plan();
         let rates = rates(&planned);
         let (receivers, streams) = self.streams(&planned, &rates);
@@ -1116,13 +1325,20 @@ impl Core {
         let mut desired: HashMap<PeerId, u64> = HashMap::new();
         for (planned, share) in planned.into_iter().zip(shares) {
             *desired.entry(planned.receiver).or_default() += planned.ceiling;
-            let view = &mut self
-                .peers
-                .get_mut(&planned.receiver)
-                .expect("listed")
-                .forwards[planned.forward]
-                .view;
-            let target = share.checked_sub(1).map(|ceiling| {
+            let peer = self.peers.get_mut(&planned.receiver).expect("listed");
+            let forward = &mut peer.forwards[planned.forward];
+            let view = &mut forward.view;
+            let mut limit = match share.limited_by {
+                Some(budget::Limit::Host) => VideoLimit::SfuHost,
+                Some(budget::Limit::Room) => VideoLimit::SfuRoom,
+                Some(budget::Limit::Viewer) => VideoLimit::SfuViewer,
+                Some(budget::Limit::Network) => VideoLimit::ReceiverBandwidth,
+                None => planned.limit,
+            };
+            if share.layers == 0 && !planned.choices.is_empty() {
+                view.backlog.overloaded(limit);
+            }
+            let target = share.layers.checked_sub(1).map(|ceiling| {
                 let resolutions: Vec<u32> = planned
                     .choices
                     .iter()
@@ -1132,8 +1348,29 @@ impl Core {
                     .stepper
                     .get_or_insert_with(|| Stepper::new(ceiling))
                     .update(&resolutions, ceiling, since);
+                if limit == VideoLimit::WithinTarget && point < ceiling {
+                    limit = VideoLimit::QualityRecovery;
+                }
                 planned.choices[point].target
             });
+            if peer.video_limits
+                && forward.open
+                && !forward.stopping
+                && view.reported_limit != Some(limit)
+                && peer.out.capacity() > crate::OUTGOING / 2
+                && let Some(mid) = forward.mid
+                && view.limit_throttle.allow(since)
+                && peer
+                    .out
+                    .try_send(ServerMessage::VideoLimit {
+                        mid: mid.to_string(),
+                        peer: forward.from,
+                        limit,
+                    })
+                    .is_ok()
+            {
+                view.reported_limit = Some(limit);
+            }
             view.selector.want(target);
             view.choices = planned.choices;
         }
@@ -1151,20 +1388,35 @@ impl Core {
                 let Some(video) = &mut source.video else {
                     continue;
                 };
-                let demand = demands.get(&(id, source.mid)).copied();
-                if demand.is_some() && demand != video.demand && video.throttle.allow(since) {
-                    video.demand = demand;
-                    let request = QualityRequest {
-                        publisher: id,
-                        kind: video.kind,
-                        tier: demand.unwrap_or(0) as u8,
-                    };
-                    messages.push((id, hex::encode(request.to_bytes())));
+                if let Some(demand) = demands.get(&(id, source.mid)) {
+                    let (tier, bitrate, limit) = demand.cap(video.kind);
+                    let limit = peer.video_limits.then_some(limit);
+                    let cap = Some((tier, bitrate, limit));
+                    if cap != video.demand && video.throttle.allow(since) {
+                        video.demand = cap;
+                        let request = QualityRequest {
+                            publisher: id,
+                            kind: video.kind,
+                            tier: tier as u8,
+                        };
+                        let cap = video.kind.ladder()[tier];
+                        messages.push((
+                            id,
+                            ServerMessage::Quality {
+                                request: hex::encode(request.to_bytes()),
+                                source: source.mid.to_string(),
+                                max_height: cap.height,
+                                max_fps: cap.fps,
+                                max_bitrate: bitrate,
+                                limit,
+                            },
+                        ));
+                    }
                 }
             }
         }
-        for (id, request) in messages {
-            self.send(id, ServerMessage::Quality { request });
+        for (id, message) in messages {
+            self.send(id, message);
         }
     }
 
@@ -1201,6 +1453,23 @@ pub fn unix_seconds() -> i64 {
         .map_or(0, |d| d.as_secs() as i64)
 }
 
+#[derive(Clone, Copy, Default)]
+struct ScreenShare {
+    screens: u64,
+    reserved: u64,
+}
+
+impl ScreenShare {
+    fn reserve(&mut self, other: Self) {
+        self.screens += other.screens;
+        self.reserved += other.reserved;
+    }
+
+    fn rate(self, wire_budget: u64) -> u64 {
+        wire_budget.saturating_sub(self.reserved * 10 / 9) / self.screens.max(1)
+    }
+}
+
 /// One receiver's stream of one video source, for the budgets.
 struct Planned {
     receiver: PeerId,
@@ -1210,6 +1479,60 @@ struct Planned {
     choices: Vec<Choice>,
     /// The most its tier needs, bits per second.
     ceiling: u64,
+    limit: VideoLimit,
+}
+
+/// Maximum receiver demand with a shared cap when the publisher sends one layer.
+struct Demand {
+    requested: (usize, VideoLimit),
+    shared_cap: (usize, VideoLimit),
+    screen_rate: Option<(u64, VideoLimit)>,
+}
+
+impl Demand {
+    fn request(&mut self, tier: usize, limit: VideoLimit) {
+        let (highest, current_limit) = self.requested;
+        if tier > highest || tier == highest && limit < current_limit {
+            self.requested = (tier, limit);
+        }
+    }
+
+    fn screen_rate(&mut self, cap: (u64, VideoLimit), single_layer: bool) {
+        self.screen_rate = Some(self.screen_rate.map_or(cap, |previous| {
+            if single_layer {
+                previous.min(cap)
+            } else {
+                previous.max(cap)
+            }
+        }));
+    }
+
+    fn cap(&self, kind: Kind) -> (usize, u64, VideoLimit) {
+        let (tier, mut limit) = if self.shared_cap.0 < self.requested.0 {
+            self.shared_cap
+        } else {
+            self.requested
+        };
+        let mut bitrate = kind.ladder()[tier].ceiling;
+        if let Some((rate, reason)) = self.screen_rate {
+            // Round down to avoid retuning encoders for tiny estimate changes.
+            bitrate = (rate / 100_000 * 100_000).max(64_000);
+            if limit == VideoLimit::WithinTarget || reason == VideoLimit::TrafficBudget {
+                limit = reason;
+            }
+        }
+        (tier, bitrate, limit)
+    }
+}
+
+impl Default for Demand {
+    fn default() -> Self {
+        Self {
+            requested: (0, VideoLimit::ForwardingBacklog),
+            shared_cap: (usize::MAX, VideoLimit::WithinTarget),
+            screen_rate: None,
+        }
+    }
 }
 
 fn rates(planned: &[Planned]) -> Vec<Vec<u64>> {
@@ -1248,6 +1571,43 @@ fn forward(from: PeerId, source: Mid, kind: MediaKind, label: &'static str) -> F
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screen_reservations_leave_room_for_a_camera_and_two_active_shares() {
+        let usage = ScreenShare {
+            screens: 1,
+            reserved: 4_000_000,
+        };
+        assert_eq!(usage.rate(25_000_000), 20_555_556);
+        let mut room = usage;
+        room.reserve(usage);
+        assert_eq!(room.rate(25_000_000), 8_055_556);
+        assert_eq!(room.rate(3_000_000), 0);
+    }
+
+    #[test]
+    fn screen_geometry_and_path_rate_are_independent() {
+        let mut shared = Demand::default();
+        let mut layered = Demand::default();
+        for (demand, single_layer) in [(&mut shared, true), (&mut layered, false)] {
+            demand.request(2, VideoLimit::WithinTarget);
+            assert_eq!(demand.cap(Kind::Screen).1, 8_000_000);
+            demand.screen_rate((23_031_000, VideoLimit::SfuViewer), single_layer);
+            assert_eq!(
+                demand.cap(Kind::Screen),
+                (2, 23_000_000, VideoLimit::SfuViewer)
+            );
+            demand.screen_rate((9_000_000, VideoLimit::ReceiverBandwidth), single_layer);
+        }
+        assert_eq!(
+            shared.cap(Kind::Screen),
+            (2, 9_000_000, VideoLimit::ReceiverBandwidth)
+        );
+        assert_eq!(
+            layered.cap(Kind::Screen),
+            (2, 23_000_000, VideoLimit::SfuViewer)
+        );
+    }
 
     fn av1(pt: u8, profile: u8, level_idx: u8) -> PayloadParams {
         let format = FormatParams {

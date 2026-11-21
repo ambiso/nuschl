@@ -109,7 +109,9 @@ One nginx virtual host with `enableACME` and `forceSSL` (both on by default) ser
 Every response carries a strict Content-Security-Policy (only this origin; the relay
 as the one connection; `wasm-unsafe-eval` for WebAssembly; media only from `blob:`
 for a call's silent keep-alive), `Referrer-Policy:
-no-referrer`, `nosniff` and a Permissions-Policy allowing only the microphone. The
+no-referrer`, `nosniff`, a Permissions-Policy allowing only the microphone, and
+`Cross-Origin-Opener-Policy: same-origin` with `Cross-Origin-Embedder-Policy:
+require-corp`, which make the page cross-origin isolated for voice. The
 relay runs as its own system user (static, so nginx can share the socket's group)
 under the server module's systemd hardening. `installUrl` sets where "Get Nuschl"
 leads.
@@ -286,6 +288,11 @@ against the pin or the web's certificate authorities (anything else is the user'
 decision, as in the apps), the Mumble login, the channel tree and users. It uses no
 DOM, so a Web Worker can host it.
 
+The web client's WebAssembly needs Chrome 96, Firefox 89 or Safari 16.4 or later:
+every module uses reference types (Chrome 96, Firefox 79, Safari 15), and the Opus
+codec Worker's module uses SIMD (`simd128`: Chrome 91, Firefox 89, Safari 16.4).
+`tests/web_audio_simd.mjs` checks that it encodes and decodes to the scalar build's bits.
+
 - `nix build .#web-wasm`, `.#web-audio-wasm`, `.#web-client` and `.#web-site`
   build the session SDK, separate Opus codec, Svelte app and complete site.
   `just wasm-client` and `just web` remain development entry points. The exact
@@ -319,6 +326,28 @@ DOM, so a Web Worker can host it.
   browser's WebSocket and Web Crypto) through the relay to a loopback Murmur, trusting
   the certificate it is shown.
 
+## Video in the web app
+
+Use the camera icon in your voice channel or an online private conversation to
+start a call. The channel gets a Join card and a link usable from stock Mumble.
+Start camera and Share screen request video capture individually. The panel can
+show both previews and the incoming video while you browse chat. Minimize keeps
+the call active. Leave video stops your capture, and End call closes a room you
+created.
+
+The web app reuses the call page's media controls, WebRTC session and SFrame
+worker. It sends video to the configured SFU. Add `?relay` to the app URL to
+require the SFU's TURN service for media. `services.nuschl-web.callHost`
+selects the HTTPS stream host, defaulting to `stream.nuschl.eu`. Camera and
+display capture permissions apply to the app, and its connection policy admits
+that host's signaling and lease endpoints. The SFU can run on a separate domain.
+The standalone call page also offers browser-tab audio sharing on browsers with
+capture handles.
+
+The web VM runs two Chromium clients against stock Mumble and a private SFU.
+It checks decoded camera and screen video from synthetic sources, a renewed
+call lease, minimizing while browsing chat, and the ended invitation.
+
 ## The call page (`web/call`)
 
 The stream host (`services.nuschl-stream`, `nix/stream-module.nix`) serves the
@@ -338,8 +367,13 @@ with a call link opens it ([desktop](desktop.md#calls)); the creator's link adds
   keys arrive. Camera tiles fill a grid; a shared screen or a pinned camera
   takes the large view. The roster lists everyone in the call, and a host
   (P) gets End call and Remove.
-- **Relay only:** `/call?relay#…` connects with `iceTransportPolicy: 'relay'`
-  through the TURN server the SFU names, and fails closed without one.
+- **Connection path:** Two participants can move video to a direct WebRTC
+  connection when the measured outgoing bitrate covers the selected quality
+  with 20% headroom. Pairwise keys protect the ICE candidates in transit.
+  The participants learn their peer's address on this path. The page moves
+  video back to the SFU when the direct connection falls behind or fails.
+  `/call?relay#…` skips direct negotiation and uses the call host's TURN
+  server, failing closed when the host offers none.
 - **Bounds:** SFU messages are checked against the page's limits before use
   (`signal.js`: 256 KiB, 256 peers, three tracks per peer, 16 KiB key
   messages); the stream worker bounds its own requests.
@@ -351,13 +385,18 @@ with a call link opens it ([desktop](desktop.md#calls)); the creator's link adds
   call codec only; on the SFU's `codec` message every source restarts its
   encoder on a new media section, since the SFU keeps a section's first codec.
   Stop, the browser's own stop and the end of the call end the capture and the
-  source. `/call` alone may ask for camera and display capture
+  source. The stream host grants camera and display capture to `/call`
   (Permissions-Policy). A browser that cannot encode the call codec shows
   "Can't send AV1" (or VP9).
-- **Quality:** Auto for watching and for each own source; Q1 adds its tiers
-  to `QUALITIES` (`controls.js`) and applies `source.quality` and
-  `track.quality` from `Call`. Embedding the call view in the web client is a
-  follow-up.
+- **Quality:** The selectors beside the capture buttons set each source's
+  maximum resolution and frame rate. The encoder also follows SFU bandwidth
+  limits. Open **Video stats** on a remote tile to choose its receive quality
+  or leave it at Auto to follow the tile size. The panel shows the requested
+  quality ceiling, received resolution, decoded and presented frame rates,
+  receive bitrate, and mean time in the receiver's jitter buffer. The stats
+  on your own preview show capture and encoder dimensions, the SFU's caps
+  and any limitation reported by the browser. Browsers with a supported scalable
+  AV1 encoder let the SFU forward different layers to different viewers.
 - **Tests:** `checks.call-page` runs `web/call/call.test.js` against the
   stream worker's wasm; `checks.vm-call-page` (`nix/call-page-vm.nix`,
   `tests/call_page.py`) runs headless Chromium and Firefox against the SFU and

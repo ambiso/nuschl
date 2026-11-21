@@ -1,8 +1,8 @@
 {
   "linux-nix": {
     "targets": ["x86_64-unknown-linux-gnu"],
-    "packages": ["nuschl", "nuschl-cli", "nuschl-tui", "nuschld", "nuschl-witness", "nuschl-web-relay", "nuschl-content-worker", "nuschl-crypto-worker", "nuschl-math-worker", "nuschl-media-worker", "nuschl-storage-worker", "nuschl-transfer-worker", "nuschl-update-worker"],
-    "features": ["nuschl-update-worker/ed25519", "nuschl-update-worker/mldsa44"],
+    "packages": ["nuschl", "nuschl-cli", "nuschl-tui", "nuschld", "nuschl-witness", "nuschl-web-relay", "nuschl-content-worker", "nuschl-crypto-worker", "nuschl-math-worker", "nuschl-media-worker", "nuschl-storage-worker", "nuschl-transfer-worker", "nuschl-video-worker", "nuschl-rtc-worker", "nuschl-update-worker"],
+    "features": ["nuschl-update-worker/ed25519", "nuschl-update-worker/mldsa44", "nuschl-video-worker/vaapi"],
     "components": ["rust-standard-library", "mumble-protocol", "newcm-math-font", "syntect-default-assets", "emoji-assets"]
   },
   "linux-portable": {
@@ -19,25 +19,25 @@
   },
   "linux-aarch64-nix": {
     "targets": ["aarch64-unknown-linux-gnu"],
-    "packages": ["nuschl", "nuschl-cli", "nuschl-tui", "nuschld", "nuschl-witness", "nuschl-web-relay", "nuschl-content-worker", "nuschl-crypto-worker", "nuschl-math-worker", "nuschl-media-worker", "nuschl-storage-worker", "nuschl-transfer-worker", "nuschl-update-worker"],
-    "features": ["nuschl-update-worker/ed25519", "nuschl-update-worker/mldsa44"],
+    "packages": ["nuschl", "nuschl-cli", "nuschl-tui", "nuschld", "nuschl-witness", "nuschl-web-relay", "nuschl-content-worker", "nuschl-crypto-worker", "nuschl-math-worker", "nuschl-media-worker", "nuschl-storage-worker", "nuschl-transfer-worker", "nuschl-video-worker", "nuschl-rtc-worker", "nuschl-update-worker"],
+    "features": ["nuschl-update-worker/ed25519", "nuschl-update-worker/mldsa44", "nuschl-video-worker/vaapi"],
     "components": ["rust-standard-library", "mumble-protocol", "newcm-math-font", "syntect-default-assets", "emoji-assets"]
   },
   "windows-x86_64": {
     "targets": ["x86_64-pc-windows-gnu"],
-    "packages": ["nuschl", "nuschl-content-worker", "nuschl-crypto-worker", "nuschl-math-worker", "nuschl-media-worker", "nuschl-storage-worker", "nuschl-transfer-worker", "nuschl-update-worker"],
+    "packages": ["nuschl", "nuschl-content-worker", "nuschl-crypto-worker", "nuschl-math-worker", "nuschl-media-worker", "nuschl-storage-worker", "nuschl-transfer-worker", "nuschl-video-worker", "nuschl-rtc-worker", "nuschl-update-worker"],
     "features": ["nuschl-update-worker/ed25519", "nuschl-update-worker/mldsa44"],
     "components": ["rust-standard-library", "mumble-protocol", "newcm-math-font", "syntect-default-assets", "emoji-assets", "gcc-runtime", "mingw-w64-runtime"]
   },
   "macos-universal": {
     "targets": ["x86_64-apple-darwin", "aarch64-apple-darwin"],
-    "packages": ["nuschl", "nuschl-content-worker", "nuschl-crypto-worker", "nuschl-math-worker", "nuschl-media-worker", "nuschl-storage-worker", "nuschl-transfer-worker", "nuschl-update-worker"],
+    "packages": ["nuschl", "nuschl-content-worker", "nuschl-crypto-worker", "nuschl-math-worker", "nuschl-media-worker", "nuschl-storage-worker", "nuschl-transfer-worker", "nuschl-video-worker", "nuschl-rtc-worker", "nuschl-update-worker"],
     "features": ["nuschl-update-worker/ed25519", "nuschl-update-worker/mldsa44"],
     "components": ["rust-standard-library", "mumble-protocol", "newcm-math-font", "syntect-default-assets", "emoji-assets"]
   },
   "web": {
     "targets": ["wasm32-unknown-unknown"],
-    "packages": ["nuschl-client-wasm", "nuschl-audio-wasm", "nuschl-content-wasm"],
+    "packages": ["nuschl-client-wasm", "nuschl-audio-wasm", "nuschl-content-wasm", "nuschl-stream-wasm"],
     "features": [],
     "components": ["rust-standard-library", "mumble-protocol", "syntect-default-assets", "emoji-assets", "web-runtime-assets"]
   },
@@ -70,6 +70,18 @@
     "packages": ["nuschl-musicbot", "nuschl-musicbot-codec-worker", "nuschl-content-worker"],
     "features": [],
     "components": ["rust-standard-library", "mumble-protocol", "syntect-default-assets", "musicbot-web-runtime-assets"]
+  },
+  "video-probe-x86_64-unknown-linux-gnu": {
+    "targets": ["x86_64-unknown-linux-gnu"],
+    "packages": ["nuschl-video-worker"],
+    "features": ["nuschl-video-worker/vaapi"],
+    "components": ["rust-standard-library"]
+  },
+  "video-probe-aarch64-unknown-linux-gnu": {
+    "targets": ["aarch64-unknown-linux-gnu"],
+    "packages": ["nuschl-video-worker"],
+    "features": ["nuschl-video-worker/vaapi"],
+    "components": ["rust-standard-library"]
   },
   "rtc-probe-x86_64-unknown-linux-gnu": {
     "targets": ["x86_64-unknown-linux-gnu"],

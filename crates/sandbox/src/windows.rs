@@ -49,6 +49,11 @@ fn policy(role: Role) -> Option<Policy> {
     if can.audio {
         capabilities.push("microphone".into());
     }
+    match role {
+        Role::DesktopVideoCapture { camera: true } => capabilities.push("webcam".into()),
+        Role::DesktopVideoCapture { camera: false } => capabilities.push("graphicsCapture".into()),
+        _ => {}
+    }
     if can.network {
         // Outgoing connections to the Internet (rendezvous, relay, peers) and
         // connections to and from the local network (direct transit between
@@ -94,6 +99,12 @@ mod tests {
             (Role::Storage { directory }, format!(r"{storage} --writable C:\data {pure}")),
             (Role::Crypto { directory }, format!(r"{crypto} --writable C:\data {pure}")),
             (Role::Media, "nuschl.media --capability microphone --memory 1073741824 --".into()),
+            (Role::VideoEncode, "nuschl.video-encode --memory 1073741824 --cpu 120 --less-privileged --".into()),
+            (Role::VideoDecode { vaapi: false }, "nuschl.video-decode --memory 1073741824 --cpu 3600 --less-privileged --".into()),
+            (Role::Rtc, "nuschl.rtc --memory 1073741824 --cpu 3600 --less-privileged --".into()),
+            (Role::CallKeys, "nuschl.call-keys --memory 1073741824 --cpu 3600 --less-privileged --".into()),
+            (Role::DesktopVideoCapture { camera: true }, "nuschl.video-camera --capability webcam --memory 1073741824 --cpu 3600 --".into()),
+            (Role::DesktopVideoCapture { camera: false }, "nuschl.video-screen --capability graphicsCapture --memory 1073741824 --cpu 3600 --".into()),
             (Role::Transfer { file: Some(file) }, r"nuschl.transfer --capability internetClient --capability privateNetworkClientServer --read-file C:\offer.zip --memory 1073741824 --".into()),
             (Role::Transfer { file: None }, "nuschl.transfer --capability internetClient --capability privateNetworkClientServer --memory 1073741824 --".into()),
         ] {
@@ -101,6 +112,7 @@ mod tests {
             let arguments: Vec<_> = arguments.iter().map(|a| a.to_string_lossy()).collect();
             assert_eq!(arguments.join(" "), format!("--nuschl-sandbox --profile {expected}"));
         }
+        assert!(policy(Role::VideoDecode { vaapi: true }).is_none());
     }
 
     #[test]

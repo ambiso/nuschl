@@ -283,7 +283,7 @@ impl Client {
             now,
         );
         self.cancel_preview(cancel);
-        if self.sending() {
+        if self.composer_sending() {
             self.pause_submitted_link_preview(now);
         }
     }

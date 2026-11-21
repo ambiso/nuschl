@@ -1,0 +1,23 @@
+[package]
+name = "nuschl-rtc-worker"
+description = "Isolated native WebRTC and SFrame call media"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+nuschl-ipc.workspace = true
+nuschl-rtc = { path = "../../crates/rtc", version = "0.3.0" }
+nuschl-sframe = { path = "../../crates/sframe", version = "0.3.0" }
+
+[target.'cfg(windows)'.dependencies]
+nuschl-sandbox-windows.workspace = true
+
+[dev-dependencies]
+nuschl-testkit.workspace = true
+tokio = { version = "1.54.1", features = ["macros", "rt", "net", "time"] }

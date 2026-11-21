@@ -13,11 +13,12 @@ use libcrux_kem::Algorithm::XWingKemDraft06;
 use rand_core::{TryCryptoRng, TryRng};
 use subtle::ConstantTimeEq as _;
 
+use crate::direct;
 use crate::link::{LinkKeys, label};
 use crate::wire::Reader;
 use crate::{Error, MAX_KEY_MESSAGE, hkdf_expand, random, sha256};
 
-const VERSION: u8 = 1;
+pub(crate) const VERSION: u8 = 1;
 /// KEM X-Wing, KDF HKDF-SHA256, AEAD ChaCha20-Poly1305, SFrame AES_128_GCM_SHA256_128.
 const SUITE: [u8; 8] = [0x64, 0x7a, 0x00, 0x01, 0x00, 0x03, 0x00, 0x04];
 const PUBLIC_KEY_LEN: usize = 1216;
@@ -308,6 +309,7 @@ struct Granted {
     subscriber: SubscriberId,
     /// The key for Rekey number `counter + 1`.
     channel: [u8; 32],
+    direct: direct::Channel,
     counter: u64,
     confirm: [u8; 32],
     confirmed: bool,
@@ -340,12 +342,55 @@ impl Publisher {
 
     /// Handles a KeyRequest or KeyAck.
     pub fn receive(&mut self, message: &[u8], now: u64) -> Result<PublisherEvent, Error> {
+        self.receive_with(message, now, |_| true)
+    }
+
+    pub(crate) fn receive_from(
+        &mut self,
+        message: &[u8],
+        now: u64,
+        expected: Option<SubscriberId>,
+    ) -> Result<PublisherEvent, Error> {
+        self.receive_with(message, now, |subscriber| expected == Some(subscriber))
+    }
+
+    fn receive_with(
+        &mut self,
+        message: &[u8],
+        now: u64,
+        expected: impl FnOnce(SubscriberId) -> bool,
+    ) -> Result<PublisherEvent, Error> {
         let (kind, body) = open_message(&self.keys, message)?;
         match kind {
             REQUEST => self.request(body, now),
-            ACK => self.ack(&body),
+            ACK => self.ack(&body, expected),
             _ => Err(Error::Unexpected),
         }
+    }
+
+    /// Seals signaling for a subscriber that proved possession of its grant.
+    pub fn seal_direct(
+        &mut self,
+        subscriber: &SubscriberId,
+        body: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        self.direct_channel(subscriber)?.seal(body)
+    }
+
+    pub fn open_direct(
+        &mut self,
+        subscriber: &SubscriberId,
+        message: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        self.direct_channel(subscriber)?.open(message)
+    }
+
+    fn direct_channel(&mut self, subscriber: &SubscriberId) -> Result<&mut direct::Channel, Error> {
+        self.subscribers
+            .iter_mut()
+            .find(|granted| granted.confirmed && granted.subscriber == *subscriber)
+            .map(|granted| &mut granted.direct)
+            .ok_or(Error::UnknownSubscriber)
     }
 
     fn request(&mut self, body: Vec<u8>, now: u64) -> Result<PublisherEvent, Error> {
@@ -385,9 +430,16 @@ impl Publisher {
         Ok(PublisherEvent::Requested(subscriber))
     }
 
-    fn ack(&mut self, body: &[u8]) -> Result<PublisherEvent, Error> {
+    fn ack(
+        &mut self,
+        body: &[u8],
+        expected: impl FnOnce(SubscriberId) -> bool,
+    ) -> Result<PublisherEvent, Error> {
         let mut reader = Reader::new(body);
         let subscriber: SubscriberId = reader.array()?;
+        if !expected(subscriber) {
+            return Err(Error::UnknownSubscriber);
+        }
         let confirm: [u8; 32] = reader.array()?;
         reader.finish()?;
         let granted = self
@@ -506,6 +558,7 @@ impl Publisher {
         let granted = Granted {
             subscriber: pending.subscriber,
             channel: export(&context, "channel publisher->subscriber")?,
+            direct: direct::Channel::new(export(&context, "direct signaling")?, true),
             counter: 0,
             confirm: export(&context, "confirm subscriber->publisher")?,
             confirmed: false,
@@ -547,6 +600,7 @@ enum State {
     /// Holds the key for Rekey number `counter + 1`, and nothing that opens the grant.
     Granted {
         channel: [u8; 32],
+        direct: direct::Channel,
         counter: u64,
         epoch: u32,
     },
@@ -589,6 +643,21 @@ impl Subscriber {
 
     pub fn id(&self) -> SubscriberId {
         self.id
+    }
+
+    pub fn seal_direct(&mut self, body: &[u8]) -> Result<Vec<u8>, Error> {
+        self.direct_channel()?.seal(body)
+    }
+
+    pub fn open_direct(&mut self, message: &[u8]) -> Result<Vec<u8>, Error> {
+        self.direct_channel()?.open(message)
+    }
+
+    fn direct_channel(&mut self) -> Result<&mut direct::Channel, Error> {
+        match &mut self.state {
+            State::Granted { direct, .. } => Ok(direct),
+            State::Joining { .. } => Err(Error::Unexpected),
+        }
     }
 
     /// Handles a KeyGrant or Rekey. Messages for other subscribers fail with
@@ -649,6 +718,7 @@ impl Subscriber {
         let ack = seal_message(&self.keys, ACK, &ack, rng)?;
         self.state = State::Granted {
             channel: export(&context, "channel publisher->subscriber")?,
+            direct: direct::Channel::new(export(&context, "direct signaling")?, false),
             counter: 0,
             epoch: key.epoch,
         };
@@ -660,6 +730,7 @@ impl Subscriber {
             channel,
             counter: last,
             epoch,
+            ..
         } = &mut self.state
         else {
             return Err(Error::Unexpected);

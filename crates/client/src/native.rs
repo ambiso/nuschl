@@ -22,6 +22,7 @@ use nuschl_core::bitrate::{VoiceBitrate, voice_frame_fits};
 use nuschl_core::{ChatMessage, ContentBlock, HistoryPage, MessageDocument};
 use nuschl_ipc::{LiveMediaEvent, LiveMediaRequest};
 use nuschl_protocol::nuschl::v1;
+pub use nuschl_session::sfu;
 use nuschl_session::{
     Error,
     config::{ClientSettings, Profile, ServerBookmark},
@@ -1257,6 +1258,12 @@ impl Driver {
             let _ = events.send(Event::OwnIdentity(result)).await;
         });
     }
+
+    /// Use the existing isolated crypto worker for call signaling.
+    pub fn call_crypto(&self) -> nuschl_session::identity::CryptoHandle {
+        self.crypto.clone()
+    }
+
     fn connections(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, Connection>> {
         self.connections
             .lock()
